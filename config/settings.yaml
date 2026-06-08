@@ -1,0 +1,38 @@
+poisson:
+  mu_total: 2.6
+  gd_div: 250
+  gd_clamp: 2.5
+  lambda_min: 0.15
+  lambda_max: 4.5
+  max_goals: 10
+  tail_mass_max: 0.01
+
+elo:
+  home_adv: 100
+  base_draw: 0.28
+  draw_k: 0.0003
+  draw_min: 0.18
+  draw_max: 0.32
+
+ensemble:
+  w_elo: 0.5
+  w_poisson: 0.5
+
+odds:
+  min_books: 3
+  outlier_ratio: 2.0
+
+value:
+  s_ev: 0.08
+  s_edge: 0.04
+  a_ev: 0.05
+  a_edge: 0.02
+  b_ev: 0.03
+  b_edge: 0.01
+  odds_max_age_seconds: 12600
+
+differ:
+  ev_change: 0.03
+  odds_move: 0.05
+
+ou_main_line: 2.5
