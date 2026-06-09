@@ -6,12 +6,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from worldcup.store_contract import SnapshotStore
+
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class SQLiteSnapshotStore:
+class SQLiteSnapshotStore(SnapshotStore):
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
 
