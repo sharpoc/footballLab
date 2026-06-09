@@ -729,11 +729,11 @@ python3 -m worldcup.export --snapshot data/cache/analysis_snapshot.json --out-di
 | 文件 | 说明 |
 |---|---|
 | `index.html` | Research Ledger 静态研究页 |
-| `api/snapshot/latest.json` | 完整最新 snapshot |
+| `api/snapshot/latest.json` | 公开安全 snapshot 投影：summary counts、脱敏 data quality 计数、只读比赛行；不得包含完整内部 snapshot |
 | `api/matches.json` | 只读比赛行投影 |
 | `manifest.json` | 导出元数据 |
 
-`data/cache/site/` 必须保持 git ignore；该输出只代表本地静态包草案，不代表已部署。
+`manifest.json` 不得包含 `run_id`、quota、provider 原名、raw source error 或其它内部运行细节。`data/cache/site/` 必须保持 git ignore；该输出只代表本地静态包草案，不代表已部署。
 
 ### Readiness check
 

@@ -151,6 +151,8 @@ def test_build_preview_html_includes_filter_dom_accessibility_contract():
     html = build_preview_html(_snapshot())
 
     assert 'data-filter="strong"' in html
+    assert ">Strong (S/A)</button>" in html
+    assert ">Weak (C/D)</button>" in html
     assert 'id="ledger-search"' in html
     assert 'aria-pressed="true"' in html
     assert 'aria-pressed="false"' in html

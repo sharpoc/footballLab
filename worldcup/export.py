@@ -14,6 +14,37 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _as_count(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, list):
+        return len(value)
+    return 1
+
+
+def _quality_count(snapshot: dict[str, Any], key: str) -> int:
+    data_quality = snapshot.get("data_quality") or {}
+    if key in data_quality:
+        return _as_count(data_quality.get(key))
+    return _as_count((snapshot.get("run") or {}).get(key))
+
+
+def build_public_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "snapshot_at": snapshot.get("snapshot_at"),
+        "counts": dict(snapshot.get("counts") or {}),
+        "data_quality": {
+            "source_error_count": _quality_count(snapshot, "source_errors"),
+            "stale_source_count": _quality_count(snapshot, "stale_sources"),
+            "missing_odds_count": _quality_count(snapshot, "missing_odds"),
+            "missing_elo_count": _quality_count(snapshot, "missing_elo"),
+            "time_mismatch_count": _quality_count(snapshot, "time_mismatches"),
+        },
+        "matches": project_match_rows(snapshot),
+    }
+
+
 def export_static_site(snapshot: dict[str, Any], out_dir: str | Path) -> dict[str, str]:
     root = Path(out_dir)
     index_path = root / "index.html"
@@ -23,13 +54,12 @@ def export_static_site(snapshot: dict[str, Any], out_dir: str | Path) -> dict[st
 
     index_path.parent.mkdir(parents=True, exist_ok=True)
     index_path.write_text(build_preview_html(snapshot), encoding="utf-8")
-    _write_json(snapshot_path, {"snapshot": snapshot})
+    _write_json(snapshot_path, {"snapshot": build_public_snapshot(snapshot)})
     _write_json(matches_path, {"matches": project_match_rows(snapshot)})
 
     manifest = {
         "schema_version": 1,
         "snapshot_at": snapshot.get("snapshot_at"),
-        "run_id": (snapshot.get("run") or {}).get("run_id"),
         "files": [
             "index.html",
             "api/snapshot/latest.json",

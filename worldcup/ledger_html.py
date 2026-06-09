@@ -76,9 +76,9 @@ def _render_controls() -> str:
     <section class="ledger-controls" aria-label="Ledger controls">
       <div class="filter-group" role="group" aria-label="Grade filter">
         <button type="button" class="filter-button active" data-filter="all" aria-pressed="true">All</button>
-        <button type="button" class="filter-button" data-filter="strong" aria-pressed="false">Strong (A)</button>
+        <button type="button" class="filter-button" data-filter="strong" aria-pressed="false">Strong (S/A)</button>
         <button type="button" class="filter-button" data-filter="watch" aria-pressed="false">Watch (B)</button>
-        <button type="button" class="filter-button" data-filter="weak" aria-pressed="false">Weak (C)</button>
+        <button type="button" class="filter-button" data-filter="weak" aria-pressed="false">Weak (C/D)</button>
       </div>
       <label class="search-label">
         <span>Search</span>

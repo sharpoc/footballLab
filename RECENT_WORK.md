@@ -9,6 +9,7 @@
 - Added tests for ledger projection, preview safety/accessibility, export contract, and mobile table-scroll containment.
 - Regenerated ignored local preview artifacts in `data/cache/preview.html` and `data/cache/site/`.
 - Browser QA passed on desktop and mobile; mobile overflow was fixed by constraining the ledger panel so the wide table scrolls inside its container.
+- Tightened static export safety so `api/snapshot/latest.json` uses a public snapshot projection and `manifest.json` no longer exposes `run_id`.
 - Local validation: `156/156 tests passed`.
 - No deployment, push, live API call, online write, database connection, or cloud resource change was performed.
 
