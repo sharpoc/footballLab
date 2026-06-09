@@ -2,6 +2,12 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-09 Plan 4 UI Design
+
+- Used Product Design to confirm the first public UI brief: users should quickly scan upcoming World Cup value signals.
+- Selected visual direction: `Research Ledger`, a public-facing analyst ledger with summary metrics, signal table, methodology/source health rail, and visible caveats.
+- Added `docs/superpowers/specs/2026-06-09-plan4-research-ledger-ui-design.md`; no frontend code, deployment, push, live API call, or online write was performed.
+
 ## 2026-06-09 Plan 3A / 3B / 3C / 3D
 
 - 新增 `docs/superpowers/specs/2026-06-09-plan3a-fastapi-ecs-design.md`，明确下一阶段先做本地 FastAPI/ECS API 形态，不部署、不改云资源、不切 PostgreSQL。
@@ -76,6 +82,7 @@
 
 ## 下一步
 
+- Review and approve the Plan 4 Research Ledger UI design spec, then write the implementation plan.
 - 明确确认 ECS/RDS 后，配置 `WORLDCUP_STORE=postgres` / `DATABASE_URL`，先运行 PostgreSQL smoke dry-run guard。
 - 在测试环境做真实 PostgreSQL ingest/read smoke，确认 `stored` / `duplicate` 幂等语义。
 - The Odds API key 已在聊天截图暴露过；用户已确认不充值，后续按免费额度和缓存兜底设计。
