@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from worldcup.ingest import build_ingest_payload
 from worldcup.local_runner import build_snapshot_from_cache, build_snapshot_from_probe, write_snapshot
 
 
@@ -101,3 +102,18 @@ def test_build_snapshot_from_cache_reads_same_input_contract():
 
         assert snapshot["counts"]["matches"] == 1
         assert snapshot["matches"][0]["away_team"] == "South Africa"
+
+
+def test_build_snapshot_from_cache_includes_run_metadata_for_ingest():
+    with TemporaryDirectory() as tmp:
+        cache_dir = Path(tmp) / "cache"
+        _write_probe_files(cache_dir)
+
+        snapshot = build_snapshot_from_cache(cache_dir, snapshot_at="2026-06-08T00:00:00+00:00")
+        payload = build_ingest_payload(
+            snapshot,
+            generated_at="2026-06-08T00:01:00+00:00",
+        )
+
+        assert snapshot["run"]["run_id"] == "20260608T000000Z-local"
+        assert payload["run_id"] == "20260608T000000Z-local"

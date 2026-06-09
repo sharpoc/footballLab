@@ -13,9 +13,9 @@
 
 - Git 仓库已初始化。
 - Plan 1 引擎核心已完成第一版。
-- 本地测试执行器通过：`112/112 tests passed`。
+- 本地测试执行器通过：`113/113 tests passed`。
 - Plan 0 核心数据源探测已完成第一轮：openfootball 赛程、eloratings Elo、The Odds API 赔率可用；API-Football Free plan 不能访问 2026 season。
-- Plan 2 已启动：当前完成纯离线解析层、单场价值信号、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、低频调度策略、run metadata、调度执行包装、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照。
+- Plan 2 已启动：当前完成纯离线解析层、单场价值信号、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、低频调度策略、run metadata、调度执行包装、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照，本地 runner 生成的快照也包含 ingest 所需 run metadata。
 - Plan 3A FastAPI local adapter is implemented and tested.
 
 ## 技术栈
@@ -28,10 +28,10 @@
 - 当前 scheduler 默认 dry-run，只读取本地 snapshot / quota 并输出 JSON 决策，不会联网或写入状态
 - 当前 scheduled refresh 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会调用 refresh runner
 - 当前 ingest 默认 dry-run；只构造请求体、HMAC 签名头和 body hash，不发送线上请求
-- 当前 ingest server 是纯本地验签/幂等模块；后续再包成 FastAPI ECS 接口
+- 当前 ingest server 是纯本地验签/幂等模块；FastAPI adapter 已复用它，ECS 部署另行确认
 - 当前 SQLite store / preview 都是本地低风险链路；默认输出在已忽略的 `data/local/` 或 `data/cache/`
 - 当前 HTTP 适配层只用于本地预览和路由契约测试；正式 FastAPI/ECS 部署需单独确认
-- 当前 ASGI 适配层无外部依赖，只包装本地 HTTP 路由契约；正式 ASGI server / FastAPI 依赖安装需单独确认
+- 当前 ASGI 适配层无外部依赖，只包装本地 HTTP 路由契约；正式 ASGI server / ECS 部署需单独确认
 - 当前 FastAPI app 只作为本地适配层，复用既有路由契约；ECS 部署明确确认前保持 local-only
 - 当前 `/healthz` 不读 DB、不依赖 secret，只用于本地和后续云端健康检查契约
 - 当前静态导出默认写入已忽略的 `data/cache/site/`
@@ -149,7 +149,7 @@ INGEST_HMAC_SECRET=...
 
 ## 下一步
 
-1. 用 `python3 -m worldcup.secrets` 生成 `INGEST_HMAC_SECRET`，手动写入 `.env` 后 readiness check 才能全绿。
+1. 上线前确认 `.env` 或云端 secret manager 已配置 `INGEST_HMAC_SECRET`，并重新跑 readiness check。
 2. 明确确认 ECS 部署后，再把当前本地 FastAPI adapter 接入正式云端运行形态。
 3. 把 SQLite store 替换/适配为 PostgreSQL 持久化，保留幂等唯一键。
 4. 后续再把 scheduled refresh 接到 macmini cron / launchd。

@@ -355,7 +355,7 @@ stale_sources[]
 
 ### Run metadata
 
-每次 `refresh_runner --live` 生成的 `analysis_snapshot.json` 必须包含：
+每次 `refresh_runner --live` 或 `local_runner` 从本地样例/缓存生成的 `analysis_snapshot.json` 都必须包含：
 
 ```text
 run
@@ -379,6 +379,8 @@ run
   source_errors
   stale_sources
 ```
+
+本地 runner 使用 `mode = local` 和 `run_id` 后缀 `-local`，`quota` 可为空，但 `run.run_id`、`run.observed_at` 和 `policy` 必须存在，保证同一份快照可以继续进入 HMAC dry-run、ingest_app 和 FastAPI smoke。
 
 当前 `policy_version = free-tier-v1`。默认策略：
 

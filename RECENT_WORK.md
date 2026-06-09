@@ -9,7 +9,8 @@
 - 新增 `docs/superpowers/plans/2026-06-09-plan3a-fastapi-ecs-implementation.md`，把 Plan 3A 拆成依赖、FastAPI route tests、thin wrapper、ingest tests、store protocol、文档和最终验证任务。
 - Implemented Plan 3A local FastAPI adapter over the existing route contract; no ECS deployment, push, live API call, or online write was performed.
 - Added `SnapshotStore` protocol to preserve SQLite behavior and prepare for PostgreSQL Plan 3B.
-- Local validation: `tests/run_tests.py` and `worldcup.readiness` pass.
+- Fixed local/cache snapshot generation so `worldcup.local_runner` includes ingest-required run metadata; local FastAPI smoke can ingest snapshots generated from existing cache.
+- Local validation: `113/113 tests passed`; `worldcup.readiness` reports 11 checks, 0 errors, 0 warnings.
 
 ## 2026-06-09
 

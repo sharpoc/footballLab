@@ -12,6 +12,7 @@ from worldcup.collectors.theoddsapi import parse_theoddsapi_events
 from worldcup.config import load_config
 from worldcup.models import Signal
 from worldcup.pipeline import analyze_match_input, build_match_inputs, generate_value_signals
+from worldcup.scheduler import build_refresh_decision, build_run_metadata, make_run_id
 
 
 def _read_json(path: Path) -> Any:
@@ -72,6 +73,39 @@ def _analysis_to_dict(analysis, signals: list[Signal]) -> dict[str, Any]:
     }
 
 
+def _next_kickoff_from_matches(matches: list[dict[str, Any]], observed_at: str) -> str | None:
+    observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+    upcoming: list[datetime] = []
+    for match in matches:
+        kickoff_raw = match.get("kickoff_at_utc")
+        if not kickoff_raw:
+            continue
+        kickoff = datetime.fromisoformat(kickoff_raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+        if kickoff >= observed:
+            upcoming.append(kickoff)
+    if not upcoming:
+        return None
+    return min(upcoming).isoformat()
+
+
+def _local_run_metadata(snapshot_at: str, matches: list[dict[str, Any]]) -> dict[str, Any]:
+    decision = build_refresh_decision(
+        now=snapshot_at,
+        last_refresh_at=None,
+        next_kickoff_at=_next_kickoff_from_matches(matches, snapshot_at),
+        quota_remaining=None,
+    )
+    return build_run_metadata(
+        run_id=make_run_id(snapshot_at, "local"),
+        mode="local",
+        observed_at=snapshot_at,
+        decision=decision,
+        quota={},
+        source_errors=[],
+        stale_sources=[],
+    )
+
+
 def build_snapshot_from_probe(
     probe_dir: str | Path,
     snapshot_at: str | None = None,
@@ -91,8 +125,10 @@ def build_snapshot_from_probe(
         signals = generate_value_signals(analysis, cfg)
         matches.append(_analysis_to_dict(analysis, signals))
 
+    observed_at = snapshot_at or _now_utc_iso()
     return {
-        "snapshot_at": snapshot_at or _now_utc_iso(),
+        "snapshot_at": observed_at,
+        "run": _local_run_metadata(observed_at, matches),
         "counts": {
             "fixtures": len(fixtures),
             "odds_events": len(odds_events),
