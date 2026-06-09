@@ -2,7 +2,7 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
-## 2026-06-09 Plan 3A
+## 2026-06-09 Plan 3A / 3B
 
 - 新增 `docs/superpowers/specs/2026-06-09-plan3a-fastapi-ecs-design.md`，明确下一阶段先做本地 FastAPI/ECS API 形态，不部署、不改云资源、不切 PostgreSQL。
 - 推荐路线：FastAPI thin wrapper 复用现有 HMAC 验签、幂等、SQLite store、只读投影和 preview 逻辑；PostgreSQL 作为后续 Plan 3B 通过同一 store boundary 替换。
@@ -10,7 +10,9 @@
 - Implemented Plan 3A local FastAPI adapter over the existing route contract; no ECS deployment, push, live API call, or online write was performed.
 - Added `SnapshotStore` protocol to preserve SQLite behavior and prepare for PostgreSQL Plan 3B.
 - Fixed local/cache snapshot generation so `worldcup.local_runner` includes ingest-required run metadata; local FastAPI smoke can ingest snapshots generated from existing cache.
-- Local validation: `113/113 tests passed`; `worldcup.readiness` reports 11 checks, 0 errors, 0 warnings.
+- Added Plan 3B PostgreSQL store adapter behind `SnapshotStore`; API/query/ingest paths now accept injected stores while SQLite remains the default local store.
+- PostgreSQL behavior is tested with fake connections only; no real RDS/PostgreSQL connection, deployment, push, or online write was performed.
+- Local validation: `121/121 tests passed`; `worldcup.readiness` reports 11 checks, 0 errors, 0 warnings.
 
 ## 2026-06-09
 
@@ -21,7 +23,7 @@
 - 通勤窗口继续低风险本地加固：新增 `docs/superpowers/plans/2026-06-09-commute-local-hardening.md`，明确只做本地 ASGI / 静态导出 / readiness / 文档验证；不部署、不 push、不 commit、不安装依赖、不打真实 live API。
 - 新增无依赖 ASGI 适配层 `worldcup/asgi_app.py`，复用 `worldcup.http_app` 路由契约，覆盖 `GET /api/matches` 和 `GET /preview` 的 ASGI 行为测试。
 - 新增静态站点/API 导出器 `worldcup/export.py`，可从 `analysis_snapshot.json` 生成 `data/cache/site/index.html`、`api/matches.json`、`api/snapshot/latest.json` 和 `manifest.json`。
-- 新增本地 readiness check `worldcup/readiness.py`，只读检查 `.env` 变量名、缓存快照内容、quota ledger、预览/静态导出免责声明和 git ignore 状态；当前真实检查仅缺 `INGEST_HMAC_SECRET`。
+- 新增本地 readiness check `worldcup/readiness.py`，只读检查 `.env` 变量名、缓存快照内容、quota ledger、预览/静态导出免责声明和 git ignore 状态；当时真实检查仅缺 `INGEST_HMAC_SECRET`。
 - 本地验证更新为：`99/99 tests passed`。
 
 ## 2026-06-08
@@ -70,6 +72,6 @@
 
 ## 下一步
 
-- 将 `worldcup.http_app` 的路由契约迁移/包装为 FastAPI，实现正式 ECS ingest/read API。
-- 把 SQLite store 替换/适配为 PostgreSQL 持久化，保留幂等唯一键。
+- 明确确认 ECS/RDS 后，把当前 FastAPI adapter 接入 `PostgresSnapshotStore` 和正式 secret 管理。
+- 在测试环境做真实 PostgreSQL ingest/read smoke，确认 `stored` / `duplicate` 幂等语义。
 - The Odds API key 已在聊天截图暴露过；用户已确认不充值，后续按免费额度和缓存兜底设计。

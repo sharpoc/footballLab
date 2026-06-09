@@ -494,15 +494,15 @@ body_sha256
 | `duplicate` | 同一个 idempotency key 已存在，本次不重复写入 |
 | `rejected` | 验签、body hash、timestamp 或字段一致性失败 |
 
-后续 FastAPI / PostgreSQL 版本应保留上述验证顺序和状态语义，把内存存储替换为数据库唯一键或等价幂等机制。
+FastAPI / PostgreSQL 版本必须保留上述验证顺序和状态语义，用数据库唯一键或等价幂等机制承接 `X-Worldcup-Idempotency-Key`。
 
 ## 9. Local persistence and preview
 
 ### SQLite store
 
-`worldcup.store.SQLiteSnapshotStore` 是本地低风险持久化层，默认后续写入 `data/local/worldcup.db`。`data/local/` 必须被 git ignore。
+`worldcup.store.SQLiteSnapshotStore` 是默认本地低风险持久化层，写入 `data/local/worldcup.db`。`data/local/` 必须被 git ignore。
 
-`worldcup.store_contract.SnapshotStore` 定义 ingest / query 依赖的持久化边界。当前实现由 `SQLiteSnapshotStore` 满足该协议；后续 PostgreSQL Plan 3B 应替换实现而不是改写 HMAC 验签、幂等语义或查询投影。
+`worldcup.store_contract.SnapshotStore` 定义 ingest / query 依赖的持久化边界。`SQLiteSnapshotStore` 和 `worldcup.postgres_store.PostgresSnapshotStore` 都满足该协议；切换持久化实现时不能改写 HMAC 验签、幂等语义或查询投影。
 
 表 `snapshots` 字段：
 
@@ -523,13 +523,31 @@ body_sha256
 | `stored` | 首次写入 idempotency key |
 | `duplicate` | idempotency key 已存在，未重复写入 |
 
+### PostgreSQL store adapter
+
+`worldcup.postgres_store.PostgresSnapshotStore` 是后续 ECS/RDS 使用的持久化适配器。当前单测通过 fake connection 覆盖 schema 初始化、`ON CONFLICT (idempotency_key) DO NOTHING` 幂等写入、`latest_snapshot()` 读取和 JSON 解析；本轮没有连接真实 PostgreSQL 或 RDS。
+
+部署时需要安装可选依赖：
+
+```bash
+python3 -m pip install '.[postgres]'
+```
+
+或等价安装：
+
+```bash
+python3 -m pip install 'psycopg[binary]>=3.2,<4'
+```
+
+真实 DSN、用户名、密码只能放在 `.env` 或云端 secret manager，不能写进 git、文档、日志或聊天。
+
 ### Local ingest app
 
 `worldcup.ingest_app.process_local_ingest` 执行：
 
 1. 调用 `worldcup.ingest_server.verify_ingest_request`。
 2. 验签失败时返回 `rejected`，不写入 snapshot。
-3. 验签成功时写入 `SQLiteSnapshotStore`，返回 `stored` 或 `duplicate`。
+3. 验签成功时写入注入的 `SnapshotStore`；默认本地 CLI 使用 `SQLiteSnapshotStore`，返回 `stored` 或 `duplicate`。
 
 CLI 只做本地验证和入库，不发送线上请求：
 
@@ -543,7 +561,7 @@ python3 -m worldcup.ingest_app --db data/local/worldcup.db --snapshot data/cache
 
 | 函数 | 说明 |
 |---|---|
-| `load_latest_snapshot(db_path)` | 从 SQLite 读取最新 snapshot |
+| `load_latest_snapshot(db_path, store=None)` | 从默认 SQLite 或注入的 `SnapshotStore` 读取最新 snapshot |
 | `project_match_rows(snapshot)` | 输出预览/API 可用的比赛行 |
 
 比赛行字段：
@@ -586,7 +604,7 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 
 | Method | Path | 行为 |
 |---|---|---|
-| `POST` | `/api/ingest/snapshot` | 调用本地 ingest app，验签后写入 SQLite |
+| `POST` | `/api/ingest/snapshot` | 调用本地 ingest app，验签后写入 `SnapshotStore` |
 | `GET` | `/api/snapshot/latest` | 返回最新完整 snapshot |
 | `GET` | `/api/matches` | 返回 `project_match_rows(snapshot)` |
 | `GET` | `/preview` | 返回静态 HTML 预览页 |
@@ -606,7 +624,7 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 
 ### FastAPI adapter
 
-`worldcup.fastapi_app.create_fastapi_app` exposes the same local route contract as `worldcup.http_app` and delegates security-sensitive behavior to existing modules. It must not reimplement HMAC verification, idempotency, query projection, or preview rendering.
+`worldcup.fastapi_app.create_fastapi_app` exposes the same local route contract as `worldcup.http_app` and delegates security-sensitive behavior to existing modules. It accepts an optional injected `SnapshotStore`, so later ECS/RDS wiring can use `PostgresSnapshotStore` without duplicating route logic. It must not reimplement HMAC verification, idempotency, query projection, or preview rendering.
 
 The adapter is local-only until ECS deployment is separately confirmed.
 
