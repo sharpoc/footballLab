@@ -1,7 +1,7 @@
 # Plan 4 Research Ledger UI Design
 
 - Date: 2026-06-09
-- Status: Draft for user review
+- Status: Accepted for implementation planning
 - Scope: first public-facing UI for the 2026 World Cup research site
 - Selected Product Design direction: Research Ledger
 - Selected visual target: `/Users/eagod/.codex/generated_images/019ea799-53e9-7221-955b-8426e2237822/ig_0db4522c5e4b94c0016a278789984c8191aae7d2bd11524177.png`

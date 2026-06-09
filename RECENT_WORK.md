@@ -7,6 +7,7 @@
 - Used Product Design to confirm the first public UI brief: users should quickly scan upcoming World Cup value signals.
 - Selected visual direction: `Research Ledger`, a public-facing analyst ledger with summary metrics, signal table, methodology/source health rail, and visible caveats.
 - Added `docs/superpowers/specs/2026-06-09-plan4-research-ledger-ui-design.md`; no frontend code, deployment, push, live API call, or online write was performed.
+- Accepted the Research Ledger design for implementation planning and added `docs/superpowers/plans/2026-06-09-plan4-research-ledger-ui-implementation.md`.
 
 ## 2026-06-09 Plan 3A / 3B / 3C / 3D
 
@@ -82,7 +83,7 @@
 
 ## 下一步
 
-- Review and approve the Plan 4 Research Ledger UI design spec, then write the implementation plan.
+- Execute the Plan 4 Research Ledger UI implementation plan locally, then run browser QA before any deployment discussion.
 - 明确确认 ECS/RDS 后，配置 `WORLDCUP_STORE=postgres` / `DATABASE_URL`，先运行 PostgreSQL smoke dry-run guard。
 - 在测试环境做真实 PostgreSQL ingest/read smoke，确认 `stored` / `duplicate` 幂等语义。
 - The Odds API key 已在聊天截图暴露过；用户已确认不充值，后续按免费额度和缓存兜底设计。
