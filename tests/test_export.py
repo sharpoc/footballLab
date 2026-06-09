@@ -33,7 +33,12 @@ def test_export_static_site_writes_html_snapshot_and_matches_json():
         assert (out_dir / "index.html").exists()
         assert (out_dir / "api" / "snapshot" / "latest.json").exists()
         assert (out_dir / "api" / "matches.json").exists()
-        assert "Mexico vs South Africa" in (out_dir / "index.html").read_text(encoding="utf-8")
+        html = (out_dir / "index.html").read_text(encoding="utf-8")
+        assert "Research Ledger" in html
+        assert "Research only, not betting advice." in html
+        assert "stake" not in html.lower()
+        assert "bet amount" not in html.lower()
+        assert "Mexico vs South Africa" in html
         assert json.loads((out_dir / "api" / "matches.json").read_text())["matches"][0][
             "match_label"
         ] == "Mexico vs South Africa"
