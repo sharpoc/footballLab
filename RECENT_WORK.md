@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-09 Plan 5 Gate B Server Smoke
+
+- Deployed release `719c5ed` to the single ECS server without using git on the server.
+- Server layout: `/opt/worldcup/releases/719c5ed`, `/opt/worldcup/current`, `/etc/worldcup/.env`, `/var/lib/worldcup/worldcup.db`.
+- Added `worldcup.service` under systemd using the standard-library `worldcup.http_app`; it listens only on `127.0.0.1:8788`.
+- Gate B smoke passed: `/healthz` returned ok; signed ingest returned `stored` then `duplicate`; `/api/matches` returned 72 matches; `/preview` returned the research disclaimer.
+- SQLite DB has one snapshot row after smoke; journal sensitive-keyword scan found no `INGEST_HMAC_SECRET`, `THE_ODDS_API_KEY`, `DATABASE_URL`, signature, cookie, token, or private-key strings.
+- No git pull/clone on the server, push, domain/DNS change, Nginx public route, HTTPS setup, RDS/PostgreSQL connection, scheduled refresh, live source refresh, or The Odds API call was performed.
+
 ## 2026-06-09 Plan 5 Deployment Dry-Run Checklist
 
 - Added `docs/superpowers/plans/2026-06-09-plan5-deployment-dry-run-checklist.md`.
