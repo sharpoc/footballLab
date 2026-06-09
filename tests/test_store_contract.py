@@ -10,3 +10,5 @@ def test_sqlite_store_satisfies_snapshot_store_protocol():
         store = SQLiteSnapshotStore(Path(tmp) / "worldcup.db")
 
         assert isinstance(store, SnapshotStore)
+        store.initialize()
+        assert store.count_snapshots() == 0

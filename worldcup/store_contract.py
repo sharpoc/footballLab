@@ -5,6 +5,9 @@ from typing import Any, Protocol, runtime_checkable
 
 @runtime_checkable
 class SnapshotStore(Protocol):
+    def initialize(self) -> None:
+        pass
+
     def put_snapshot(
         self,
         idempotency_key: str,
