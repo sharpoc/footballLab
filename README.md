@@ -13,12 +13,13 @@
 
 - Git 仓库已初始化。
 - Plan 1 引擎核心已完成第一版。
-- 本地测试执行器通过：`135/135 tests passed`。
+- 本地测试执行器通过：`138/138 tests passed`。
 - Plan 0 核心数据源探测已完成第一轮：openfootball 赛程、eloratings Elo、The Odds API 赔率可用；API-Football Free plan 不能访问 2026 season。
 - Plan 2 已启动：当前完成纯离线解析层、单场价值信号、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、低频调度策略、run metadata、调度执行包装、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照，本地 runner 生成的快照也包含 ingest 所需 run metadata。
 - Plan 3A FastAPI local adapter is implemented and tested.
 - Plan 3B PostgreSQL store adapter is implemented behind `SnapshotStore`; tests use fake connections only, with no real database connection.
 - Plan 3C store selection wiring is implemented: local CLI defaults to SQLite and can explicitly select PostgreSQL with `WORLDCUP_STORE=postgres` plus `DATABASE_URL`, but no real database connection was made.
+- Plan 3D PostgreSQL smoke dry-run guard is implemented: it validates PostgreSQL smoke prerequisites and emits redacted request metadata only, without HTTP or database connections.
 
 ## 技术栈
 
@@ -34,6 +35,7 @@
 - 当前 SQLite store / preview 都是本地低风险链路；默认输出在已忽略的 `data/local/` 或 `data/cache/`
 - 当前 PostgreSQL store adapter 可用于后续 ECS/RDS 接入；`psycopg` 只作为可选依赖声明，本轮未安装、未连接真实数据库
 - 当前 store selection 默认 `sqlite`；只有显式 `--store postgres` 或 `.env` 中 `WORLDCUP_STORE=postgres` 时才要求 `DATABASE_URL`
+- 当前 PostgreSQL smoke guard 默认只做 dry-run，要求 `WORLDCUP_STORE=postgres`、`DATABASE_URL` 和 `INGEST_HMAC_SECRET`，且不打印 DSN、secret、签名或请求 body
 - 当前 HTTP 适配层只用于本地预览和路由契约测试；正式 FastAPI/ECS 部署需单独确认
 - 当前 ASGI 适配层无外部依赖，只包装本地 HTTP 路由契约；正式 ASGI server / ECS 部署需单独确认
 - 当前 FastAPI app 只作为本地适配层，复用既有路由契约；ECS 部署明确确认前保持 local-only
@@ -76,6 +78,7 @@ worldcup/
   store_contract.py             # SnapshotStore 协议边界
   store_factory.py              # SQLite/PostgreSQL store 选择
   postgres_store.py             # PostgreSQL snapshot 持久化适配器
+  postgres_smoke.py             # PostgreSQL smoke dry-run guard
   query.py                      # 最新快照读取与比赛行投影
   preview.py                    # 静态 HTML 预览页生成
   http_app.py                   # 标准库 HTTP 适配层和路由契约
@@ -128,6 +131,14 @@ python3 -m worldcup.fastapi_app --host 127.0.0.1 --port 8788 --db data/local/wor
 
 The FastAPI app is local-only until ECS deployment is explicitly confirmed.
 
+PostgreSQL smoke dry-run guard 可在测试环境变量准备好后先跑：
+
+```bash
+python3 -m worldcup.postgres_smoke --env .env --snapshot data/cache/analysis_snapshot.json --endpoint https://example.invalid/api/ingest/snapshot
+```
+
+该命令只验证前置条件并输出脱敏请求摘要，不连接数据库、不发送 HTTP。
+
 ## API 注册清单
 
 API-Football 与 The Odds API 已完成第一轮探测；其它赔率源可作为后续容灾或交叉校验候选。
@@ -159,8 +170,9 @@ DATABASE_URL=
 
 1. 上线前确认 `.env` 或云端 secret manager 已配置 `INGEST_HMAC_SECRET`，并重新跑 readiness check。
 2. 明确确认 ECS/RDS 后，在测试环境配置 `WORLDCUP_STORE=postgres` 与 `DATABASE_URL`。
-3. 在测试环境做真实 PostgreSQL smoke，再考虑部署生产。
-4. 后续再把 scheduled refresh 接到 macmini cron / launchd。
+3. 先运行 PostgreSQL smoke dry-run guard，确认输出 `dry_run_ready` 且无敏感值。
+4. 在测试环境做真实 PostgreSQL smoke，再考虑部署生产。
+5. 后续再把 scheduled refresh 接到 macmini cron / launchd。
 
 ## 重要约束
 

@@ -559,6 +559,40 @@ CLI 覆盖规则：
 
 默认本地路径不需要 `DATABASE_URL`。只有选择 PostgreSQL 时才需要该变量名存在且有值；真实值不得写入文档、日志、提交信息或聊天。
 
+### PostgreSQL smoke dry-run guard
+
+`worldcup.postgres_smoke` 是真实 RDS/PostgreSQL smoke 前的本地安全闸，只做 dry-run：
+
+```bash
+python3 -m worldcup.postgres_smoke --env .env --snapshot data/cache/analysis_snapshot.json --endpoint https://example.invalid/api/ingest/snapshot
+```
+
+前置条件：
+
+| 检查 | 要求 |
+|---|---|
+| store | `WORLDCUP_STORE=postgres` |
+| database | `DATABASE_URL` 存在且非空 |
+| signing | `INGEST_HMAC_SECRET` 存在且非空 |
+| snapshot | snapshot 文件存在并包含可构造 ingest payload 的 run metadata |
+
+输出只允许包含脱敏请求摘要：
+
+- `method`
+- `url`
+- `path`
+- `header_names`
+- `run_id`
+- `snapshot_id`
+- `body_sha256`
+- `idempotency_key`
+- `body_bytes`
+- `expected_sequence`
+
+该 guard 不发送 HTTP、不连接数据库、不写入状态。输出不得包含 `DATABASE_URL` 值、HMAC secret、`X-Worldcup-Signature`、请求 body、API key、Cookie 或 token。前置条件不满足时返回 `blocked` 并以非零退出码结束。
+
+真实测试环境 smoke 的预期序列仍是同一 signed payload 写两次：第一次 `stored`，第二次 `duplicate`。该真实写入必须在 ECS/RDS/测试环境明确确认后再执行。
+
 ### Local ingest app
 
 `worldcup.ingest_app.process_local_ingest` 执行：

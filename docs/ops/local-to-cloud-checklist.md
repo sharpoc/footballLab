@@ -8,6 +8,7 @@
 - 本地缓存：`data/cache/analysis_snapshot.json`，当前含 72 场已确定对阵分析。
 - 本地接口契约：`POST /api/ingest/snapshot`、`GET /api/snapshot/latest`、`GET /api/matches`、`GET /preview`、`GET /healthz`。
 - 持久化边界：默认 SQLite，本地已提供 `PostgresSnapshotStore` adapter；当前只用 fake connection 测试，未连接真实 RDS。
+- PostgreSQL smoke guard：`worldcup.postgres_smoke` 只做 dry-run，验证 `WORLDCUP_STORE=postgres`、`DATABASE_URL`、`INGEST_HMAC_SECRET` 和本地 snapshot，并只输出脱敏请求摘要。
 - 本地预览包：`data/cache/site/`，该目录被 git ignore。
 - readiness：本地或云端环境必须配置 `THE_ODDS_API_KEY` 和 `INGEST_HMAC_SECRET`；选择 PostgreSQL 时还必须配置 `DATABASE_URL`；检查过程不得输出真实值。
 - `.env.example`：只含变量名和空值，可提交；真实 `.env` 不提交。
@@ -18,6 +19,7 @@
 2. 测试 PostgreSQL 时设置 `WORLDCUP_STORE=postgres`，并只把 `DATABASE_URL` 写入本地 `.env` 或云端 secret manager。
 3. 不把 secret、DSN、密码写进文档、代码、提交信息或聊天。
 4. 运行 `python3 -m worldcup.readiness --root .`，确认 readiness 全绿。
+5. 真实 PostgreSQL smoke 前先运行 `python3 -m worldcup.postgres_smoke --env .env --snapshot data/cache/analysis_snapshot.json --endpoint <test ingest endpoint>`，确认返回 `dry_run_ready` 且输出不含敏感值。
 
 ## 云端实现阶段
 
@@ -44,8 +46,9 @@
 ## 部署验证
 
 1. API smoke test：`GET /healthz` 返回 `status=ok`。
-2. PostgreSQL smoke test：测试环境以 `--store postgres` 或 `WORLDCUP_STORE=postgres` 写入同一 signed payload 两次，应返回 `stored` 后 `duplicate`。
-3. ingest dry-run：本地生成 HMAC header，先对测试环境验签。
-4. read API：`GET /api/matches` 不包含 stake、bet amount 或下注金额字段。
-5. 公开页面：保留研究免责声明。
-6. 日志：不得出现 API key、HMAC secret、RDS 连接串、Cookie 或 token。
+2. PostgreSQL smoke dry-run guard：本地返回 `dry_run_ready`，只展示脱敏 `method`、`url`、`path`、`header_names`、`run_id`、`snapshot_id`、`body_sha256`、`idempotency_key`、`body_bytes` 和 `expected_sequence`。
+3. PostgreSQL smoke test：测试环境以 `--store postgres` 或 `WORLDCUP_STORE=postgres` 写入同一 signed payload 两次，应返回 `stored` 后 `duplicate`。
+4. ingest dry-run：本地生成 HMAC header，先对测试环境验签。
+5. read API：`GET /api/matches` 不包含 stake、bet amount 或下注金额字段。
+6. 公开页面：保留研究免责声明。
+7. 日志：不得出现 API key、HMAC secret、RDS 连接串、`X-Worldcup-Signature`、请求 body、Cookie 或 token。
