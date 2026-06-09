@@ -2,7 +2,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from worldcup.ingest import build_ingest_request
-from worldcup.ingest_app import process_local_ingest
+from worldcup.ingest_app import build_store_from_env, process_local_ingest
+from worldcup.postgres_store import PostgresSnapshotStore
 from worldcup.store import SQLiteSnapshotStore
 
 
@@ -57,6 +58,40 @@ def _request(secret="test-hmac-secret"):
         secret=secret,
         timestamp="2026-06-08T00:02:00+00:00",
     )
+
+
+def test_ingest_build_store_from_env_defaults_to_sqlite():
+    store = build_store_from_env(
+        env={},
+        db_path="data/local/worldcup.db",
+        store_arg=None,
+        database_url_env="DATABASE_URL",
+    )
+
+    assert isinstance(store, SQLiteSnapshotStore)
+
+
+def test_ingest_build_store_from_env_supports_postgres_without_connecting():
+    store = build_store_from_env(
+        env={"WORLDCUP_STORE": "postgres", "DATABASE_URL": "postgresql://example.invalid/worldcup"},
+        db_path="unused.db",
+        store_arg=None,
+        database_url_env="DATABASE_URL",
+    )
+
+    assert isinstance(store, PostgresSnapshotStore)
+    assert store.dsn == "postgresql://example.invalid/worldcup"
+
+
+def test_ingest_build_store_from_env_cli_arg_overrides_env_store_kind():
+    store = build_store_from_env(
+        env={"WORLDCUP_STORE": "postgres"},
+        db_path="data/local/worldcup.db",
+        store_arg="sqlite",
+        database_url_env="DATABASE_URL",
+    )
+
+    assert isinstance(store, SQLiteSnapshotStore)
 
 
 def test_process_local_ingest_stores_signed_request_in_sqlite():

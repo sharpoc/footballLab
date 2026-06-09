@@ -5,8 +5,9 @@ from tempfile import TemporaryDirectory
 
 from fastapi.testclient import TestClient
 
-from worldcup.fastapi_app import create_fastapi_app
+from worldcup.fastapi_app import build_store_from_env, create_fastapi_app
 from worldcup.ingest import build_ingest_request
+from worldcup.postgres_store import PostgresSnapshotStore
 from worldcup.store import SQLiteSnapshotStore
 
 
@@ -71,6 +72,40 @@ def _store_snapshot(db_path: Path):
         },
         stored_at="2026-06-08T00:02:00+00:00",
     )
+
+
+def test_fastapi_build_store_from_env_defaults_to_sqlite():
+    store = build_store_from_env(
+        env={},
+        db_path="data/local/worldcup.db",
+        store_arg=None,
+        database_url_env="DATABASE_URL",
+    )
+
+    assert isinstance(store, SQLiteSnapshotStore)
+
+
+def test_fastapi_build_store_from_env_supports_postgres_without_connecting():
+    store = build_store_from_env(
+        env={"WORLDCUP_STORE": "postgres", "DATABASE_URL": "postgresql://example.invalid/worldcup"},
+        db_path="unused.db",
+        store_arg=None,
+        database_url_env="DATABASE_URL",
+    )
+
+    assert isinstance(store, PostgresSnapshotStore)
+    assert store.dsn == "postgresql://example.invalid/worldcup"
+
+
+def test_fastapi_build_store_from_env_cli_arg_overrides_env_store_kind():
+    store = build_store_from_env(
+        env={"WORLDCUP_STORE": "postgres"},
+        db_path="data/local/worldcup.db",
+        store_arg="sqlite",
+        database_url_env="DATABASE_URL",
+    )
+
+    assert isinstance(store, SQLiteSnapshotStore)
 
 
 def test_fastapi_healthz_does_not_require_db_or_secret():

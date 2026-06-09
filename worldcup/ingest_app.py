@@ -9,6 +9,7 @@ from worldcup.ingest import build_ingest_request
 from worldcup.ingest_server import DEFAULT_REPLAY_WINDOW_SECONDS, verify_ingest_request
 from worldcup.refresh_runner import _load_env
 from worldcup.store import SQLiteSnapshotStore
+from worldcup.store_factory import create_snapshot_store
 from worldcup.store_contract import SnapshotStore
 
 
@@ -65,20 +66,43 @@ def build_local_ingest_request_from_snapshot(
     )
 
 
+def build_store_from_env(
+    env: dict[str, str],
+    db_path: str | Path,
+    store_arg: str | None,
+    database_url_env: str,
+) -> SnapshotStore:
+    store_kind = store_arg or env.get("WORLDCUP_STORE")
+    return create_snapshot_store(
+        store_kind=store_kind,
+        db_path=db_path,
+        database_url=env.get(database_url_env),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify and store a local ingest request into SQLite.")
+    parser = argparse.ArgumentParser(description="Verify and store a local ingest request.")
     parser.add_argument("--db", default="data/local/worldcup.db")
     parser.add_argument("--snapshot", default="data/cache/analysis_snapshot.json")
     parser.add_argument("--endpoint", default="https://example.invalid/api/ingest/snapshot")
     parser.add_argument("--env", default=".env")
     parser.add_argument("--secret-env", default="INGEST_HMAC_SECRET")
+    parser.add_argument("--store", default=None, choices=["sqlite", "postgres"])
+    parser.add_argument("--database-url-env", default="DATABASE_URL")
     parser.add_argument("--timestamp", default=None)
     parser.add_argument("--now", default=None)
     args = parser.parse_args(argv)
 
-    secret = _load_env(args.env).get(args.secret_env)
+    env = _load_env(args.env)
+    secret = env.get(args.secret_env)
     if not secret:
         raise SystemExit(f"{args.secret_env} is missing in {args.env}")
+    store = build_store_from_env(
+        env=env,
+        db_path=args.db,
+        store_arg=args.store,
+        database_url_env=args.database_url_env,
+    )
 
     request = build_local_ingest_request_from_snapshot(
         snapshot_path=args.snapshot,
@@ -94,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         body=request["body"],
         secret=secret,
         now=args.now or args.timestamp,
+        store=store,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0

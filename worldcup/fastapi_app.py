@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from worldcup.http_app import handle_request
 from worldcup.refresh_runner import _load_env
+from worldcup.store_factory import create_snapshot_store
 from worldcup.store_contract import SnapshotStore
 
 
@@ -91,6 +92,20 @@ def create_fastapi_app(
     return app
 
 
+def build_store_from_env(
+    env: dict[str, str],
+    db_path: str | Path,
+    store_arg: str | None,
+    database_url_env: str,
+) -> SnapshotStore:
+    store_kind = store_arg or env.get("WORLDCUP_STORE")
+    return create_snapshot_store(
+        store_kind=store_kind,
+        db_path=db_path,
+        database_url=env.get(database_url_env),
+    )
+
+
 def load_secret(env_path: str | Path = ".env", secret_env: str = "INGEST_HMAC_SECRET") -> str:
     secret = _load_env(str(env_path)).get(secret_env)
     if not secret:
@@ -105,11 +120,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default="data/local/worldcup.db")
     parser.add_argument("--env", default=".env")
     parser.add_argument("--secret-env", default="INGEST_HMAC_SECRET")
+    parser.add_argument("--store", default=None, choices=["sqlite", "postgres"])
+    parser.add_argument("--database-url-env", default="DATABASE_URL")
     args = parser.parse_args(argv)
 
     import uvicorn
 
-    app = create_fastapi_app(db_path=args.db, secret=load_secret(args.env, args.secret_env))
+    env = _load_env(str(args.env))
+    secret = env.get(args.secret_env)
+    if not secret:
+        raise SystemExit(f"{args.secret_env} is missing in {args.env}")
+    store = build_store_from_env(
+        env=env,
+        db_path=args.db,
+        store_arg=args.store,
+        database_url_env=args.database_url_env,
+    )
+    app = create_fastapi_app(db_path=args.db, secret=secret, store=store)
     uvicorn.run(app, host=args.host, port=args.port)
     return 0
 
