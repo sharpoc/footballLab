@@ -21,7 +21,7 @@
 - Plan 3C store selection wiring is implemented: local CLI defaults to SQLite and can explicitly select PostgreSQL with `WORLDCUP_STORE=postgres` plus `DATABASE_URL`, but no real database connection was made.
 - Plan 3D PostgreSQL smoke dry-run guard is implemented: it validates PostgreSQL smoke prerequisites and emits redacted request metadata only, without HTTP or database connections.
 - Plan 4 Research Ledger UI is implemented as a local static/exportable research page over the existing snapshot data; desktop/mobile browser QA passed, and no deployment, push, live API call, or online write was performed.
-- Plan 5 Gate B controlled server smoke is completed on the single ECS server: release `719c5ed` is deployed without git, `worldcup.http_app` runs behind systemd on `127.0.0.1:8788`, SQLite stores data at `/var/lib/worldcup/worldcup.db`, and ingest/read smoke passed. Formal domain/HTTPS/Nginx exposure, scheduled refresh, RDS/PostgreSQL, push, and live source refresh have not been performed.
+- Plan 5 Gate C HTTPS activation is completed for `football.celab.xin`: Nginx proxies public HTTPS traffic to `worldcup.http_app` on `127.0.0.1:8788`, `/api/snapshot/latest` is blocked with 404, Let's Encrypt certificate renewal is scheduled, and public read/ingest smoke passed. Scheduled refresh, RDS/PostgreSQL, push, and live source refresh have not been performed.
 
 ## 技术栈
 
@@ -38,7 +38,7 @@
 - 当前 PostgreSQL store adapter 可用于后续 ECS/RDS 接入；`psycopg` 只作为可选依赖声明，本轮未安装、未连接真实数据库
 - 当前 store selection 默认 `sqlite`；单服务器 MVP 首发推荐 SQLite，只有显式 `--store postgres` 或 `.env` 中 `WORLDCUP_STORE=postgres` 时才要求 `DATABASE_URL`
 - 当前 PostgreSQL smoke guard 默认只做 dry-run；SQLite 首发路线下返回 `blocked / expected_postgres` 是安全结果，且不打印 DSN、secret、签名或请求 body
-- 当前 HTTP 适配层已用于 Gate B ECS 受控 smoke；服务只监听服务器本机 `127.0.0.1:8788`，正式公网域名/HTTPS/Nginx 暴露需单独确认
+- 当前 HTTP 适配层已用于 ECS 正式公网入口；服务只监听服务器本机 `127.0.0.1:8788`，由 Nginx 对 `football.celab.xin` 提供 HTTPS 反代
 - 当前 ASGI 适配层无外部依赖，只包装本地 HTTP 路由契约；正式 ASGI server / ECS 部署需单独确认
 - 当前 FastAPI app 仍作为可选适配层；Gate B 服务器 smoke 采用无额外依赖的标准库 HTTP app
 - 当前 `/healthz` 不读 DB、不依赖 secret，只用于本地和后续云端健康检查契约
@@ -46,7 +46,7 @@
 - 当前静态预览/导出页为 Research Ledger UI：只展示研究信号、方法说明、脱敏数据质量状态和免责声明，不显示下注金额或资金相关字段
 - 当前 readiness check 只读本地文件和变量名，会解析 snapshot/quota、检查预览免责声明，并确认 `.env.example` 只含空值模板，不联网、不打印 secret
 - 当前 HMAC secret helper 只打印 `INGEST_HMAC_SECRET=<value>`，不会写 `.env`
-- 后续正式公网激活可继续使用当前 HTTP app + SQLite；FastAPI、PostgreSQL/RDS、OSS/CDN 都是可选升级，不是单用户 MVP 首发必需项
+- 当前公网 MVP 使用 HTTP app + SQLite + Nginx HTTPS；FastAPI、PostgreSQL/RDS、OSS/CDN 都是可选升级，不是单用户 MVP 首发必需项
 
 ## 目录结构
 
@@ -173,10 +173,10 @@ DATABASE_URL=
 
 ## 下一步
 
-1. Gate B 已完成；当前服务只监听服务器本机 `127.0.0.1:8788`，尚未开放正式域名。
-2. Gate C 前先确认 Nginx/HTTPS/域名方案，以及公网是否开放 `/api/snapshot/latest`。
-3. Gate C 正式启用时验证 `/healthz`、`/api/matches`、`/preview` 和 ingest endpoint。
-4. Gate C 通过后再把 scheduled refresh 接到 macmini cron / launchd。
+1. Gate C HTTPS 已完成：`https://football.celab.xin/` 对外展示 Research Ledger。
+2. 公网开放 `/`、`/preview`、`/api/matches`、`/healthz`、`/api/ingest/snapshot`；`/api/snapshot/latest` 返回 404。
+3. 下一步再把 scheduled refresh 接到 macmini cron / launchd。
+4. 上线后先观察 Nginx/systemd 日志和 certbot 自动续期。
 5. RDS/PostgreSQL 暂不需要；等多用户、备份或查询压力变大再升级。
 
 ## 重要约束

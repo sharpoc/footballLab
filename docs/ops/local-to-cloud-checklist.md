@@ -1,6 +1,6 @@
 # Local to Cloud Checklist
 
-本清单只描述上线步骤和验证点，不执行部署、不写云资源。
+本清单记录上线步骤、验证点和当前生产状态；后续生产变更仍需单独确认。
 
 ## Plan 5 Gate Model
 
@@ -10,7 +10,7 @@
 | Gate B: production-server smoke | 明确确认后，在唯一生产服务器上做受控 smoke，不开定时刷新 | 同一台服务器、SQLite 默认、临时端口或临时 host、signed ingest smoke | 正式域名切换、自动刷新、无回滚点写入 |
 | Gate C: production activation | Gate B 通过后，明确确认再启用正式域名/HTTPS 和定时刷新 | 正式域名/HTTPS、macmini scheduled refresh、监控和回滚 | 未确认的自动发布或高频刷新 |
 
-当前 Plan 5 只完成 Gate A。Gate B / Gate C 必须单独确认；不需要第二台测试服务器。
+当前 Plan 5 已完成 Gate C：`football.celab.xin` 通过 Nginx/HTTPS 对外开放，后续 scheduled refresh 仍需单独确认。
 
 ## 当前本地状态
 
@@ -22,6 +22,18 @@
 - 本地预览包：`data/cache/site/`，该目录被 git ignore。
 - readiness：本地或云端环境必须配置 `THE_ODDS_API_KEY` 和 `INGEST_HMAC_SECRET`；选择 PostgreSQL 时才必须配置 `DATABASE_URL`；检查过程不得输出真实值。
 - `.env.example`：只含变量名和空值，可提交；真实 `.env` 不提交。
+
+## 当前生产状态
+
+- 域名：`https://football.celab.xin/`
+- 服务器 app：`worldcup.service`，监听 `127.0.0.1:8788`。
+- 公网入口：Nginx 反代 HTTPS 到本机 app。
+- 存储：SQLite，路径 `/var/lib/worldcup/worldcup.db`。
+- 公开路径：`/`、`/preview`、`/api/matches`、`/healthz`、`/api/ingest/snapshot`。
+- 阻断路径：`/api/snapshot/latest` 返回 404，`/api/snapshot/` 前缀也阻断。
+- 证书：Let's Encrypt，`football.celab.xin`，到期日 2026-09-07，certbot timer 已存在，续期 dry-run 已通过。
+- Nginx 回滚备份：`/root/nginx-backups/20260609153432-football-gatec` 和 `/root/nginx-backups/20260609153716-football-https`。
+- 尚未启用：macmini scheduled refresh、RDS/PostgreSQL、OSS/CDN、The Odds API live refresh。
 
 ## 上线前人工配置
 
@@ -62,9 +74,9 @@ python3 -m worldcup.fastapi_app --host 127.0.0.1 --port 8788 --env /etc/worldcup
 
 1. 确认域名和 ICP 备案状态。
 2. 确认 DNS provider 和 record type。
-3. Gate B 可先使用临时端口或临时 host，例如 `preprod.example.invalid`。
-4. 确认 TLS 证书来源：Alibaba Cloud certificate、Let's Encrypt 或已有证书。
-5. 确认 HTTP 到 HTTPS redirect。
+3. 当前域名为 `football.celab.xin`，DNS 已指向当前 ECS。
+4. TLS 证书来源为 Let's Encrypt。
+5. HTTP 已跳转 HTTPS。
 6. 如果静态 Research Ledger 不由 FastAPI 直接服务，确认 CDN/OSS/static hosting 方案。
 7. 比赛窗口期 HTML 和 JSON 缓存 TTL 应保持较短。
 
@@ -126,7 +138,7 @@ PostgreSQL smoke guard 的本地期望：
 2. 单用户 MVP 默认 `WORLDCUP_STORE=sqlite`，用持久化 SQLite 文件首发。
 3. 若后续升级 RDS，再用 `WORLDCUP_STORE=postgres` + `DATABASE_URL` 选择 `PostgresSnapshotStore`，保留 `idempotency_key` 唯一约束。
 4. ECS 只开放必要 API；macmini 只调用 ECS ingest，不直连 RDS/OSS。
-4. `/healthz` 只用于健康检查，不输出环境变量、quota、snapshot 或 secret。
+5. `/healthz` 只用于健康检查，不输出环境变量、quota、snapshot 或 secret。
 
 ## Local FastAPI Smoke
 

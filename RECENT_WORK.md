@@ -2,6 +2,17 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-09 Plan 5 Gate C HTTPS Activation
+
+- Activated public HTTPS for `football.celab.xin` through Nginx, proxying to `worldcup.http_app` on `127.0.0.1:8788`.
+- Public paths: `/`, `/preview`, `/api/matches`, `/healthz`, and `/api/ingest/snapshot`.
+- Blocked raw snapshot path: `/api/snapshot/latest` returns 404, and `/api/snapshot/` is blocked by prefix.
+- Issued a Let's Encrypt certificate for `football.celab.xin`; certificate expires on 2026-09-07, certbot renewal timer is present, and a renewal dry-run succeeded after a transient CAA lookup retry.
+- Nginx backups were written under `/root/nginx-backups/20260609153432-football-gatec` and `/root/nginx-backups/20260609153716-football-https`.
+- Public HTTPS smoke passed: `/` and `/preview` returned the research disclaimer; `/api/matches` returned 72 matches; `/healthz` returned `worldcup-analysis`; HTTPS ingest returned `duplicate`; HTTP redirects to HTTPS.
+- Server checks: `worldcup.service` active, `nginx` active, SQLite snapshot rows remained 1, and journal/Nginx sensitive-keyword scans returned 0.
+- No scheduled refresh, RDS/PostgreSQL connection, live source refresh, The Odds API call, push, or git operation on the server was performed.
+
 ## 2026-06-09 Plan 5 Gate B Server Smoke
 
 - Deployed release `719c5ed` to the single ECS server without using git on the server.
