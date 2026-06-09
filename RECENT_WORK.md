@@ -2,6 +2,16 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-09 Plan 4 Research Ledger UI Implementation
+
+- Implemented `worldcup.ledger` and `worldcup.ledger_html` for the first public Research Ledger UI over local snapshot data.
+- `worldcup.preview` now renders the Research Ledger page, and `worldcup.export` inherits it for `data/cache/site/index.html`.
+- Added tests for ledger projection, preview safety/accessibility, export contract, and mobile table-scroll containment.
+- Regenerated ignored local preview artifacts in `data/cache/preview.html` and `data/cache/site/`.
+- Browser QA passed on desktop and mobile; mobile overflow was fixed by constraining the ledger panel so the wide table scrolls inside its container.
+- Local validation: `156/156 tests passed`.
+- No deployment, push, live API call, online write, database connection, or cloud resource change was performed.
+
 ## 2026-06-09 Plan 4 UI Design
 
 - Used Product Design to confirm the first public UI brief: users should quickly scan upcoming World Cup value signals.
@@ -83,7 +93,7 @@
 
 ## 下一步
 
-- Execute the Plan 4 Research Ledger UI implementation plan locally, then run browser QA before any deployment discussion.
+- 上线前补齐/确认 `INGEST_HMAC_SECRET`，重新跑 readiness check。
 - 明确确认 ECS/RDS 后，配置 `WORLDCUP_STORE=postgres` / `DATABASE_URL`，先运行 PostgreSQL smoke dry-run guard。
 - 在测试环境做真实 PostgreSQL ingest/read smoke，确认 `stored` / `duplicate` 幂等语义。
 - The Odds API key 已在聊天截图暴露过；用户已确认不充值，后续按免费额度和缓存兜底设计。

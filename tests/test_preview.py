@@ -156,3 +156,10 @@ def test_build_preview_html_includes_filter_dom_accessibility_contract():
     assert 'aria-pressed="false"' in html
     assert "<caption>Research signal ledger</caption>" in html
     assert '<th scope="col">Matchup</th>' in html
+
+
+def test_build_preview_html_keeps_mobile_table_scroll_inside_ledger_panel():
+    html = build_preview_html(_snapshot())
+
+    assert 'class="ledger-panel"' in html
+    assert ".ledger-panel { min-width: 0; }" in html

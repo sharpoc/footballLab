@@ -357,6 +357,7 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
       gap: 18px;
       align-items: start;
     }}
+    .ledger-panel {{ min-width: 0; }}
     .ledger-controls {{
       display: flex;
       justify-content: space-between;
@@ -461,7 +462,7 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
     </header>
     {summary}
     <div class="content-grid">
-      <div>
+      <div class="ledger-panel">
         {controls}
         {table}
       </div>

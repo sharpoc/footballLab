@@ -13,13 +13,14 @@
 
 - Git 仓库已初始化。
 - Plan 1 引擎核心已完成第一版。
-- 本地测试执行器通过：`138/138 tests passed`。
+- 本地测试执行器通过：`156/156 tests passed`。
 - Plan 0 核心数据源探测已完成第一轮：openfootball 赛程、eloratings Elo、The Odds API 赔率可用；API-Football Free plan 不能访问 2026 season。
 - Plan 2 已启动：当前完成纯离线解析层、单场价值信号、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、低频调度策略、run metadata、调度执行包装、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照，本地 runner 生成的快照也包含 ingest 所需 run metadata。
 - Plan 3A FastAPI local adapter is implemented and tested.
 - Plan 3B PostgreSQL store adapter is implemented behind `SnapshotStore`; tests use fake connections only, with no real database connection.
 - Plan 3C store selection wiring is implemented: local CLI defaults to SQLite and can explicitly select PostgreSQL with `WORLDCUP_STORE=postgres` plus `DATABASE_URL`, but no real database connection was made.
 - Plan 3D PostgreSQL smoke dry-run guard is implemented: it validates PostgreSQL smoke prerequisites and emits redacted request metadata only, without HTTP or database connections.
+- Plan 4 Research Ledger UI is implemented as a local static/exportable research page over the existing snapshot data; desktop/mobile browser QA passed, and no deployment, push, live API call, or online write was performed.
 
 ## 技术栈
 
@@ -41,6 +42,7 @@
 - 当前 FastAPI app 只作为本地适配层，复用既有路由契约；ECS 部署明确确认前保持 local-only
 - 当前 `/healthz` 不读 DB、不依赖 secret，只用于本地和后续云端健康检查契约
 - 当前静态导出默认写入已忽略的 `data/cache/site/`
+- 当前静态预览/导出页为 Research Ledger UI：只展示研究信号、方法说明、脱敏数据质量状态和免责声明，不显示下注金额或资金相关字段
 - 当前 readiness check 只读本地文件和变量名，会解析 snapshot/quota、检查预览免责声明，并确认 `.env.example` 只含空值模板，不联网、不打印 secret
 - 当前 HMAC secret helper 只打印 `INGEST_HMAC_SECRET=<value>`，不会写 `.env`
 - 后续云端计划使用 FastAPI + PostgreSQL + OSS
@@ -80,7 +82,9 @@ worldcup/
   postgres_store.py             # PostgreSQL snapshot 持久化适配器
   postgres_smoke.py             # PostgreSQL smoke dry-run guard
   query.py                      # 最新快照读取与比赛行投影
-  preview.py                    # 静态 HTML 预览页生成
+  ledger.py                     # Research Ledger UI 安全投影与格式化
+  ledger_html.py                # Research Ledger HTML/CSS/vanilla JS renderer
+  preview.py                    # 静态 HTML 预览页入口，委托 Research Ledger renderer
   http_app.py                   # 标准库 HTTP 适配层和路由契约
   asgi_app.py                   # 无依赖 ASGI 适配层
   export.py                     # 静态站点/API 导出

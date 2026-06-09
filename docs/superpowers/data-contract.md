@@ -632,9 +632,26 @@ stale
 
 不得在投影中加入 stake、bet amount、下注金额或其它资金字段。
 
+### Research Ledger UI projection
+
+`worldcup.ledger` 负责把完整 `analysis_snapshot.json` 投影为公开 UI 可用的数据：
+
+| 输出 | 说明 |
+|---|---|
+| signal rows | 每条价值信号一行，包含对阵、开赛时间、盘口标签、模型概率、去水市场概率、EV、Edge、等级、freshness 和确定性解释 |
+| summary metrics | upcoming matches、strong/watch/weak signals、stale sources、overall quality、grade counts |
+| source health | 只展示脱敏后的可用性、计数和质量状态 |
+
+公开 UI 投影不得包含：
+
+- API key、HMAC secret、Cookie、token、`DATABASE_URL`。
+- `run_id`、原始 quota remaining/used、原始 provider 名、原始 source error 文本。
+- stake、bet amount、bankroll、payout、wager、unit、下注金额、投注金额、本金、重注、追损、串关、喊单等资金或喊单字段。
+- 运行时 AI 解释或不确定生成内容；解释文案必须由确定性规则产生。
+
 ### Static preview
 
-`worldcup.preview` 生成单文件 HTML：
+`worldcup.preview` 生成单文件 Research Ledger HTML，并委托 `worldcup.ledger_html.build_research_ledger_html(snapshot)` 渲染：
 
 ```bash
 python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out data/cache/preview.html
@@ -643,9 +660,12 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 预览页必须包含：
 
 - `研究分析工具，不构成投注建议` 免责声明。
-- counts 概览。
-- data quality：`stale_sources`、`source_errors`、`missing_odds`、`missing_elo`、`time_mismatches`。
-- 比赛表：UTC 开赛、阶段、小组、对阵、信号数、最高等级、缓存兜底。
+- Research Ledger 标题与 World Cup 2026 上下文。
+- summary metrics。
+- grade filter、search input 和 Research signal ledger table。
+- Methodology、Source Health、Caveats、Last updated。
+- 脱敏 source health 计数，不展示 provider 原名、quota 明细或原始错误文本。
+- 桌面为主表 + 右侧 rail；移动端台账在右侧 rail 之前，表格横向滚动限制在表格容器内，页面本身不得横向溢出。
 - 不显示资金相关字段。
 
 ### Local HTTP route contract
@@ -708,7 +728,7 @@ python3 -m worldcup.export --snapshot data/cache/analysis_snapshot.json --out-di
 
 | 文件 | 说明 |
 |---|---|
-| `index.html` | 研究预览页 |
+| `index.html` | Research Ledger 静态研究页 |
 | `api/snapshot/latest.json` | 完整最新 snapshot |
 | `api/matches.json` | 只读比赛行投影 |
 | `manifest.json` | 导出元数据 |
