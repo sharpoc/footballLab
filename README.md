@@ -20,7 +20,7 @@
 - Plan 3B PostgreSQL store 适配器已在 `SnapshotStore` 边界后实现；测试只使用 fake connection，未连接真实数据库。
 - Plan 3C store 选择接线已完成：本地 CLI 默认 SQLite，也可以通过 `WORLDCUP_STORE=postgres` 加 `DATABASE_URL` 显式选择 PostgreSQL；本轮未连接真实数据库。
 - Plan 3D PostgreSQL smoke dry-run guard 已完成：只验证 PostgreSQL smoke 前置条件并输出脱敏请求元数据，不发 HTTP、不连数据库。
-- Plan 4 研究台账 UI 已实现为基于现有快照数据的本地静态/可导出研究页；桌面和移动端浏览器 QA 已通过。
+- Plan 4 研究台账 UI 已实现并部署到 `football.celab.xin`；公开页面已中文化，桌面和移动端浏览器 QA 已通过。
 - Plan 5 Gate C HTTPS 已完成：`football.celab.xin` 通过 Nginx 将公网 HTTPS 流量反代到 `127.0.0.1:8788` 上的 `worldcup.http_app`；`/api/snapshot/latest` 返回 404；Let's Encrypt 证书续期已配置；公网读取和 ingest smoke 已通过。
 
 ## 技术栈
