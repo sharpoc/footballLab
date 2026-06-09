@@ -2,6 +2,16 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-09 First Automatic Scheduled Publish Observed
+
+- Observed the first automatic LaunchAgent run after scheduler due.
+- `launchd` runs count increased to 2 with last exit code 0.
+- The task refreshed 72 matches and published run `20260609T082711Z-live` to `https://football.celab.xin/api/ingest/snapshot`.
+- The Odds API quota changed from remaining 494 / used 6 to remaining 491 / used 9, matching one odds refresh cost of 3.
+- Server SQLite snapshot rows increased from 1 to 2; latest server run is `20260609T082711Z-live`.
+- Snapshot `data_quality.source_errors` and `data_quality.stale_sources` were empty.
+- LaunchAgent log sensitive scan returned 0 for API key, HMAC secret, signature, token, cookie, and private-key markers.
+
 ## 2026-06-09 Launchd Scheduled Publish Enabled
 
 - Installed and loaded user LaunchAgent `xin.celab.football.scheduled-publish`.
