@@ -72,6 +72,8 @@ def test_format_market_label_maps_known_market_types():
     assert format_market_label("1X2_90min", "home", None) == "1X2 - Home"
     assert format_market_label("OverUnder_90min", "Over", 2.5) == "O/U 2.5 - Over"
     assert format_market_label("AsianHandicap_90min", "home", -0.25) == "AH -0.25 - Home"
+    assert format_market_label("AsianHandicap_90min", "home_-1", -1.0) == "AH -1 - Home"
+    assert format_market_label("AsianHandicap_90min", "away_+1", 1.0) == "AH +1 - Away"
 
 
 def test_derive_quality_status_warns_on_stale_or_missing_data():
@@ -81,6 +83,18 @@ def test_derive_quality_status_warns_on_stale_or_missing_data():
     assert status["tone"] == "warn"
     assert "stale_sources" in status["reasons"]
     assert "missing_odds" in status["reasons"]
+
+
+def test_quality_status_and_metrics_do_not_double_count_duplicate_sources():
+    snapshot = _snapshot()
+    snapshot["data_quality"]["stale_sources"] = ["theoddsapi"]
+    snapshot["run"]["stale_sources"] = ["theoddsapi"]
+
+    status = derive_quality_status(snapshot)
+    metrics = build_summary_metrics(snapshot)
+
+    assert status["reasons"].count("stale_sources") == 1
+    assert metrics["stale_sources"]["value"] == 1
 
 
 def test_derive_quality_status_attention_on_source_errors():
@@ -144,6 +158,58 @@ def test_project_signal_rows_expands_signals_without_money_fields():
     assert "bankroll" not in rows[0]
     assert "payout" not in rows[0]
     assert "unit" not in rows[0]
+
+
+def test_project_signal_rows_reads_realistic_over_under_probabilities():
+    snapshot = {
+        "matches": [
+            {
+                "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "home_team": "Mexico",
+                "away_team": "South Africa",
+                "model": {"ou_2_5": {"over": 0.54, "under": 0.46}},
+                "market": {"ou_2_5": {"market_probs": {"over": 0.51, "under": 0.49}}},
+                "signals": [
+                    {
+                        "market_type": "OverUnder_90min",
+                        "selection": "Over",
+                        "line": 2.5,
+                        "grade": "B",
+                    }
+                ],
+            }
+        ]
+    }
+
+    rows = project_signal_rows(snapshot)
+
+    assert rows[0]["market_label"] == "O/U 2.5 - Over"
+    assert rows[0]["model_prob"] == "54.0%"
+    assert rows[0]["market_prob"] == "51.0%"
+
+
+def test_project_signal_rows_labels_realistic_asian_handicap_selection():
+    snapshot = {
+        "matches": [
+            {
+                "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "home_team": "Mexico",
+                "away_team": "South Africa",
+                "signals": [
+                    {
+                        "market_type": "AsianHandicap_90min",
+                        "selection": "away_+1",
+                        "line": 1.0,
+                        "grade": "C",
+                    }
+                ],
+            }
+        ]
+    }
+
+    rows = project_signal_rows(snapshot)
+
+    assert rows[0]["market_label"] == "AH +1 - Away"
 
 
 def test_project_signal_rows_sorts_by_kickoff_then_grade_descending():

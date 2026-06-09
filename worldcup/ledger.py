@@ -28,10 +28,24 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+def _dedupe_stable(values: list[Any]) -> list[Any]:
+    seen: set[str] = set()
+    deduped: list[Any] = []
+    for value in values:
+        marker = repr(value)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(value)
+    return deduped
+
+
 def _quality_values(snapshot: dict[str, Any], key: str) -> list[Any]:
     data_quality = snapshot.get("data_quality") or {}
     run = snapshot.get("run") or {}
-    return _as_list(data_quality.get(key)) + _as_list(run.get(key))
+    if key in data_quality:
+        return _dedupe_stable(_as_list(data_quality.get(key)))
+    return _dedupe_stable(_as_list(run.get(key)))
 
 
 def _selection_label(selection: str | None) -> str:
@@ -44,14 +58,21 @@ def _selection_label(selection: str | None) -> str:
     }
     if selection is None:
         return EM_DASH
-    return labels.get(str(selection).lower(), str(selection))
+    normalized = str(selection).lower()
+    if normalized.startswith("home_"):
+        normalized = "home"
+    elif normalized.startswith("away_"):
+        normalized = "away"
+    return labels.get(normalized, str(selection))
 
 
-def _line_label(line: Any) -> str:
+def _line_label(line: Any, signed_positive: bool = False) -> str:
     if line is None:
         return ""
     try:
-        return f" {float(line):g}"
+        value = float(line)
+        sign = "+" if signed_positive and value > 0 else ""
+        return f" {sign}{value:g}"
     except (TypeError, ValueError):
         return f" {line}"
 
@@ -63,15 +84,28 @@ def _signal_line(signal: dict[str, Any]) -> Any:
     return None
 
 
+def _selection_key(selection: Any) -> str | None:
+    if selection is None:
+        return None
+    normalized = str(selection).lower()
+    if normalized.startswith("home_"):
+        return "home"
+    if normalized.startswith("away_"):
+        return "away"
+    return normalized
+
+
 def _signal_model_prob(match: dict[str, Any], signal: dict[str, Any]) -> float | None:
     direct = signal.get("model_prob")
     if direct is not None:
         return direct
     market_type = signal.get("market_type")
-    selection = signal.get("selection")
+    selection = _selection_key(signal.get("selection"))
     model = match.get("model") or {}
     if market_type == "1X2_90min":
         return (model.get("combined_1x2") or {}).get(selection)
+    if market_type == "OverUnder_90min":
+        return (model.get("ou_2_5") or {}).get(selection)
     return None
 
 
@@ -80,10 +114,12 @@ def _signal_market_prob(match: dict[str, Any], signal: dict[str, Any]) -> float 
     if direct is not None:
         return direct
     market_type = signal.get("market_type")
-    selection = signal.get("selection")
+    selection = _selection_key(signal.get("selection"))
     market = match.get("market") or {}
     if market_type == "1X2_90min":
         return ((market.get("1x2") or {}).get("probs") or {}).get(selection)
+    if market_type == "OverUnder_90min":
+        return ((market.get("ou_2_5") or {}).get("market_probs") or {}).get(selection)
     return None
 
 
@@ -105,7 +141,7 @@ def format_market_label(market_type: str | None, selection: str | None, line: fl
     if market_type == "OverUnder_90min":
         return f"O/U{_line_label(line)} - {selection_label}"
     if market_type == "AsianHandicap_90min":
-        return f"AH{_line_label(line)} - {selection_label}"
+        return f"AH{_line_label(line, signed_positive=True)} - {selection_label}"
     return f"{market_type or 'Market'} - {selection_label}"
 
 
@@ -136,6 +172,12 @@ def build_signal_explanation(signal: dict[str, Any], stale: bool) -> str:
     return "Model and market estimates differ enough to flag for review."
 
 
+def _format_kickoff_date(parsed_kickoff: datetime | None) -> str:
+    if parsed_kickoff is None:
+        return "Date unavailable"
+    return f"{parsed_kickoff.strftime('%A, %b')} {parsed_kickoff.day}, {parsed_kickoff.year}"
+
+
 def project_signal_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     stale = bool(_quality_values(snapshot, "stale_sources"))
     rows: list[dict[str, Any]] = []
@@ -153,9 +195,7 @@ def project_signal_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "home_team": home_team,
                 "away_team": away_team,
                 "kickoff_at_utc": kickoff_at_utc,
-                "kickoff_date": parsed_kickoff.strftime("%A, %b %-d, %Y")
-                if parsed_kickoff
-                else "Date unavailable",
+                "kickoff_date": _format_kickoff_date(parsed_kickoff),
                 "kickoff_time": parsed_kickoff.strftime("%H:%M") if parsed_kickoff else EM_DASH,
                 "stage": match.get("stage", ""),
                 "group": match.get("group", ""),
