@@ -50,6 +50,8 @@ def test_build_preview_html_renders_research_ledger_surface():
     assert "研究台账" in html
     assert "仅用于研究分析，不构成投注建议" in html
     assert "墨西哥 对 南非" in html
+    assert "2026 年 6 月 12 日 星期五" in html
+    assert "03:00" in html
     assert "胜平负 - 主队" in html
     assert "+4.1%" in html
     assert "模型概率高于去水后的市场概率。" in html
@@ -58,6 +60,8 @@ def test_build_preview_html_renders_research_ledger_surface():
     assert "注意事项" in html
     assert "Research Ledger" not in html
     assert "Research only, not betting advice." not in html
+    assert "开赛 (北京时间)" in html
+    assert "开赛 (UTC)" not in html
     assert "下注金额" not in html
     assert "stake" not in html.lower()
     assert "bet amount" not in html.lower()

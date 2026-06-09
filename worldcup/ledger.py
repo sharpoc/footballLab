@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 EM_DASH = "\u2014"
+BEIJING_TZ = timezone(timedelta(hours=8))
 WEEKDAY_LABELS = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
 GRADE_ORDER = {"S": 5, "A": 4, "B": 3, "C": 2, "D": 1}
 STRONG_GRADES = {"S", "A"}
@@ -79,6 +80,14 @@ def _parse_datetime(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _to_beijing_time(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(BEIJING_TZ)
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -288,6 +297,7 @@ def project_signal_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     for match in snapshot.get("matches", []):
         kickoff_at_utc = match.get("kickoff_at_utc", "")
         parsed_kickoff = _parse_datetime(kickoff_at_utc)
+        display_kickoff = _to_beijing_time(parsed_kickoff)
         home_team = match.get("home_team", "")
         away_team = match.get("away_team", "")
         for signal in match.get("signals") or []:
@@ -302,8 +312,8 @@ def project_signal_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "source_home_team": home_team,
                 "source_away_team": away_team,
                 "kickoff_at_utc": kickoff_at_utc,
-                "kickoff_date": _format_kickoff_date(parsed_kickoff),
-                "kickoff_time": parsed_kickoff.strftime("%H:%M") if parsed_kickoff else EM_DASH,
+                "kickoff_date": _format_kickoff_date(display_kickoff),
+                "kickoff_time": display_kickoff.strftime("%H:%M") if display_kickoff else EM_DASH,
                 "stage": _format_stage(match.get("stage", "")),
                 "group": _format_group(match.get("group", "")),
                 "stage_group": _format_stage_group(match.get("stage", ""), match.get("group", "")),

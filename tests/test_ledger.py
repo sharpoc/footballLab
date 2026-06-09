@@ -146,7 +146,8 @@ def test_project_signal_rows_expands_signals_without_money_fields():
 
     assert len(rows) == 1
     assert rows[0]["matchup"] == "墨西哥 对 南非"
-    assert rows[0]["kickoff_date"] == "2026 年 6 月 11 日 星期四"
+    assert rows[0]["kickoff_date"] == "2026 年 6 月 12 日 星期五"
+    assert rows[0]["kickoff_time"] == "03:00"
     assert rows[0]["stage_group"] == "小组赛第 1 轮 | A 组"
     assert rows[0]["market_label"] == "胜平负 - 主队"
     assert rows[0]["model_prob"] == "61.0%"

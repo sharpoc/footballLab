@@ -106,6 +106,8 @@ def _row_search_text(row: dict[str, Any]) -> str:
         row.get("source_home_team", ""),
         row.get("source_away_team", ""),
         row.get("kickoff_at_utc", ""),
+        row.get("kickoff_date", ""),
+        row.get("kickoff_time", ""),
         row.get("market_label", ""),
         row.get("model_prob", ""),
         row.get("market_prob", ""),
@@ -178,7 +180,7 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
         <thead>
           <tr>
             <th scope="col">对阵</th>
-            <th scope="col">开赛 (UTC)</th>
+            <th scope="col">开赛 (北京时间)</th>
             <th scope="col">盘口</th>
             <th scope="col">模型概率</th>
             <th scope="col">市场概率</th>
