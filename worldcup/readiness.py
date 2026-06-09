@@ -108,7 +108,7 @@ def _check_html(root: Path, key: str, relative: str, required: bool) -> tuple[st
         html = path.read_text(encoding="utf-8")
     except OSError:
         return key, {"status": "error", "path": relative, "message": "unreadable"}
-    if "研究分析工具，不构成投注建议" not in html:
+    if "仅用于研究分析，不构成投注建议" not in html:
         return key, {"status": "error", "path": relative, "message": "missing_disclaimer"}
     return key, {"status": "ok", "path": relative}
 

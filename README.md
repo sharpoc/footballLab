@@ -13,15 +13,15 @@
 
 - Git 仓库已初始化。
 - Plan 1 引擎核心已完成第一版。
-- 本地测试执行器通过：`156/156 tests passed`。
+- 本地测试执行器通过：`160/160 tests passed`。
 - Plan 0 核心数据源探测已完成第一轮：openfootball 赛程、eloratings Elo、The Odds API 赔率可用；API-Football Free plan 不能访问 2026 season。
 - Plan 2 已启动：当前完成纯离线解析层、单场价值信号、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、低频调度策略、run metadata、调度执行包装、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照，本地 runner 生成的快照也包含 ingest 所需 run metadata。
-- Plan 3A FastAPI local adapter is implemented and tested.
-- Plan 3B PostgreSQL store adapter is implemented behind `SnapshotStore`; tests use fake connections only, with no real database connection.
-- Plan 3C store selection wiring is implemented: local CLI defaults to SQLite and can explicitly select PostgreSQL with `WORLDCUP_STORE=postgres` plus `DATABASE_URL`, but no real database connection was made.
-- Plan 3D PostgreSQL smoke dry-run guard is implemented: it validates PostgreSQL smoke prerequisites and emits redacted request metadata only, without HTTP or database connections.
-- Plan 4 Research Ledger UI is implemented as a local static/exportable research page over the existing snapshot data; desktop/mobile browser QA passed, and no deployment, push, live API call, or online write was performed.
-- Plan 5 Gate C HTTPS activation is completed for `football.celab.xin`: Nginx proxies public HTTPS traffic to `worldcup.http_app` on `127.0.0.1:8788`, `/api/snapshot/latest` is blocked with 404, Let's Encrypt certificate renewal is scheduled, and public read/ingest smoke passed. Scheduled refresh, RDS/PostgreSQL, push, and live source refresh have not been performed.
+- Plan 3A FastAPI 本地适配层已实现并完成测试。
+- Plan 3B PostgreSQL store 适配器已在 `SnapshotStore` 边界后实现；测试只使用 fake connection，未连接真实数据库。
+- Plan 3C store 选择接线已完成：本地 CLI 默认 SQLite，也可以通过 `WORLDCUP_STORE=postgres` 加 `DATABASE_URL` 显式选择 PostgreSQL；本轮未连接真实数据库。
+- Plan 3D PostgreSQL smoke dry-run guard 已完成：只验证 PostgreSQL smoke 前置条件并输出脱敏请求元数据，不发 HTTP、不连数据库。
+- Plan 4 研究台账 UI 已实现为基于现有快照数据的本地静态/可导出研究页；桌面和移动端浏览器 QA 已通过。
+- Plan 5 Gate C HTTPS 已完成：`football.celab.xin` 通过 Nginx 将公网 HTTPS 流量反代到 `127.0.0.1:8788` 上的 `worldcup.http_app`；`/api/snapshot/latest` 返回 404；Let's Encrypt 证书续期已配置；公网读取和 ingest smoke 已通过。
 
 ## 技术栈
 
@@ -44,7 +44,7 @@
 - 当前 FastAPI app 仍作为可选适配层；Gate B 服务器 smoke 采用无额外依赖的标准库 HTTP app
 - 当前 `/healthz` 不读 DB、不依赖 secret，只用于本地和后续云端健康检查契约
 - 当前静态导出默认写入已忽略的 `data/cache/site/`
-- 当前静态预览/导出页为 Research Ledger UI：只展示研究信号、方法说明、脱敏数据质量状态和免责声明，不显示下注金额或资金相关字段
+- 当前静态预览/导出页为研究台账 UI：只展示研究信号、方法说明、脱敏数据质量状态和免责声明，不显示下注金额或资金相关字段
 - 当前 readiness check 只读本地文件和变量名，会解析 snapshot/quota、检查预览免责声明，并确认 `.env.example` 只含空值模板，不联网、不打印 secret
 - 当前 HMAC secret helper 只打印 `INGEST_HMAC_SECRET=<value>`，不会写 `.env`
 - 当前公网 MVP 使用 HTTP app + SQLite + Nginx HTTPS；FastAPI、PostgreSQL/RDS、OSS/CDN 都是可选升级，不是单用户 MVP 首发必需项
@@ -84,9 +84,9 @@ worldcup/
   postgres_store.py             # PostgreSQL snapshot 持久化适配器
   postgres_smoke.py             # PostgreSQL smoke dry-run guard
   query.py                      # 最新快照读取与比赛行投影
-  ledger.py                     # Research Ledger UI 安全投影与格式化
-  ledger_html.py                # Research Ledger HTML/CSS/vanilla JS renderer
-  preview.py                    # 静态 HTML 预览页入口，委托 Research Ledger renderer
+  ledger.py                     # 研究台账 UI 安全投影与格式化
+  ledger_html.py                # 研究台账 HTML/CSS/vanilla JS 渲染器
+  preview.py                    # 静态 HTML 预览页入口，委托研究台账渲染器
   http_app.py                   # 标准库 HTTP 适配层和路由契约
   asgi_app.py                   # 无依赖 ASGI 适配层
   export.py                     # 静态站点/API 导出
@@ -135,7 +135,7 @@ python3 -m pytest -v
 python3 -m worldcup.fastapi_app --host 127.0.0.1 --port 8788 --db data/local/worldcup.db --env .env
 ```
 
-The FastAPI app is local-only until ECS deployment is explicitly confirmed.
+FastAPI app 在明确确认 ECS 部署前只作为本地适配层使用。
 
 PostgreSQL smoke dry-run guard 仅在明确选择 PostgreSQL/RDS 时先跑；SQLite 首发时返回 `blocked / expected_postgres` 是安全结果：
 
@@ -174,7 +174,7 @@ DATABASE_URL=
 
 ## 下一步
 
-1. Gate C HTTPS 已完成：`https://football.celab.xin/` 对外展示 Research Ledger。
+1. Gate C HTTPS 已完成：`https://football.celab.xin/` 对外展示研究台账。
 2. 公网开放 `/`、`/preview`、`/api/matches`、`/healthz`、`/api/ingest/snapshot`；`/api/snapshot/latest` 返回 404。
 3. 本机 `launchd` 已启用 `xin.celab.football.scheduled-publish`，每 15 分钟唤醒一次；真正刷新/发布仍由 scheduler due 判断控制。
 4. 下一步观察首轮 due 后的刷新、线上 ingest、Nginx/systemd 日志和 certbot 自动续期。

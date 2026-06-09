@@ -1,98 +1,107 @@
-# Recent Work
+# 近期工作
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
-## 2026-06-09 First Automatic Scheduled Publish Observed
+## 2026-06-09 公开界面中文化
 
-- Observed the first automatic LaunchAgent run after scheduler due.
-- `launchd` runs count increased to 2 with last exit code 0.
-- The task refreshed 72 matches and published run `20260609T082711Z-live` to `https://football.celab.xin/api/ingest/snapshot`.
-- The Odds API quota changed from remaining 494 / used 6 to remaining 491 / used 9, matching one odds refresh cost of 3.
-- Server SQLite snapshot rows increased from 1 to 2; latest server run is `20260609T082711Z-live`.
-- Snapshot `data_quality.source_errors` and `data_quality.stale_sources` were empty.
-- LaunchAgent log sensitive scan returned 0 for API key, HMAC secret, signature, token, cookie, and private-key markers.
+- 将公开预览/导出页从英文 `Research Ledger` 改为中文“研究台账”。
+- 中文化页面标题、免责声明、筛选控件、表头、空态、方法说明、数据源健康、注意事项、更新时间、信号解释、质量状态和摘要指标。
+- 公开页面中的球队名、比赛阶段和分组已做中文展示；原始 snapshot 和 `/api/matches` JSON 契约仍保留源数据英文，避免破坏接口。
+- readiness 免责声明检查同步为中文新文案：`仅用于研究分析，不构成投注建议`。
+- 本地验证：`160/160 tests passed`。
+- 本轮尚未部署到服务器、未推送远端、未触发 live refresh、未消耗 The Odds API 额度、未写线上数据。
 
-## 2026-06-09 Launchd Scheduled Publish Enabled
+## 2026-06-09 已观察到首次自动定时发布
 
-- Installed and loaded user LaunchAgent `xin.celab.football.scheduled-publish`.
-- Plist path: `~/Library/LaunchAgents/xin.celab.football.scheduled-publish.plist`.
-- Log paths: `~/Library/Logs/worldcup/scheduled-publish.out.log` and `~/Library/Logs/worldcup/scheduled-publish.err.log`.
-- The LaunchAgent runs every 900 seconds and calls `worldcup.scheduled_publish --live --endpoint https://football.celab.xin/api/ingest/snapshot`.
-- Manual `launchctl kickstart` exited 0 and returned `status=skipped` because scheduler decision was `not_due`; quota and server SQLite row count stayed unchanged.
-- Sensitive scans for the plist and launchd logs returned 0 for API key, HMAC secret, signature, token, cookie, and private-key markers.
-- No live refresh, The Odds API call, or online write occurred during the kickstart because the scheduler was not due.
+- 观察到 scheduler due 后第一次自动 LaunchAgent 运行。
+- `launchd` 运行次数增加到 2，最后一次退出码为 0。
+- 任务刷新了 72 场比赛，并将 run `20260609T082711Z-live` 发布到 `https://football.celab.xin/api/ingest/snapshot`。
+- The Odds API quota 从 remaining 494 / used 6 变为 remaining 491 / used 9，符合一次赔率刷新消耗 3 credits。
+- 服务器 SQLite snapshot 行数从 1 增至 2；服务器最新 run 为 `20260609T082711Z-live`。
+- Snapshot `data_quality.source_errors` 和 `data_quality.stale_sources` 为空。
+- LaunchAgent 日志敏感扫描对 API key、HMAC secret、signature、token、cookie、private-key 标记返回 0。
 
-## 2026-06-09 Scheduled Publish Command
+## 2026-06-09 已启用 Launchd 定时发布
 
-- Added `worldcup.publish`, a default dry-run snapshot publisher that builds signed ingest requests and redacts request body, HMAC secret, and `X-Worldcup-Signature` from output.
-- Added `worldcup.scheduled_publish`, which runs the existing scheduler/refresh flow and publishes to HTTPS ingest only when explicitly run with `--live` and the scheduler is due, or with `--force`.
-- Added tests for publish redaction, live sender injection, skipped scheduled publish, and refresh-then-publish behavior.
-- Local dry-run examples passed for `https://football.celab.xin/api/ingest/snapshot`; current scheduler decision was `not_due`, so no upload was sent.
-- Validation: `160/160 tests passed`.
-- No launchd/cron task was installed, no live refresh was run, no The Odds API call was made, and no online write was performed in this step.
+- 已安装并加载用户 LaunchAgent `xin.celab.football.scheduled-publish`。
+- Plist 路径：`~/Library/LaunchAgents/xin.celab.football.scheduled-publish.plist`。
+- 日志路径：`~/Library/Logs/worldcup/scheduled-publish.out.log` 和 `~/Library/Logs/worldcup/scheduled-publish.err.log`。
+- LaunchAgent 每 900 秒运行一次，并调用 `worldcup.scheduled_publish --live --endpoint https://football.celab.xin/api/ingest/snapshot`。
+- 手动 `launchctl kickstart` 退出码为 0，因 scheduler decision 为 `not_due` 返回 `status=skipped`；quota 和服务器 SQLite 行数未变化。
+- plist 与 launchd 日志敏感扫描对 API key、HMAC secret、signature、token、cookie、private-key 标记返回 0。
+- kickstart 期间未发生 live refresh、The Odds API 调用或线上写入，因为 scheduler 未到期。
 
-## 2026-06-09 Plan 5 Gate C HTTPS Activation
+## 2026-06-09 定时发布命令
 
-- Activated public HTTPS for `football.celab.xin` through Nginx, proxying to `worldcup.http_app` on `127.0.0.1:8788`.
-- Public paths: `/`, `/preview`, `/api/matches`, `/healthz`, and `/api/ingest/snapshot`.
-- Blocked raw snapshot path: `/api/snapshot/latest` returns 404, and `/api/snapshot/` is blocked by prefix.
-- Issued a Let's Encrypt certificate for `football.celab.xin`; certificate expires on 2026-09-07, certbot renewal timer is present, and a renewal dry-run succeeded after a transient CAA lookup retry.
-- Nginx backups were written under `/root/nginx-backups/20260609153432-football-gatec` and `/root/nginx-backups/20260609153716-football-https`.
-- Public HTTPS smoke passed: `/` and `/preview` returned the research disclaimer; `/api/matches` returned 72 matches; `/healthz` returned `worldcup-analysis`; HTTPS ingest returned `duplicate`; HTTP redirects to HTTPS.
-- Server checks: `worldcup.service` active, `nginx` active, SQLite snapshot rows remained 1, and journal/Nginx sensitive-keyword scans returned 0.
-- No scheduled refresh, RDS/PostgreSQL connection, live source refresh, The Odds API call, push, or git operation on the server was performed.
+- 新增 `worldcup.publish`：默认 dry-run 的 snapshot 发布器，可构造签名 ingest 请求，并在输出中脱敏 request body、HMAC secret 和 `X-Worldcup-Signature`。
+- 新增 `worldcup.scheduled_publish`：复用现有 scheduler/refresh 流程，只有显式 `--live` 且 scheduler due，或传入 `--force` 时，才发布到 HTTPS ingest。
+- 新增发布脱敏、live sender 注入、定时发布跳过、refresh 后发布等测试。
+- 本地 dry-run 示例针对 `https://football.celab.xin/api/ingest/snapshot` 通过；当时 scheduler decision 为 `not_due`，因此未上传。
+- 验证：`160/160 tests passed`。
+- 本步骤未安装 launchd/cron 任务、未运行 live refresh、未调用 The Odds API、未执行线上写入。
 
-## 2026-06-09 Plan 5 Gate B Server Smoke
+## 2026-06-09 Plan 5 Gate C HTTPS 激活
 
-- Deployed release `719c5ed` to the single ECS server without using git on the server.
-- Server layout: `/opt/worldcup/releases/719c5ed`, `/opt/worldcup/current`, `/etc/worldcup/.env`, `/var/lib/worldcup/worldcup.db`.
-- Added `worldcup.service` under systemd using the standard-library `worldcup.http_app`; it listens only on `127.0.0.1:8788`.
-- Gate B smoke passed: `/healthz` returned ok; signed ingest returned `stored` then `duplicate`; `/api/matches` returned 72 matches; `/preview` returned the research disclaimer.
-- SQLite DB has one snapshot row after smoke; journal sensitive-keyword scan found no `INGEST_HMAC_SECRET`, `THE_ODDS_API_KEY`, `DATABASE_URL`, signature, cookie, token, or private-key strings.
-- No git pull/clone on the server, push, domain/DNS change, Nginx public route, HTTPS setup, RDS/PostgreSQL connection, scheduled refresh, live source refresh, or The Odds API call was performed.
+- 已通过 Nginx 为 `football.celab.xin` 激活公网 HTTPS，并反代到 `127.0.0.1:8788` 上的 `worldcup.http_app`。
+- 公网路径：`/`、`/preview`、`/api/matches`、`/healthz`、`/api/ingest/snapshot`。
+- 原始 snapshot 路径已阻断：`/api/snapshot/latest` 返回 404，`/api/snapshot/` 前缀也被阻断。
+- 已为 `football.celab.xin` 签发 Let's Encrypt 证书；证书到期日为 2026-09-07，certbot renewal timer 存在，续期 dry-run 在一次短暂 CAA 查询重试后成功。
+- Nginx 备份写入 `/root/nginx-backups/20260609153432-football-gatec` 和 `/root/nginx-backups/20260609153716-football-https`。
+- 公网 HTTPS smoke 通过：`/` 和 `/preview` 返回研究免责声明；`/api/matches` 返回 72 场比赛；`/healthz` 返回 `worldcup-analysis`；HTTPS ingest 返回 `duplicate`；HTTP 会跳转 HTTPS。
+- 服务器检查：`worldcup.service` active、`nginx` active、SQLite snapshot 行数保持 1，journal/Nginx 敏感关键词扫描返回 0。
+- 未执行 scheduled refresh、RDS/PostgreSQL 连接、live source refresh、The Odds API 调用、push 或服务器上的 git 操作。
 
-## 2026-06-09 Plan 5 Deployment Dry-Run Checklist
+## 2026-06-09 Plan 5 Gate B 服务器 Smoke
 
-- Added `docs/superpowers/plans/2026-06-09-plan5-deployment-dry-run-checklist.md`.
-- Expanded `docs/ops/local-to-cloud-checklist.md` with Gate A/B/C separation, ECS, storage, domain/HTTPS, secret, macmini refresh, and rollback dry-run checklists.
-- Updated README next steps so the next real action is explicit approval for controlled smoke on the one production server, not full public activation.
-- Local dry-run validation: `156/156 tests passed`; readiness reported 12 checks, 0 errors, 0 warnings; static export sensitive/public-output scan had no matches; PostgreSQL smoke guard safely returned `blocked` in current SQLite mode.
-- Revised the launch path for the user's one-server setup: Gate B is now controlled smoke on the same production server, SQLite is the default MVP store, and RDS/PostgreSQL is a later optional upgrade.
-- No deployment, RDS connection, domain/DNS change, cloud resource change, live API call, online write, push, or dependency install was performed.
+- 未在服务器使用 git，直接将 release `719c5ed` 部署到唯一 ECS 服务器。
+- 服务器布局：`/opt/worldcup/releases/719c5ed`、`/opt/worldcup/current`、`/etc/worldcup/.env`、`/var/lib/worldcup/worldcup.db`。
+- 新增 systemd `worldcup.service`，使用标准库 `worldcup.http_app`，只监听 `127.0.0.1:8788`。
+- Gate B smoke 通过：`/healthz` 返回 ok；签名 ingest 先返回 `stored` 再返回 `duplicate`；`/api/matches` 返回 72 场比赛；`/preview` 返回研究免责声明。
+- Smoke 后 SQLite DB 有 1 行 snapshot；journal 敏感关键词扫描未发现 `INGEST_HMAC_SECRET`、`THE_ODDS_API_KEY`、`DATABASE_URL`、signature、cookie、token 或 private-key 字符串。
+- 未在服务器执行 git pull/clone、push、域名/DNS 变更、Nginx 公网路由、HTTPS 设置、RDS/PostgreSQL 连接、scheduled refresh、live source refresh 或 The Odds API 调用。
 
-## 2026-06-09 Plan 4 Research Ledger UI Implementation
+## 2026-06-09 Plan 5 部署 Dry-Run 清单
 
-- Implemented `worldcup.ledger` and `worldcup.ledger_html` for the first public Research Ledger UI over local snapshot data.
-- `worldcup.preview` now renders the Research Ledger page, and `worldcup.export` inherits it for `data/cache/site/index.html`.
-- Added tests for ledger projection, preview safety/accessibility, export contract, and mobile table-scroll containment.
-- Regenerated ignored local preview artifacts in `data/cache/preview.html` and `data/cache/site/`.
-- Browser QA passed on desktop and mobile; mobile overflow was fixed by constraining the ledger panel so the wide table scrolls inside its container.
-- Tightened static export safety so `api/snapshot/latest.json` uses a public snapshot projection and `manifest.json` no longer exposes `run_id`.
-- Local validation: `156/156 tests passed`.
-- No deployment, push, live API call, online write, database connection, or cloud resource change was performed.
+- 新增 `docs/superpowers/plans/2026-06-09-plan5-deployment-dry-run-checklist.md`。
+- 扩展 `docs/ops/local-to-cloud-checklist.md`，加入 Gate A/B/C 拆分、ECS、存储、域名/HTTPS、secret、macmini refresh 和回滚 dry-run 清单。
+- 更新 README 下一步：下一次真实动作应明确批准在唯一生产服务器做受控 smoke，而不是直接完整公网激活。
+- 本地 dry-run 验证：`156/156 tests passed`；readiness 报告 12 项检查、0 errors、0 warnings；静态导出敏感/公开输出扫描无匹配；PostgreSQL smoke guard 在当前 SQLite 模式下安全返回 `blocked`。
+- 按用户的一台服务器设置修正上线路径：Gate B 是同一台生产服务器上的受控 smoke，SQLite 是 MVP 默认存储，RDS/PostgreSQL 是后续可选升级。
+- 未部署、未连接 RDS、未改域名/DNS、未改云资源、未调用 live API、未线上写入、未 push、未安装依赖。
 
-## 2026-06-09 Plan 4 UI Design
+## 2026-06-09 Plan 4 研究台账 UI 实现
 
-- Used Product Design to confirm the first public UI brief: users should quickly scan upcoming World Cup value signals.
-- Selected visual direction: `Research Ledger`, a public-facing analyst ledger with summary metrics, signal table, methodology/source health rail, and visible caveats.
-- Added `docs/superpowers/specs/2026-06-09-plan4-research-ledger-ui-design.md`; no frontend code, deployment, push, live API call, or online write was performed.
-- Accepted the Research Ledger design for implementation planning and added `docs/superpowers/plans/2026-06-09-plan4-research-ledger-ui-implementation.md`.
+- 基于本地 snapshot 数据实现首版公开研究台账 UI：`worldcup.ledger` 和 `worldcup.ledger_html`。
+- `worldcup.preview` 现在渲染研究台账页面；`worldcup.export` 继承该页面用于 `data/cache/site/index.html`。
+- 新增 ledger 投影、预览安全/可访问性、导出契约、移动端表格滚动容器等测试。
+- 重新生成已忽略的本地预览产物：`data/cache/preview.html` 和 `data/cache/site/`。
+- 桌面和移动端浏览器 QA 通过；移动端通过约束 ledger panel，确保宽表格在容器内横向滚动。
+- 收紧静态导出安全：`api/snapshot/latest.json` 使用公开 snapshot 投影，`manifest.json` 不再暴露 `run_id`。
+- 本地验证：`156/156 tests passed`。
+- 未部署、未 push、未调用 live API、未线上写入、未连接数据库、未改云资源。
+
+## 2026-06-09 Plan 4 UI 设计
+
+- 使用 Product Design 确认首版公开 UI brief：用户应能快速扫描即将进行的世界杯价值信号。
+- 选择视觉方向“研究台账”：面向公众的分析台账，包含摘要指标、信号表、方法/数据源健康侧栏和显式注意事项。
+- 新增 `docs/superpowers/specs/2026-06-09-plan4-research-ledger-ui-design.md`；未写前端代码、未部署、未 push、未调用 live API、未线上写入。
+- 确认研究台账设计进入实现计划，并新增 `docs/superpowers/plans/2026-06-09-plan4-research-ledger-ui-implementation.md`。
 
 ## 2026-06-09 Plan 3A / 3B / 3C / 3D
 
 - 新增 `docs/superpowers/specs/2026-06-09-plan3a-fastapi-ecs-design.md`，明确下一阶段先做本地 FastAPI/ECS API 形态，不部署、不改云资源、不切 PostgreSQL。
 - 推荐路线：FastAPI thin wrapper 复用现有 HMAC 验签、幂等、SQLite store、只读投影和 preview 逻辑；PostgreSQL 当时作为后续 Plan 3B 通过同一 store boundary 替换。
 - 新增 `docs/superpowers/plans/2026-06-09-plan3a-fastapi-ecs-implementation.md`，把 Plan 3A 拆成依赖、FastAPI route tests、thin wrapper、ingest tests、store protocol、文档和最终验证任务。
-- Implemented Plan 3A local FastAPI adapter over the existing route contract; no ECS deployment, push, live API call, or online write was performed.
-- Added `SnapshotStore` protocol to preserve SQLite behavior and prepare for PostgreSQL Plan 3B.
-- Fixed local/cache snapshot generation so `worldcup.local_runner` includes ingest-required run metadata; local FastAPI smoke can ingest snapshots generated from existing cache.
-- Added Plan 3B PostgreSQL store adapter behind `SnapshotStore`; API/query/ingest paths now accept injected stores while SQLite remains the default local store.
-- PostgreSQL behavior is tested with fake connections only; no real RDS/PostgreSQL connection, deployment, push, or online write was performed.
-- Added Plan 3C store selection wiring: FastAPI and ingest CLIs default to SQLite, support `--store postgres`, and can read `WORLDCUP_STORE` / `DATABASE_URL` from `.env`.
-- readiness now validates store selection without printing `DATABASE_URL`; PostgreSQL mode requires the variable name, SQLite mode does not.
-- Added Plan 3D PostgreSQL smoke dry-run guard: `worldcup.postgres_smoke` validates postgres smoke prerequisites and emits redacted request metadata only.
-- The smoke guard does not connect to RDS/PostgreSQL, send HTTP, print `DATABASE_URL`, print HMAC secret, print signature, or include request body.
-- Local validation: `138/138 tests passed`; `worldcup.readiness` reports 12 checks, 0 errors, 0 warnings.
+- 完成 Plan 3A 本地 FastAPI 适配层，复用既有路由契约；未部署 ECS、未 push、未调用 live API、未线上写入。
+- 新增 `SnapshotStore` 协议，保留 SQLite 行为，并为后续 PostgreSQL Plan 3B 做准备。
+- 修复本地/cache snapshot 生成，使 `worldcup.local_runner` 包含 ingest 所需 run metadata；本地 FastAPI smoke 可 ingest 现有缓存生成的 snapshot。
+- 在 `SnapshotStore` 后新增 Plan 3B PostgreSQL store 适配器；API/query/ingest 路径现在支持注入 store，SQLite 仍为默认本地 store。
+- PostgreSQL 行为只用 fake connection 测试；未连接真实 RDS/PostgreSQL、未部署、未 push、未线上写入。
+- 新增 Plan 3C store 选择接线：FastAPI 和 ingest CLI 默认 SQLite，支持 `--store postgres`，并可从 `.env` 读取 `WORLDCUP_STORE` / `DATABASE_URL`。
+- readiness 现在会验证 store 选择且不打印 `DATABASE_URL`；PostgreSQL 模式要求变量名存在，SQLite 模式不要求。
+- 新增 Plan 3D PostgreSQL smoke dry-run guard：`worldcup.postgres_smoke` 验证 postgres smoke 前置条件，并只输出脱敏请求元数据。
+- smoke guard 不连接 RDS/PostgreSQL、不发送 HTTP、不打印 `DATABASE_URL`、不打印 HMAC secret、不打印 signature、不包含 request body。
+- 本地验证：`138/138 tests passed`；`worldcup.readiness` 报告 12 项检查、0 errors、0 warnings。
 
 ## 2026-06-09
 

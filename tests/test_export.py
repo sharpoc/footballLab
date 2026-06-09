@@ -48,11 +48,13 @@ def test_export_static_site_writes_html_snapshot_and_matches_json():
         assert (out_dir / "api" / "snapshot" / "latest.json").exists()
         assert (out_dir / "api" / "matches.json").exists()
         html = (out_dir / "index.html").read_text(encoding="utf-8")
-        assert "Research Ledger" in html
-        assert "Research only, not betting advice." in html
+        assert "研究台账" in html
+        assert "仅用于研究分析，不构成投注建议。" in html
+        assert "Research Ledger" not in html
+        assert "Research only, not betting advice." not in html
         assert "stake" not in html.lower()
         assert "bet amount" not in html.lower()
-        assert "Mexico vs South Africa" in html
+        assert "墨西哥 对 南非" in html
         public_snapshot = json.loads((out_dir / "api" / "snapshot" / "latest.json").read_text())[
             "snapshot"
         ]

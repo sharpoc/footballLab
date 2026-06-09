@@ -22,8 +22,8 @@ def test_readiness_reports_ok_when_local_artifacts_exist():
             '{"counts":{"matches":1},"matches":[{"home_team":"Mexico","away_team":"South Africa"}]}',
         )
         _write(root / "data/cache/quota.json", '{"providers":{}}')
-        _write(root / "data/cache/preview.html", "<html>研究分析工具，不构成投注建议</html>")
-        _write(root / "data/cache/site/index.html", "<html>研究分析工具，不构成投注建议</html>")
+        _write(root / "data/cache/preview.html", "<html>仅用于研究分析，不构成投注建议</html>")
+        _write(root / "data/cache/site/index.html", "<html>仅用于研究分析，不构成投注建议</html>")
         _write(root / "data/local/worldcup.db", "sqlite placeholder")
         _write(root / ".gitignore", ".env\ndata/cache/\ndata/local/\ndata/probe/\n")
 

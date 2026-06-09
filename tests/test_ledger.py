@@ -69,17 +69,17 @@ def test_format_probability_is_unsigned_and_handles_missing():
 
 
 def test_format_market_label_maps_known_market_types():
-    assert format_market_label("1X2_90min", "home", None) == "1X2 - Home"
-    assert format_market_label("OverUnder_90min", "Over", 2.5) == "O/U 2.5 - Over"
-    assert format_market_label("AsianHandicap_90min", "home", -0.25) == "AH -0.25 - Home"
-    assert format_market_label("AsianHandicap_90min", "home_-1", -1.0) == "AH -1 - Home"
-    assert format_market_label("AsianHandicap_90min", "away_+1", 1.0) == "AH +1 - Away"
+    assert format_market_label("1X2_90min", "home", None) == "胜平负 - 主队"
+    assert format_market_label("OverUnder_90min", "Over", 2.5) == "大小球 2.5 - 大球"
+    assert format_market_label("AsianHandicap_90min", "home", -0.25) == "亚洲让球 -0.25 - 主队"
+    assert format_market_label("AsianHandicap_90min", "home_-1", -1.0) == "亚洲让球 -1 - 主队"
+    assert format_market_label("AsianHandicap_90min", "away_+1", 1.0) == "亚洲让球 +1 - 客队"
 
 
 def test_derive_quality_status_warns_on_stale_or_missing_data():
     status = derive_quality_status(_snapshot())
 
-    assert status["label"] == "WARN"
+    assert status["label"] == "预警"
     assert status["tone"] == "warn"
     assert "stale_sources" in status["reasons"]
     assert "missing_odds" in status["reasons"]
@@ -105,7 +105,7 @@ def test_derive_quality_status_attention_on_source_errors():
 
     status = derive_quality_status(snapshot)
 
-    assert status["label"] == "ATTENTION"
+    assert status["label"] == "需关注"
     assert status["tone"] == "error"
     assert status["reasons"] == ["source_errors"]
 
@@ -124,7 +124,7 @@ def test_derive_quality_status_good_for_clean_snapshot():
 
     status = derive_quality_status(snapshot)
 
-    assert status["label"] == "GOOD"
+    assert status["label"] == "正常"
     assert status["tone"] == "ok"
     assert status["reasons"] == []
 
@@ -137,7 +137,7 @@ def test_build_summary_metrics_counts_signal_grades():
     assert metrics["watch_signals"]["value"] == 0
     assert metrics["weak_signals"]["value"] == 0
     assert metrics["stale_sources"]["value"] == 1
-    assert metrics["overall_quality"]["value"] == "WARN"
+    assert metrics["overall_quality"]["value"] == "预警"
     assert metrics["grade_counts"]["value"] == {"A": 1}
 
 
@@ -145,9 +145,10 @@ def test_project_signal_rows_expands_signals_without_money_fields():
     rows = project_signal_rows(_snapshot())
 
     assert len(rows) == 1
-    assert rows[0]["matchup"] == "Mexico vs South Africa"
-    assert rows[0]["kickoff_date"] == "Thursday, Jun 11, 2026"
-    assert rows[0]["market_label"] == "1X2 - Home"
+    assert rows[0]["matchup"] == "墨西哥 对 南非"
+    assert rows[0]["kickoff_date"] == "2026 年 6 月 11 日 星期四"
+    assert rows[0]["stage_group"] == "小组赛第 1 轮 | A 组"
+    assert rows[0]["market_label"] == "胜平负 - 主队"
     assert rows[0]["model_prob"] == "61.0%"
     assert rows[0]["market_prob"] == "57.0%"
     assert rows[0]["edge"] == "+4.1%"
@@ -184,7 +185,8 @@ def test_project_signal_rows_reads_realistic_over_under_probabilities():
 
     rows = project_signal_rows(snapshot)
 
-    assert rows[0]["market_label"] == "O/U 2.5 - Over"
+    assert rows[0]["matchup"] == "墨西哥 对 南非"
+    assert rows[0]["market_label"] == "大小球 2.5 - 大球"
     assert rows[0]["model_prob"] == "54.0%"
     assert rows[0]["market_prob"] == "51.0%"
 
@@ -210,7 +212,7 @@ def test_project_signal_rows_labels_realistic_asian_handicap_selection():
 
     rows = project_signal_rows(snapshot)
 
-    assert rows[0]["market_label"] == "AH +1 - Away"
+    assert rows[0]["market_label"] == "亚洲让球 +1 - 客队"
 
 
 def test_project_signal_rows_sorts_by_kickoff_then_grade_descending():
@@ -240,9 +242,9 @@ def test_project_signal_rows_sorts_by_kickoff_then_grade_descending():
     rows = project_signal_rows(snapshot)
 
     assert [row["matchup"] for row in rows] == [
-        "Early High vs Match",
-        "Early Low vs Match",
-        "Late vs Match",
+        "Early High 对 Match",
+        "Early Low 对 Match",
+        "Late 对 Match",
     ]
 
 
@@ -251,27 +253,27 @@ def test_build_signal_explanation_matches_plan_strings_and_is_safe():
         (
             {"market_type": "1X2_90min"},
             False,
-            "Model probability is above the devigged market probability.",
+            "模型概率高于去水后的市场概率。",
         ),
         (
             {"market_type": "OverUnder_90min"},
             False,
-            "Model total-goals distribution differs from the market total.",
+            "模型总进球分布与市场大小球预期存在差异。",
         ),
         (
             {"market_type": "AsianHandicap_90min"},
             False,
-            "Settlement EV is positive at the current handicap line.",
+            "当前让球盘口下的结算 EV 为正。",
         ),
         (
             {"market_type": "Unknown"},
             False,
-            "Model and market estimates differ enough to flag for review.",
+            "模型估计与市场估计差异足够大，值得复核。",
         ),
         (
             {"market_type": "1X2_90min"},
             True,
-            "Signal is capped because one or more inputs are stale or missing.",
+            "由于一个或多个输入过期或缺失，信号已被降级。",
         ),
     ]
 

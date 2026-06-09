@@ -632,15 +632,15 @@ stale
 
 不得在投影中加入 stake、bet amount、下注金额或其它资金字段。
 
-### Research Ledger UI projection
+### 研究台账 UI 投影
 
 `worldcup.ledger` 负责把完整 `analysis_snapshot.json` 投影为公开 UI 可用的数据：
 
 | 输出 | 说明 |
 |---|---|
-| signal rows | 每条价值信号一行，包含对阵、开赛时间、盘口标签、模型概率、去水市场概率、EV、Edge、等级、freshness 和确定性解释 |
-| summary metrics | upcoming matches、strong/watch/weak signals、stale sources、overall quality、grade counts |
-| source health | 只展示脱敏后的可用性、计数和质量状态 |
+| 信号行 | 每条价值信号一行，包含对阵、开赛时间、盘口标签、模型概率、去水市场概率、EV、Edge、等级、新鲜度和确定性解释 |
+| 摘要指标 | 即将比赛、强/观察/弱信号、过期来源、整体质量、等级统计 |
+| 数据源健康 | 只展示脱敏后的可用性、计数和质量状态 |
 
 公开 UI 投影不得包含：
 
@@ -649,9 +649,9 @@ stale
 - stake、bet amount、bankroll、payout、wager、unit、下注金额、投注金额、本金、重注、追损、串关、喊单等资金或喊单字段。
 - 运行时 AI 解释或不确定生成内容；解释文案必须由确定性规则产生。
 
-### Static preview
+### 静态预览
 
-`worldcup.preview` 生成单文件 Research Ledger HTML，并委托 `worldcup.ledger_html.build_research_ledger_html(snapshot)` 渲染：
+`worldcup.preview` 生成单文件研究台账 HTML，并委托 `worldcup.ledger_html.build_research_ledger_html(snapshot)` 渲染：
 
 ```bash
 python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out data/cache/preview.html
@@ -659,13 +659,13 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 
 预览页必须包含：
 
-- `研究分析工具，不构成投注建议` 免责声明。
-- Research Ledger 标题与 World Cup 2026 上下文。
-- summary metrics。
-- grade filter、search input 和 Research signal ledger table。
-- Methodology、Source Health、Caveats、Last updated。
-- 脱敏 source health 计数，不展示 provider 原名、quota 明细或原始错误文本。
-- 桌面为主表 + 右侧 rail；移动端台账在右侧 rail 之前，表格横向滚动限制在表格容器内，页面本身不得横向溢出。
+- `仅用于研究分析，不构成投注建议` 免责声明。
+- “研究台账”标题与“2026 世界杯”上下文。
+- 中文摘要指标。
+- 等级筛选、搜索输入和研究信号台账表格。
+- 方法说明、数据源健康、注意事项、最后更新时间。
+- 脱敏数据源健康计数，不展示 provider 原名、quota 明细或原始错误文本。
+- 桌面为主表 + 右侧栏；移动端台账在右侧栏之前，表格横向滚动限制在表格容器内，页面本身不得横向溢出。
 - 不显示资金相关字段。
 
 ### Local HTTP route contract
@@ -694,11 +694,11 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 
 正式 ASGI server / FastAPI 依赖安装、启动常驻服务、ECS 部署和云端写入必须单独确认。
 
-### FastAPI adapter
+### FastAPI 适配层
 
-`worldcup.fastapi_app.create_fastapi_app` exposes the same local route contract as `worldcup.http_app` and delegates security-sensitive behavior to existing modules. It accepts an optional injected `SnapshotStore`, so later ECS/RDS wiring can use `PostgresSnapshotStore` without duplicating route logic. It must not reimplement HMAC verification, idempotency, query projection, or preview rendering.
+`worldcup.fastapi_app.create_fastapi_app` 暴露与 `worldcup.http_app` 相同的本地路由契约，并把安全敏感行为委托给既有模块。它接受可选注入的 `SnapshotStore`，所以后续 ECS/RDS 接线可以使用 `PostgresSnapshotStore`，不需要重复实现路由逻辑。不得重新实现 HMAC 验签、幂等、查询投影或预览渲染。
 
-The adapter is local-only until ECS deployment is separately confirmed.
+在单独确认 ECS 部署前，该适配层只用于本地。
 
 ### Local secret helper
 
@@ -728,7 +728,7 @@ python3 -m worldcup.export --snapshot data/cache/analysis_snapshot.json --out-di
 
 | 文件 | 说明 |
 |---|---|
-| `index.html` | Research Ledger 静态研究页 |
+| `index.html` | 研究台账静态研究页 |
 | `api/snapshot/latest.json` | 公开安全 snapshot 投影：summary counts、脱敏 data quality 计数、只读比赛行；不得包含完整内部 snapshot |
 | `api/matches.json` | 只读比赛行投影 |
 | `manifest.json` | 导出元数据 |
@@ -751,7 +751,7 @@ python3 -m worldcup.readiness --root .
 - `data/cache/analysis_snapshot.json` 是否存在且包含比赛。
 - quota ledger 是否存在并可解析。
 - `data/cache/preview.html` 与 `data/cache/site/index.html` 是否存在。
-- 预览页和静态首页是否保留 `研究分析工具，不构成投注建议` 免责声明。
+- 预览页和静态首页是否保留 `仅用于研究分析，不构成投注建议` 免责声明。
 - `.env`、`data/cache/`、`data/local/`、`data/probe/` 是否被 git ignore。
 
 readiness check 不联网、不打印 secret 值或 `DATABASE_URL` 值。当前如果 `.env` 缺少真实 `INGEST_HMAC_SECRET`，必须报错；不要自动生成并写入 `.env`。`.env.example` 只能保留变量名和空值，不能写入任何真实或示例 secret 值。

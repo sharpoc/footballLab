@@ -150,8 +150,8 @@ def test_http_get_preview_returns_html():
 
         assert response["status"] == 200
         assert response["headers"]["Content-Type"] == "text/html; charset=utf-8"
-        assert "研究分析工具，不构成投注建议" in response["body"]
-        assert "Mexico vs South Africa" in response["body"]
+        assert "仅用于研究分析，不构成投注建议" in response["body"]
+        assert "墨西哥 对 南非" in response["body"]
 
 
 def test_http_post_ingest_snapshot_stores_signed_request():

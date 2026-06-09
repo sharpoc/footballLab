@@ -98,5 +98,5 @@ def test_asgi_app_get_preview_returns_html():
         status, body = _call_asgi(app, "GET", "/preview")
 
         assert status == 200
-        assert "研究分析工具，不构成投注建议" in body
-        assert "Mexico vs South Africa" in body
+        assert "仅用于研究分析，不构成投注建议" in body
+        assert "墨西哥 对 南非" in body

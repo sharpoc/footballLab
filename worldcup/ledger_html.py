@@ -36,7 +36,7 @@ def _quality_values(snapshot: dict[str, Any], key: str) -> list[Any]:
 def _metric_value(value: Any) -> str:
     if isinstance(value, dict):
         if not value:
-            return "None"
+            return "无"
         return ", ".join(f"{_text(key)}: {_text(count)}" for key, count in value.items())
     return _text(value)
 
@@ -73,16 +73,16 @@ def _render_summary(snapshot: dict[str, Any]) -> str:
 
 def _render_controls() -> str:
     return """
-    <section class="ledger-controls" aria-label="Ledger controls">
-      <div class="filter-group" role="group" aria-label="Grade filter">
-        <button type="button" class="filter-button active" data-filter="all" aria-pressed="true">All</button>
-        <button type="button" class="filter-button" data-filter="strong" aria-pressed="false">Strong (S/A)</button>
-        <button type="button" class="filter-button" data-filter="watch" aria-pressed="false">Watch (B)</button>
-        <button type="button" class="filter-button" data-filter="weak" aria-pressed="false">Weak (C/D)</button>
+    <section class="ledger-controls" aria-label="台账筛选">
+      <div class="filter-group" role="group" aria-label="等级筛选">
+        <button type="button" class="filter-button active" data-filter="all" aria-pressed="true">全部</button>
+        <button type="button" class="filter-button" data-filter="strong" aria-pressed="false">强信号 (S/A)</button>
+        <button type="button" class="filter-button" data-filter="watch" aria-pressed="false">观察 (B)</button>
+        <button type="button" class="filter-button" data-filter="weak" aria-pressed="false">弱信号 (C/D)</button>
       </div>
       <label class="search-label">
-        <span>Search</span>
-        <input type="search" id="ledger-search" placeholder="Team, market, grade" autocomplete="off">
+        <span>搜索</span>
+        <input type="search" id="ledger-search" placeholder="球队、盘口、等级" autocomplete="off">
       </label>
     </section>
     """
@@ -102,6 +102,9 @@ def _grade_bucket(grade: Any) -> str:
 def _row_search_text(row: dict[str, Any]) -> str:
     parts = [
         row.get("matchup", ""),
+        row.get("source_matchup", ""),
+        row.get("source_home_team", ""),
+        row.get("source_away_team", ""),
         row.get("kickoff_at_utc", ""),
         row.get("market_label", ""),
         row.get("model_prob", ""),
@@ -121,15 +124,15 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
         return """
         <section class="ledger-table-wrap">
           <div class="empty-state">
-            <h2>No research signals</h2>
-            <p>Current snapshot has no rows that meet the signal thresholds.</p>
+            <h2>暂无研究信号</h2>
+            <p>当前快照没有达到阈值的信号行。</p>
           </div>
         </section>
         """
 
     grouped: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        grouped[str(row.get("kickoff_date") or "Date unavailable")].append(row)
+        grouped[str(row.get("kickoff_date") or "日期暂不可用")].append(row)
 
     table_rows = []
     for kickoff_date, date_rows in grouped.items():
@@ -155,13 +158,7 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
                     grade_bucket=_text(grade_bucket),
                     search=_text(search_text),
                     matchup=_text(row.get("matchup")),
-                    stage_group=_text(
-                        " | ".join(
-                            part
-                            for part in [str(row.get("stage") or ""), str(row.get("group") or "")]
-                            if part
-                        )
-                    ),
+                    stage_group=_text(row.get("stage_group")),
                     kickoff=_text(row.get("kickoff_time") or row.get("kickoff_at_utc")),
                     market=_text(row.get("market_label")),
                     model_prob=_text(row.get("model_prob")),
@@ -177,25 +174,25 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
     return """
     <section class="ledger-table-wrap">
       <table class="ledger-table">
-        <caption>Research signal ledger</caption>
+        <caption>研究信号台账</caption>
         <thead>
           <tr>
-            <th scope="col">Matchup</th>
-            <th scope="col">Kickoff (UTC)</th>
-            <th scope="col">Market</th>
-            <th scope="col">Model Prob</th>
-            <th scope="col">Market Prob</th>
+            <th scope="col">对阵</th>
+            <th scope="col">开赛 (UTC)</th>
+            <th scope="col">盘口</th>
+            <th scope="col">模型概率</th>
+            <th scope="col">市场概率</th>
             <th scope="col">EV / Edge</th>
-            <th scope="col">Grade</th>
-            <th scope="col">Freshness</th>
-            <th scope="col">Why this is a signal</th>
+            <th scope="col">等级</th>
+            <th scope="col">新鲜度</th>
+            <th scope="col">信号原因</th>
           </tr>
         </thead>
         <tbody>
           {rows}
         </tbody>
       </table>
-      <p class="no-results" hidden>No rows match the current filters.</p>
+      <p class="no-results" hidden>没有符合当前筛选的信号。</p>
     </section>
     """.format(rows="\n".join(table_rows))
 
@@ -216,26 +213,26 @@ def _render_source_health(snapshot: dict[str, Any]) -> str:
 
     return """
     <section class="rail-card">
-      <h2>Source Health</h2>
-      <p><strong>Data quality: {quality}</strong></p>
-      <p><strong>Odds feed: {odds_feed}</strong></p>
-      <p><strong>Fixtures: {fixtures}</strong></p>
-      <p><strong>Elo ratings: {elo}</strong></p>
-      <p><strong>Input checks: {input_checks}</strong></p>
+      <h2>数据源健康</h2>
+      <p><strong>数据质量：{quality}</strong></p>
+      <p><strong>赔率源：{odds_feed}</strong></p>
+      <p><strong>赛程：{fixtures}</strong></p>
+      <p><strong>Elo 评级：{elo}</strong></p>
+      <p><strong>输入检查：{input_checks}</strong></p>
       <ul class="health-counts">
-        <li>Source issues: {source_error_count}</li>
-        <li>Stale inputs: {stale_count}</li>
-        <li>Missing odds: {missing_odds_count}</li>
-        <li>Missing Elo: {missing_elo_count}</li>
-        <li>Time checks: {time_count}</li>
+        <li>源异常：{source_error_count}</li>
+        <li>过期输入：{stale_count}</li>
+        <li>缺失赔率：{missing_odds_count}</li>
+        <li>缺失 Elo：{missing_elo_count}</li>
+        <li>时间核对：{time_count}</li>
       </ul>
     </section>
     """.format(
         quality=_text(quality.get("label")),
-        odds_feed="Needs attention" if odds_attention else "Available",
-        fixtures="Available" if fixtures_available else "Needs attention",
-        elo="Needs attention" if elo_attention else "Available",
-        input_checks="Needs attention" if input_attention else "Available",
+        odds_feed="需关注" if odds_attention else "可用",
+        fixtures="可用" if fixtures_available else "需关注",
+        elo="需关注" if elo_attention else "可用",
+        input_checks="需关注" if input_attention else "可用",
         source_error_count=_text(len(source_errors)),
         stale_count=_text(len(stale_sources)),
         missing_odds_count=_text(len(missing_odds)),
@@ -249,23 +246,23 @@ def _render_right_rail(snapshot: dict[str, Any]) -> str:
     return """
     <aside class="right-rail">
       <section class="rail-card">
-        <h2>Methodology</h2>
-        <p>Elo and Poisson model probabilities are compared with devigged market probabilities.</p>
-        <p>Model probability is above the devigged market probability.</p>
-        <p>Grades summarize EV, edge, and input freshness for research triage.</p>
+        <h2>方法说明</h2>
+        <p>用 Elo 与 Poisson 模型概率，对比去水后的市场概率。</p>
+        <p>信号来自模型概率、EV、Edge 与盘口之间的差异。</p>
+        <p>等级用于研究优先级排序，并会受输入新鲜度影响。</p>
       </section>
       {source_health}
       <section class="rail-card">
-        <h2>Caveats</h2>
+        <h2>注意事项</h2>
         <ul>
-          <li>Model outputs are research signals only and can be wrong.</li>
-          <li>Stale feeds, missing inputs, or kickoff mismatches reduce confidence.</li>
-          <li>This page is a static export and may lag newer source data.</li>
+          <li>模型输出只作为研究信号，可能出错。</li>
+          <li>数据过期、输入缺失或开赛时间不一致都会降低可信度。</li>
+          <li>页面可能滞后于最新数据源。</li>
         </ul>
       </section>
       <section class="rail-card">
-        <h2>Time</h2>
-        <p><strong>Last updated:</strong><br>{snapshot_at}</p>
+        <h2>更新时间</h2>
+        <p><strong>最后更新：</strong><br>{snapshot_at}</p>
       </section>
     </aside>
     """.format(
@@ -277,11 +274,11 @@ def _render_right_rail(snapshot: dict[str, Any]) -> str:
 def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
     snapshot_at = snapshot.get("snapshot_at", "")
     return """<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>World Cup 2026 | Research Ledger</title>
+  <title>2026 世界杯 | 研究台账</title>
   <style>
     :root {{
       color-scheme: light;
@@ -454,11 +451,11 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
   <main>
     <header>
       <div>
-        <p class="eyebrow">World Cup 2026</p>
-        <h1>Research Ledger</h1>
-        <p class="disclaimer">Research only, not betting advice. 研究分析工具，不构成投注建议。</p>
+        <p class="eyebrow">2026 世界杯</p>
+        <h1>研究台账</h1>
+        <p class="disclaimer">仅用于研究分析，不构成投注建议。</p>
       </div>
-      <p class="meta">Last updated<br>{snapshot_at}</p>
+      <p class="meta">最后更新<br>{snapshot_at}</p>
     </header>
     {summary}
     <div class="content-grid">

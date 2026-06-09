@@ -162,8 +162,8 @@ def test_fastapi_get_preview_returns_disclaimer_html():
 
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/html")
-        assert "研究分析工具，不构成投注建议" in response.text
-        assert "Mexico vs South Africa" in response.text
+        assert "仅用于研究分析，不构成投注建议" in response.text
+        assert "墨西哥 对 南非" in response.text
 
 
 def test_fastapi_latest_snapshot_returns_404_when_missing():

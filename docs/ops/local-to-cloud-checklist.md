@@ -78,7 +78,7 @@ python3 -m worldcup.fastapi_app --host 127.0.0.1 --port 8788 --env /etc/worldcup
 3. 当前域名为 `football.celab.xin`，DNS 已指向当前 ECS。
 4. TLS 证书来源为 Let's Encrypt。
 5. HTTP 已跳转 HTTPS。
-6. 如果静态 Research Ledger 不由 FastAPI 直接服务，确认 CDN/OSS/static hosting 方案。
+6. 如果静态研究台账不由 FastAPI 直接服务，确认 CDN/OSS/static hosting 方案。
 7. 比赛窗口期 HTML 和 JSON 缓存 TTL 应保持较短。
 
 ## Secret Dry-Run Checklist

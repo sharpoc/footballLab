@@ -10,7 +10,7 @@ def _snapshot():
         "run": {
             "run_id": "20260608T000000Z-live",
             "quota": {"theoddsapi": {"remaining": 494, "used": 6}},
-            "stale_sources": ["theoddsapi"],
+            "stale_sources": [],
             "source_errors": [],
         },
         "counts": {"fixtures": 104, "matches": 1, "odds_events": 1},
@@ -46,17 +46,18 @@ def _snapshot():
 def test_build_preview_html_renders_research_ledger_surface():
     html = build_preview_html(_snapshot())
 
-    assert "World Cup 2026" in html
-    assert "Research Ledger" in html
-    assert "Research only, not betting advice." in html
-    assert "研究分析工具，不构成投注建议" in html
-    assert "Mexico vs South Africa" in html
-    assert "1X2 - Home" in html
+    assert "2026 世界杯" in html
+    assert "研究台账" in html
+    assert "仅用于研究分析，不构成投注建议" in html
+    assert "墨西哥 对 南非" in html
+    assert "胜平负 - 主队" in html
     assert "+4.1%" in html
-    assert "Model probability is above the devigged market probability." in html
-    assert "Methodology" in html
-    assert "Source Health" in html
-    assert "Caveats" in html
+    assert "模型概率高于去水后的市场概率。" in html
+    assert "方法说明" in html
+    assert "数据源健康" in html
+    assert "注意事项" in html
+    assert "Research Ledger" not in html
+    assert "Research only, not betting advice." not in html
     assert "下注金额" not in html
     assert "stake" not in html.lower()
     assert "bet amount" not in html.lower()
@@ -70,7 +71,7 @@ def test_write_preview_creates_parent_directory_and_file():
         write_preview(_snapshot(), out)
 
         assert out.exists()
-        assert "Research Ledger" in out.read_text(encoding="utf-8")
+        assert "研究台账" in out.read_text(encoding="utf-8")
 
 
 def test_build_preview_html_does_not_expose_raw_operational_details():
@@ -94,14 +95,14 @@ def test_build_preview_html_does_not_expose_raw_operational_details():
 
     html = build_preview_html(snapshot)
 
-    assert "Source Health" in html
-    assert "Data quality: ATTENTION" in html
-    assert "Odds feed: Needs attention" in html
-    assert "Fixtures: Available" in html
-    assert "Elo ratings: Available" in html
-    assert "Input checks: Needs attention" in html
-    assert "Missing odds: 1" in html
-    assert "Time checks: 1" in html
+    assert "数据源健康" in html
+    assert "数据质量：需关注" in html
+    assert "赔率源：需关注" in html
+    assert "赛程：可用" in html
+    assert "Elo 评级：可用" in html
+    assert "输入检查：需关注" in html
+    assert "缺失赔率：1" in html
+    assert "时间核对：1" in html
     assert "internal-run-abc-999" not in html
     assert "777777" not in html
     assert "123456" not in html
@@ -144,20 +145,20 @@ def test_build_preview_html_renders_empty_signal_state():
 
     html = build_preview_html(snapshot)
 
-    assert "No research signals" in html
+    assert "暂无研究信号" in html
 
 
 def test_build_preview_html_includes_filter_dom_accessibility_contract():
     html = build_preview_html(_snapshot())
 
     assert 'data-filter="strong"' in html
-    assert ">Strong (S/A)</button>" in html
-    assert ">Weak (C/D)</button>" in html
+    assert ">强信号 (S/A)</button>" in html
+    assert ">弱信号 (C/D)</button>" in html
     assert 'id="ledger-search"' in html
     assert 'aria-pressed="true"' in html
     assert 'aria-pressed="false"' in html
-    assert "<caption>Research signal ledger</caption>" in html
-    assert '<th scope="col">Matchup</th>' in html
+    assert "<caption>研究信号台账</caption>" in html
+    assert '<th scope="col">对阵</th>' in html
 
 
 def test_build_preview_html_keeps_mobile_table_scroll_inside_ledger_panel():
