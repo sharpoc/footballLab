@@ -13,15 +13,28 @@
 
 - Git 仓库已初始化。
 - Plan 1 引擎核心已完成第一版。
-- 本地测试执行器通过：`41/41 tests passed`。
-- Plan 0 数据源探测计划已写好，等待 API key 后执行。
+- 本地测试执行器通过：`104/104 tests passed`。
+- Plan 0 核心数据源探测已完成第一轮：openfootball 赛程、eloratings Elo、The Odds API 赔率可用；API-Football Free plan 不能访问 2026 season。
+- Plan 2 已启动：当前完成纯离线解析层、单场价值信号、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、低频调度策略、run metadata、调度执行包装、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照。
 
 ## 技术栈
 
 - Python 3
 - 标准库优先
 - 当前引擎不联网、不连数据库、不依赖云资源
-- 后续采集层会使用 `requests`
+- 当前 collector 解析层不联网；后续真实请求层可再引入 HTTP 客户端
+- 当前 refresh runner 默认 dry-run；只有显式 `--live` 才会读取 `.env` 并联网消耗 The Odds API 额度
+- 当前 scheduler 默认 dry-run，只读取本地 snapshot / quota 并输出 JSON 决策，不会联网或写入状态
+- 当前 scheduled refresh 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会调用 refresh runner
+- 当前 ingest 默认 dry-run；只构造请求体、HMAC 签名头和 body hash，不发送线上请求
+- 当前 ingest server 是纯本地验签/幂等模块；后续再包成 FastAPI ECS 接口
+- 当前 SQLite store / preview 都是本地低风险链路；默认输出在已忽略的 `data/local/` 或 `data/cache/`
+- 当前 HTTP 适配层只用于本地预览和路由契约测试；正式 FastAPI/ECS 部署需单独确认
+- 当前 ASGI 适配层无外部依赖，只包装本地 HTTP 路由契约；正式 ASGI server / FastAPI 依赖安装需单独确认
+- 当前 `/healthz` 不读 DB、不依赖 secret，只用于本地和后续云端健康检查契约
+- 当前静态导出默认写入已忽略的 `data/cache/site/`
+- 当前 readiness check 只读本地文件和变量名，会解析 snapshot/quota、检查预览免责声明，并确认 `.env.example` 只含空值模板，不联网、不打印 secret
+- 当前 HMAC secret helper 只打印 `INGEST_HMAC_SECRET=<value>`，不会写 `.env`
 - 后续云端计划使用 FastAPI + PostgreSQL + OSS
 
 ## 目录结构
@@ -36,11 +49,40 @@ docs/superpowers/specs/
 docs/superpowers/plans/
   2026-06-08-engine-core.md
   2026-06-08-plan0-data-source-probe.md
+  2026-06-08-plan2-collectors.md
+  2026-06-08-autonomous-local-mvp.md
+  2026-06-09-commute-local-hardening.md
 
 worldcup/
   config.py                     # 配置读取
   models.py                     # 数据模型与枚举
   differ.py                     # 两轮变化检测
+  pipeline.py                   # collector 输出对齐 + 单场分析编排
+  local_runner.py               # 本地样例/缓存 → 分析快照 JSON
+  refresh_runner.py             # source refresh → cache → analysis snapshot
+  scheduler.py                  # 免费额度调度策略与 run metadata
+  scheduled_refresh.py          # 调度判断 → 条件执行 refresh
+  ingest.py                     # 云端 ingest payload 与 HMAC dry-run
+  ingest_server.py              # ingest 验签、防重放与本地幂等模拟
+  ingest_app.py                 # 本地 ingest 应用层：验签 → SQLite
+  store.py                      # SQLite snapshot 持久化
+  query.py                      # 最新快照读取与比赛行投影
+  preview.py                    # 静态 HTML 预览页生成
+  http_app.py                   # 标准库 HTTP 适配层和路由契约
+  asgi_app.py                   # 无依赖 ASGI 适配层
+  export.py                     # 静态站点/API 导出
+  readiness.py                  # 本地上线前 readiness check
+  secrets.py                    # 本地 HMAC secret 生成助手，不写 .env
+  quota.py                      # 本地 API quota ledger
+  sources/
+    openfootball.py             # openfootball 请求与缓存
+    theoddsapi.py               # The Odds API 请求、缓存与 quota 记录
+    eloratings.py               # Elo TSV 请求与缓存
+  collectors/
+    openfootball.py             # openfootball 赛程样例解析
+    theoddsapi.py               # The Odds API 赔率样例解析
+    eloratings.py               # eloratings TSV 解析
+    team_aliases.py             # 队名规范化与别名
   engine/
     odds.py                     # 赔率去水、聚合
     elo.py                      # Elo 1X2 概率
@@ -51,6 +93,7 @@ worldcup/
 
 tests/
   run_tests.py                  # 无 pytest 环境下的本地测试执行器
+  collectors/                   # collector 离线解析测试
 ```
 
 ## 本地验证
@@ -69,7 +112,7 @@ python3 -m pytest -v
 
 ## API 注册清单
 
-至少先注册 API-Football；赔率备源至少注册一个。
+API-Football 与 The Odds API 已完成第一轮探测；其它赔率源可作为后续容灾或交叉校验候选。
 
 | 用途 | 服务 | 注册 / 官网 |
 |---|---|---|
@@ -87,20 +130,28 @@ API_FOOTBALL_KEY=...
 THE_ODDS_API_KEY=...
 ODDS_API_IO_KEY=...
 ODDSPAPI_KEY=...
+INGEST_HMAC_SECRET=...
 ```
 
 `.env` 已被 `.gitignore` 忽略。
 
 ## 下一步
 
-1. 注册 API key。
-2. 按 `docs/superpowers/plans/2026-06-08-plan0-data-source-probe.md` 执行数据源探测。
-3. 产出 `docs/superpowers/data-contract.md`。
-4. 根据真实字段写 Plan 2 采集层。
+1. 用 `python3 -m worldcup.secrets` 生成 `INGEST_HMAC_SECRET`，手动写入 `.env` 后 readiness check 才能全绿。
+2. 将 `worldcup.http_app` / `worldcup.asgi_app` 的路由契约迁移/包装为 FastAPI，实现正式 ECS ingest/read API。
+3. 把 SQLite store 替换/适配为 PostgreSQL 持久化，保留幂等唯一键。
+4. 后续再把 scheduled refresh 接到 macmini cron / launchd。
 
 ## 重要约束
 
 - API key、RDS 连接串、HMAC 密钥、Cookie、token 不得写入 git、文档或回复。
 - macmini 不直连 RDS/OSS，后续只调用 ECS ingest API。
+- source refresh 失败但本地缓存存在时，可以继续用上一轮缓存生成快照；必须在 `data_quality.source_errors` 和 `data_quality.stale_sources` 标记，不能静默当作新鲜数据。
+- The Odds API 按免费额度使用：低额度时 scheduler 会降频；上线前不得默认高频刷新。
+- ingest 必须绑定 `timestamp`、`run_id`、`snapshot_id` 和 body hash 做 HMAC；dry-run 不发送请求，也不能打印 secret。
+- ingest server 默认防重放窗口为 300 秒；服务端必须用 `X-Worldcup-Idempotency-Key` 做幂等。
+- `/healthz` 只能报告服务存活，不得输出环境变量、密钥、quota 或 snapshot 内容。
+- 本地预览页必须保留研究免责声明，不显示资金相关字段。
+- readiness check 只报告变量名、文件状态和内容完整性，不能输出密钥值；`.env.example` 必须只含变量名和空值。
 - 所有公开输出都必须保留免责声明。
 - 当前模型未经历史回测验证，公开页只能显示研究价值信号。

@@ -7,10 +7,12 @@ __pycache__/
 
 .env
 .env.*
+!.env.example
 
 data/raw/
 data/probe/
 data/cache/
+data/local/
 
 .venv/
 venv/

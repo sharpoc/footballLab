@@ -2,7 +2,7 @@
 
 - 日期：2026-06-08
 - 范围：2026 世界杯 MVP 数据源探测
-- 结论状态：部分完成；赛程与 Elo 可用，API-Football 免费档不能访问 2026 season，赔率备源待 key 后继续探测
+- 结论状态：核心源已探测；赛程与 Elo 可用，API-Football 免费档不能访问 2026 season，The Odds API 可作为当前 MVP 赔率源；Plan 2 本地采集/分析/预览链路已按该契约落地第一版
 
 ## 1. 赛程源：openfootball/worldcup.json
 
@@ -174,33 +174,138 @@ Mexico     MX  1875
 - openfootball 使用英文国家队名，Elo 使用国家代码 + 映射表，仍需 team alias 表。
 - 部分历史/地区队名存在多个别名，collector 需要保留无法匹配列表。
 
-## 4. 赔率备源
+## 4. 赔率源：The Odds API
 
-### 当前状态
+### 结论
 
-尚未探测。原因：当前只拿到 API-Football key，未拿到 The Odds API / odds-api.io / OddsPapi key。
+- 可用。
+- 认证使用 `.env` 中的 `THE_ODDS_API_KEY`，不要写入代码、文档或 git。
+- `soccer_fifa_world_cup` 当前为 active，描述为 `FIFA World Cup 2026`。
+- `h2h / spreads / totals` 三类盘口都可返回，字段足够支撑 MVP。
+- 2026-06-08 探测时返回 72 场，均能与 openfootball 的已确定对阵按队名对齐；未返回的 32 场主要是淘汰赛占位对阵，当前不判源失败。
 
-### 下一步至少注册一个
+### 已保存样例
 
-| 服务 | 官网 | 变量名 |
+```text
+data/probe/theoddsapi_sports.json
+data/probe/theoddsapi_sports_headers.txt
+data/probe/theoddsapi_wc_odds.json
+data/probe/theoddsapi_wc_odds_headers.txt
+data/probe/theoddsapi_summary.json
+```
+
+以上文件不进 git。
+
+### 端点
+
+```text
+GET https://api.the-odds-api.com/v4/sports/?all=true
+GET https://api.the-odds-api.com/v4/sports/soccer_fifa_world_cup/odds/?regions=eu&markets=h2h,spreads,totals&oddsFormat=decimal&dateFormat=iso
+```
+
+### sport key
+
+| key | title | active | has_outrights | 用途 |
+|---|---|---:|---:|---|
+| `soccer_fifa_world_cup` | FIFA World Cup | true | false | 单场 1X2 / spreads / totals |
+| `soccer_fifa_world_cup_winner` | FIFA World Cup Winner | true | true | 冠军 outright，MVP 暂不需要 |
+
+### 响应结构
+
+```text
+event
+  id
+  sport_key
+  sport_title
+  commence_time
+  home_team
+  away_team
+  bookmakers[]
+    key
+    title
+    last_update
+    markets[]
+      key
+      last_update
+      outcomes[]
+        name
+        price
+        point
+```
+
+### 字段映射
+
+| The Odds API 字段 | 内部字段 | 说明 |
 |---|---|---|
-| The Odds API | https://the-odds-api.com/ | `THE_ODDS_API_KEY` |
-| odds-api.io | https://odds-api.io/ | `ODDS_API_IO_KEY` |
-| OddsPapi | https://oddspapi.io/ | `ODDSPAPI_KEY` |
+| `event.id` | `source_event_id` | The Odds API 事件 ID |
+| `event.commence_time` | `kickoff_at_utc` | ISO8601 UTC，例如 `2026-06-11T19:00:00Z` |
+| `event.home_team` | `home_team_name` | 与 openfootball 当前 72 场精确对齐 |
+| `event.away_team` | `away_team_name` | 与 openfootball 当前 72 场精确对齐 |
+| `bookmakers[].key` | `bookmaker_key` | 稳定 bookmaker 标识 |
+| `bookmakers[].title` | `bookmaker_name` | 展示名 |
+| `bookmakers[].last_update` | `odds_updated_at` | bookmaker 或 market 更新时间 |
+| `markets[].key` | `source_market_key` | `h2h` / `spreads` / `totals` |
+| `outcomes[].name` | `selection_name` | 队名、`Draw`、`Over`、`Under` |
+| `outcomes[].price` | `decimal_odds` | 十进制赔率 |
+| `outcomes[].point` | `line` | 让球或大小球线；`h2h` 无此字段 |
 
-### 选择标准
+### 内部盘口映射
 
-优先选择同时满足以下条件的源：
+| 内部盘口 | The Odds API market | selection / line 规则 |
+|---|---|---|
+| `1X2_90min` | `h2h` | `name` 为主队、客队或 `Draw`；`price` 为 decimal odds |
+| `AsianHandicap_90min` | `spreads` | `name` 为队名；`point` 为该队让球线，可出现 `-1.25`、`0.75` 等分位 |
+| `OverUnder_90min` | `totals` | `name` 为 `Over` / `Under`；`point` 为进球线，可出现 `2.25`、`2.75` 等分位 |
 
-1. 覆盖 `soccer_fifa_world_cup`
-2. 有 `h2h / totals / spreads` 或等价三盘口
-3. 返回 bookmaker、market、line、selection、price
-4. 免费额度能支撑赛前 3 小时级别刷新
-5. 能提供响应头或接口字段辅助 quota ledger
+探测中还出现 `h2h_lay`，主要来自交易所类 bookmaker。Plan 2 collector 应允许未知 market 存在，但 MVP 聚合时先忽略 `h2h_lay`。
 
-## 5. 状态判定落地
+### 覆盖与 bookmaker
 
-当前根据 API-Football 探测结果，状态逻辑调整为：
+- 返回事件数：72。
+- 每场 bookmaker 数：15 到 25 家，平均约 19.58 家。
+- 每场至少有一个 `h2h`、`spreads`、`totals` market。
+- 按 market 覆盖：
+  - `h2h`：72 场，25 个 bookmaker。
+  - `spreads`：72 场，7 个 bookmaker。
+  - `totals`：72 场，14 个 bookmaker。
+  - `h2h_lay`：50 场，2 个 bookmaker，MVP 暂不使用。
+- `spreads` 和 `totals` 返回的 `point` 支持 0.25/0.75 这类亚洲盘常见分位。
+
+### 配额行为
+
+- `/sports/?all=true` 本次 `x-requests-last = 0`，不消耗额度。
+- `/odds` 本次 `x-requests-last = 3`，对应 1 个 region x 3 个 markets。
+- 响应头包含：
+  - `x-requests-remaining`
+  - `x-requests-used`
+  - `x-requests-last`
+- quota ledger 优先读取响应头；如果响应头缺失，再按 `regions * markets` 估算本次消耗。
+
+### 决策
+
+- The Odds API 进入 Plan 2，作为当前 MVP 的赔率源。
+- API-Football Free plan 不进入 2026 赔率采集链路，除非后续升级 plan 或 season 权限变化。
+- odds-api.io / OddsPapi 暂时保留为未来交叉校验或容灾候选；当前没有必要阻塞 Plan 2。
+
+## 5. Team alias 初稿
+
+### 结论
+
+- The Odds API 的 48 个队名全部出现在 openfootball 已确定对阵中，当前 72 场可按队名 pair 对齐。
+- The Odds API 的 48 个队名中，使用 `en.teams.tsv` 全部别名列可匹配 Elo 47 个；剩余 1 个需要手工 alias。
+- collector 必须保留 `unmatched_teams` 输出，不能静默丢弃无法匹配的队。
+
+### 必要 alias
+
+| canonical_key | openfootball / The Odds API | Elo code | Elo name / alias | 处理 |
+|---|---|---|---|---|
+| `bosnia_herzegovina` | `Bosnia & Herzegovina` | `BA` | `Bosnia & Herzegovina` | Elo 已含 alias |
+| `czech_republic` | `Czech Republic` | `CZ` | `Czechia` | 需要手工 alias |
+| `united_states` | `USA` | `US` | `USA` / `United States` | Elo 已含 alias |
+
+## 6. 状态判定落地
+
+当前根据 API-Football 与 The Odds API 探测结果，状态逻辑调整为：
 
 | 状态 | 含义 |
 |---|---|
@@ -208,19 +313,361 @@ Mexico     MX  1875
 | `ODDS_PENDING` | 赛前 14 天内暂未拿到主盘口，先不判异常 |
 | `D` | 临近比赛仍无主盘口、盘口异常、报价不足或数据源权限/覆盖确认失败 |
 
-由于 API-Football Free plan 对 2026 season 无权限，不能用它的 1-14 天窗口判断 2026 出盘状态；实际状态应以后续赔率备源探测结果为准。
+由于 API-Football Free plan 对 2026 season 无权限，不能用它的 1-14 天窗口判断 2026 出盘状态。实际状态以 The Odds API 为准：
 
-## 6. Plan 2 输入要求
+- 小组赛 72 场已经有 `h2h / spreads / totals`，可进入正常赔率采集。
+- 淘汰赛占位对阵尚无真实队名时，不判 `D`；保持 fixture 占位状态，等待对阵确定后再匹配赔率。
+- 已确定对阵在赛前 14 天内没有目标盘口时，标记 `ODDS_PENDING`。
+- 已确定对阵临近比赛仍没有目标盘口、盘口结构异常、`point` 缺失或 bookmaker 数低于 `config/settings.yaml` 中的 `odds.min_books` 时，标记 `D`。
 
-Plan 2 collectors 开工前，还缺：
+## 7. Refresh / cache policy
 
-1. 至少一个赔率备源的真实响应样例。
-2. 三盘口字段映射：
+### 结论
+
+- `worldcup.refresh_runner` 默认 dry-run；只有显式 `--live` 才会读取 `.env` 并请求外部源。
+- `worldcup.scheduler` 默认 dry-run；只读取本地 snapshot / quota 并输出 JSON 决策，不联网、不写状态。
+- `worldcup.scheduled_refresh` 默认 dry-run；只有显式 `--live` 且 scheduler 判定 due，或同时传 `--force`，才会调用 refresh runner。
+- source refresh 成功时写入 `data/cache/`，随后由 `worldcup.local_runner` 的同名缓存输入契约生成 `analysis_snapshot.json`。
+- source refresh 失败但对应缓存文件已存在时，本轮可以继续用上一轮缓存生成快照，避免网络抖动导致整轮分析中断。
+- source refresh 失败且对应缓存文件不存在时，必须失败退出，不能生成看似完整但来源缺失的快照。
+
+### 快照质量字段
+
+fallback 发生时，`analysis_snapshot.json` 必须在 `data_quality` 中写入：
+
+```text
+source_errors[]
+  source
+  error
+
+stale_sources[]
+```
+
+当前 source name 约定：
+
+| source | 缓存文件 | 说明 |
+|---|---|---|
+| `openfootball` | `data/cache/openfootball_2026.json` | 赛程源 |
+| `eloratings` | `data/cache/elo_world.tsv` + `data/cache/elo_teams.tsv` | Elo 源 |
+| `theoddsapi` | `data/cache/theoddsapi_wc_odds.json` | 赔率源 |
+
+前端、云端 ingest 和后续调度不能把 `stale_sources` 非空的快照当作全新数据；可以展示，但需要保留数据质量标记。
+
+### Run metadata
+
+每次 `refresh_runner --live` 生成的 `analysis_snapshot.json` 必须包含：
+
+```text
+run
+  schema_version
+  run_id
+  mode
+  observed_at
+  policy_version
+  policy
+    should_refresh
+    reason
+    policy_reason
+    interval_seconds
+    now
+    last_refresh_at
+    next_due_at
+    next_kickoff_at
+    quota_remaining
+    policy_version
+  quota
+  source_errors
+  stale_sources
+```
+
+当前 `policy_version = free-tier-v1`。默认策略：
+
+| 条件 | interval | policy_reason |
+|---|---:|---|
+| The Odds API `remaining <= 30` | 86400 秒 | `quota_low` |
+| 下一场 kickoff 在 7 天内 | 21600 秒 | `tournament_window` |
+| 其它情况 | 86400 秒 | `default` |
+
+调度执行层应先运行 scheduler dry-run；只有 `decision.should_refresh = true` 时才进入 live refresh。低额度降频优先级高于赛前窗口。
+
+### Scheduled refresh result
+
+`worldcup.scheduled_refresh` 输出 JSON：
+
+```text
+status
+force
+report
+refresh
+```
+
+状态约定：
+
+| status | 含义 |
+|---|---|
+| `dry_run` | 默认行为，只输出 scheduler report，不调用 refresh runner |
+| `skipped` | 已传 `--live`，但 scheduler 判定 not due，未调用 refresh runner |
+| `refreshed` | 已传 `--live`，且 due 或 `--force`，已调用 refresh runner |
+
+cron / launchd 应优先调用默认 dry-run 验证本地状态；真实刷新命令必须显式带 `--live`。
+
+## 8. Cloud ingest dry-run
+
+### 结论
+
+- `worldcup.ingest` 只做本地 dry-run：构造请求体、HMAC 签名头、body hash 和幂等键，不发送线上请求。
+- CLI 默认不展开完整 body，只输出 `body_sha256`、`body_bytes`、headers 和目标 URL；需要调试完整请求体时才显式传 `--include-body`。
+- HMAC secret 从 `.env` 的 `INGEST_HMAC_SECRET` 读取；文档、日志和 dry-run 输出不得打印 secret。
+
+### Payload
+
+ingest request body 是 canonical JSON：
+
+```text
+schema_version
+run_id
+snapshot_id
+snapshot_at
+generated_at
+snapshot
+```
+
+字段约定：
+
+| 字段 | 来源 / 规则 |
+|---|---|
+| `run_id` | `snapshot.run.run_id`，必填 |
+| `snapshot_id` | 对完整 `snapshot` canonical JSON 做 SHA256 |
+| `snapshot_at` | `snapshot.snapshot_at` |
+| `generated_at` | 构造 ingest payload 的 UTC 时间 |
+| `snapshot` | 完整 `analysis_snapshot.json` 内容 |
+
+### HMAC signing
+
+请求方法固定为 `POST`。签名消息为：
+
+```text
+timestamp
+method
+path
+run_id
+snapshot_id
+body_sha256
+```
+
+各行用 `\n` 拼接，使用 `HMAC-SHA256(secret, message)`，header 中以 `sha256=<hex>` 传递。
+
+请求头约定：
+
+| Header | 说明 |
+|---|---|
+| `Content-Type` | 固定 `application/json` |
+| `X-Worldcup-Timestamp` | 签名时间，服务端用于防重放窗口 |
+| `X-Worldcup-Run-Id` | 本轮 run id |
+| `X-Worldcup-Snapshot-Id` | snapshot body hash |
+| `X-Worldcup-Body-SHA256` | ingest request body hash |
+| `X-Worldcup-Signature` | `sha256=<hmac hex>` |
+| `X-Worldcup-Idempotency-Key` | `<run_id>:<snapshot_id>` |
+
+服务端必须用同样规则验签，并以 `X-Worldcup-Idempotency-Key` 做幂等。
+
+### Server-side verification
+
+本地服务端验签模块 `worldcup.ingest_server` 当前实现以下检查：
+
+1. 必填 header 完整。
+2. `X-Worldcup-Timestamp` 是 timezone-aware 时间，且与服务端当前时间相差不超过 300 秒。
+3. 实际 body SHA256 等于 `X-Worldcup-Body-SHA256`。
+4. request body 是 JSON，且包含 `run_id`、`snapshot_id`、`snapshot`。
+5. body 内 `run_id` / `snapshot_id` 与 header 一致。
+6. `X-Worldcup-Idempotency-Key` 等于 `<run_id>:<snapshot_id>`。
+7. `snapshot_id` 等于完整 `snapshot` canonical JSON 的 SHA256。
+8. `X-Worldcup-Signature` 等于服务端按同样签名串和 secret 计算出的 `sha256=<hex>`。
+
+本地 `InMemoryIngestStore` 只用于测试幂等语义：
+
+| status | 含义 |
+|---|---|
+| `stored` | 首次通过验签并写入 idempotency key |
+| `duplicate` | 同一个 idempotency key 已存在，本次不重复写入 |
+| `rejected` | 验签、body hash、timestamp 或字段一致性失败 |
+
+后续 FastAPI / PostgreSQL 版本应保留上述验证顺序和状态语义，把内存存储替换为数据库唯一键或等价幂等机制。
+
+## 9. Local persistence and preview
+
+### SQLite store
+
+`worldcup.store.SQLiteSnapshotStore` 是本地低风险持久化层，默认后续写入 `data/local/worldcup.db`。`data/local/` 必须被 git ignore。
+
+表 `snapshots` 字段：
+
+| 字段 | 说明 |
+|---|---|
+| `idempotency_key` | 主键，等于 `<run_id>:<snapshot_id>` |
+| `run_id` | 本轮 run id |
+| `snapshot_id` | snapshot hash |
+| `snapshot_at` | snapshot 时间 |
+| `stored_at` | 本地写入时间 |
+| `payload_json` | 完整 ingest payload |
+| `snapshot_json` | 完整 analysis snapshot |
+
+写入语义：
+
+| status | 含义 |
+|---|---|
+| `stored` | 首次写入 idempotency key |
+| `duplicate` | idempotency key 已存在，未重复写入 |
+
+### Local ingest app
+
+`worldcup.ingest_app.process_local_ingest` 执行：
+
+1. 调用 `worldcup.ingest_server.verify_ingest_request`。
+2. 验签失败时返回 `rejected`，不写入 snapshot。
+3. 验签成功时写入 `SQLiteSnapshotStore`，返回 `stored` 或 `duplicate`。
+
+CLI 只做本地验证和入库，不发送线上请求：
+
+```bash
+python3 -m worldcup.ingest_app --db data/local/worldcup.db --snapshot data/cache/analysis_snapshot.json --env .env
+```
+
+### Query projection
+
+`worldcup.query` 提供只读投影：
+
+| 函数 | 说明 |
+|---|---|
+| `load_latest_snapshot(db_path)` | 从 SQLite 读取最新 snapshot |
+| `project_match_rows(snapshot)` | 输出预览/API 可用的比赛行 |
+
+比赛行字段：
+
+```text
+kickoff_at_utc
+stage
+group
+home_team
+away_team
+match_label
+signal_count
+top_grade
+stale
+```
+
+不得在投影中加入 stake、bet amount、下注金额或其它资金字段。
+
+### Static preview
+
+`worldcup.preview` 生成单文件 HTML：
+
+```bash
+python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out data/cache/preview.html
+```
+
+预览页必须包含：
+
+- `研究分析工具，不构成投注建议` 免责声明。
+- counts 概览。
+- data quality：`stale_sources`、`source_errors`、`missing_odds`、`missing_elo`、`time_mismatches`。
+- 比赛表：UTC 开赛、阶段、小组、对阵、信号数、最高等级、缓存兜底。
+- 不显示资金相关字段。
+
+### Local HTTP route contract
+
+`worldcup.http_app` 是标准库 HTTP 适配层，用于本地预览和路由契约测试；不是最终 ECS/FastAPI 部署形态。
+
+当前路由：
+
+| Method | Path | 行为 |
+|---|---|---|
+| `POST` | `/api/ingest/snapshot` | 调用本地 ingest app，验签后写入 SQLite |
+| `GET` | `/api/snapshot/latest` | 返回最新完整 snapshot |
+| `GET` | `/api/matches` | 返回 `project_match_rows(snapshot)` |
+| `GET` | `/preview` | 返回静态 HTML 预览页 |
+| `GET` | `/healthz` | 返回服务存活状态；不读 DB、不依赖 secret |
+
+### Local ASGI adapter
+
+`worldcup.asgi_app.create_asgi_app` 是无外部依赖 ASGI 适配层，当前只包装 `worldcup.http_app.handle_request` 的路由契约，方便后续迁移到 FastAPI 或 ASGI server 时复用测试边界。
+
+当前覆盖：
+
+- `GET /api/matches`
+- `GET /preview`
+- `GET /healthz`
+
+正式 ASGI server / FastAPI 依赖安装、启动常驻服务、ECS 部署和云端写入必须单独确认。
+
+### Local secret helper
+
+`worldcup.secrets` 用于生成本地 HMAC secret 文本，方便人工写入 `.env`：
+
+```bash
+python3 -m worldcup.secrets
+```
+
+输出格式：
+
+```text
+INGEST_HMAC_SECRET=<hex value>
+```
+
+该工具不读取 `.env`、不写 `.env`、不写文档、不联网。真实 secret 只能留在 `.env` 或安全配置系统里，不能提交到 git。
+
+### Static site/API export
+
+`worldcup.export` 可从本地 snapshot 导出静态站点草案：
+
+```bash
+python3 -m worldcup.export --snapshot data/cache/analysis_snapshot.json --out-dir data/cache/site
+```
+
+导出文件：
+
+| 文件 | 说明 |
+|---|---|
+| `index.html` | 研究预览页 |
+| `api/snapshot/latest.json` | 完整最新 snapshot |
+| `api/matches.json` | 只读比赛行投影 |
+| `manifest.json` | 导出元数据 |
+
+`data/cache/site/` 必须保持 git ignore；该输出只代表本地静态包草案，不代表已部署。
+
+### Readiness check
+
+`worldcup.readiness` 是只读上线前检查：
+
+```bash
+python3 -m worldcup.readiness --root .
+```
+
+检查项：
+
+- `.env` 是否存在指定变量名：`THE_ODDS_API_KEY`、`INGEST_HMAC_SECRET`。
+- `.env.example` 是否存在、包含必需变量名、值为空，并未被 `.env.*` 通配规则误忽略。
+- `data/cache/analysis_snapshot.json` 是否存在且包含比赛。
+- quota ledger 是否存在并可解析。
+- `data/cache/preview.html` 与 `data/cache/site/index.html` 是否存在。
+- 预览页和静态首页是否保留 `研究分析工具，不构成投注建议` 免责声明。
+- `.env`、`data/cache/`、`data/local/`、`data/probe/` 是否被 git ignore。
+
+readiness check 不联网、不打印 secret 值。当前如果 `.env` 缺少真实 `INGEST_HMAC_SECRET`，必须报错；不要自动生成并写入 `.env`。`.env.example` 只能保留变量名和空值，不能写入任何真实或示例 secret 值。
+
+正式 FastAPI/ECS 版本应复用同一验签、幂等、查询投影和预览安全规则；上线、云端写入和部署必须单独确认。
+
+## 10. Plan 2 输入要求
+
+Plan 2 collectors 可以基于当前契约开工，最小输入如下：
+
+1. 使用保存的 The Odds API 样例写离线解析测试。
+2. 三盘口字段映射已确认：
    - `1X2_90min`
    - `OverUnder_90min`
    - `AsianHandicap_90min`
-3. bookmaker 数量与 line 表达方式。
-4. quota / credit 消耗方式。
-5. team alias 初稿。
+3. bookmaker 数量与 line 表达方式已确认。
+4. quota / credit 消耗方式已确认。
+5. team alias 初稿已确认，但 collector 仍必须输出无法匹配列表。
 
-在这些缺口补齐前，不应写真 collectors。
+Plan 2 不应再按假接口写 collector；必须以 `data/probe/theoddsapi_wc_odds.json`、`data/probe/openfootball_2026.json`、`data/probe/elo_world.tsv`、`data/probe/elo_teams.tsv` 作为离线测试样例。

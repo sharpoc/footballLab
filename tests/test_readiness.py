@@ -1,0 +1,90 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from worldcup.readiness import run_readiness_checks
+
+
+def _write(path: Path, text: str = "{}"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_readiness_reports_ok_when_local_artifacts_exist():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write(root / ".env", "THE_ODDS_API_KEY=x\nINGEST_HMAC_SECRET=y\n")
+        _write(
+            root / ".env.example",
+            "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\n",
+        )
+        _write(
+            root / "data/cache/analysis_snapshot.json",
+            '{"counts":{"matches":1},"matches":[{"home_team":"Mexico","away_team":"South Africa"}]}',
+        )
+        _write(root / "data/cache/quota.json", '{"providers":{}}')
+        _write(root / "data/cache/preview.html", "<html>研究分析工具，不构成投注建议</html>")
+        _write(root / "data/cache/site/index.html", "<html>研究分析工具，不构成投注建议</html>")
+        _write(root / "data/local/worldcup.db", "sqlite placeholder")
+        _write(root / ".gitignore", ".env\ndata/cache/\ndata/local/\ndata/probe/\n")
+
+        result = run_readiness_checks(root)
+
+        assert result["ok"] is True
+        assert result["summary"]["errors"] == 0
+        assert result["checks"]["env_THE_ODDS_API_KEY"]["status"] == "ok"
+        assert result["checks"]["env_example"]["status"] == "ok"
+        assert result["checks"]["cache_snapshot"]["matches"] == 1
+        assert result["checks"]["ignored_data_cache"]["status"] == "ok"
+
+
+def test_readiness_reports_missing_required_artifacts_without_secrets():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write(root / ".env", "THE_ODDS_API_KEY=secret-value\n")
+        _write(root / ".gitignore", ".env\n")
+
+        result = run_readiness_checks(root)
+
+        assert result["ok"] is False
+        assert result["summary"]["errors"] > 0
+        assert result["checks"]["env_INGEST_HMAC_SECRET"]["status"] == "error"
+        assert result["checks"]["cache_snapshot"]["status"] == "error"
+        assert "secret-value" not in str(result)
+
+
+def test_readiness_rejects_env_example_with_values_or_missing_names():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write(root / ".env", "THE_ODDS_API_KEY=x\nINGEST_HMAC_SECRET=y\n")
+        _write(root / ".env.example", "THE_ODDS_API_KEY=real-ish-value\n")
+        _write(root / ".gitignore", ".env\n.env.*\n!.env.example\ndata/cache/\ndata/local/\ndata/probe/\n")
+
+        result = run_readiness_checks(root)
+
+        assert result["ok"] is False
+        assert result["checks"]["env_example"]["status"] == "error"
+        assert result["checks"]["env_example"]["message"] == "contains_values"
+        assert "real-ish-value" not in str(result)
+
+
+def test_readiness_rejects_broken_snapshot_and_preview_without_disclaimer():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write(root / ".env", "THE_ODDS_API_KEY=x\nINGEST_HMAC_SECRET=y\n")
+        _write(
+            root / ".env.example",
+            "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\n",
+        )
+        _write(root / "data/cache/analysis_snapshot.json", '{"matches":[]}')
+        _write(root / "data/cache/quota.json", "not json")
+        _write(root / "data/cache/preview.html", "<html>No disclaimer</html>")
+        _write(root / "data/cache/site/index.html", "<html>No disclaimer</html>")
+        _write(root / ".gitignore", ".env\ndata/cache/\ndata/local/\ndata/probe/\n")
+
+        result = run_readiness_checks(root)
+
+        assert result["ok"] is False
+        assert result["checks"]["cache_snapshot"]["message"] == "no_matches"
+        assert result["checks"]["cache_quota"]["status"] == "warn"
+        assert result["checks"]["cache_preview"]["message"] == "missing_disclaimer"
+        assert result["checks"]["static_site_index"]["message"] == "missing_disclaimer"
