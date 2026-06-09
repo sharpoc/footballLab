@@ -4,6 +4,7 @@ from worldcup.ledger import (
     derive_quality_status,
     format_market_label,
     format_percent,
+    format_probability,
     project_signal_rows,
 )
 
@@ -61,6 +62,12 @@ def test_format_percent_handles_values_and_missing():
     assert format_percent(None) == "—"
 
 
+def test_format_probability_is_unsigned_and_handles_missing():
+    assert format_probability(0.61) == "61.0%"
+    assert format_probability(-0.004) == "-0.4%"
+    assert format_probability(None) == "—"
+
+
 def test_format_market_label_maps_known_market_types():
     assert format_market_label("1X2_90min", "home", None) == "1X2 - Home"
     assert format_market_label("OverUnder_90min", "Over", 2.5) == "O/U 2.5 - Over"
@@ -76,6 +83,38 @@ def test_derive_quality_status_warns_on_stale_or_missing_data():
     assert "missing_odds" in status["reasons"]
 
 
+def test_derive_quality_status_attention_on_source_errors():
+    snapshot = _snapshot()
+    snapshot["run"]["stale_sources"] = []
+    snapshot["data_quality"] = {}
+    snapshot["run"]["source_errors"] = [{"source": "theoddsapi", "error": "timeout"}]
+
+    status = derive_quality_status(snapshot)
+
+    assert status["label"] == "ATTENTION"
+    assert status["tone"] == "error"
+    assert status["reasons"] == ["source_errors"]
+
+
+def test_derive_quality_status_good_for_clean_snapshot():
+    snapshot = _snapshot()
+    snapshot["run"]["stale_sources"] = []
+    snapshot["run"]["source_errors"] = []
+    snapshot["data_quality"] = {
+        "missing_odds": [],
+        "missing_elo": [],
+        "time_mismatches": [],
+        "stale_sources": [],
+        "source_errors": [],
+    }
+
+    status = derive_quality_status(snapshot)
+
+    assert status["label"] == "GOOD"
+    assert status["tone"] == "ok"
+    assert status["reasons"] == []
+
+
 def test_build_summary_metrics_counts_signal_grades():
     metrics = build_summary_metrics(_snapshot())
 
@@ -85,6 +124,7 @@ def test_build_summary_metrics_counts_signal_grades():
     assert metrics["weak_signals"]["value"] == 0
     assert metrics["stale_sources"]["value"] == 1
     assert metrics["overall_quality"]["value"] == "WARN"
+    assert metrics["grade_counts"]["value"] == {"A": 1}
 
 
 def test_project_signal_rows_expands_signals_without_money_fields():
@@ -102,12 +142,75 @@ def test_project_signal_rows_expands_signals_without_money_fields():
     assert "stake" not in rows[0]
     assert "bet_amount" not in rows[0]
     assert "bankroll" not in rows[0]
+    assert "payout" not in rows[0]
+    assert "unit" not in rows[0]
 
 
-def test_build_signal_explanation_is_deterministic_and_safe():
-    signal = {"market_type": "1X2_90min", "edge": 0.041, "status": "OK"}
-    text = build_signal_explanation(signal, stale=False)
+def test_project_signal_rows_sorts_by_kickoff_then_grade_descending():
+    snapshot = {
+        "matches": [
+            {
+                "kickoff_at_utc": "2026-06-12T01:00:00+00:00",
+                "home_team": "Late",
+                "away_team": "Match",
+                "signals": [{"market_type": "1X2_90min", "selection": "home", "grade": "S"}],
+            },
+            {
+                "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "home_team": "Early Low",
+                "away_team": "Match",
+                "signals": [{"market_type": "1X2_90min", "selection": "home", "grade": "B"}],
+            },
+            {
+                "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "home_team": "Early High",
+                "away_team": "Match",
+                "signals": [{"market_type": "1X2_90min", "selection": "home", "grade": "A"}],
+            },
+        ]
+    }
 
-    assert text == "Model probability is above the devigged market probability."
-    assert "bet" not in text.lower()
-    assert "stake" not in text.lower()
+    rows = project_signal_rows(snapshot)
+
+    assert [row["matchup"] for row in rows] == [
+        "Early High vs Match",
+        "Early Low vs Match",
+        "Late vs Match",
+    ]
+
+
+def test_build_signal_explanation_matches_plan_strings_and_is_safe():
+    cases = [
+        (
+            {"market_type": "1X2_90min"},
+            False,
+            "Model probability is above the devigged market probability.",
+        ),
+        (
+            {"market_type": "OverUnder_90min"},
+            False,
+            "Model total-goals distribution differs from the market total.",
+        ),
+        (
+            {"market_type": "AsianHandicap_90min"},
+            False,
+            "Settlement EV is positive at the current handicap line.",
+        ),
+        (
+            {"market_type": "Unknown"},
+            False,
+            "Model and market estimates differ enough to flag for review.",
+        ),
+        (
+            {"market_type": "1X2_90min"},
+            True,
+            "Signal is capped because one or more inputs are stale or missing.",
+        ),
+    ]
+
+    for signal, stale, expected in cases:
+        text = build_signal_explanation(signal, stale=stale)
+
+        assert text == expected
+        assert "bet" not in text.lower()
+        assert "stake" not in text.lower()

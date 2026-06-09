@@ -125,15 +125,15 @@ def derive_quality_status(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 def build_signal_explanation(signal: dict[str, Any], stale: bool) -> str:
     if stale:
-        return "Source data is stale, so this row is shown for monitoring only."
-    if signal.get("status") and signal.get("status") != "OK":
-        return "Signal is present, but quality checks require attention."
-    edge = signal.get("edge")
-    if edge is not None and edge > 0:
+        return "Signal is capped because one or more inputs are stale or missing."
+    market_type = signal.get("market_type")
+    if market_type == "1X2_90min":
         return "Model probability is above the devigged market probability."
-    if edge is not None and edge < 0:
-        return "Model probability is below the devigged market probability."
-    return "Model and market probabilities are closely aligned."
+    if market_type == "OverUnder_90min":
+        return "Model total-goals distribution differs from the market total."
+    if market_type == "AsianHandicap_90min":
+        return "Settlement EV is positive at the current handicap line."
+    return "Model and market estimates differ enough to flag for review."
 
 
 def project_signal_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
@@ -201,6 +201,10 @@ def build_summary_metrics(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]
         "weak_signals": {
             "label": "Weak signals",
             "value": sum(grade_counts[grade] for grade in WEAK_GRADES),
+        },
+        "grade_counts": {
+            "label": "Grade counts",
+            "value": {grade: grade_counts[grade] for grade in sorted(grade_counts)},
         },
         "stale_sources": {"label": "Stale sources", "value": len(_quality_values(snapshot, "stale_sources"))},
         "overall_quality": {
