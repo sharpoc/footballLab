@@ -151,9 +151,11 @@ PostgreSQL smoke guard 的本地期望：
 
 ## 调度阶段
 
-1. macmini cron / launchd 只调用 `worldcup.scheduled_refresh --live`。
+1. macmini cron / launchd 推荐调用 `worldcup.scheduled_publish --live --endpoint https://football.celab.xin/api/ingest/snapshot`。
 2. The Odds API 免费额度按 scheduler 降频策略执行。
-3. 失败但缓存可用时允许 stale fallback，但必须在 snapshot `data_quality` 中标记。
+3. scheduled publish 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会刷新并发布。
+4. 失败但缓存可用时允许 stale fallback，但必须在 snapshot `data_quality` 中标记。
+5. 发布输出不得包含 request body、HMAC secret 或 `X-Worldcup-Signature`。
 
 ## 部署验证
 

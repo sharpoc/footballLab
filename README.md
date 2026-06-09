@@ -32,6 +32,7 @@
 - 当前 refresh runner 默认 dry-run；只有显式 `--live` 才会读取 `.env` 并联网消耗 The Odds API 额度
 - 当前 scheduler 默认 dry-run，只读取本地 snapshot / quota 并输出 JSON 决策，不会联网或写入状态
 - 当前 scheduled refresh 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会调用 refresh runner
+- 当前 scheduled publish 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会刷新数据并向 HTTPS ingest endpoint 发送签名 snapshot
 - 当前 ingest 默认 dry-run；只构造请求体、HMAC 签名头和 body hash，不发送线上请求
 - 当前 ingest server 是纯本地验签/幂等模块；FastAPI adapter 已复用它，ECS 部署另行确认
 - 当前 SQLite store / preview 都是本地低风险链路；默认输出在已忽略的 `data/local/` 或 `data/cache/`
@@ -175,7 +176,7 @@ DATABASE_URL=
 
 1. Gate C HTTPS 已完成：`https://football.celab.xin/` 对外展示 Research Ledger。
 2. 公网开放 `/`、`/preview`、`/api/matches`、`/healthz`、`/api/ingest/snapshot`；`/api/snapshot/latest` 返回 404。
-3. 下一步再把 scheduled refresh 接到 macmini cron / launchd。
+3. 下一步再把 `worldcup.scheduled_publish --live` 接到 macmini cron / launchd。
 4. 上线后先观察 Nginx/systemd 日志和 certbot 自动续期。
 5. RDS/PostgreSQL 暂不需要；等多用户、备份或查询压力变大再升级。
 

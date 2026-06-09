@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-09 Scheduled Publish Command
+
+- Added `worldcup.publish`, a default dry-run snapshot publisher that builds signed ingest requests and redacts request body, HMAC secret, and `X-Worldcup-Signature` from output.
+- Added `worldcup.scheduled_publish`, which runs the existing scheduler/refresh flow and publishes to HTTPS ingest only when explicitly run with `--live` and the scheduler is due, or with `--force`.
+- Added tests for publish redaction, live sender injection, skipped scheduled publish, and refresh-then-publish behavior.
+- Local dry-run examples passed for `https://football.celab.xin/api/ingest/snapshot`; current scheduler decision was `not_due`, so no upload was sent.
+- Validation: `160/160 tests passed`.
+- No launchd/cron task was installed, no live refresh was run, no The Odds API call was made, and no online write was performed in this step.
+
 ## 2026-06-09 Plan 5 Gate C HTTPS Activation
 
 - Activated public HTTPS for `football.celab.xin` through Nginx, proxying to `worldcup.http_app` on `127.0.0.1:8788`.
