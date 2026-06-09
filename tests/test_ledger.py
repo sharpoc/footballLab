@@ -32,7 +32,7 @@ def _snapshot():
                 "home_team": "Mexico",
                 "away_team": "South Africa",
                 "model": {"combined_1x2": {"home": 0.61, "draw": 0.23, "away": 0.16}},
-                "market": {"1x2": {"probs": {"home": 0.57, "draw": 0.25, "away": 0.18}}},
+                "market": {"1x2": {"market_probs": {"home": 0.57, "draw": 0.25, "away": 0.18}}},
                 "signals": [
                     {
                         "market_type": "1X2_90min",
@@ -153,11 +153,12 @@ def test_project_signal_rows_expands_signals_without_money_fields():
     assert rows[0]["edge"] == "+4.1%"
     assert rows[0]["ev"] == "+5.2%"
     assert rows[0]["grade"] == "A"
-    assert "stake" not in rows[0]
-    assert "bet_amount" not in rows[0]
-    assert "bankroll" not in rows[0]
-    assert "payout" not in rows[0]
-    assert "unit" not in rows[0]
+    for row in rows:
+        assert "stake" not in row
+        assert "bet_amount" not in row
+        assert "bankroll" not in row
+        assert "payout" not in row
+        assert "unit" not in row
 
 
 def test_project_signal_rows_reads_realistic_over_under_probabilities():

@@ -117,7 +117,8 @@ def _signal_market_prob(match: dict[str, Any], signal: dict[str, Any]) -> float 
     selection = _selection_key(signal.get("selection"))
     market = match.get("market") or {}
     if market_type == "1X2_90min":
-        return ((market.get("1x2") or {}).get("probs") or {}).get(selection)
+        market_1x2 = market.get("1x2") or {}
+        return (market_1x2.get("market_probs") or market_1x2.get("probs") or {}).get(selection)
     if market_type == "OverUnder_90min":
         return ((market.get("ou_2_5") or {}).get("market_probs") or {}).get(selection)
     return None
