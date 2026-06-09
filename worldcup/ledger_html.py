@@ -33,22 +33,6 @@ def _quality_values(snapshot: dict[str, Any], key: str) -> list[Any]:
     return _as_list(run.get(key))
 
 
-def _source_error_label(item: Any) -> str:
-    if isinstance(item, dict):
-        source = item.get("source", "")
-        error = item.get("error", "")
-        if source or error:
-            return f"{source}: {error}".strip(": ")
-    return str(item)
-
-
-def _list_html(values: list[Any], empty: str = "None reported.") -> str:
-    if not values:
-        return f"<p class=\"muted\">{escape(empty)}</p>"
-    items = "".join(f"<li>{_text(value)}</li>" for value in values)
-    return f"<ul>{items}</ul>"
-
-
 def _metric_value(value: Any) -> str:
     if isinstance(value, dict):
         if not value:
@@ -91,10 +75,10 @@ def _render_controls() -> str:
     return """
     <section class="ledger-controls" aria-label="Ledger controls">
       <div class="filter-group" role="group" aria-label="Grade filter">
-        <button type="button" class="filter-button active" data-filter="all">All</button>
-        <button type="button" class="filter-button" data-filter="strong">Strong (A)</button>
-        <button type="button" class="filter-button" data-filter="watch">Watch (B)</button>
-        <button type="button" class="filter-button" data-filter="weak">Weak (C)</button>
+        <button type="button" class="filter-button active" data-filter="all" aria-pressed="true">All</button>
+        <button type="button" class="filter-button" data-filter="strong" aria-pressed="false">Strong (A)</button>
+        <button type="button" class="filter-button" data-filter="watch" aria-pressed="false">Watch (B)</button>
+        <button type="button" class="filter-button" data-filter="weak" aria-pressed="false">Weak (C)</button>
       </div>
       <label class="search-label">
         <span>Search</span>
@@ -193,17 +177,18 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
     return """
     <section class="ledger-table-wrap">
       <table class="ledger-table">
+        <caption>Research signal ledger</caption>
         <thead>
           <tr>
-            <th>Matchup</th>
-            <th>Kickoff (UTC)</th>
-            <th>Market</th>
-            <th>Model Prob</th>
-            <th>Market Prob</th>
-            <th>EV / Edge</th>
-            <th>Grade</th>
-            <th>Freshness</th>
-            <th>Why this is a signal</th>
+            <th scope="col">Matchup</th>
+            <th scope="col">Kickoff (UTC)</th>
+            <th scope="col">Market</th>
+            <th scope="col">Model Prob</th>
+            <th scope="col">Market Prob</th>
+            <th scope="col">EV / Edge</th>
+            <th scope="col">Grade</th>
+            <th scope="col">Freshness</th>
+            <th scope="col">Why this is a signal</th>
           </tr>
         </thead>
         <tbody>
@@ -217,54 +202,50 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
 
 def _render_source_health(snapshot: dict[str, Any]) -> str:
     quality = derive_quality_status(snapshot)
-    run = snapshot.get("run") or {}
-    quota = run.get("quota") or {}
-    quota_items = []
-    for provider, values in quota.items():
-        if isinstance(values, dict):
-            remaining = values.get("remaining", "unknown")
-            used = values.get("used", "unknown")
-            quota_items.append(f"{provider}: remaining {remaining}, used {used}")
-        else:
-            quota_items.append(f"{provider}: {values}")
-
-    source_errors = [_source_error_label(item) for item in _quality_values(snapshot, "source_errors")]
     stale_sources = _quality_values(snapshot, "stale_sources")
+    source_errors = _quality_values(snapshot, "source_errors")
     missing_odds = _quality_values(snapshot, "missing_odds")
     missing_elo = _quality_values(snapshot, "missing_elo")
     time_mismatches = _quality_values(snapshot, "time_mismatches")
+    counts = snapshot.get("counts") or {}
+    matches = snapshot.get("matches") or []
+    fixtures_available = bool(counts.get("fixtures") or matches)
+    odds_attention = bool(source_errors or stale_sources or missing_odds)
+    elo_attention = bool(missing_elo)
+    input_attention = bool(source_errors or stale_sources or missing_odds or missing_elo or time_mismatches)
 
     return """
     <section class="rail-card">
       <h2>Source Health</h2>
-      <p><strong>Status:</strong> {status}</p>
-      <p class="muted">Reasons: {reasons}</p>
-      <h3>Quota</h3>
-      {quota}
-      <h3>Stale Sources</h3>
-      {stale}
-      <h3>Source Errors</h3>
-      {errors}
-      <h3>Missing Inputs</h3>
-      {missing}
-      <h3>Time Checks</h3>
-      {time}
+      <p><strong>Data quality: {quality}</strong></p>
+      <p><strong>Odds feed: {odds_feed}</strong></p>
+      <p><strong>Fixtures: {fixtures}</strong></p>
+      <p><strong>Elo ratings: {elo}</strong></p>
+      <p><strong>Input checks: {input_checks}</strong></p>
+      <ul class="health-counts">
+        <li>Source issues: {source_error_count}</li>
+        <li>Stale inputs: {stale_count}</li>
+        <li>Missing odds: {missing_odds_count}</li>
+        <li>Missing Elo: {missing_elo_count}</li>
+        <li>Time checks: {time_count}</li>
+      </ul>
     </section>
     """.format(
-        status=_text(quality.get("label")),
-        reasons=_text(", ".join(quality.get("reasons") or []) or "none"),
-        quota=_list_html(quota_items),
-        stale=_list_html(stale_sources),
-        errors=_list_html(source_errors),
-        missing=_list_html([f"missing_odds: {value}" for value in missing_odds] + [f"missing_elo: {value}" for value in missing_elo]),
-        time=_list_html(time_mismatches),
+        quality=_text(quality.get("label")),
+        odds_feed="Needs attention" if odds_attention else "Available",
+        fixtures="Available" if fixtures_available else "Needs attention",
+        elo="Needs attention" if elo_attention else "Available",
+        input_checks="Needs attention" if input_attention else "Available",
+        source_error_count=_text(len(source_errors)),
+        stale_count=_text(len(stale_sources)),
+        missing_odds_count=_text(len(missing_odds)),
+        missing_elo_count=_text(len(missing_elo)),
+        time_count=_text(len(time_mismatches)),
     )
 
 
 def _render_right_rail(snapshot: dict[str, Any]) -> str:
-    run = snapshot.get("run") or {}
     snapshot_at = snapshot.get("snapshot_at", "")
-    run_id = run.get("run_id", "")
     return """
     <aside class="right-rail">
       <section class="rail-card">
@@ -285,13 +266,11 @@ def _render_right_rail(snapshot: dict[str, Any]) -> str:
       <section class="rail-card">
         <h2>Time</h2>
         <p><strong>Last updated:</strong><br>{snapshot_at}</p>
-        <p><strong>Run:</strong><br>{run_id}</p>
       </section>
     </aside>
     """.format(
         source_health=_render_source_health(snapshot),
         snapshot_at=_text(snapshot_at),
-        run_id=_text(run_id),
     )
 
 
@@ -343,6 +322,9 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
     li {{ margin: 5px 0; }}
     .eyebrow {{ margin: 0 0 6px; color: var(--accent); font-weight: 700; }}
     .muted, .meta {{ color: var(--muted); }}
+    .meta, .metric-card, .rail-card, .empty-state, .disclaimer {{
+      overflow-wrap: anywhere;
+    }}
     .disclaimer {{
       margin: 14px 0 0;
       padding: 12px 14px;
@@ -417,6 +399,12 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
     }}
     .ledger-table-wrap {{ overflow-x: auto; }}
     .ledger-table {{ width: 100%; min-width: 980px; border-collapse: collapse; }}
+    caption {{
+      padding: 12px;
+      text-align: left;
+      font-weight: 700;
+      color: var(--muted);
+    }}
     th, td {{
       padding: 11px 12px;
       border-bottom: 1px solid #edf1f5;
@@ -458,7 +446,6 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
     @media (max-width: 980px) {{
       header, .ledger-controls {{ flex-direction: column; align-items: stretch; }}
       .content-grid {{ grid-template-columns: 1fr; }}
-      .right-rail {{ order: -1; }}
     }}
   </style>
 </head>
@@ -522,8 +509,12 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
       buttons.forEach(function (button) {{
         button.addEventListener('click', function () {{
           activeFilter = button.dataset.filter || 'all';
-          buttons.forEach(function (item) {{ item.classList.remove('active'); }});
+          buttons.forEach(function (item) {{
+            item.classList.remove('active');
+            item.setAttribute('aria-pressed', 'false');
+          }});
           button.classList.add('active');
+          button.setAttribute('aria-pressed', 'true');
           applyFilters();
         }});
       }});

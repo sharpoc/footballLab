@@ -71,3 +71,88 @@ def test_write_preview_creates_parent_directory_and_file():
 
         assert out.exists()
         assert "Research Ledger" in out.read_text(encoding="utf-8")
+
+
+def test_build_preview_html_does_not_expose_raw_operational_details():
+    snapshot = _snapshot()
+    snapshot["run"] = {
+        "run_id": "internal-run-abc-999",
+        "quota": {"ultra-private-feed": {"remaining": 777777, "used": 123456}},
+        "stale_sources": ["ultra-private-feed"],
+        "source_errors": [
+            {"source": "ultra-private-feed", "error": "TimeoutError: secret-ish upstream detail"}
+        ],
+    }
+    snapshot["data_quality"] = {
+        "source_errors": [
+            {"source": "ultra-private-feed", "error": "TimeoutError: secret-ish upstream detail"}
+        ],
+        "missing_odds": ["Private Team vs Hidden Team"],
+        "missing_elo": [],
+        "time_mismatches": ["Internal fixture mismatch detail"],
+    }
+
+    html = build_preview_html(snapshot)
+
+    assert "Source Health" in html
+    assert "Data quality: ATTENTION" in html
+    assert "Odds feed: Needs attention" in html
+    assert "Fixtures: Available" in html
+    assert "Elo ratings: Available" in html
+    assert "Input checks: Needs attention" in html
+    assert "Missing odds: 1" in html
+    assert "Time checks: 1" in html
+    assert "internal-run-abc-999" not in html
+    assert "777777" not in html
+    assert "123456" not in html
+    assert "ultra-private-feed" not in html
+    assert "TimeoutError: secret-ish upstream detail" not in html
+    assert "Private Team vs Hidden Team" not in html
+    assert "Internal fixture mismatch detail" not in html
+
+
+def test_build_preview_html_escapes_dynamic_values():
+    snapshot = _snapshot()
+    snapshot["matches"][0]["home_team"] = 'Mexico <script>alert("x")</script>'
+    snapshot["matches"][0]["away_team"] = 'South Africa" data-break="1'
+    snapshot["matches"][0]["stage"] = '<img src=x onerror="alert(1)">'
+    snapshot["matches"][0]["group"] = 'Group A"><script>alert(2)</script>'
+    snapshot["run"] = {
+        "run_id": "run-x",
+        "source_errors": [
+            {"source": 'feed"><script>alert(3)</script>', "error": '<script>alert(4)</script>'}
+        ],
+    }
+
+    html = build_preview_html(snapshot)
+    lower_html = html.lower()
+
+    assert "<img" not in lower_html
+    assert 'Mexico <script>alert("x")</script>' not in html
+    assert 'Group A"><script>alert(2)</script>' not in html
+    assert 'feed"><script>alert(3)</script>' not in html
+    assert "<script>alert(4)</script>" not in html
+    assert 'data-break="1' not in html
+    assert 'onerror="alert(1)"' not in html
+    assert "Mexico &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;" in html
+    assert "South Africa&quot; data-break=&quot;1" in html
+
+
+def test_build_preview_html_renders_empty_signal_state():
+    snapshot = _snapshot()
+    snapshot["matches"][0]["signals"] = []
+
+    html = build_preview_html(snapshot)
+
+    assert "No research signals" in html
+
+
+def test_build_preview_html_includes_filter_dom_accessibility_contract():
+    html = build_preview_html(_snapshot())
+
+    assert 'data-filter="strong"' in html
+    assert 'id="ledger-search"' in html
+    assert 'aria-pressed="true"' in html
+    assert 'aria-pressed="false"' in html
+    assert "<caption>Research signal ledger</caption>" in html
+    assert '<th scope="col">Matchup</th>' in html
