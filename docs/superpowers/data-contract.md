@@ -500,6 +500,8 @@ body_sha256
 
 `worldcup.store.SQLiteSnapshotStore` 是本地低风险持久化层，默认后续写入 `data/local/worldcup.db`。`data/local/` 必须被 git ignore。
 
+`worldcup.store_contract.SnapshotStore` 定义 ingest / query 依赖的持久化边界。当前实现由 `SQLiteSnapshotStore` 满足该协议；后续 PostgreSQL Plan 3B 应替换实现而不是改写 HMAC 验签、幂等语义或查询投影。
+
 表 `snapshots` 字段：
 
 | 字段 | 说明 |
@@ -599,6 +601,12 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 - `GET /healthz`
 
 正式 ASGI server / FastAPI 依赖安装、启动常驻服务、ECS 部署和云端写入必须单独确认。
+
+### FastAPI adapter
+
+`worldcup.fastapi_app.create_fastapi_app` exposes the same local route contract as `worldcup.http_app` and delegates security-sensitive behavior to existing modules. It must not reimplement HMAC verification, idempotency, query projection, or preview rendering.
+
+The adapter is local-only until ECS deployment is separately confirmed.
 
 ### Local secret helper
 

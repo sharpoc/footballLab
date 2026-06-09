@@ -24,6 +24,14 @@
 3. ECS 只开放必要 API；macmini 只调用 ECS ingest，不直连 RDS/OSS。
 4. `/healthz` 只用于健康检查，不输出环境变量、quota、snapshot 或 secret。
 
+## Local FastAPI Smoke
+
+1. Start local FastAPI only after `.env` readiness is green.
+2. Check `GET /healthz`.
+3. Check `GET /api/matches` contains no stake or bet amount fields.
+4. Check `GET /preview` contains the research disclaimer.
+5. Stop the local process before deploying or changing cloud resources.
+
 ## 调度阶段
 
 1. macmini cron / launchd 只调用 `worldcup.scheduled_refresh --live`。
