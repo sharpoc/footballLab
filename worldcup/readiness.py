@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from worldcup.store_factory import normalize_store_kind
 
 REQUIRED_ENV_EXAMPLE_NAMES = {
     "API_FOOTBALL_KEY",
@@ -12,6 +13,8 @@ REQUIRED_ENV_EXAMPLE_NAMES = {
     "ODDS_API_IO_KEY",
     "ODDSPAPI_KEY",
     "INGEST_HMAC_SECRET",
+    "WORLDCUP_STORE",
+    "DATABASE_URL",
 }
 
 
@@ -154,6 +157,26 @@ def _check_env_example(root: Path) -> tuple[str, dict[str, Any]]:
     return "env_example", {"status": "ok", "path": relative, "names": sorted(entries)}
 
 
+def _check_store_env(root: Path) -> tuple[str, dict[str, Any]]:
+    entries = _read_env_entries(root / ".env")
+    store = normalize_store_kind(entries.get("WORLDCUP_STORE"))
+    if store not in {"sqlite", "postgres"}:
+        return "env_store", {
+            "status": "error",
+            "name": "WORLDCUP_STORE",
+            "message": "unsupported_store",
+            "store": store,
+        }
+    if store == "postgres" and "DATABASE_URL" not in entries:
+        return "env_store", {
+            "status": "error",
+            "name": "DATABASE_URL",
+            "message": "missing_DATABASE_URL",
+            "store": store,
+        }
+    return "env_store", {"status": "ok", "name": "WORLDCUP_STORE", "store": store}
+
+
 def _check_ignore(root: Path, key: str, pattern: str) -> tuple[str, dict[str, Any]]:
     patterns = _ignore_patterns(root)
     if pattern in patterns:
@@ -168,6 +191,7 @@ def run_readiness_checks(root: str | Path = ".") -> dict[str, Any]:
         _check_env(project_root, "THE_ODDS_API_KEY"),
         _check_env(project_root, "INGEST_HMAC_SECRET"),
         _check_env_example(project_root),
+        _check_store_env(project_root),
         _check_snapshot(project_root),
         _check_quota(project_root),
         _check_html(project_root, "cache_preview", "data/cache/preview.html", required=False),

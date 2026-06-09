@@ -15,7 +15,7 @@ def test_readiness_reports_ok_when_local_artifacts_exist():
         _write(root / ".env", "THE_ODDS_API_KEY=x\nINGEST_HMAC_SECRET=y\n")
         _write(
             root / ".env.example",
-            "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\n",
+            "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\nWORLDCUP_STORE=\nDATABASE_URL=\n",
         )
         _write(
             root / "data/cache/analysis_snapshot.json",
@@ -33,6 +33,8 @@ def test_readiness_reports_ok_when_local_artifacts_exist():
         assert result["summary"]["errors"] == 0
         assert result["checks"]["env_THE_ODDS_API_KEY"]["status"] == "ok"
         assert result["checks"]["env_example"]["status"] == "ok"
+        assert result["checks"]["env_store"]["status"] == "ok"
+        assert result["checks"]["env_store"]["store"] == "sqlite"
         assert result["checks"]["cache_snapshot"]["matches"] == 1
         assert result["checks"]["ignored_data_cache"]["status"] == "ok"
 
@@ -67,13 +69,82 @@ def test_readiness_rejects_env_example_with_values_or_missing_names():
         assert "real-ish-value" not in str(result)
 
 
+def test_readiness_accepts_sqlite_store_without_database_url():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write(root / ".env", "THE_ODDS_API_KEY=x\nINGEST_HMAC_SECRET=y\nWORLDCUP_STORE=sqlite\n")
+        _write(
+            root / ".env.example",
+            "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\nWORLDCUP_STORE=\nDATABASE_URL=\n",
+        )
+        _write(
+            root / "data/cache/analysis_snapshot.json",
+            '{"counts":{"matches":1},"matches":[{"home_team":"Mexico","away_team":"South Africa"}]}',
+        )
+        _write(root / "data/cache/quota.json", '{"providers":{}}')
+        _write(root / ".gitignore", ".env\ndata/cache/\ndata/local/\ndata/probe/\n")
+
+        result = run_readiness_checks(root)
+
+        assert result["checks"]["env_store"]["status"] == "ok"
+        assert result["checks"]["env_store"]["store"] == "sqlite"
+
+
+def test_readiness_requires_database_url_name_when_postgres_selected():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write(root / ".env", "THE_ODDS_API_KEY=x\nINGEST_HMAC_SECRET=y\nWORLDCUP_STORE=postgres\n")
+        _write(
+            root / ".env.example",
+            "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\nWORLDCUP_STORE=\nDATABASE_URL=\n",
+        )
+        _write(
+            root / "data/cache/analysis_snapshot.json",
+            '{"counts":{"matches":1},"matches":[{"home_team":"Mexico","away_team":"South Africa"}]}',
+        )
+        _write(root / "data/cache/quota.json", '{"providers":{}}')
+        _write(root / ".gitignore", ".env\ndata/cache/\ndata/local/\ndata/probe/\n")
+
+        result = run_readiness_checks(root)
+
+        assert result["ok"] is False
+        assert result["checks"]["env_store"]["status"] == "error"
+        assert result["checks"]["env_store"]["message"] == "missing_DATABASE_URL"
+        assert "postgresql://" not in str(result)
+
+
+def test_readiness_accepts_postgres_store_when_database_url_name_exists_without_printing_value():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write(
+            root / ".env",
+            "THE_ODDS_API_KEY=x\nINGEST_HMAC_SECRET=y\nWORLDCUP_STORE=postgres\nDATABASE_URL=postgresql://user:pass@example.invalid/db\n",
+        )
+        _write(
+            root / ".env.example",
+            "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\nWORLDCUP_STORE=\nDATABASE_URL=\n",
+        )
+        _write(
+            root / "data/cache/analysis_snapshot.json",
+            '{"counts":{"matches":1},"matches":[{"home_team":"Mexico","away_team":"South Africa"}]}',
+        )
+        _write(root / "data/cache/quota.json", '{"providers":{}}')
+        _write(root / ".gitignore", ".env\ndata/cache/\ndata/local/\ndata/probe/\n")
+
+        result = run_readiness_checks(root)
+
+        assert result["checks"]["env_store"]["status"] == "ok"
+        assert result["checks"]["env_store"]["store"] == "postgres"
+        assert "postgresql://user:pass@example.invalid/db" not in str(result)
+
+
 def test_readiness_rejects_broken_snapshot_and_preview_without_disclaimer():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         _write(root / ".env", "THE_ODDS_API_KEY=x\nINGEST_HMAC_SECRET=y\n")
         _write(
             root / ".env.example",
-            "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\n",
+            "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\nWORLDCUP_STORE=\nDATABASE_URL=\n",
         )
         _write(root / "data/cache/analysis_snapshot.json", '{"matches":[]}')
         _write(root / "data/cache/quota.json", "not json")
