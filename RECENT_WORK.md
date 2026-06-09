@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-09 Plan 5 Deployment Dry-Run Checklist
+
+- Added `docs/superpowers/plans/2026-06-09-plan5-deployment-dry-run-checklist.md`.
+- Expanded `docs/ops/local-to-cloud-checklist.md` with Gate A/B/C separation, ECS, RDS/PostgreSQL, domain/HTTPS, secret, macmini refresh, and rollback dry-run checklists.
+- Updated README next steps so the next real action is explicit approval for test-environment smoke, not production deployment.
+- Local dry-run validation: `156/156 tests passed`; readiness reported 12 checks, 0 errors, 0 warnings; static export sensitive/public-output scan had no matches; PostgreSQL smoke guard safely returned `blocked` in current SQLite mode.
+- No deployment, RDS connection, domain/DNS change, cloud resource change, live API call, online write, push, or dependency install was performed.
+
 ## 2026-06-09 Plan 4 Research Ledger UI Implementation
 
 - Implemented `worldcup.ledger` and `worldcup.ledger_html` for the first public Research Ledger UI over local snapshot data.

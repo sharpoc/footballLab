@@ -21,6 +21,7 @@
 - Plan 3C store selection wiring is implemented: local CLI defaults to SQLite and can explicitly select PostgreSQL with `WORLDCUP_STORE=postgres` plus `DATABASE_URL`, but no real database connection was made.
 - Plan 3D PostgreSQL smoke dry-run guard is implemented: it validates PostgreSQL smoke prerequisites and emits redacted request metadata only, without HTTP or database connections.
 - Plan 4 Research Ledger UI is implemented as a local static/exportable research page over the existing snapshot data; desktop/mobile browser QA passed, and no deployment, push, live API call, or online write was performed.
+- Plan 5 deployment dry-run checklist is documented: ECS/RDS/domain/secret/rollback steps are explicit, with local-only verification commands; no cloud deployment or RDS connection has been performed.
 
 ## 技术栈
 
@@ -172,10 +173,10 @@ DATABASE_URL=
 
 ## 下一步
 
-1. 上线前确认 `.env` 或云端 secret manager 已配置 `INGEST_HMAC_SECRET`，并重新跑 readiness check。
-2. 明确确认 ECS/RDS 后，在测试环境配置 `WORLDCUP_STORE=postgres` 与 `DATABASE_URL`。
-3. 先运行 PostgreSQL smoke dry-run guard，确认输出 `dry_run_ready` 且无敏感值。
-4. 在测试环境做真实 PostgreSQL smoke，再考虑部署生产。
+1. 明确确认是否进入 Gate B 测试环境 smoke；确认前不部署、不连 RDS、不改域名。
+2. 若进入 Gate B，在测试环境配置 `WORLDCUP_STORE=postgres` 与 `DATABASE_URL`，并先运行 PostgreSQL smoke dry-run guard。
+3. 测试环境真实 PostgreSQL smoke 只验证同一 signed payload 返回 `stored` 后 `duplicate`。
+4. Gate C 生产 cutover 前必须再次确认域名/HTTPS/secret/回滚方案。
 5. 后续再把 scheduled refresh 接到 macmini cron / launchd。
 
 ## 重要约束
