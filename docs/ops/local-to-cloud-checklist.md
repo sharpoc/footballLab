@@ -33,7 +33,8 @@
 - 阻断路径：`/api/snapshot/latest` 返回 404，`/api/snapshot/` 前缀也阻断。
 - 证书：Let's Encrypt，`football.celab.xin`，到期日 2026-09-07，certbot timer 已存在，续期 dry-run 已通过。
 - Nginx 回滚备份：`/root/nginx-backups/20260609153432-football-gatec` 和 `/root/nginx-backups/20260609153716-football-https`。
-- 尚未启用：macmini scheduled refresh、RDS/PostgreSQL、OSS/CDN、The Odds API live refresh。
+- 已启用本机 LaunchAgent：`xin.celab.football.scheduled-publish`，每 900 秒唤醒一次，实际刷新/发布由 scheduler due 判断控制。
+- 尚未启用：RDS/PostgreSQL、OSS/CDN。
 
 ## 上线前人工配置
 
@@ -156,6 +157,9 @@ PostgreSQL smoke guard 的本地期望：
 3. scheduled publish 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会刷新并发布。
 4. 失败但缓存可用时允许 stale fallback，但必须在 snapshot `data_quality` 中标记。
 5. 发布输出不得包含 request body、HMAC secret 或 `X-Worldcup-Signature`。
+6. 当前 LaunchAgent plist：`~/Library/LaunchAgents/xin.celab.football.scheduled-publish.plist`。
+7. 当前日志：`~/Library/Logs/worldcup/scheduled-publish.out.log` 和 `~/Library/Logs/worldcup/scheduled-publish.err.log`。
+8. 停用命令：`launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/xin.celab.football.scheduled-publish.plist`。
 
 ## 部署验证
 

@@ -2,6 +2,16 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-09 Launchd Scheduled Publish Enabled
+
+- Installed and loaded user LaunchAgent `xin.celab.football.scheduled-publish`.
+- Plist path: `~/Library/LaunchAgents/xin.celab.football.scheduled-publish.plist`.
+- Log paths: `~/Library/Logs/worldcup/scheduled-publish.out.log` and `~/Library/Logs/worldcup/scheduled-publish.err.log`.
+- The LaunchAgent runs every 900 seconds and calls `worldcup.scheduled_publish --live --endpoint https://football.celab.xin/api/ingest/snapshot`.
+- Manual `launchctl kickstart` exited 0 and returned `status=skipped` because scheduler decision was `not_due`; quota and server SQLite row count stayed unchanged.
+- Sensitive scans for the plist and launchd logs returned 0 for API key, HMAC secret, signature, token, cookie, and private-key markers.
+- No live refresh, The Odds API call, or online write occurred during the kickstart because the scheduler was not due.
+
 ## 2026-06-09 Scheduled Publish Command
 
 - Added `worldcup.publish`, a default dry-run snapshot publisher that builds signed ingest requests and redacts request body, HMAC secret, and `X-Worldcup-Signature` from output.

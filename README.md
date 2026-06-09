@@ -176,8 +176,8 @@ DATABASE_URL=
 
 1. Gate C HTTPS 已完成：`https://football.celab.xin/` 对外展示 Research Ledger。
 2. 公网开放 `/`、`/preview`、`/api/matches`、`/healthz`、`/api/ingest/snapshot`；`/api/snapshot/latest` 返回 404。
-3. 下一步再把 `worldcup.scheduled_publish --live` 接到 macmini cron / launchd。
-4. 上线后先观察 Nginx/systemd 日志和 certbot 自动续期。
+3. 本机 `launchd` 已启用 `xin.celab.football.scheduled-publish`，每 15 分钟唤醒一次；真正刷新/发布仍由 scheduler due 判断控制。
+4. 下一步观察首轮 due 后的刷新、线上 ingest、Nginx/systemd 日志和 certbot 自动续期。
 5. RDS/PostgreSQL 暂不需要；等多用户、备份或查询压力变大再升级。
 
 ## 重要约束
