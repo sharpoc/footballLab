@@ -9,6 +9,7 @@ from worldcup.ingest import build_ingest_request
 from worldcup.ingest_server import DEFAULT_REPLAY_WINDOW_SECONDS, verify_ingest_request
 from worldcup.refresh_runner import _load_env
 from worldcup.store import SQLiteSnapshotStore
+from worldcup.store_contract import SnapshotStore
 
 
 def process_local_ingest(
@@ -20,6 +21,7 @@ def process_local_ingest(
     secret: str,
     now: str | None = None,
     replay_window_seconds: int = DEFAULT_REPLAY_WINDOW_SECONDS,
+    store: SnapshotStore | None = None,
 ) -> dict[str, Any]:
     verification = verify_ingest_request(
         method=method,
@@ -30,9 +32,9 @@ def process_local_ingest(
         now=now,
         replay_window_seconds=replay_window_seconds,
     )
-    store = SQLiteSnapshotStore(db_path)
+    snapshot_store = store or SQLiteSnapshotStore(db_path)
     if not verification.ok:
-        store.initialize()
+        snapshot_store.initialize()
         return {
             "status": "rejected",
             "reason": verification.reason,
@@ -40,7 +42,7 @@ def process_local_ingest(
 
     assert verification.idempotency_key is not None
     assert verification.payload is not None
-    result = store.put_snapshot(
+    result = snapshot_store.put_snapshot(
         idempotency_key=verification.idempotency_key,
         payload=verification.payload,
         stored_at=now,

@@ -7,6 +7,39 @@ from worldcup.ingest import build_ingest_request
 from worldcup.store import SQLiteSnapshotStore
 
 
+class MemorySnapshotStore:
+    def __init__(self, latest=None):
+        self.latest = latest
+        self.puts = []
+
+    def initialize(self):
+        pass
+
+    def put_snapshot(self, idempotency_key, payload, stored_at=None):
+        self.puts.append((idempotency_key, payload, stored_at))
+        self.latest = {
+            "idempotency_key": idempotency_key,
+            "run_id": payload["run_id"],
+            "snapshot_id": payload["snapshot_id"],
+            "snapshot_at": payload.get("snapshot_at"),
+            "stored_at": stored_at,
+            "payload": payload,
+            "snapshot": payload["snapshot"],
+        }
+        return {
+            "status": "stored",
+            "idempotency_key": idempotency_key,
+            "run_id": payload["run_id"],
+            "snapshot_id": payload["snapshot_id"],
+        }
+
+    def count_snapshots(self):
+        return len(self.puts)
+
+    def latest_snapshot(self):
+        return self.latest
+
+
 def _snapshot(run_id="20260608T000000Z-live"):
     return {
         "snapshot_at": "2026-06-08T00:00:00+00:00",
@@ -58,6 +91,28 @@ def test_http_get_matches_returns_projected_rows():
         assert response["headers"]["Content-Type"] == "application/json"
         assert body["matches"][0]["match_label"] == "Mexico vs South Africa"
         assert "stake" not in body["matches"][0]
+
+
+def test_http_get_matches_uses_injected_store():
+    store = MemorySnapshotStore(
+        latest={
+            "snapshot": _snapshot("run-memory"),
+        }
+    )
+
+    response = handle_request(
+        method="GET",
+        path="/api/matches",
+        headers={},
+        body="",
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        store=store,
+    )
+
+    body = json.loads(response["body"])
+    assert response["status"] == 200
+    assert body["matches"][0]["match_label"] == "Mexico vs South Africa"
 
 
 def test_http_healthz_returns_ok_without_snapshot():
@@ -123,6 +178,32 @@ def test_http_post_ingest_snapshot_stores_signed_request():
         assert response["status"] == 200
         assert body["status"] == "stored"
         assert SQLiteSnapshotStore(db_path).count_snapshots() == 1
+
+
+def test_http_post_ingest_snapshot_uses_injected_store():
+    store = MemorySnapshotStore()
+    request = build_ingest_request(
+        snapshot=_snapshot(),
+        endpoint="https://example.com/api/ingest/snapshot",
+        secret="test-hmac-secret",
+        timestamp="2026-06-08T00:02:00+00:00",
+    )
+
+    response = handle_request(
+        method=request["method"],
+        path=request["path"],
+        headers=request["headers"],
+        body=request["body"],
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        now="2026-06-08T00:03:00+00:00",
+        store=store,
+    )
+
+    body = json.loads(response["body"])
+    assert response["status"] == 200
+    assert body["status"] == "stored"
+    assert store.count_snapshots() == 1
 
 
 def test_http_unknown_route_returns_404():

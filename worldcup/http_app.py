@@ -10,6 +10,7 @@ from worldcup.ingest_app import process_local_ingest
 from worldcup.preview import build_preview_html
 from worldcup.query import load_latest_snapshot, project_match_rows
 from worldcup.refresh_runner import _load_env
+from worldcup.store_contract import SnapshotStore
 
 
 def _json_response(status: int, data: dict[str, Any]) -> dict[str, Any]:
@@ -28,8 +29,8 @@ def _html_response(status: int, body: str) -> dict[str, Any]:
     }
 
 
-def _latest_or_404(db_path: str | Path) -> dict[str, Any] | None:
-    return load_latest_snapshot(db_path)
+def _latest_or_404(db_path: str | Path, store: SnapshotStore | None = None) -> dict[str, Any] | None:
+    return load_latest_snapshot(db_path, store=store)
 
 
 def handle_request(
@@ -40,6 +41,7 @@ def handle_request(
     db_path: str | Path,
     secret: str,
     now: str | None = None,
+    store: SnapshotStore | None = None,
 ) -> dict[str, Any]:
     route = path.split("?", 1)[0]
     method_upper = method.upper()
@@ -63,23 +65,24 @@ def handle_request(
             body=body,
             secret=secret,
             now=now,
+            store=store,
         )
         return _json_response(200 if result["status"] != "rejected" else 400, result)
 
     if method_upper == "GET" and route == "/api/snapshot/latest":
-        snapshot = _latest_or_404(db_path)
+        snapshot = _latest_or_404(db_path, store=store)
         if snapshot is None:
             return _json_response(404, {"error": "snapshot_not_found"})
         return _json_response(200, {"snapshot": snapshot})
 
     if method_upper == "GET" and route == "/api/matches":
-        snapshot = _latest_or_404(db_path)
+        snapshot = _latest_or_404(db_path, store=store)
         if snapshot is None:
             return _json_response(404, {"error": "snapshot_not_found"})
         return _json_response(200, {"matches": project_match_rows(snapshot)})
 
     if method_upper == "GET" and route == "/preview":
-        snapshot = _latest_or_404(db_path)
+        snapshot = _latest_or_404(db_path, store=store)
         if snapshot is None:
             return _html_response(404, "<!doctype html><title>Not Found</title><p>snapshot_not_found</p>")
         return _html_response(200, build_preview_html(snapshot))

@@ -5,6 +5,37 @@ from worldcup.query import load_latest_snapshot, project_match_rows
 from worldcup.store import SQLiteSnapshotStore
 
 
+class MemorySnapshotStore:
+    def __init__(self, latest=None):
+        self.latest = latest
+
+    def initialize(self):
+        pass
+
+    def put_snapshot(self, idempotency_key, payload, stored_at=None):
+        self.latest = {
+            "idempotency_key": idempotency_key,
+            "run_id": payload["run_id"],
+            "snapshot_id": payload["snapshot_id"],
+            "snapshot_at": payload.get("snapshot_at"),
+            "stored_at": stored_at,
+            "payload": payload,
+            "snapshot": payload["snapshot"],
+        }
+        return {
+            "status": "stored",
+            "idempotency_key": idempotency_key,
+            "run_id": payload["run_id"],
+            "snapshot_id": payload["snapshot_id"],
+        }
+
+    def count_snapshots(self):
+        return 1 if self.latest else 0
+
+    def latest_snapshot(self):
+        return self.latest
+
+
 def _snapshot():
     return {
         "snapshot_at": "2026-06-08T00:00:00+00:00",
@@ -69,6 +100,15 @@ def test_load_latest_snapshot_reads_latest_from_sqlite_store():
 
         assert snapshot["counts"]["matches"] == 2
         assert snapshot["run"]["run_id"] == "20260608T000000Z-live"
+
+
+def test_load_latest_snapshot_reads_from_injected_store():
+    store = MemorySnapshotStore(latest={"snapshot": _snapshot()})
+
+    snapshot = load_latest_snapshot(store=store)
+
+    assert snapshot["counts"]["matches"] == 2
+    assert snapshot["run"]["run_id"] == "20260608T000000Z-live"
 
 
 def test_project_match_rows_returns_preview_safe_rows():

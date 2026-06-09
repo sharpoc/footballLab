@@ -4,12 +4,17 @@ from pathlib import Path
 from typing import Any
 
 from worldcup.store import SQLiteSnapshotStore
+from worldcup.store_contract import SnapshotStore
 
 GRADE_ORDER = {"S": 5, "A": 4, "B": 3, "C": 2, "D": 1}
 
 
-def load_latest_snapshot(db_path: str | Path) -> dict[str, Any] | None:
-    latest = SQLiteSnapshotStore(db_path).latest_snapshot()
+def load_latest_snapshot(
+    db_path: str | Path = "data/local/worldcup.db",
+    store: SnapshotStore | None = None,
+) -> dict[str, Any] | None:
+    snapshot_store = store or SQLiteSnapshotStore(db_path)
+    latest = snapshot_store.latest_snapshot()
     if latest is None:
         return None
     return latest["snapshot"]

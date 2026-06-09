@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from worldcup.http_app import handle_request
 from worldcup.refresh_runner import _load_env
+from worldcup.store_contract import SnapshotStore
 
 
 def _headers(request: Request) -> dict[str, str]:
@@ -37,6 +38,7 @@ async def _dispatch(
     db_path: str | Path,
     secret: str,
     body: str = "",
+    store: SnapshotStore | None = None,
 ) -> Response:
     result = handle_request(
         method=method,
@@ -45,28 +47,33 @@ async def _dispatch(
         body=body,
         db_path=db_path,
         secret=secret,
+        store=store,
     )
     return _response(result)
 
 
-def create_fastapi_app(db_path: str | Path = "data/local/worldcup.db", secret: str = "") -> FastAPI:
+def create_fastapi_app(
+    db_path: str | Path = "data/local/worldcup.db",
+    secret: str = "",
+    store: SnapshotStore | None = None,
+) -> FastAPI:
     app = FastAPI(title="Worldcup Analysis API", version="0.1.0")
 
     @app.get("/healthz")
     async def healthz(request: Request) -> Response:
-        return await _dispatch(request, "GET", "/healthz", db_path, secret)
+        return await _dispatch(request, "GET", "/healthz", db_path, secret, store=store)
 
     @app.get("/api/snapshot/latest")
     async def latest_snapshot(request: Request) -> Response:
-        return await _dispatch(request, "GET", "/api/snapshot/latest", db_path, secret)
+        return await _dispatch(request, "GET", "/api/snapshot/latest", db_path, secret, store=store)
 
     @app.get("/api/matches")
     async def matches(request: Request) -> Response:
-        return await _dispatch(request, "GET", "/api/matches", db_path, secret)
+        return await _dispatch(request, "GET", "/api/matches", db_path, secret, store=store)
 
     @app.get("/preview")
     async def preview(request: Request) -> Response:
-        return await _dispatch(request, "GET", "/preview", db_path, secret)
+        return await _dispatch(request, "GET", "/preview", db_path, secret, store=store)
 
     @app.post("/api/ingest/snapshot")
     async def ingest_snapshot(request: Request) -> Response:
@@ -78,6 +85,7 @@ def create_fastapi_app(db_path: str | Path = "data/local/worldcup.db", secret: s
             db_path,
             secret,
             body=raw_body.decode("utf-8"),
+            store=store,
         )
 
     return app
