@@ -541,6 +541,24 @@ python3 -m pip install 'psycopg[binary]>=3.2,<4'
 
 真实 DSN、用户名、密码只能放在 `.env` 或云端 secret manager，不能写进 git、文档、日志或聊天。
 
+### Store selection
+
+`worldcup.store_factory.create_snapshot_store` 负责把配置映射到 `SnapshotStore`：
+
+| 配置 | 行为 |
+|---|---|
+| 未设置 / `WORLDCUP_STORE=sqlite` | 使用 `SQLiteSnapshotStore` 和 `--db` 路径 |
+| `WORLDCUP_STORE=postgres` 或 CLI `--store postgres` | 使用 `PostgresSnapshotStore`，必须提供 `DATABASE_URL` |
+
+CLI 覆盖规则：
+
+| 入口 | 参数 | 环境变量 |
+|---|---|---|
+| `python3 -m worldcup.fastapi_app` | `--store sqlite|postgres`、`--database-url-env DATABASE_URL` | `.env` 中的 `WORLDCUP_STORE` / `DATABASE_URL` |
+| `python3 -m worldcup.ingest_app` | `--store sqlite|postgres`、`--database-url-env DATABASE_URL` | `.env` 中的 `WORLDCUP_STORE` / `DATABASE_URL` |
+
+默认本地路径不需要 `DATABASE_URL`。只有选择 PostgreSQL 时才需要该变量名存在且有值；真实值不得写入文档、日志、提交信息或聊天。
+
 ### Local ingest app
 
 `worldcup.ingest_app.process_local_ingest` 执行：
@@ -675,13 +693,14 @@ python3 -m worldcup.readiness --root .
 
 - `.env` 是否存在指定变量名：`THE_ODDS_API_KEY`、`INGEST_HMAC_SECRET`。
 - `.env.example` 是否存在、包含必需变量名、值为空，并未被 `.env.*` 通配规则误忽略。
+- store 配置是否有效：默认 `sqlite`；选择 `postgres` 时 `.env` 必须包含 `DATABASE_URL` 变量名，输出不能包含该值。
 - `data/cache/analysis_snapshot.json` 是否存在且包含比赛。
 - quota ledger 是否存在并可解析。
 - `data/cache/preview.html` 与 `data/cache/site/index.html` 是否存在。
 - 预览页和静态首页是否保留 `研究分析工具，不构成投注建议` 免责声明。
 - `.env`、`data/cache/`、`data/local/`、`data/probe/` 是否被 git ignore。
 
-readiness check 不联网、不打印 secret 值。当前如果 `.env` 缺少真实 `INGEST_HMAC_SECRET`，必须报错；不要自动生成并写入 `.env`。`.env.example` 只能保留变量名和空值，不能写入任何真实或示例 secret 值。
+readiness check 不联网、不打印 secret 值或 `DATABASE_URL` 值。当前如果 `.env` 缺少真实 `INGEST_HMAC_SECRET`，必须报错；不要自动生成并写入 `.env`。`.env.example` 只能保留变量名和空值，不能写入任何真实或示例 secret 值。
 
 正式 FastAPI/ECS 版本应复用同一验签、幂等、查询投影和预览安全规则；上线、云端写入和部署必须单独确认。
 

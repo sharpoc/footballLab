@@ -9,19 +9,20 @@
 - 本地接口契约：`POST /api/ingest/snapshot`、`GET /api/snapshot/latest`、`GET /api/matches`、`GET /preview`、`GET /healthz`。
 - 持久化边界：默认 SQLite，本地已提供 `PostgresSnapshotStore` adapter；当前只用 fake connection 测试，未连接真实 RDS。
 - 本地预览包：`data/cache/site/`，该目录被 git ignore。
-- readiness：本地或云端环境必须配置 `THE_ODDS_API_KEY` 和 `INGEST_HMAC_SECRET`；检查过程不得输出真实值。
+- readiness：本地或云端环境必须配置 `THE_ODDS_API_KEY` 和 `INGEST_HMAC_SECRET`；选择 PostgreSQL 时还必须配置 `DATABASE_URL`；检查过程不得输出真实值。
 - `.env.example`：只含变量名和空值，可提交；真实 `.env` 不提交。
 
 ## 上线前人工配置
 
 1. 运行 `python3 -m worldcup.secrets` 生成 `INGEST_HMAC_SECRET=<value>`。
-2. 只把 value 写入本地 `.env` 或云端 secret manager，不写进文档、代码、提交信息或聊天。
-3. 运行 `python3 -m worldcup.readiness --root .`，确认 readiness 全绿。
+2. 测试 PostgreSQL 时设置 `WORLDCUP_STORE=postgres`，并只把 `DATABASE_URL` 写入本地 `.env` 或云端 secret manager。
+3. 不把 secret、DSN、密码写进文档、代码、提交信息或聊天。
+4. 运行 `python3 -m worldcup.readiness --root .`，确认 readiness 全绿。
 
 ## 云端实现阶段
 
 1. 复用已完成的本地 FastAPI adapter，接入 ECS 运行配置和正式 secret 管理。
-2. 用 `PostgresSnapshotStore` 接入 RDS，保留 `idempotency_key` 唯一约束。
+2. 用 `WORLDCUP_STORE=postgres` + `DATABASE_URL` 选择 `PostgresSnapshotStore` 接入 RDS，保留 `idempotency_key` 唯一约束。
 3. ECS 只开放必要 API；macmini 只调用 ECS ingest，不直连 RDS/OSS。
 4. `/healthz` 只用于健康检查，不输出环境变量、quota、snapshot 或 secret。
 
@@ -43,7 +44,7 @@
 ## 部署验证
 
 1. API smoke test：`GET /healthz` 返回 `status=ok`。
-2. PostgreSQL smoke test：测试环境写入同一 signed payload 两次，应返回 `stored` 后 `duplicate`。
+2. PostgreSQL smoke test：测试环境以 `--store postgres` 或 `WORLDCUP_STORE=postgres` 写入同一 signed payload 两次，应返回 `stored` 后 `duplicate`。
 3. ingest dry-run：本地生成 HMAC header，先对测试环境验签。
 4. read API：`GET /api/matches` 不包含 stake、bet amount 或下注金额字段。
 5. 公开页面：保留研究免责声明。

@@ -2,17 +2,19 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
-## 2026-06-09 Plan 3A / 3B
+## 2026-06-09 Plan 3A / 3B / 3C
 
 - 新增 `docs/superpowers/specs/2026-06-09-plan3a-fastapi-ecs-design.md`，明确下一阶段先做本地 FastAPI/ECS API 形态，不部署、不改云资源、不切 PostgreSQL。
-- 推荐路线：FastAPI thin wrapper 复用现有 HMAC 验签、幂等、SQLite store、只读投影和 preview 逻辑；PostgreSQL 作为后续 Plan 3B 通过同一 store boundary 替换。
+- 推荐路线：FastAPI thin wrapper 复用现有 HMAC 验签、幂等、SQLite store、只读投影和 preview 逻辑；PostgreSQL 当时作为后续 Plan 3B 通过同一 store boundary 替换。
 - 新增 `docs/superpowers/plans/2026-06-09-plan3a-fastapi-ecs-implementation.md`，把 Plan 3A 拆成依赖、FastAPI route tests、thin wrapper、ingest tests、store protocol、文档和最终验证任务。
 - Implemented Plan 3A local FastAPI adapter over the existing route contract; no ECS deployment, push, live API call, or online write was performed.
 - Added `SnapshotStore` protocol to preserve SQLite behavior and prepare for PostgreSQL Plan 3B.
 - Fixed local/cache snapshot generation so `worldcup.local_runner` includes ingest-required run metadata; local FastAPI smoke can ingest snapshots generated from existing cache.
 - Added Plan 3B PostgreSQL store adapter behind `SnapshotStore`; API/query/ingest paths now accept injected stores while SQLite remains the default local store.
 - PostgreSQL behavior is tested with fake connections only; no real RDS/PostgreSQL connection, deployment, push, or online write was performed.
-- Local validation: `121/121 tests passed`; `worldcup.readiness` reports 11 checks, 0 errors, 0 warnings.
+- Added Plan 3C store selection wiring: FastAPI and ingest CLIs default to SQLite, support `--store postgres`, and can read `WORLDCUP_STORE` / `DATABASE_URL` from `.env`.
+- readiness now validates store selection without printing `DATABASE_URL`; PostgreSQL mode requires the variable name, SQLite mode does not.
+- Local validation: `135/135 tests passed`; `worldcup.readiness` reports 12 checks, 0 errors, 0 warnings.
 
 ## 2026-06-09
 
@@ -72,6 +74,6 @@
 
 ## 下一步
 
-- 明确确认 ECS/RDS 后，把当前 FastAPI adapter 接入 `PostgresSnapshotStore` 和正式 secret 管理。
+- 明确确认 ECS/RDS 后，配置 `WORLDCUP_STORE=postgres` / `DATABASE_URL` 并做测试环境 smoke。
 - 在测试环境做真实 PostgreSQL ingest/read smoke，确认 `stored` / `duplicate` 幂等语义。
 - The Odds API key 已在聊天截图暴露过；用户已确认不充值，后续按免费额度和缓存兜底设计。
