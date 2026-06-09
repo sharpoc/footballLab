@@ -21,7 +21,7 @@
 - Plan 3C store selection wiring is implemented: local CLI defaults to SQLite and can explicitly select PostgreSQL with `WORLDCUP_STORE=postgres` plus `DATABASE_URL`, but no real database connection was made.
 - Plan 3D PostgreSQL smoke dry-run guard is implemented: it validates PostgreSQL smoke prerequisites and emits redacted request metadata only, without HTTP or database connections.
 - Plan 4 Research Ledger UI is implemented as a local static/exportable research page over the existing snapshot data; desktop/mobile browser QA passed, and no deployment, push, live API call, or online write was performed.
-- Plan 5 deployment dry-run checklist is documented: ECS/RDS/domain/secret/rollback steps are explicit, with local-only verification commands; no cloud deployment or RDS connection has been performed.
+- Plan 5 single-server launch checklist is documented: one production server can be used directly with a controlled smoke window, SQLite is the MVP default, and RDS/PostgreSQL is optional future hardening; no cloud deployment or RDS connection has been performed.
 
 ## 技术栈
 
@@ -36,8 +36,8 @@
 - 当前 ingest server 是纯本地验签/幂等模块；FastAPI adapter 已复用它，ECS 部署另行确认
 - 当前 SQLite store / preview 都是本地低风险链路；默认输出在已忽略的 `data/local/` 或 `data/cache/`
 - 当前 PostgreSQL store adapter 可用于后续 ECS/RDS 接入；`psycopg` 只作为可选依赖声明，本轮未安装、未连接真实数据库
-- 当前 store selection 默认 `sqlite`；只有显式 `--store postgres` 或 `.env` 中 `WORLDCUP_STORE=postgres` 时才要求 `DATABASE_URL`
-- 当前 PostgreSQL smoke guard 默认只做 dry-run，要求 `WORLDCUP_STORE=postgres`、`DATABASE_URL` 和 `INGEST_HMAC_SECRET`，且不打印 DSN、secret、签名或请求 body
+- 当前 store selection 默认 `sqlite`；单服务器 MVP 首发推荐 SQLite，只有显式 `--store postgres` 或 `.env` 中 `WORLDCUP_STORE=postgres` 时才要求 `DATABASE_URL`
+- 当前 PostgreSQL smoke guard 默认只做 dry-run；SQLite 首发路线下返回 `blocked / expected_postgres` 是安全结果，且不打印 DSN、secret、签名或请求 body
 - 当前 HTTP 适配层只用于本地预览和路由契约测试；正式 FastAPI/ECS 部署需单独确认
 - 当前 ASGI 适配层无外部依赖，只包装本地 HTTP 路由契约；正式 ASGI server / ECS 部署需单独确认
 - 当前 FastAPI app 只作为本地适配层，复用既有路由契约；ECS 部署明确确认前保持 local-only
@@ -136,7 +136,7 @@ python3 -m worldcup.fastapi_app --host 127.0.0.1 --port 8788 --db data/local/wor
 
 The FastAPI app is local-only until ECS deployment is explicitly confirmed.
 
-PostgreSQL smoke dry-run guard 可在测试环境变量准备好后先跑：
+PostgreSQL smoke dry-run guard 仅在明确选择 PostgreSQL/RDS 时先跑；SQLite 首发时返回 `blocked / expected_postgres` 是安全结果：
 
 ```bash
 python3 -m worldcup.postgres_smoke --env .env --snapshot data/cache/analysis_snapshot.json --endpoint https://example.invalid/api/ingest/snapshot
@@ -173,11 +173,11 @@ DATABASE_URL=
 
 ## 下一步
 
-1. 明确确认是否进入 Gate B 测试环境 smoke；确认前不部署、不连 RDS、不改域名。
-2. 若进入 Gate B，在测试环境配置 `WORLDCUP_STORE=postgres` 与 `DATABASE_URL`，并先运行 PostgreSQL smoke dry-run guard。
-3. 测试环境真实 PostgreSQL smoke 只验证同一 signed payload 返回 `stored` 后 `duplicate`。
-4. Gate C 生产 cutover 前必须再次确认域名/HTTPS/secret/回滚方案。
-5. 后续再把 scheduled refresh 接到 macmini cron / launchd。
+1. 明确确认是否进入 Gate B 生产服务器受控 smoke；确认前不部署、不改域名、不启动定时刷新。
+2. Gate B 默认使用 SQLite：`WORLDCUP_STORE=sqlite`，DB 放到服务器持久化路径。
+3. 生产服务器 smoke 只验证 `/healthz`、`/api/matches`、`/preview` 和同一 signed payload 返回 `stored` 后 `duplicate`。
+4. Gate C 正式启用前必须再次确认域名/HTTPS/secret/回滚方案。
+5. Gate C 通过后再把 scheduled refresh 接到 macmini cron / launchd。
 
 ## 重要约束
 

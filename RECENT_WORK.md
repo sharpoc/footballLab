@@ -5,9 +5,10 @@
 ## 2026-06-09 Plan 5 Deployment Dry-Run Checklist
 
 - Added `docs/superpowers/plans/2026-06-09-plan5-deployment-dry-run-checklist.md`.
-- Expanded `docs/ops/local-to-cloud-checklist.md` with Gate A/B/C separation, ECS, RDS/PostgreSQL, domain/HTTPS, secret, macmini refresh, and rollback dry-run checklists.
-- Updated README next steps so the next real action is explicit approval for test-environment smoke, not production deployment.
+- Expanded `docs/ops/local-to-cloud-checklist.md` with Gate A/B/C separation, ECS, storage, domain/HTTPS, secret, macmini refresh, and rollback dry-run checklists.
+- Updated README next steps so the next real action is explicit approval for controlled smoke on the one production server, not full public activation.
 - Local dry-run validation: `156/156 tests passed`; readiness reported 12 checks, 0 errors, 0 warnings; static export sensitive/public-output scan had no matches; PostgreSQL smoke guard safely returned `blocked` in current SQLite mode.
+- Revised the launch path for the user's one-server setup: Gate B is now controlled smoke on the same production server, SQLite is the default MVP store, and RDS/PostgreSQL is a later optional upgrade.
 - No deployment, RDS connection, domain/DNS change, cloud resource change, live API call, online write, push, or dependency install was performed.
 
 ## 2026-06-09 Plan 4 Research Ledger UI Implementation
@@ -103,6 +104,6 @@
 ## 下一步
 
 - 上线前补齐/确认 `INGEST_HMAC_SECRET`，重新跑 readiness check。
-- 明确确认 ECS/RDS 后，配置 `WORLDCUP_STORE=postgres` / `DATABASE_URL`，先运行 PostgreSQL smoke dry-run guard。
-- 在测试环境做真实 PostgreSQL ingest/read smoke，确认 `stored` / `duplicate` 幂等语义。
+- 明确确认进入 Gate B 后，在唯一生产服务器上先用 SQLite 做受控 smoke，不接定时刷新。
+- Gate B 通过后，再单独确认正式域名/HTTPS 和 macmini scheduled refresh。
 - The Odds API key 已在聊天截图暴露过；用户已确认不充值，后续按免费额度和缓存兜底设计。

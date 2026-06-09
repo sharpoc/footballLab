@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Prepare a deployment dry-run checklist that makes ECS/RDS/domain/secret/rollback requirements explicit before any real cloud deployment.
+**Goal:** Prepare a single-server production launch checklist that makes ECS/domain/secret/rollback requirements explicit before any real cloud deployment.
 
-**Architecture:** Keep this phase documentation-first and local-only. Reuse existing local verification commands, static export, readiness check, and PostgreSQL smoke dry-run guard; do not create deployment scripts, connect to RDS, push branches, or modify cloud resources.
+**Architecture:** Keep this phase documentation-first and local-only. The intended rollout is one production server with a controlled smoke window: start the app on the production server first, keep scheduled refresh off, verify health/read/ingest behavior, then separately enable the public domain and macmini refresh. SQLite is the default MVP store; PostgreSQL/RDS is optional future hardening, not a launch blocker.
 
-**Tech Stack:** Python 3, existing `worldcup.readiness`, `worldcup.export`, `worldcup.postgres_smoke`, existing `tests/run_tests.py`, Markdown runbook documentation.
+**Tech Stack:** Python 3, existing `worldcup.readiness`, `worldcup.export`, existing `tests/run_tests.py`, FastAPI local adapter, SQLite by default, Markdown runbook documentation.
 
 ---
 
@@ -23,19 +23,19 @@
 ## File Structure
 
 - Create `docs/superpowers/plans/2026-06-09-plan5-deployment-dry-run-checklist.md`: this implementation plan and execution checklist.
-- Modify `docs/ops/local-to-cloud-checklist.md`: operational dry-run runbook for ECS/RDS/domain/secret/rollback.
+- Modify `docs/ops/local-to-cloud-checklist.md`: operational dry-run runbook for ECS/storage/domain/secret/rollback.
 - Modify `README.md`: update current status and next-step summary for Plan 5.
 - Modify `RECENT_WORK.md`: record the local-only Plan 5 dry-run checklist and verification result.
 
-## Deployment Readiness Model
+## Single-Server Readiness Model
 
-Plan 5 has three gates:
+Plan 5 has three gates for one production server:
 
 | Gate | Meaning | Allowed Actions |
 |---|---|---|
 | Gate A: local dry-run | Prove local repo, static export, readiness, redaction, and dry-run guards are coherent | Local file reads/writes in ignored dirs, local tests, docs |
-| Gate B: test environment smoke | Use a real test ECS/RDS endpoint after explicit confirmation | Test ECS/RDS only, signed ingest smoke, no production DNS cutover |
-| Gate C: production cutover | Point public traffic at production ECS/static page after explicit confirmation | Production ECS/RDS/domain/HTTPS, monitored rollout, rollback ready |
+| Gate B: controlled production-server smoke | Use the one real server after explicit confirmation, without scheduled refresh or final public cutover | Same ECS/server, SQLite default, temporary port or temporary host, signed ingest smoke |
+| Gate C: production activation | Enable public domain/HTTPS and scheduled refresh after Gate B passes and rollback is ready | Domain/HTTPS, macmini scheduled refresh, monitored rollout |
 
 This plan only completes Gate A.
 
@@ -44,10 +44,10 @@ This plan only completes Gate A.
 - [ ] Confirm target Alibaba Cloud region.
 - [ ] Confirm ECS instance type, OS image, disk size, and security group.
 - [ ] Confirm process manager: `systemd` service or container runtime.
-- [ ] Confirm app command, for example:
+- [ ] Confirm app command for SQLite MVP launch, for example:
 
 ```bash
-python3 -m worldcup.fastapi_app --host 0.0.0.0 --port 8788 --env /etc/worldcup/.env --store postgres
+python3 -m worldcup.fastapi_app --host 127.0.0.1 --port 8788 --env /etc/worldcup/.env --store sqlite --db /var/lib/worldcup/worldcup.db
 ```
 
 - [ ] Confirm `/healthz` is exposed through the chosen reverse proxy or load balancer.
@@ -56,23 +56,21 @@ python3 -m worldcup.fastapi_app --host 0.0.0.0 --port 8788 --env /etc/worldcup/.
 - [ ] Confirm deployment artifact source: Git checkout, release tarball, or container image.
 - [ ] Confirm release identity: Git commit SHA must be recorded before any smoke test.
 
-## RDS/PostgreSQL Checklist
+## Storage Checklist
 
-- [ ] Confirm whether Plan 5 test smoke uses RDS or a disposable PostgreSQL test DB.
-- [ ] Confirm `WORLDCUP_STORE=postgres`.
-- [ ] Confirm `DATABASE_URL` exists only in `.env` or cloud secret manager.
-- [ ] Confirm `DATABASE_URL` uses a least-privilege app user, not root/admin.
-- [ ] Confirm network path: ECS can reach RDS; macmini cannot directly reach RDS.
-- [ ] Confirm schema initialization path is controlled by `PostgresSnapshotStore`.
-- [ ] Confirm idempotency key uniqueness is preserved by `idempotency_key`.
+- [ ] Use SQLite for MVP launch unless there is a separate explicit decision to add RDS.
+- [ ] Confirm SQLite path, for example `/var/lib/worldcup/worldcup.db`, is on persistent disk and backed up.
+- [ ] Confirm app user can read/write only the app directory, `.env`, log directory, and SQLite data path.
+- [ ] Confirm idempotency is still enforced by `idempotency_key`.
 - [ ] Confirm smoke expectation: same signed payload twice returns `stored`, then `duplicate`.
-- [ ] Confirm backup/snapshot policy before any production write.
+- [ ] If PostgreSQL/RDS is chosen later, require `WORLDCUP_STORE=postgres`, `DATABASE_URL`, least-privilege app user, ECS-to-RDS network access, and backup/snapshot policy.
+- [ ] macmini must never connect directly to SQLite files, RDS, or OSS; it only sends signed ingest payloads to the server.
 
 ## Domain And HTTPS Checklist
 
 - [ ] Confirm domain name and whether ICP filing is complete.
 - [ ] Confirm DNS provider and record type.
-- [ ] Confirm test host, for example `test.example.invalid`, before production host.
+- [ ] Gate B may use a temporary port or temporary host, for example `preprod.example.invalid`, before final production activation.
 - [ ] Confirm TLS certificate source: Alibaba Cloud certificate, Let's Encrypt, or existing cert.
 - [ ] Confirm HTTP to HTTPS redirect behavior.
 - [ ] Confirm CDN/OSS/static hosting choice if static Research Ledger is served outside FastAPI.
@@ -93,13 +91,15 @@ DATABASE_URL
 - [ ] Real `.env` must stay git ignored.
 - [ ] `INGEST_HMAC_SECRET` must be shared only between the producer and ECS ingest server.
 - [ ] `THE_ODDS_API_KEY` remains low-frequency and quota-aware.
-- [ ] `DATABASE_URL` must never appear in logs, commits, docs, screenshots, shell history snippets, or chat.
+- [ ] `WORLDCUP_STORE=sqlite` is the default single-server MVP launch setting.
+- [ ] `DATABASE_URL` is only required if PostgreSQL/RDS is explicitly chosen later, and must never appear in logs, commits, docs, screenshots, shell history snippets, or chat.
 - [ ] Dry-run outputs must omit request body and `X-Worldcup-Signature`.
 
 ## Macmini Refresh Checklist
 
 - [ ] Confirm refresh owner: macmini scheduled task is recommended for MVP.
-- [ ] Confirm command stays explicit `--live` only after deployment is approved.
+- [ ] Keep scheduled refresh disabled during Gate B production-server smoke.
+- [ ] Confirm command stays explicit `--live` only after Gate C production activation is approved.
 - [ ] Confirm scheduler low-quota behavior remains active.
 - [ ] Confirm macmini sends only signed ingest payload to ECS and never connects to RDS.
 - [ ] Confirm failed source refresh uses stale cache only with `data_quality.source_errors` and `data_quality.stale_sources`.
@@ -115,8 +115,8 @@ DATABASE_URL
 - [ ] Verify rollback with:
 
 ```bash
-curl -fsS https://test.example.invalid/healthz
-curl -fsS https://test.example.invalid/api/matches
+curl -fsS https://preprod.example.invalid/healthz
+curl -fsS https://preprod.example.invalid/api/matches
 ```
 
 Expected: health returns `status=ok`; matches response contains no stake, bet amount, bankroll, payout, wager, unit, or Chinese money/staking terms.
@@ -128,9 +128,9 @@ Expected: health returns `status=ok`; matches response contains no stake, bet am
 
 - [ ] **Step 1: Add Plan 5 gate model**
 
-Add a section that distinguishes local dry-run, test environment smoke, and production cutover.
+Add a section that distinguishes local dry-run, controlled production-server smoke, and production activation.
 
-- [ ] **Step 2: Add ECS/RDS/domain/secret/rollback sections**
+- [ ] **Step 2: Add ECS/storage/domain/secret/rollback sections**
 
 Document the exact checklist items from this plan in the ops runbook.
 
@@ -147,10 +147,10 @@ Include:
 
 For the PostgreSQL smoke guard, expected local result is either:
 
-- `dry_run_ready` when `.env` is intentionally configured for `WORLDCUP_STORE=postgres` with a test `DATABASE_URL`.
+- `dry_run_ready` when `.env` is intentionally configured for `WORLDCUP_STORE=postgres` with a redacted PostgreSQL `DATABASE_URL`.
 - `blocked` with `expected_postgres` when `.env` is still local SQLite mode.
 
-Both are local dry-run outcomes; neither connects to RDS or sends HTTP.
+Both are local dry-run outcomes; neither connects to RDS or sends HTTP. In the single-server SQLite launch path, the blocked SQLite-mode result is expected and acceptable.
 
 ## Task 2: Update Project Status Docs
 
@@ -164,7 +164,7 @@ Add that Plan 5 deployment dry-run checklist is documented and local-only.
 
 - [ ] **Step 2: Update next steps**
 
-Set the next action to explicit approval for test ECS/RDS smoke, not production deployment.
+Set the next action to explicit approval for controlled production-server smoke, not full public activation.
 
 - [ ] **Step 3: Update Recent Work**
 
@@ -223,7 +223,7 @@ Expected:
 /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.postgres_smoke --env .env --snapshot data/cache/analysis_snapshot.json --endpoint https://example.invalid/api/ingest/snapshot
 ```
 
-Expected in current local SQLite mode: exits non-zero with `status=blocked` and `message=expected_postgres`, without printing secret or `DATABASE_URL`. If `.env` has already been switched to test PostgreSQL mode, expected is `status=dry_run_ready` with redacted request metadata only.
+Expected in current local SQLite mode: exits non-zero with `status=blocked` and `message=expected_postgres`, without printing secret or `DATABASE_URL`. If `.env` has explicitly been switched to PostgreSQL mode, expected is `status=dry_run_ready` with redacted request metadata only.
 
 - [ ] **Step 6: Run whitespace and sensitive value checks**
 
@@ -241,8 +241,8 @@ tracked_sensitive_value_leaks= 0
 
 ## Completion Criteria
 
-- Plan 5 docs exist and list ECS/RDS/domain/secret/rollback requirements.
-- Ops checklist makes local dry-run vs test smoke vs production cutover explicit.
+- Plan 5 docs exist and list ECS/storage/domain/secret/rollback requirements.
+- Ops checklist makes local dry-run vs production-server smoke vs production activation explicit.
 - Current local repo passes tests, readiness, export redaction scan, and sensitive value scan.
-- PostgreSQL smoke guard is exercised locally and either blocks safely in SQLite mode or reports redacted `dry_run_ready` in test PostgreSQL mode.
+- PostgreSQL smoke guard is exercised locally and either blocks safely in SQLite mode or reports redacted `dry_run_ready` if PostgreSQL is explicitly chosen.
 - No deployment, cloud resource change, RDS connection, live API refresh, push, or online write occurred.
