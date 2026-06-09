@@ -1,10 +1,12 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from fastapi.testclient import TestClient
 
 from worldcup.fastapi_app import create_fastapi_app
+from worldcup.ingest import build_ingest_request
 from worldcup.store import SQLiteSnapshotStore
 
 
@@ -95,3 +97,84 @@ def test_fastapi_latest_snapshot_returns_404_when_missing():
 
         assert response.status_code == 404
         assert response.json()["error"] == "snapshot_not_found"
+
+
+def test_fastapi_post_ingest_snapshot_stores_signed_request():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        timestamp = datetime.now(timezone.utc).isoformat()
+        request = build_ingest_request(
+            snapshot=_snapshot(),
+            endpoint="https://example.com/api/ingest/snapshot",
+            secret="test-hmac-secret",
+            timestamp=timestamp,
+        )
+        app = create_fastapi_app(db_path=db_path, secret="test-hmac-secret")
+        client = TestClient(app)
+
+        response = client.post(
+            "/api/ingest/snapshot",
+            headers=request["headers"],
+            content=request["body"],
+        )
+
+        body = response.json()
+        assert response.status_code == 200
+        assert body["status"] == "stored"
+        assert SQLiteSnapshotStore(db_path).count_snapshots() == 1
+
+
+def test_fastapi_post_ingest_snapshot_rejects_bad_signature_without_writing():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        timestamp = datetime.now(timezone.utc).isoformat()
+        request = build_ingest_request(
+            snapshot=_snapshot(),
+            endpoint="https://example.com/api/ingest/snapshot",
+            secret="test-hmac-secret",
+            timestamp=timestamp,
+        )
+        headers = dict(request["headers"])
+        headers["X-Worldcup-Signature"] = "sha256=bad"
+        app = create_fastapi_app(db_path=db_path, secret="test-hmac-secret")
+        client = TestClient(app)
+
+        response = client.post(
+            "/api/ingest/snapshot",
+            headers=headers,
+            content=request["body"],
+        )
+
+        body = response.json()
+        assert response.status_code == 400
+        assert body["status"] == "rejected"
+        assert SQLiteSnapshotStore(db_path).count_snapshots() == 0
+
+
+def test_fastapi_post_ingest_snapshot_duplicate_is_idempotent():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        timestamp = datetime.now(timezone.utc).isoformat()
+        request = build_ingest_request(
+            snapshot=_snapshot(),
+            endpoint="https://example.com/api/ingest/snapshot",
+            secret="test-hmac-secret",
+            timestamp=timestamp,
+        )
+        app = create_fastapi_app(db_path=db_path, secret="test-hmac-secret")
+        client = TestClient(app)
+
+        first = client.post(
+            "/api/ingest/snapshot",
+            headers=request["headers"],
+            content=request["body"],
+        )
+        second = client.post(
+            "/api/ingest/snapshot",
+            headers=request["headers"],
+            content=request["body"],
+        )
+
+        assert first.json()["status"] == "stored"
+        assert second.json()["status"] == "duplicate"
+        assert SQLiteSnapshotStore(db_path).count_snapshots() == 1
