@@ -163,6 +163,21 @@ def test_project_signal_rows_expands_signals_without_money_fields():
         assert "unit" not in row
 
 
+def test_project_signal_rows_includes_detail_items_for_expandable_analysis():
+    snapshot = _snapshot()
+    snapshot["run"]["stale_sources"] = []
+
+    rows = project_signal_rows(snapshot)
+    details = {item["label"]: item["value"] for item in rows[0]["detail_items"]}
+
+    assert details["核心判断"] == "模型概率高于去水后的市场概率。"
+    assert details["盘口方向"] == "胜平负 - 主队"
+    assert details["模型与市场"] == "模型 61.0%，市场 57.0%，Edge +4.1%"
+    assert details["EV"] == "+5.2%"
+    assert details["等级状态"] == "A / OK / 新鲜"
+    assert details["风险提示"] == "当前数据新鲜，未触发额外降级原因。"
+
+
 def test_project_signal_rows_reads_realistic_over_under_probabilities():
     snapshot = {
         "matches": [

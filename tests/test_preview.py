@@ -52,6 +52,9 @@ def test_build_preview_html_renders_research_ledger_surface():
     assert "墨西哥 对 南非" in html
     assert "2026 年 6 月 12 日 星期五" in html
     assert "03:00" in html
+    assert "最后更新<br>2026 年 6 月 8 日 星期一 08:00" in html
+    assert "最后更新：</strong><br>2026 年 6 月 8 日 星期一 08:00" in html
+    assert "2026-06-08T00:00:00+00:00" not in html
     assert "胜平负 - 主队" in html
     assert "+4.1%" in html
     assert "模型概率高于去水后的市场概率。" in html
@@ -163,6 +166,23 @@ def test_build_preview_html_includes_filter_dom_accessibility_contract():
     assert 'aria-pressed="false"' in html
     assert "<caption>研究信号台账</caption>" in html
     assert '<th scope="col">对阵</th>' in html
+
+
+def test_build_preview_html_includes_expandable_signal_detail_rows():
+    html = build_preview_html(_snapshot())
+
+    assert 'class="signal-row"' in html
+    assert 'role="button"' in html
+    assert 'tabindex="0"' in html
+    assert 'aria-expanded="false"' in html
+    assert 'aria-controls="signal-detail-0"' in html
+    assert 'data-detail-target="signal-detail-0"' in html
+    assert '<tr class="signal-detail-row" id="signal-detail-0" hidden>' in html
+    assert "<h3>分析详情</h3>" in html
+    assert "<dt>核心判断</dt><dd>模型概率高于去水后的市场概率。</dd>" in html
+    assert "<dt>模型与市场</dt><dd>模型 61.0%，市场 57.0%，Edge +4.1%</dd>" in html
+    assert "toggleSignalDetail" in html
+    assert "keydown" in html
 
 
 def test_build_preview_html_keeps_mobile_table_scroll_inside_ledger_panel():

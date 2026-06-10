@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime, timezone
 from html import escape
 from typing import Any
 
-from worldcup.ledger import build_summary_metrics, derive_quality_status, project_signal_rows
+from worldcup.ledger import (
+    BEIJING_TZ,
+    WEEKDAY_LABELS,
+    build_summary_metrics,
+    derive_quality_status,
+    project_signal_rows,
+)
 
 
 def _text(value: Any) -> str:
@@ -23,6 +30,21 @@ def _as_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
     return [value]
+
+
+def _format_snapshot_time(value: Any) -> str:
+    if not value:
+        return ""
+    raw = str(value)
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    display = parsed.astimezone(BEIJING_TZ)
+    weekday = WEEKDAY_LABELS[display.weekday()]
+    return f"{display.year} 年 {display.month} 月 {display.day} 日 {weekday} {display:%H:%M}"
 
 
 def _quality_values(snapshot: dict[str, Any], key: str) -> list[Any]:
@@ -120,6 +142,25 @@ def _row_search_text(row: dict[str, Any]) -> str:
     return " ".join(str(part) for part in parts).lower()
 
 
+def _render_signal_detail(row: dict[str, Any]) -> str:
+    detail_items = row.get("detail_items") or []
+    items = []
+    for item in detail_items:
+        items.append(
+            "<div><dt>{label}</dt><dd>{value}</dd></div>".format(
+                label=_text(item.get("label")),
+                value=_text(item.get("value")),
+            )
+        )
+    return (
+        "<div class=\"signal-detail\">"
+        "<h3>分析详情</h3>"
+        "<dl class=\"detail-grid\">{items}</dl>"
+        "<p class=\"detail-note\">这些内容只解释研究信号来源，不构成投注建议。</p>"
+        "</div>"
+    ).format(items="".join(items))
+
+
 def _render_signal_table(snapshot: dict[str, Any]) -> str:
     rows = project_signal_rows(snapshot)
     if not rows:
@@ -137,6 +178,7 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
         grouped[str(row.get("kickoff_date") or "日期暂不可用")].append(row)
 
     table_rows = []
+    detail_index = 0
     for kickoff_date, date_rows in grouped.items():
         table_rows.append(
             "<tr class=\"date-row\"><th colspan=\"9\">{}</th></tr>".format(_text(kickoff_date))
@@ -145,8 +187,12 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
             grade = row.get("grade", "")
             grade_bucket = _grade_bucket(grade)
             search_text = _row_search_text(row)
+            detail_id = f"signal-detail-{detail_index}"
             table_rows.append(
-                "<tr class=\"signal-row\" data-grade=\"{grade_bucket}\" data-search=\"{search}\">"
+                "<tr class=\"signal-row\" role=\"button\" tabindex=\"0\" "
+                "aria-expanded=\"false\" aria-controls=\"{detail_id}\" "
+                "data-detail-target=\"{detail_id}\" data-grade=\"{grade_bucket}\" "
+                "data-search=\"{search}\">"
                 "<td><strong>{matchup}</strong><span>{stage_group}</span></td>"
                 "<td>{kickoff}</td>"
                 "<td>{market}</td>"
@@ -157,6 +203,7 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
                 "<td>{freshness}</td>"
                 "<td>{why}</td>"
                 "</tr>".format(
+                    detail_id=_text(detail_id),
                     grade_bucket=_text(grade_bucket),
                     search=_text(search_text),
                     matchup=_text(row.get("matchup")),
@@ -172,6 +219,15 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
                     why=_text(row.get("explanation")),
                 )
             )
+            table_rows.append(
+                "<tr class=\"signal-detail-row\" id=\"{detail_id}\" hidden>"
+                "<td colspan=\"9\">{detail}</td>"
+                "</tr>".format(
+                    detail_id=_text(detail_id),
+                    detail=_render_signal_detail(row),
+                )
+            )
+            detail_index += 1
 
     return """
     <section class="ledger-table-wrap">
@@ -244,7 +300,7 @@ def _render_source_health(snapshot: dict[str, Any]) -> str:
 
 
 def _render_right_rail(snapshot: dict[str, Any]) -> str:
-    snapshot_at = snapshot.get("snapshot_at", "")
+    snapshot_at = _format_snapshot_time(snapshot.get("snapshot_at"))
     return """
     <aside class="right-rail">
       <section class="rail-card">
@@ -274,7 +330,7 @@ def _render_right_rail(snapshot: dict[str, Any]) -> str:
 
 
 def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
-    snapshot_at = snapshot.get("snapshot_at", "")
+    snapshot_at = _format_snapshot_time(snapshot.get("snapshot_at"))
     return """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -429,6 +485,56 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
       text-transform: none;
       position: static;
     }}
+    .signal-row {{
+      cursor: pointer;
+    }}
+    .signal-row:focus {{
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }}
+    .signal-row[aria-expanded="true"] td {{
+      background: #fbfdfd;
+      border-bottom-color: #d6e7e4;
+    }}
+    .signal-detail-row td {{
+      background: #fbfdfd;
+      padding: 0 12px 14px;
+    }}
+    .signal-detail {{
+      border: 1px solid #d6e7e4;
+      border-radius: 8px;
+      padding: 14px;
+      background: #ffffff;
+    }}
+    .detail-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 10px 14px;
+      margin: 0;
+    }}
+    .detail-grid div {{
+      min-width: 0;
+      padding: 10px;
+      border: 1px solid #e5edf3;
+      border-radius: 6px;
+      background: #f8fafc;
+    }}
+    .detail-grid dt {{
+      margin: 0 0 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }}
+    .detail-grid dd {{
+      margin: 0;
+      line-height: 1.55;
+      overflow-wrap: anywhere;
+    }}
+    .detail-note {{
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }}
     .grade-pill {{
       display: inline-flex;
       width: 34px;
@@ -477,14 +583,30 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
       var dateRows = Array.prototype.slice.call(document.querySelectorAll('.date-row'));
       var noResults = document.querySelector('.no-results');
 
+      function setSignalDetail(row, expanded) {{
+        var targetId = row.dataset.detailTarget;
+        var detail = targetId ? document.getElementById(targetId) : null;
+        row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        if (detail) {{
+          detail.hidden = !expanded || row.hidden;
+        }}
+      }}
+
+      function toggleSignalDetail(row) {{
+        var expanded = row.getAttribute('aria-expanded') === 'true';
+        setSignalDetail(row, !expanded);
+      }}
+
       function applyFilters() {{
         var term = search ? search.value.trim().toLowerCase() : '';
         var visible = 0;
         rows.forEach(function (row) {{
+          var wasExpanded = row.getAttribute('aria-expanded') === 'true';
           var gradeMatch = activeFilter === 'all' || row.dataset.grade === activeFilter;
           var textMatch = !term || row.dataset.search.indexOf(term) !== -1;
           var show = gradeMatch && textMatch;
           row.hidden = !show;
+          setSignalDetail(row, show && wasExpanded);
           if (show) {{
             visible += 1;
           }}
@@ -505,6 +627,18 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
           noResults.hidden = visible !== 0;
         }}
       }}
+
+      rows.forEach(function (row) {{
+        row.addEventListener('click', function () {{
+          toggleSignalDetail(row);
+        }});
+        row.addEventListener('keydown', function (event) {{
+          if (event.key === 'Enter' || event.key === ' ') {{
+            event.preventDefault();
+            toggleSignalDetail(row);
+          }}
+        }});
+      }});
 
       buttons.forEach(function (button) {{
         button.addEventListener('click', function () {{

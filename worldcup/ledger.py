@@ -284,6 +284,53 @@ def build_signal_explanation(signal: dict[str, Any], stale: bool) -> str:
     return "模型估计与市场估计差异足够大，值得复核。"
 
 
+def _signal_risk_note(signal: dict[str, Any], stale: bool) -> str:
+    notes: list[str] = []
+    if stale:
+        notes.append("存在过期或兜底输入，信号可信度已降低")
+    reason_labels = {
+        "stale_odds": "赔率数据过期，等级已压低",
+        "few_books": "可用书商数量少，等级已压低",
+        "longshot_uncertainty": "市场概率偏低，冷门尾部不确定性较高",
+        "unconfirmed_backup": "使用本地缓存兜底，需复核",
+        "line_changed_unknown": "盘口线变动未完全确认",
+    }
+    for reason in _as_list(signal.get("reasons")):
+        label = reason_labels.get(str(reason))
+        if label:
+            notes.append(label)
+    if not notes:
+        return "当前数据新鲜，未触发额外降级原因。"
+    return "；".join(_dedupe_stable(notes)) + "。"
+
+
+def _build_signal_detail_items(
+    *,
+    explanation: str,
+    market_label: str,
+    model_prob: str,
+    market_prob: str,
+    edge: str,
+    ev: str,
+    grade: Any,
+    status: Any,
+    freshness: str,
+    risk_note: str,
+) -> list[dict[str, str]]:
+    if model_prob == EM_DASH and market_prob == EM_DASH:
+        model_market = "该盘口主要依据结算 EV，不强行展示模型/市场二元概率。"
+    else:
+        model_market = f"模型 {model_prob}，市场 {market_prob}，Edge {edge}"
+    return [
+        {"label": "核心判断", "value": explanation},
+        {"label": "盘口方向", "value": market_label},
+        {"label": "模型与市场", "value": model_market},
+        {"label": "EV", "value": ev},
+        {"label": "等级状态", "value": f"{grade or EM_DASH} / {status or EM_DASH} / {freshness}"},
+        {"label": "风险提示", "value": risk_note},
+    ]
+
+
 def _format_kickoff_date(parsed_kickoff: datetime | None) -> str:
     if parsed_kickoff is None:
         return "日期暂不可用"
@@ -304,6 +351,15 @@ def project_signal_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             market_type = signal.get("market_type")
             selection = signal.get("selection")
             line = _signal_line(signal)
+            market_label = format_market_label(market_type, selection, line)
+            model_prob = format_probability(_signal_model_prob(match, signal))
+            market_prob = format_probability(_signal_market_prob(match, signal))
+            edge = format_percent(signal.get("edge"))
+            ev = format_percent(signal.get("ev"))
+            grade = signal.get("grade", "")
+            status = signal.get("status", "")
+            freshness = "过期" if stale else "新鲜"
+            explanation = build_signal_explanation(signal, stale)
             row = {
                 "matchup": format_matchup_label(home_team, away_team),
                 "source_matchup": f"{home_team} vs {away_team}",
@@ -318,16 +374,28 @@ def project_signal_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "group": _format_group(match.get("group", "")),
                 "stage_group": _format_stage_group(match.get("stage", ""), match.get("group", "")),
                 "market_type": market_type,
-                "market_label": format_market_label(market_type, selection, line),
-                "model_prob": format_probability(_signal_model_prob(match, signal)),
-                "market_prob": format_probability(_signal_market_prob(match, signal)),
-                "edge": format_percent(signal.get("edge")),
-                "ev": format_percent(signal.get("ev")),
-                "grade": signal.get("grade", ""),
-                "status": signal.get("status", ""),
-                "freshness": "过期" if stale else "新鲜",
+                "market_label": market_label,
+                "model_prob": model_prob,
+                "market_prob": market_prob,
+                "edge": edge,
+                "ev": ev,
+                "grade": grade,
+                "status": status,
+                "freshness": freshness,
                 "stale": stale,
-                "explanation": build_signal_explanation(signal, stale),
+                "explanation": explanation,
+                "detail_items": _build_signal_detail_items(
+                    explanation=explanation,
+                    market_label=market_label,
+                    model_prob=model_prob,
+                    market_prob=market_prob,
+                    edge=edge,
+                    ev=ev,
+                    grade=grade,
+                    status=status,
+                    freshness=freshness,
+                    risk_note=_signal_risk_note(signal, stale),
+                ),
             }
             rows.append(row)
 
