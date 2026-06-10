@@ -151,7 +151,7 @@ def replay_match(match: BacktestMatch, cfg: dict) -> dict:
     market_1x2 = devig(match.odds_1x2) if match.odds_1x2 else None
     market_ou = devig(match.odds_ou) if match.odds_ou else None
     mu_used = poisson.blended_mu(
-        market_ou["over"] if market_ou else None, OU_LINE, cfg["poisson"]
+        market_ou["over"] if market_ou else None, OU_LINE, cfg["poisson"], dr=dr
     )
     lh, la = poisson.lambdas(dr, cfg["poisson"], mu_total=mu_used)
     matrix, _ = poisson.score_matrix(lh, la, cfg["poisson"])

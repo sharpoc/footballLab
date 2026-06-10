@@ -204,6 +204,7 @@ def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnal
         p_over_market,
         ou_line,
         cfg["poisson"],
+        dr=dr,
     )
     lh, la = poisson.lambdas(dr, cfg["poisson"], mu_total=mu_total_used)
     matrix, tail = poisson.score_matrix(lh, la, cfg["poisson"])

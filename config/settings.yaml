@@ -8,6 +8,7 @@ poisson:
   tail_mass_max: 0.01
   mu_market_weight: 0.7
   dc_rho: 0.0
+  mu_dr_slope: 0.0
 
 elo:
   home_adv: 100

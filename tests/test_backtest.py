@@ -145,6 +145,25 @@ def test_replay_match_without_odds_keeps_model_only():
     assert math.isclose(result["mu_used"], cfg["poisson"]["mu_total"], abs_tol=1e-9)
 
 
+def test_replay_match_uses_dr_prior_without_odds():
+    from worldcup.backtest import BacktestMatch, apply_overrides, replay_match
+    from worldcup.config import load_config
+
+    cfg = apply_overrides(load_config(), ["poisson.mu_dr_slope=0.002"])
+    match = BacktestMatch(
+        match_id="m-dr",
+        kickoff_at_utc="2024-01-01T12:00:00Z",
+        home_team="Alpha",
+        away_team="Beta",
+        home_score=2,
+        away_score=0,
+        home_elo_before=2000.0,
+        away_elo_before=1600.0,
+    )
+    result = replay_match(match, cfg)
+    assert math.isclose(result["mu_used"], cfg["poisson"]["mu_total"] + 0.002 * 400)
+
+
 def test_replay_match_home_advantage_applied_when_not_neutral():
     from worldcup.backtest import load_matches, replay_match
     from worldcup.config import load_config

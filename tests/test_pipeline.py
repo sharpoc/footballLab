@@ -396,6 +396,22 @@ def test_ou_falls_back_to_prior_without_market():
     assert math.isclose(analysis.mu_total_used, cfg["poisson"]["mu_total"])
 
 
+def test_mu_prior_uses_dr_when_no_ou_market():
+    from worldcup.backtest import apply_overrides
+
+    cfg = apply_overrides(load_config(), ["poisson.mu_dr_slope=0.002"])
+    match_input = _ou_match_input(0.0, 0.0, with_ou=False)
+    big_gap = MatchAnalysisInput(
+        fixture=match_input.fixture,
+        odds_event=match_input.odds_event,
+        home_elo=EloRating("AA", 1, 2000),
+        away_elo=EloRating("BB", 2, 1600),
+        quotes=match_input.quotes,
+    )
+    analysis = analyze_match_input(big_gap, cfg)
+    assert math.isclose(analysis.mu_total_used, cfg["poisson"]["mu_total"] + 0.002 * 400)
+
+
 def test_ou_anchor_requires_min_books():
     cfg = load_config()
     analysis = analyze_match_input(_ou_match_input(1.55, 2.45, books=("book1",)), cfg)
