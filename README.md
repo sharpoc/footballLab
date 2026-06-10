@@ -157,8 +157,13 @@ python3 -m worldcup.backtest --csv data/local/backtest/history.csv --min-sample 
 - 真实历史数据（赛前 Elo、收盘赔率）来源需单独确认后再接入。
 - 报告默认写入被忽略的 `data/local/backtest/report.json`。
 - 样本量低于 `--min-sample` 时报告带 `sample_too_small: true`，不能据此下强结论。
+- 报告中 `markets.*.model` 是全样本模型指标，`model_matched` 是与市场基线同样本（有收盘赔率的行）的模型指标；对比模型 vs 市场请用 `model_matched` vs `market`。
+- 可用 `--set section.key=value` 做单次参数实验（不改 `settings.yaml`），例如 `--set poisson.dc_rho=-0.1 --set poisson.mu_market_weight=0`。
+- CSV 中任何十进制赔率必须 > 1.0，否则按行号报错。
 
 另外：OU 大小球模型的逐场 `mu_total` 现在由「OU 市场去水概率反推的总进球」与配置先验 `poisson.mu_total` 按 `poisson.mu_market_weight` 混合得出；无 OU 市场时回退先验。snapshot 的 `model.mu_total` 字段记录实际使用值。
+
+模型还内置 Dixon-Coles 低比分修正开关 `poisson.dc_rho`（默认 `0.0` 即关闭，行为与历史版本一致）；rho 的取值必须由真实历史数据回测确定后再启用。mu 市场锚定仅在 OU 盘口 over/under 双边报价家数均达到 `odds.min_books` 时生效，否则回退先验 `poisson.mu_total`。注意：`dc_rho != 0` 时比分矩阵的大小球概率与 mu 锚定的纯 Poisson 反推存在微小近似偏差，rho 为小负数时可忽略。
 
 ## API 注册清单
 
