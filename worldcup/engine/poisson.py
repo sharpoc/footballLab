@@ -38,6 +38,16 @@ def implied_total_mu(p_over: float, line: float, lo: float = 0.1, hi: float = 8.
     return (lo + hi) / 2
 
 
+def prior_mu(dr: float, cfg: dict) -> float:
+    """Total-goals prior; rises with |dr| when mu_dr_slope is enabled."""
+    base = cfg["mu_total"]
+    slope = cfg.get("mu_dr_slope", 0.0)
+    if not slope:
+        return base
+    mu = base + slope * abs(dr)
+    return _clamp(mu, cfg.get("mu_prior_min", 1.5), cfg.get("mu_prior_max", 4.0))
+
+
 def blended_mu(p_over_market: float | None, line: float, cfg: dict) -> float:
     """Blend market-implied total goals with the config prior.
 

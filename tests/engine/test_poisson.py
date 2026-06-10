@@ -72,6 +72,34 @@ def test_implied_total_mu_clamps_extreme_probs():
     assert 0.1 <= implied_total_mu(1.0, 2.5) <= 8.0
 
 
+def test_prior_mu_zero_slope_returns_base():
+    from worldcup.engine.poisson import prior_mu
+
+    assert prior_mu(0, CFG) == CFG["mu_total"]
+    assert prior_mu(400, CFG) == CFG["mu_total"]
+
+
+def test_prior_mu_rises_with_abs_dr_and_is_symmetric():
+    from worldcup.engine.poisson import prior_mu
+
+    cfg = dict(CFG)
+    cfg["mu_total"] = 2.3
+    cfg["mu_dr_slope"] = 0.002
+    assert math.isclose(prior_mu(0, cfg), 2.3)
+    assert math.isclose(prior_mu(300, cfg), 2.3 + 0.002 * 300)
+    assert math.isclose(prior_mu(-300, cfg), prior_mu(300, cfg))
+
+
+def test_prior_mu_clamped():
+    from worldcup.engine.poisson import prior_mu
+
+    cfg = dict(CFG)
+    cfg["mu_dr_slope"] = 0.01
+    assert prior_mu(10000, cfg) == 4.0
+    cfg["mu_prior_max"] = 3.5
+    assert prior_mu(10000, cfg) == 3.5
+
+
 def test_lambdas_mu_override():
     lh, la = lambdas(0, CFG, mu_total=3.0)
     assert math.isclose(lh + la, 3.0)
