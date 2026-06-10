@@ -5,7 +5,9 @@ and does not participate in the live pipeline.
 """
 from __future__ import annotations
 
+import argparse
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -127,3 +129,70 @@ def replay(
         ratings[match.home_team] = new_home
         ratings[match.away_team] = new_away
     return replayed, ratings
+
+
+def main(argv: list[str] | None = None) -> int:
+    from worldcup.collectors.eloratings import parse_elo_ratings, parse_elo_team_aliases
+    from worldcup.collectors.team_aliases import canonicalize_team
+
+    parser = argparse.ArgumentParser(description="Replay ratings and compare with official eloratings")
+    parser.add_argument("--source", default="data/probe/intl_results_martj42.csv")
+    parser.add_argument("--elo", default="data/probe/elo_world.tsv")
+    parser.add_argument("--aliases", default="data/probe/elo_teams.tsv")
+    parser.add_argument("--top", type=int, default=10, help="official top-N to check")
+    parser.add_argument("--pool", type=int, default=30, help="replayed top-M pool for overlap")
+    args = parser.parse_args(argv)
+
+    replayed, ratings = replay(load_results(args.source))
+    official = parse_elo_ratings(Path(args.elo).read_text(encoding="utf-8"))
+    aliases = parse_elo_team_aliases(Path(args.aliases).read_text(encoding="utf-8"))
+    code_by_canonical = {canonicalize_team(name): code for name, code in aliases.items()}
+
+    replayed_by_code: dict[str, float] = {}
+    for team, rating in ratings.items():
+        code = code_by_canonical.get(canonicalize_team(team))
+        if code is not None:
+            replayed_by_code[code] = max(rating, replayed_by_code.get(code, rating))
+    replay_rank = {
+        code: idx + 1
+        for idx, (code, _) in enumerate(
+            sorted(replayed_by_code.items(), key=lambda item: -item[1])
+        )
+    }
+
+    top_official = sorted(official.values(), key=lambda r: r.rank)[: args.top]
+    lines = []
+    hits = 0
+    for entry in top_official:
+        rank = replay_rank.get(entry.code)
+        if rank is not None and rank <= args.pool:
+            hits += 1
+        lines.append(
+            {
+                "code": entry.code,
+                "official_rank": entry.rank,
+                "official_rating": entry.rating,
+                "replay_rank": rank,
+                "replay_rating": round(replayed_by_code.get(entry.code, 0.0), 1),
+            }
+        )
+    print(
+        json.dumps(
+            {
+                "matches_replayed": len(replayed),
+                "teams_rated": len(ratings),
+                "teams_mapped_to_codes": len(replayed_by_code),
+                "official_top": args.top,
+                "replay_pool": args.pool,
+                "overlap_hits": hits,
+                "detail": lines,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
