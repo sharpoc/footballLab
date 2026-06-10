@@ -15,6 +15,28 @@ def lambdas(dr: float, cfg: dict) -> tuple[float, float]:
     return lh, la
 
 
+def prob_total_over(mu: float, line: float) -> float:
+    """P(total > line) when total goals ~ Poisson(mu); line must be k + 0.5."""
+    k = int(line)
+    pk = exp(-mu)
+    cdf = pk
+    for i in range(1, k + 1):
+        pk = pk * mu / i
+        cdf += pk
+    return 1.0 - cdf
+
+
+def implied_total_mu(p_over: float, line: float, lo: float = 0.1, hi: float = 8.0) -> float:
+    p = _clamp(p_over, prob_total_over(lo, line), prob_total_over(hi, line))
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        if prob_total_over(mid, line) < p:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
 def _pmf_series(lam: float, max_goals: int) -> list[float]:
     vals = [exp(-lam)]
     for k in range(1, max_goals + 1):
