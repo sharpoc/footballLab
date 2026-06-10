@@ -2,6 +2,25 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-10 AH 进入赛后评估链路
+
+- 已按 `docs/superpowers/plans/2026-06-10-ah-eval-coverage.md` 逐任务 TDD 执行，并按任务做本地 commit；未 push、未部署、未触发 live refresh、未调用 The Odds API。
+- snapshot 新增增量兼容块 `market.ah_main`：记录 AH 主盘 `line_home`、home/away 聚合赔率和双边报价家数；无 AH 报价时不写该键，老快照兼容。
+- `eval_data` 输出新增 `ah_line` / `odds_ah_home` / `odds_ah_away` 三列；两边赔率或盘口线不完整时三列全空，避免半缺失数据进入评估。
+- `backtest.py` 零改动；现有 `backtest.load_matches` 已能读取新增三列并进入 `ah_ev_buckets`。
+- 本地验证：先按 TDD 看到新增测试红灯，再实现转绿；最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `275/275 tests passed`。
+- 离线 smoke：`python3 -m worldcup.local_runner --input-dir data/cache --out data/local/backtest/ah_smoke_snapshot.json` 生成 72 场临时 snapshot，统计 `{"matches": 72, "with_ah_main": 72}`；输出位于被忽略的 `data/local/backtest/`。
+- 时效注意：本改动合入本机 `main` 后，下一次 live refresh 生成的 closing snapshot 才会带 `ah_main`；已归档旧 snapshot 不回补，对应 AH 列为空属预期。
+
+## 2026-06-10 AH 评估覆盖实现计划（待 Codex 执行）
+
+- 新增实现计划 `docs/superpowers/plans/2026-06-10-ah-eval-coverage.md`：让赛后验证链路覆盖亚洲让球。
+- 摸底结论：`backtest.py` 的 AH 评估（CSV 列 `ah_line` / `odds_ah_home` / `odds_ah_away`、`ah_ev_buckets`）早已就绪，本计划不改 backtest；缺口只在 snapshot `market` 块无 AH 主盘聚合赔率、`eval_data` 无 AH 列。
+- 计划共 4 个任务、全 TDD、全离线：pipeline 生成 `market_ah_main`（复用 `_main_home_ah_line` + `odds.aggregate` 双边聚合，不碰 `_ah_signals` 信号逻辑）；`local_runner` 增量序列化 `market["ah_main"]`（无 AH 报价不写键，老快照兼容）；`eval_data` 输出三个 AH 列并与 `backtest.load_matches` roundtrip；离线 smoke + README/RECENT_WORK 文档同步。
+- 用户决定由 Codex 按计划执行；验证命令仍为 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py`，当前基线 `269/269 tests passed`，完成后预计 `275/275`。
+- 时效注意：需在下一次 live refresh 前合入本机 `main`，开赛前 closing snapshot 才会带 `ah_main`；已归档旧快照不补字段，对应 AH 列为空属预期。
+- 本次只写计划与近期记录，未改业务代码、未 commit、未 push、未部署、未触发 live refresh、未调用 The Odds API。
+
 ## 2026-06-10 一键只读运维检查
 
 - 新增 `python3 -m worldcup.ops_check`，用于一键汇总本机 snapshot/history/quota/LaunchAgent、本机 scheduled-publish 日志、公网健康与页面更新时间、ECS 服务/SQLite/latest snapshot 和日志安全计数。
@@ -71,7 +90,7 @@
 - 新增 `worldcup.eval_data`：用“开球前最后一份”归档 snapshot 的 1X2/OU 聚合赔率 join 赛果，输出 `data/local/backtest/wc2026_eval.csv`，可交给现有 `worldcup.backtest`。
 - 开赛后日常命令：`python3 -m worldcup.results_capture`，`python3 -m worldcup.eval_data`，`python3 -m worldcup.backtest --csv data/local/backtest/wc2026_eval.csv --min-sample 30 --out data/local/backtest/wc2026_report.json`。
 - 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `257/257 tests passed`；赛前 smoke `python3 -m worldcup.results_capture` 输出 `{"finished": 0, "added": 0, "updated": 0, "total": 0}` 属正常。
-- 已知局限：评估 CSV 的 `neutral` 一律为 1，AH 不进评估；openfootball 首个比赛日若真实比分字段格式不同，需要回来调整 `_extract_score`。
+- 已知局限：评估 CSV 的 `neutral` 一律为 1；AH 仅在 closing snapshot 含 `market.ah_main` 时进入评估，旧归档快照对应 AH 列为空；openfootball 首个比赛日若真实比分字段格式不同，需要回来调整 `_extract_score`。
 
 ## 2026-06-10 mu-dr 总进球先验证据
 

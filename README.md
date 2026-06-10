@@ -201,7 +201,7 @@ python3 -m worldcup.eval_data
 python3 -m worldcup.backtest --csv data/local/backtest/wc2026_eval.csv --min-sample 30 --out data/local/backtest/wc2026_report.json
 ```
 
-已知局限：评估 CSV 的 `neutral` 一律为 1（不含东道主修正）；AH 不进评估；样本量小时报告会标 `sample_too_small`，小组赛阶段结论只做方向参考。
+已知局限：评估 CSV 的 `neutral` 一律为 1（不含东道主修正）；AH 采用 closing snapshot 的主盘线与均价（本改动合入前的老归档快照无 `ah_main`，对应 AH 列为空）；样本量小时报告会标 `sample_too_small`，小组赛阶段结论只做方向参考。
 
 ## API 注册清单
 
