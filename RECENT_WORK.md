@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-10 预测结果常驻列
+
+- 研究信号台账新增常驻“预测结果”列：赛前/未完赛显示“待赛”，完赛后显示“命中 / 未中 / 走水”。
+- 原“信号原因”栏继续保留赛后比分、方向和结算说明，避免只看标签时缺少上下文。
+- 表格日期行和详情行 `colspan` 调整为 11，台账最小宽度调整为 1160px，窄屏继续在表格容器内横向滚动。
+- 本地 TDD 先看到 preview 测试因缺少表头和状态徽章失败，再实现；最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `265/265 tests passed`。
+- 本次仅改展示层与测试，不主动触发 live refresh、不调用 The Odds API、不改 LaunchAgent。
+
 ## 2026-06-10 台账赛后预测结果显示
 
 - 已提交并推送 `2243951 feat: show post-match prediction results` 到 `origin/main`，并部署到 ECS。

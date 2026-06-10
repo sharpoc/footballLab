@@ -69,6 +69,8 @@ def test_build_preview_html_renders_research_ledger_surface():
     assert "最后更新：</strong><br>2026 年 6 月 8 日 星期一 08:00" in html
     assert "2026-06-08T00:00:00+00:00" not in html
     assert '<th scope="col">更新</th>' in html
+    assert '<th scope="col">预测结果</th>' in html
+    assert 'class="prediction-pill prediction-pending">待赛</span>' in html
     assert "赔率源更新" in html
     assert "11:30" in html
     assert "胜平负 - 主队" in html
@@ -242,6 +244,7 @@ def test_build_preview_html_shows_finished_prediction_result_in_reason_column():
 
     html = build_preview_html(snapshot)
 
+    assert 'class="prediction-pill prediction-hit">命中</span>' in html
     assert 'class="prediction-result prediction-result-hit"' in html
     assert "<strong>预测结果：命中</strong>" in html
     assert "赛果：墨西哥 2-0 南非；方向：主胜" in html

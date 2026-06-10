@@ -205,6 +205,20 @@ def _render_prediction_result(row: dict[str, Any]) -> str:
     )
 
 
+def _render_prediction_cell(row: dict[str, Any]) -> str:
+    result = row.get("prediction_result") or {}
+    if result:
+        status = _slug(result.get("status", "unknown"))
+        label = result.get("label") or "已完赛"
+    else:
+        status = "pending"
+        label = "待赛"
+    return "<span class=\"prediction-pill prediction-{status}\">{label}</span>".format(
+        status=_text(status),
+        label=_text(label),
+    )
+
+
 def _render_signal_reason(row: dict[str, Any]) -> str:
     return "{result}{change}<span class=\"signal-why\">{why}</span>".format(
         result=_render_prediction_result(row),
@@ -236,7 +250,7 @@ def _render_signal_table(
     detail_index = 0
     for kickoff_date, date_rows in grouped.items():
         table_rows.append(
-            "<tr class=\"date-row\"><th colspan=\"10\">{}</th></tr>".format(_text(kickoff_date))
+            "<tr class=\"date-row\"><th colspan=\"11\">{}</th></tr>".format(_text(kickoff_date))
         )
         for row in date_rows:
             grade = row.get("grade", "")
@@ -245,6 +259,7 @@ def _render_signal_table(
             search_text = _row_search_text(row)
             detail_id = f"signal-detail-{detail_index}"
             reason = _render_signal_reason(row)
+            prediction = _render_prediction_cell(row)
             table_rows.append(
                 "<tr class=\"signal-row\" role=\"button\" tabindex=\"0\" "
                 "aria-expanded=\"false\" aria-controls=\"{detail_id}\" "
@@ -254,6 +269,7 @@ def _render_signal_table(
                 "<td>{kickoff}</td>"
                 "<td><strong>{updated}</strong><span>{updated_label}</span></td>"
                 "<td>{market}</td>"
+                "<td>{prediction}</td>"
                 "<td>{model_prob}</td>"
                 "<td>{market_prob}</td>"
                 "<td><strong>{ev}</strong><span>{edge}</span></td>"
@@ -270,6 +286,7 @@ def _render_signal_table(
                     updated=_text(row.get("updated_time")),
                     updated_label=_text(row.get("updated_label")),
                     market=_text(row.get("market_label")),
+                    prediction=prediction,
                     model_prob=_text(row.get("model_prob")),
                     market_prob=_text(row.get("market_prob")),
                     ev=_text(row.get("ev")),
@@ -282,7 +299,7 @@ def _render_signal_table(
             )
             table_rows.append(
                 "<tr class=\"signal-detail-row\" id=\"{detail_id}\" hidden>"
-                "<td colspan=\"10\">{detail}</td>"
+                "<td colspan=\"11\">{detail}</td>"
                 "</tr>".format(
                     detail_id=_text(detail_id),
                     detail=_render_signal_detail(row),
@@ -300,6 +317,7 @@ def _render_signal_table(
             <th scope="col">开赛 (北京时间)</th>
             <th scope="col">更新</th>
             <th scope="col">盘口</th>
+            <th scope="col">预测结果</th>
             <th scope="col">模型概率</th>
             <th scope="col">市场概率</th>
             <th scope="col">EV / Edge</th>
@@ -575,7 +593,7 @@ def build_research_ledger_html(
       background: #fff;
     }}
     .ledger-table-wrap {{ overflow-x: auto; }}
-    .ledger-table {{ width: 100%; min-width: 1080px; border-collapse: collapse; }}
+    .ledger-table {{ width: 100%; min-width: 1160px; border-collapse: collapse; }}
     caption {{
       padding: 12px;
       text-align: left;
@@ -747,6 +765,40 @@ def build_research_ledger_html(
       border-left-color: #64748b;
       background: #f8fafc;
       color: #334155;
+    }}
+    .prediction-pill {{
+      display: inline-flex;
+      min-width: 52px;
+      min-height: 28px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 7px;
+      border: 1px solid #d1d5db;
+      background: #f8fafc;
+      color: #475569;
+      font-weight: 800;
+      font-size: 13px;
+      white-space: nowrap;
+    }}
+    .prediction-hit {{
+      border-color: #86efac;
+      background: #dcfce7;
+      color: #166534;
+    }}
+    .prediction-miss {{
+      border-color: #fecaca;
+      background: #fee2e2;
+      color: #991b1b;
+    }}
+    .prediction-push {{
+      border-color: #cbd5e1;
+      background: #f1f5f9;
+      color: #334155;
+    }}
+    .prediction-pending {{
+      border-color: #d1d5db;
+      background: #f8fafc;
+      color: #64748b;
     }}
     .signal-why {{ color: var(--muted); }}
     .policy-list {{ margin-bottom: 12px; }}
