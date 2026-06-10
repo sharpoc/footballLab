@@ -70,9 +70,8 @@ python3 -m pytest -v
 
 ## 近期重点
 
-1. The Odds API key 已在聊天截图暴露过；用户已确认不充值，后续按免费额度和缓存兜底设计。
-2. 用 `python3 -m worldcup.secrets` 生成 `INGEST_HMAC_SECRET`，手动写入 `.env` 后 readiness check 才能全绿。
-3. 将 `worldcup.http_app` / `worldcup.asgi_app` 的路由契约迁移/包装为 FastAPI，实现正式 ECS ingest/read API。
-4. 把 SQLite store 替换/适配为 PostgreSQL 持久化，保留幂等唯一键。
-5. 保持 collector 解析测试使用 `data/probe/` 保存样例，不联网。
-6. 后续再把 scheduled refresh 接到 macmini cron / launchd。
+1. The Odds API key 已在聊天截图暴露过；用户已确认不充值，后续按免费额度和缓存兜底设计；赛期留意 quota，低额度时降频。
+2. 保持 collector 解析测试使用 `data/probe/` 保存样例，不联网。
+3. 线上 ECS 当前使用 SQLite；切换 PostgreSQL/RDS 需单独确认（`postgres_store` / `store_factory` 代码层已就绪）。
+4. 赛期内完赛后用 `results_capture` / `eval_data` 积累真实赛果，再决定是否采纳 `mu_total=2.2, mu_dr_slope=0.0015`（见 `docs/research/2026-06-10-mu-dr-fit.md`）；积累足够样本前不改模型参数。
+5. 日常巡检用只读命令 `python3 -m worldcup.ops_check`。
