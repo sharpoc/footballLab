@@ -323,3 +323,24 @@ def run_backtest(matches: list[BacktestMatch], cfg: dict, min_sample: int = 200)
         ],
         "notes": "research metrics only; no staking advice",
     }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Offline backtest for the worldcup engine")
+    parser.add_argument("--csv", required=True, help="historical matches csv path")
+    parser.add_argument("--config", default=None, help="settings.yaml path override")
+    parser.add_argument("--out", default="data/local/backtest/report.json")
+    parser.add_argument("--min-sample", type=int, default=200)
+    args = parser.parse_args(argv)
+
+    cfg = load_config(args.config)
+    report = run_backtest(load_matches(args.csv), cfg, min_sample=args.min_sample)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(json.dumps(report["sample"], indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

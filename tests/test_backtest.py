@@ -173,3 +173,18 @@ def test_run_backtest_not_small_when_min_sample_met():
 
     report = run_backtest(load_matches(SAMPLE_CSV), load_config(), min_sample=5)
     assert report["sample"]["sample_too_small"] is False
+
+
+def test_cli_writes_report_json():
+    import json
+    import tempfile
+
+    from worldcup.backtest import main
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path = Path(tmp) / "report.json"
+        code = main(["--csv", str(SAMPLE_CSV), "--out", str(out_path), "--min-sample", "5"])
+        assert code == 0
+        report = json.loads(out_path.read_text(encoding="utf-8"))
+        assert report["sample"]["n_matches"] == 7
+        assert report["sample"]["sample_too_small"] is False
