@@ -11,6 +11,7 @@ CFG = {
     "b_ev": 0.03,
     "b_edge": 0.01,
     "longshot_market_prob_max": 0.12,
+    "odds_dispersion_ratio_max": 1.18,
     "odds_max_age_seconds": 12600,
     "min_books": 3,
 }
@@ -83,6 +84,144 @@ def test_stale_odds_caps_at_b():
 def test_few_books_caps_at_b():
     signal = grade_signal(MarketType.X12, "home", 0.60, 0.45, 1.85, ok_ctx(n_books=1), CFG)
     assert signal.grade == Grade.B
+
+
+def test_model_disagreement_caps_1x2_at_b():
+    signal = grade_signal(
+        MarketType.X12,
+        "home",
+        0.60,
+        0.45,
+        1.85,
+        ok_ctx(model_disagreement=True),
+        CFG,
+    )
+
+    assert signal.grade == Grade.B
+    assert "model_disagreement" in signal.reasons
+
+
+def test_model_disagreement_caps_a_grade_to_b():
+    signal = grade_signal(
+        MarketType.X12,
+        "home",
+        0.55,
+        0.52,
+        1.92,
+        ok_ctx(model_disagreement=True),
+        CFG,
+    )
+
+    assert signal.grade == Grade.B
+    assert "model_disagreement" in signal.reasons
+
+
+def test_model_disagreement_does_not_apply_to_ah():
+    signal = grade_signal(
+        MarketType.AH,
+        "home_-0.5",
+        0.0,
+        None,
+        1.85,
+        ok_ctx(model_disagreement=True),
+        CFG,
+        ah_ev=0.09,
+    )
+
+    assert signal.grade == Grade.S
+    assert "model_disagreement" not in signal.reasons
+
+
+def test_market_dispersion_caps_at_b():
+    signal = grade_signal(
+        MarketType.X12,
+        "home",
+        0.60,
+        0.45,
+        1.85,
+        ok_ctx(odds_dispersion_ratio=1.25),
+        CFG,
+    )
+
+    assert signal.grade == Grade.B
+    assert "market_dispersion" in signal.reasons
+
+
+def test_market_dispersion_caps_ou_at_b():
+    signal = grade_signal(
+        MarketType.OU,
+        "over",
+        0.60,
+        0.45,
+        1.85,
+        ok_ctx(odds_dispersion_ratio=1.25),
+        CFG,
+    )
+
+    assert signal.grade == Grade.B
+    assert "market_dispersion" in signal.reasons
+
+
+def test_market_dispersion_caps_a_grade_to_b():
+    signal = grade_signal(
+        MarketType.X12,
+        "home",
+        0.55,
+        0.52,
+        1.92,
+        ok_ctx(odds_dispersion_ratio=1.25),
+        CFG,
+    )
+
+    assert signal.grade == Grade.B
+    assert "market_dispersion" in signal.reasons
+
+
+def test_few_books_suppresses_market_dispersion_reason():
+    signal = grade_signal(
+        MarketType.X12,
+        "home",
+        0.60,
+        0.45,
+        1.85,
+        ok_ctx(n_books=1, odds_dispersion_ratio=1.25),
+        CFG,
+    )
+
+    assert signal.grade == Grade.B
+    assert "few_books" in signal.reasons
+    assert "market_dispersion" not in signal.reasons
+
+
+def test_market_dispersion_caps_ah_at_b():
+    signal = grade_signal(
+        MarketType.AH,
+        "home_-0.5",
+        0.0,
+        None,
+        1.85,
+        ok_ctx(odds_dispersion_ratio=1.25),
+        CFG,
+        ah_ev=0.09,
+    )
+
+    assert signal.grade == Grade.B
+    assert "market_dispersion" in signal.reasons
+
+
+def test_market_dispersion_threshold_is_not_triggered_at_limit():
+    signal = grade_signal(
+        MarketType.X12,
+        "home",
+        0.60,
+        0.45,
+        1.85,
+        ok_ctx(odds_dispersion_ratio=1.18),
+        CFG,
+    )
+
+    assert signal.grade == Grade.S
+    assert "market_dispersion" not in signal.reasons
 
 
 def test_longshot_market_probability_caps_at_b():

@@ -234,7 +234,33 @@ def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnal
 def _value_cfg(cfg: dict) -> dict:
     value_cfg = dict(cfg["value"])
     value_cfg["min_books"] = cfg["odds"]["min_books"]
+    quality_cfg = cfg.get("quality", {})
+    if "odds_dispersion_ratio_max" in quality_cfg:
+        value_cfg["odds_dispersion_ratio_max"] = quality_cfg["odds_dispersion_ratio_max"]
     return value_cfg
+
+
+def _top_probability_key(probs: dict[str, float]) -> str | None:
+    if not probs:
+        return None
+    return max(probs, key=probs.get)
+
+
+def _model_disagreement(analysis: MatchAnalysis, selection: str, cfg: dict) -> bool:
+    threshold = cfg.get("quality", {}).get("disagreement_prob_delta")
+    if threshold is None:
+        return False
+    elo_top = _top_probability_key(analysis.elo_1x2)
+    poisson_top = _top_probability_key(analysis.poisson_1x2)
+    if elo_top is None or poisson_top is None:
+        return False
+    if elo_top != poisson_top:
+        return True
+    elo_prob = analysis.elo_1x2.get(selection)
+    poisson_prob = analysis.poisson_1x2.get(selection)
+    if elo_prob is None or poisson_prob is None:
+        return False
+    return abs(elo_prob - poisson_prob) >= threshold
 
 
 def _normalize_observed_at(value: datetime | str | None) -> datetime | None:
@@ -286,6 +312,8 @@ def _signal_ctx(
     n_books: int,
     observed_at: datetime | None,
     depends_on_backup: bool,
+    model_disagreement: bool = False,
+    odds_dispersion_ratio: float | None = None,
 ) -> dict:
     ctx = {
         "status": "OK",
@@ -302,6 +330,10 @@ def _signal_ctx(
     )
     if odds_age_seconds is not None:
         ctx["odds_age_seconds"] = odds_age_seconds
+    if model_disagreement:
+        ctx["model_disagreement"] = True
+    if odds_dispersion_ratio is not None:
+        ctx["odds_dispersion_ratio"] = odds_dispersion_ratio
     return ctx
 
 
@@ -339,6 +371,7 @@ def _integer_market_signals(
     market_probs = market.get("market_probs", {})
     market_odds = market.get("odds", {})
     n_books = market.get("n_books_by_selection", {})
+    dispersion_by_selection = market.get("dispersion_by_selection", {})
     for selection in selections:
         out.append(
             value.grade_signal(
@@ -355,6 +388,10 @@ def _integer_market_signals(
                     n_books.get(selection, 0),
                     observed_at,
                     depends_on_backup,
+                    model_disagreement=(
+                        market_type == MarketType.X12 and _model_disagreement(analysis, selection, cfg)
+                    ),
+                    odds_dispersion_ratio=dispersion_by_selection.get(selection),
                 ),
                 value_cfg,
                 line=line,
@@ -400,6 +437,7 @@ def _ah_signals(
                     home_agg["n_books"],
                     observed_at,
                     depends_on_backup,
+                    odds_dispersion_ratio=home_agg["dispersion_ratio"],
                 ),
                 value_cfg,
                 ah_ev=ah_ev,
@@ -432,6 +470,7 @@ def _ah_signals(
                     away_agg["n_books"],
                     observed_at,
                     depends_on_backup,
+                    odds_dispersion_ratio=away_agg["dispersion_ratio"],
                 ),
                 value_cfg,
                 ah_ev=away_ev,

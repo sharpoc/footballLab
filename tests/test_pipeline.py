@@ -1,8 +1,10 @@
+from dataclasses import replace
+
 from worldcup.collectors.eloratings import parse_elo_ratings, parse_elo_team_aliases
 from worldcup.collectors.openfootball import parse_openfootball_fixtures
 from worldcup.collectors.theoddsapi import parse_theoddsapi_events
 from worldcup.config import load_config
-from worldcup.models import MarketType
+from worldcup.models import Grade, MarketType, OddsQuote
 from worldcup.pipeline import analyze_match_input, build_match_inputs, generate_value_signals
 
 
@@ -198,6 +200,74 @@ def test_generate_value_signals_outputs_1x2_ou_and_ah():
     assert ah_home.ev is not None
     assert ah_home.edge is None
     assert ah_home.line == -0.5
+
+
+def test_generate_value_signals_caps_1x2_when_models_disagree():
+    cfg = load_config()
+    analysis = analyze_match_input(_sample_match_input_with_three_markets(), cfg)
+    analysis = replace(
+        analysis,
+        elo_1x2={"home": 0.70, "draw": 0.18, "away": 0.12},
+        poisson_1x2={"home": 0.44, "draw": 0.30, "away": 0.26},
+        combined_1x2={"home": 0.62, "draw": 0.22, "away": 0.16},
+    )
+    analysis.market_1x2["n_books_by_selection"]["home"] = 3
+
+    signals = generate_value_signals(analysis, cfg)
+    home_1x2 = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.X12 and signal.selection == "home"
+    )
+
+    assert home_1x2.grade == Grade.B
+    assert "model_disagreement" in home_1x2.reasons
+
+
+def test_generate_value_signals_caps_when_market_dispersion_is_high():
+    cfg = load_config()
+    analysis = analyze_match_input(_sample_match_input_with_three_markets(), cfg)
+    analysis = replace(
+        analysis,
+        combined_1x2={"home": 0.62, "draw": 0.22, "away": 0.16},
+        elo_1x2={"home": 0.62, "draw": 0.22, "away": 0.16},
+        poisson_1x2={"home": 0.61, "draw": 0.23, "away": 0.16},
+    )
+    analysis.market_1x2["n_books_by_selection"]["home"] = 3
+    analysis.market_1x2["dispersion_by_selection"] = {"home": 1.25}
+
+    signals = generate_value_signals(analysis, cfg)
+    home_1x2 = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.X12 and signal.selection == "home"
+    )
+
+    assert home_1x2.grade == Grade.B
+    assert "market_dispersion" in home_1x2.reasons
+    assert "model_disagreement" not in home_1x2.reasons
+
+
+def test_generate_value_signals_passes_market_dispersion_to_ah():
+    cfg = load_config()
+    analysis = analyze_match_input(_sample_match_input_with_three_markets(), cfg)
+    analysis.match_input.quotes.extend(
+        [
+            OddsQuote("bk2", MarketType.AH, "home", 2.2, line=-0.5),
+            OddsQuote("bk3", MarketType.AH, "home", 2.4, line=-0.5),
+        ]
+    )
+
+    signals = generate_value_signals(analysis, cfg)
+    ah_home = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.AH and signal.selection == "home_-0.5"
+    )
+
+    assert ah_home.grade == Grade.B
+    assert "market_dispersion" in ah_home.reasons
+    assert "model_disagreement" not in ah_home.reasons
 
 
 def _sample_match_input_with_three_markets():

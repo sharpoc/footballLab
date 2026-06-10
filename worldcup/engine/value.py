@@ -45,6 +45,17 @@ def _should_cap_longshot(p_market: float | None, grade: Grade, cfg: dict) -> boo
     )
 
 
+def _should_cap_dispersion(ctx: dict, cfg: dict) -> bool:
+    threshold = cfg.get("odds_dispersion_ratio_max")
+    ratio = ctx.get("odds_dispersion_ratio")
+    return (
+        threshold is not None
+        and ratio is not None
+        and ctx.get("n_books", 0) >= cfg.get("min_books", 0)
+        and ratio > threshold
+    )
+
+
 def grade_signal(
     market_type: MarketType,
     selection: str,
@@ -86,6 +97,12 @@ def grade_signal(
     if ctx.get("n_books", 0) < cfg["min_books"]:
         base = _cap_at_b(base)
         reasons.append("few_books")
+    if market_type == MarketType.X12 and ctx.get("model_disagreement"):
+        base = _cap_at_b(base)
+        reasons.append("model_disagreement")
+    if _should_cap_dispersion(ctx, cfg):
+        base = _cap_at_b(base)
+        reasons.append("market_dispersion")
     if market_type != MarketType.AH and _should_cap_longshot(p_market, base, cfg):
         base = _cap_at_b(base)
         reasons.append("longshot_uncertainty")

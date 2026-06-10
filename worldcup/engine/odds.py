@@ -43,7 +43,23 @@ def aggregate(
     ]
     cleaned = filter_outliers(matched, ratio)
     n = len(cleaned)
-    return {"odds": (sum(cleaned) / n) if n else None, "n_books": n}
+    if not cleaned:
+        return {
+            "odds": None,
+            "n_books": 0,
+            "min_odds": None,
+            "max_odds": None,
+            "dispersion_ratio": None,
+        }
+    min_odds = min(cleaned)
+    max_odds = max(cleaned)
+    return {
+        "odds": sum(cleaned) / n,
+        "n_books": n,
+        "min_odds": min_odds,
+        "max_odds": max_odds,
+        "dispersion_ratio": max_odds / min_odds,
+    }
 
 
 def aggregate_market(
@@ -55,6 +71,7 @@ def aggregate_market(
 ) -> dict:
     odds: dict[str, float] = {}
     n_books: dict[str, int] = {}
+    dispersion_by_selection: dict[str, float] = {}
     fetched_times = [
         q.fetched_at.astimezone(timezone.utc)
         for q in quotes
@@ -69,10 +86,13 @@ def aggregate_market(
         n_books[selection] = agg["n_books"]
         if agg["odds"] is not None:
             odds[selection] = agg["odds"]
+        if agg["dispersion_ratio"] is not None:
+            dispersion_by_selection[selection] = agg["dispersion_ratio"]
     base = {
         "odds": odds,
         "market_probs": {},
         "n_books_by_selection": n_books,
+        "dispersion_by_selection": dispersion_by_selection,
         "last_update_at": last_update_at,
     }
     if set(odds) != set(selections):

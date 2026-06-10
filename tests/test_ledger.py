@@ -185,6 +185,30 @@ def test_project_signal_rows_includes_detail_items_for_expandable_analysis():
     assert details["风险提示"] == "当前数据新鲜，未触发额外降级原因。"
 
 
+def test_project_signal_rows_explains_quality_guard_reasons():
+    snapshot = _snapshot()
+    snapshot["run"]["stale_sources"] = []
+    snapshot["data_quality"] = {
+        "missing_odds": [],
+        "missing_elo": [],
+        "time_mismatches": [],
+        "stale_sources": [],
+        "source_errors": [],
+    }
+    snapshot["matches"][0]["signals"][0]["reasons"] = [
+        "model_disagreement",
+        "market_dispersion",
+    ]
+
+    rows = project_signal_rows(snapshot)
+    risk_item = next(
+        item for item in rows[0]["detail_items"] if item["label"] == "风险提示"
+    )
+
+    assert "Elo 与 Poisson 模型分歧" in risk_item["value"]
+    assert "多家赔率报价分歧较大" in risk_item["value"]
+
+
 def test_project_signal_rows_reads_realistic_over_under_probabilities():
     snapshot = {
         "matches": [

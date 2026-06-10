@@ -32,6 +32,35 @@ def test_aggregate_same_line_average():
     assert math.isclose(out["odds"], 2.0)
 
 
+def test_aggregate_reports_dispersion_after_outlier_filtering():
+    quotes = [
+        OddsQuote("bk1", MarketType.X12, "home", 1.8),
+        OddsQuote("bk2", MarketType.X12, "home", 2.0),
+        OddsQuote("bk3", MarketType.X12, "home", 2.2),
+        OddsQuote("bk4", MarketType.X12, "home", 10.0),
+    ]
+
+    out = aggregate(quotes, MarketType.X12, "home", ratio=2.0)
+
+    assert out["n_books"] == 3
+    assert math.isclose(out["odds"], 2.0)
+    assert out["min_odds"] == 1.8
+    assert out["max_odds"] == 2.2
+    assert math.isclose(out["dispersion_ratio"], 2.2 / 1.8)
+
+
+def test_aggregate_without_quotes_reports_empty_dispersion():
+    out = aggregate([], MarketType.X12, "home")
+
+    assert out == {
+        "odds": None,
+        "n_books": 0,
+        "min_odds": None,
+        "max_odds": None,
+        "dispersion_ratio": None,
+    }
+
+
 def test_aggregate_market_devigs_all_selections_same_line():
     quotes = [
         OddsQuote("bk1", MarketType.OU, "over", 1.9, line=2.5, fetched_at=datetime(2026, 6, 8, 1, tzinfo=timezone.utc)),
@@ -45,3 +74,6 @@ def test_aggregate_market_devigs_all_selections_same_line():
     assert set(out["odds"]) == {"over", "under"}
     assert math.isclose(sum(out["market_probs"].values()), 1.0, abs_tol=1e-9)
     assert out["last_update_at"] == "2026-06-08T04:00:00+00:00"
+    assert set(out["dispersion_by_selection"]) == {"over", "under"}
+    assert math.isclose(out["dispersion_by_selection"]["over"], 2.1 / 1.9)
+    assert math.isclose(out["dispersion_by_selection"]["under"], 2.0 / 1.8)

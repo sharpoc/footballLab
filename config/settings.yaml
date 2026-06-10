@@ -22,6 +22,10 @@ odds:
   min_books: 3
   outlier_ratio: 2.0
 
+quality:
+  disagreement_prob_delta: 0.12
+  odds_dispersion_ratio_max: 1.18
+
 value:
   s_ev: 0.08
   s_edge: 0.04

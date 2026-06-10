@@ -297,6 +297,8 @@ def _signal_risk_note(signal: dict[str, Any], stale: bool) -> str:
         "longshot_uncertainty": "市场概率偏低，冷门尾部不确定性较高",
         "unconfirmed_backup": "使用本地缓存兜底，需复核",
         "line_changed_unknown": "盘口线变动未完全确认",
+        "model_disagreement": "Elo 与 Poisson 模型分歧，等级已压低",
+        "market_dispersion": "多家赔率报价分歧较大，等级已压低",
     }
     for reason in _as_list(signal.get("reasons")):
         label = reason_labels.get(str(reason))
