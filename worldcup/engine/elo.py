@@ -9,9 +9,17 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
-def win_draw_loss(elo_home: float, elo_away: float, neutral: bool, cfg: dict) -> dict:
+def win_draw_loss(
+    elo_home: float,
+    elo_away: float,
+    neutral: bool,
+    cfg: dict,
+    home_advantage: float | None = None,
+) -> dict:
     dr = elo_home - elo_away
-    if not neutral:
+    if home_advantage is not None:
+        dr += home_advantage
+    elif not neutral:
         dr += cfg["home_adv"]
     we = expected_score(dr)
     p_draw = _clamp(

@@ -10,6 +10,7 @@ CFG = {
     "a_edge": 0.02,
     "b_ev": 0.03,
     "b_edge": 0.01,
+    "longshot_market_prob_max": 0.12,
     "odds_max_age_seconds": 12600,
     "min_books": 3,
 }
@@ -82,6 +83,12 @@ def test_stale_odds_caps_at_b():
 def test_few_books_caps_at_b():
     signal = grade_signal(MarketType.X12, "home", 0.60, 0.45, 1.85, ok_ctx(n_books=1), CFG)
     assert signal.grade == Grade.B
+
+
+def test_longshot_market_probability_caps_at_b():
+    signal = grade_signal(MarketType.X12, "draw", 0.16, 0.05, 18.5, ok_ctx(), CFG)
+    assert signal.grade == Grade.B
+    assert "longshot_uncertainty" in signal.reasons
 
 
 def test_no_market_yet_status():

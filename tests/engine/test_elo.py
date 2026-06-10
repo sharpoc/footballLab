@@ -39,3 +39,10 @@ def test_home_advantage_applied_when_not_neutral():
     eq_neutral = win_draw_loss(1800, 1800, neutral=True, cfg=CFG)
     with_home = win_draw_loss(1800, 1800, neutral=False, cfg=CFG)
     assert with_home["home"] > eq_neutral["home"]
+
+
+def test_signed_home_advantage_can_boost_away_side():
+    eq_neutral = win_draw_loss(1800, 1800, neutral=True, cfg=CFG)
+    away_host = win_draw_loss(1800, 1800, neutral=True, cfg=CFG, home_advantage=-100)
+    assert away_host["away"] > eq_neutral["away"]
+    assert away_host["home"] < eq_neutral["home"]

@@ -113,7 +113,7 @@ def refresh_cache_and_build_snapshot(
         source_errors.append({"source": "theoddsapi", "error": f"{type(exc).__name__}: {exc}"})
         stale_sources.append("theoddsapi")
 
-    snapshot = build_snapshot_from_cache(cache, snapshot_at=observed)
+    snapshot = build_snapshot_from_cache(cache, snapshot_at=observed, stale_sources=stale_sources)
     snapshot.setdefault("data_quality", {})["source_errors"] = source_errors
     snapshot.setdefault("data_quality", {})["stale_sources"] = stale_sources
     quota = load_quota_ledger(quota_output).get("providers", {})

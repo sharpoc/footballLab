@@ -35,6 +35,16 @@ def _cap_at_b(grade: Grade) -> Grade:
     return Grade.B if grade in (Grade.S, Grade.A) else grade
 
 
+def _should_cap_longshot(p_market: float | None, grade: Grade, cfg: dict) -> bool:
+    threshold = cfg.get("longshot_market_prob_max")
+    return (
+        threshold is not None
+        and p_market is not None
+        and p_market < threshold
+        and grade in (Grade.S, Grade.A)
+    )
+
+
 def grade_signal(
     market_type: MarketType,
     selection: str,
@@ -76,6 +86,9 @@ def grade_signal(
     if ctx.get("n_books", 0) < cfg["min_books"]:
         base = _cap_at_b(base)
         reasons.append("few_books")
+    if market_type != MarketType.AH and _should_cap_longshot(p_market, base, cfg):
+        base = _cap_at_b(base)
+        reasons.append("longshot_uncertainty")
     if ctx.get("depends_on_backup"):
         base = _cap_at_b(base)
         reasons.append("unconfirmed_backup")

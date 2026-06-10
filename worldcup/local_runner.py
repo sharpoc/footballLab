@@ -88,7 +88,11 @@ def _next_kickoff_from_matches(matches: list[dict[str, Any]], observed_at: str) 
     return min(upcoming).isoformat()
 
 
-def _local_run_metadata(snapshot_at: str, matches: list[dict[str, Any]]) -> dict[str, Any]:
+def _local_run_metadata(
+    snapshot_at: str,
+    matches: list[dict[str, Any]],
+    stale_sources: list[str] | None = None,
+) -> dict[str, Any]:
     decision = build_refresh_decision(
         now=snapshot_at,
         last_refresh_at=None,
@@ -102,7 +106,7 @@ def _local_run_metadata(snapshot_at: str, matches: list[dict[str, Any]]) -> dict
         decision=decision,
         quota={},
         source_errors=[],
-        stale_sources=[],
+        stale_sources=list(stale_sources or []),
     )
 
 
@@ -110,9 +114,12 @@ def build_snapshot_from_probe(
     probe_dir: str | Path,
     snapshot_at: str | None = None,
     cfg: dict | None = None,
+    stale_sources: list[str] | None = None,
 ) -> dict[str, Any]:
     probe_path = Path(probe_dir)
     cfg = cfg or load_config()
+    observed_at = snapshot_at or _now_utc_iso()
+    stale_source_list = list(stale_sources or [])
     fixtures = parse_openfootball_fixtures(_read_json(probe_path / "openfootball_2026.json"))
     odds_events = parse_theoddsapi_events(_read_json(probe_path / "theoddsapi_wc_odds.json"))
     elo_ratings = parse_elo_ratings((probe_path / "elo_world.tsv").read_text(encoding="utf-8"))
@@ -122,24 +129,31 @@ def build_snapshot_from_probe(
     matches = []
     for match_input in build_result.inputs:
         analysis = analyze_match_input(match_input, cfg)
-        signals = generate_value_signals(analysis, cfg)
+        signals = generate_value_signals(
+            analysis,
+            cfg,
+            observed_at=observed_at,
+            stale_sources=stale_source_list,
+        )
         matches.append(_analysis_to_dict(analysis, signals))
 
-    observed_at = snapshot_at or _now_utc_iso()
+    data_quality = {
+        "missing_odds": build_result.missing_odds,
+        "missing_elo": build_result.missing_elo,
+        "time_mismatches": build_result.time_mismatches,
+    }
+    if stale_source_list:
+        data_quality["stale_sources"] = stale_source_list
     return {
         "snapshot_at": observed_at,
-        "run": _local_run_metadata(observed_at, matches),
+        "run": _local_run_metadata(observed_at, matches, stale_sources=stale_source_list),
         "counts": {
             "fixtures": len(fixtures),
             "odds_events": len(odds_events),
             "match_inputs": len(build_result.inputs),
             "matches": len(matches),
         },
-        "data_quality": {
-            "missing_odds": build_result.missing_odds,
-            "missing_elo": build_result.missing_elo,
-            "time_mismatches": build_result.time_mismatches,
-        },
+        "data_quality": data_quality,
         "matches": matches,
     }
 
@@ -148,8 +162,14 @@ def build_snapshot_from_cache(
     cache_dir: str | Path,
     snapshot_at: str | None = None,
     cfg: dict | None = None,
+    stale_sources: list[str] | None = None,
 ) -> dict[str, Any]:
-    return build_snapshot_from_probe(cache_dir, snapshot_at=snapshot_at, cfg=cfg)
+    return build_snapshot_from_probe(
+        cache_dir,
+        snapshot_at=snapshot_at,
+        cfg=cfg,
+        stale_sources=stale_sources,
+    )
 
 
 def write_snapshot(snapshot: dict[str, Any], output_path: str | Path) -> None:

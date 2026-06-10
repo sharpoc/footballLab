@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from worldcup.config import load_config
 from worldcup.ingest import build_ingest_payload
 from worldcup.local_runner import build_snapshot_from_cache, build_snapshot_from_probe, write_snapshot
 
@@ -117,3 +118,32 @@ def test_build_snapshot_from_cache_includes_run_metadata_for_ingest():
 
         assert snapshot["run"]["run_id"] == "20260608T000000Z-local"
         assert payload["run_id"] == "20260608T000000Z-local"
+
+
+def test_build_snapshot_caps_signals_when_odds_quotes_are_stale():
+    with TemporaryDirectory() as tmp:
+        probe_dir = Path(tmp) / "probe"
+        _write_probe_files(probe_dir)
+        odds_path = probe_dir / "theoddsapi_wc_odds.json"
+        odds_events = json.loads(odds_path.read_text())
+        for market in odds_events[0]["bookmakers"][0]["markets"]:
+            market["last_update"] = "2026-06-08T00:00:00Z"
+            if market["key"] == "h2h":
+                market["outcomes"][0]["price"] = 2.2
+        odds_path.write_text(json.dumps(odds_events))
+        base_cfg = load_config()
+        cfg = {**base_cfg, "odds": {**base_cfg["odds"], "min_books": 1}}
+
+        snapshot = build_snapshot_from_probe(
+            probe_dir,
+            snapshot_at="2026-06-08T04:00:01+00:00",
+            cfg=cfg,
+        )
+
+        home_signal = next(
+            signal
+            for signal in snapshot["matches"][0]["signals"]
+            if signal["market_type"] == "1X2_90min" and signal["selection"] == "home"
+        )
+        assert home_signal["grade"] == "B"
+        assert "stale_odds" in home_signal["reasons"]

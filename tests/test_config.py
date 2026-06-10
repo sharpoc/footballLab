@@ -8,7 +8,9 @@ def test_load_config_reads_known_keys():
     cfg = load_config()
     assert cfg["poisson"]["max_goals"] == 10
     assert cfg["elo"]["home_adv"] == 100
+    assert cfg["elo"]["draw_min"] <= 0.12
     assert cfg["odds"]["min_books"] == 3
+    assert cfg["value"]["longshot_market_prob_max"] == 0.12
 
 
 def test_odds_quote_rejects_naive_datetime():

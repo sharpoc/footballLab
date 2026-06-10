@@ -87,6 +87,78 @@ def test_build_match_inputs_reports_missing_odds_for_confirmed_fixture():
     assert result.missing_odds == ["Mexico vs South Africa"]
 
 
+def test_build_match_inputs_marks_home_host_advantage_for_world_cup_venue():
+    fixtures = parse_openfootball_fixtures(
+        {
+            "matches": [
+                {
+                    "round": "Matchday 1",
+                    "date": "2026-06-11",
+                    "time": "13:00 UTC-6",
+                    "team1": "Mexico",
+                    "team2": "South Africa",
+                    "ground": "Mexico City",
+                }
+            ]
+        }
+    )
+    events = parse_theoddsapi_events(
+        [
+            {
+                "id": "event-1",
+                "sport_key": "soccer_fifa_world_cup",
+                "commence_time": "2026-06-11T19:00:00Z",
+                "home_team": "Mexico",
+                "away_team": "South Africa",
+                "bookmakers": [],
+            }
+        ]
+    )
+    ratings = parse_elo_ratings("1\t1\tMX\t1875\n2\t2\tZA\t1700\n")
+    aliases = parse_elo_team_aliases("MX\tMexico\nZA\tSouth Africa\n")
+
+    result = build_match_inputs(fixtures, events, ratings, aliases)
+
+    assert result.inputs[0].home_advantage_elo > 0
+
+
+def test_build_match_inputs_marks_away_host_advantage_for_world_cup_venue():
+    fixtures = parse_openfootball_fixtures(
+        {
+            "matches": [
+                {
+                    "round": "Matchday 3",
+                    "date": "2026-06-25",
+                    "time": "19:00 UTC-7",
+                    "team1": "Turkey",
+                    "team2": "USA",
+                    "ground": "Los Angeles (Inglewood)",
+                }
+            ]
+        }
+    )
+    events = parse_theoddsapi_events(
+        [
+            {
+                "id": "event-1",
+                "sport_key": "soccer_fifa_world_cup",
+                "commence_time": "2026-06-26T02:00:00Z",
+                "home_team": "Turkey",
+                "away_team": "USA",
+                "bookmakers": [],
+            }
+        ]
+    )
+    ratings = parse_elo_ratings("1\t1\tTR\t1800\n2\t2\tUS\t1800\n")
+    aliases = parse_elo_team_aliases("TR\tTurkey\nUS\tUnited States\tUSA\n")
+
+    result = build_match_inputs(fixtures, events, ratings, aliases)
+    analysis = analyze_match_input(result.inputs[0], load_config())
+
+    assert result.inputs[0].home_advantage_elo < 0
+    assert analysis.lambdas[1] > analysis.lambdas[0]
+
+
 def test_analyze_match_input_generates_model_and_market_outputs():
     match_input = _sample_match_input_with_three_markets()
 

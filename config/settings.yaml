@@ -11,7 +11,7 @@ elo:
   home_adv: 100
   base_draw: 0.28
   draw_k: 0.0003
-  draw_min: 0.18
+  draw_min: 0.12
   draw_max: 0.32
 
 ensemble:
@@ -29,6 +29,7 @@ value:
   a_edge: 0.02
   b_ev: 0.03
   b_edge: 0.01
+  longshot_market_prob_max: 0.12
   odds_max_age_seconds: 12600
 
 differ:
