@@ -128,6 +128,34 @@ def test_blended_mu_full_weight_tracks_market():
     assert math.isclose(blended_mu(p_high, 2.5, cfg), 3.2, abs_tol=1e-6)
 
 
+def test_blended_mu_uses_dr_prior_without_market():
+    from worldcup.engine.poisson import blended_mu, prior_mu
+
+    cfg = dict(CFG)
+    cfg["mu_dr_slope"] = 0.002
+    cfg["mu_market_weight"] = 0.7
+    assert math.isclose(blended_mu(None, 2.5, cfg, dr=300), prior_mu(300, cfg))
+
+
+def test_blended_mu_blends_market_with_dr_prior():
+    from worldcup.engine.poisson import blended_mu, implied_total_mu, prior_mu, prob_total_over
+
+    cfg = dict(CFG)
+    cfg["mu_dr_slope"] = 0.002
+    cfg["mu_market_weight"] = 0.7
+    p = prob_total_over(3.0, 2.5)
+    expected = 0.7 * implied_total_mu(p, 2.5) + 0.3 * prior_mu(300, cfg)
+    assert math.isclose(blended_mu(p, 2.5, cfg, dr=300), expected, abs_tol=1e-9)
+
+
+def test_blended_mu_default_dr_keeps_old_behaviour():
+    from worldcup.engine.poisson import blended_mu
+
+    cfg = dict(CFG)
+    cfg["mu_market_weight"] = 0.7
+    assert math.isclose(blended_mu(None, 2.5, cfg), CFG["mu_total"])
+
+
 def test_score_matrix_dc_rho_zero_is_noop():
     base, tail_base = score_matrix(1.5, 1.1, CFG)
     cfg = dict(CFG)

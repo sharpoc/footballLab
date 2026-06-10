@@ -48,12 +48,13 @@ def prior_mu(dr: float, cfg: dict) -> float:
     return _clamp(mu, cfg.get("mu_prior_min", 1.5), cfg.get("mu_prior_max", 4.0))
 
 
-def blended_mu(p_over_market: float | None, line: float, cfg: dict) -> float:
-    """Blend market-implied total goals with the config prior.
+def blended_mu(p_over_market: float | None, line: float, cfg: dict, dr: float = 0.0) -> float:
+    """Blend market-implied total goals with the (possibly dr-dependent) prior.
 
-    `mu_market_weight` 缺省为 0，行为与历史版本完全一致（恒用 mu_total 先验）。
+    `mu_market_weight` 缺省为 0、`mu_dr_slope` 缺省为 0 时，
+    行为与历史版本完全一致（恒用 mu_total 先验）。
     """
-    base = cfg["mu_total"]
+    base = prior_mu(dr, cfg)
     weight = cfg.get("mu_market_weight", 0.0)
     if p_over_market is None or weight <= 0:
         return base
