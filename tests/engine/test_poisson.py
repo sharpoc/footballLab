@@ -70,3 +70,31 @@ def test_implied_total_mu_clamps_extreme_probs():
 
     assert 0.1 <= implied_total_mu(0.0, 2.5) <= 8.0
     assert 0.1 <= implied_total_mu(1.0, 2.5) <= 8.0
+
+
+def test_lambdas_mu_override():
+    lh, la = lambdas(0, CFG, mu_total=3.0)
+    assert math.isclose(lh + la, 3.0)
+
+
+def test_blended_mu_without_market_falls_back_to_prior():
+    from worldcup.engine.poisson import blended_mu
+
+    cfg = dict(CFG)
+    cfg["mu_market_weight"] = 0.7
+    assert math.isclose(blended_mu(None, 2.5, cfg), CFG["mu_total"])
+
+
+def test_blended_mu_weight_zero_keeps_prior():
+    from worldcup.engine.poisson import blended_mu
+
+    assert math.isclose(blended_mu(0.9, 2.5, dict(CFG)), CFG["mu_total"])
+
+
+def test_blended_mu_full_weight_tracks_market():
+    from worldcup.engine.poisson import blended_mu, prob_total_over
+
+    cfg = dict(CFG)
+    cfg["mu_market_weight"] = 1.0
+    p_high = prob_total_over(3.2, 2.5)
+    assert math.isclose(blended_mu(p_high, 2.5, cfg), 3.2, abs_tol=1e-6)

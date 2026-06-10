@@ -7,9 +7,10 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
-def lambdas(dr: float, cfg: dict) -> tuple[float, float]:
+def lambdas(dr: float, cfg: dict, mu_total: float | None = None) -> tuple[float, float]:
+    total = cfg["mu_total"] if mu_total is None else mu_total
     gd = _clamp(dr / cfg["gd_div"], -cfg["gd_clamp"], cfg["gd_clamp"])
-    half = cfg["mu_total"] / 2
+    half = total / 2
     lh = _clamp(half + gd / 2, cfg["lambda_min"], cfg["lambda_max"])
     la = _clamp(half - gd / 2, cfg["lambda_min"], cfg["lambda_max"])
     return lh, la
@@ -35,6 +36,19 @@ def implied_total_mu(p_over: float, line: float, lo: float = 0.1, hi: float = 8.
         else:
             hi = mid
     return (lo + hi) / 2
+
+
+def blended_mu(p_over_market: float | None, line: float, cfg: dict) -> float:
+    """Blend market-implied total goals with the config prior.
+
+    `mu_market_weight` 缺省为 0，行为与历史版本完全一致（恒用 mu_total 先验）。
+    """
+    base = cfg["mu_total"]
+    weight = cfg.get("mu_market_weight", 0.0)
+    if p_over_market is None or weight <= 0:
+        return base
+    mu_market = implied_total_mu(p_over_market, line)
+    return weight * mu_market + (1.0 - weight) * base
 
 
 def _pmf_series(lam: float, max_goals: int) -> list[float]:
