@@ -145,6 +145,21 @@ python3 -m worldcup.postgres_smoke --env .env --snapshot data/cache/analysis_sna
 
 该命令只验证前置条件并输出脱敏请求摘要，不连接数据库、不发送 HTTP。
 
+## 离线回测
+
+回测框架只读本地历史 CSV，不联网，输出研究指标（Brier / Log Loss / 校准分箱 / EV 与赔率分层 / 总进球诊断），不含任何资金建议。
+
+```bash
+python3 -m worldcup.backtest --csv data/local/backtest/history.csv --min-sample 200
+```
+
+- CSV 列契约见 `tests/data/backtest_sample.csv`（合成样例，仅演示格式，不得用于正式结论）。
+- 真实历史数据（赛前 Elo、收盘赔率）来源需单独确认后再接入。
+- 报告默认写入被忽略的 `data/local/backtest/report.json`。
+- 样本量低于 `--min-sample` 时报告带 `sample_too_small: true`，不能据此下强结论。
+
+另外：OU 大小球模型的逐场 `mu_total` 现在由「OU 市场去水概率反推的总进球」与配置先验 `poisson.mu_total` 按 `poisson.mu_market_weight` 混合得出；无 OU 市场时回退先验。snapshot 的 `model.mu_total` 字段记录实际使用值。
+
 ## API 注册清单
 
 API-Football 与 The Odds API 已完成第一轮探测；其它赔率源可作为后续容灾或交叉校验候选。

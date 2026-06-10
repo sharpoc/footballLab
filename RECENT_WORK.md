@@ -2,6 +2,17 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-10 回测框架 + OU 市场锚定实现完成
+
+- 新建分支 `codex/backtest-ou-market-total`，按 `docs/superpowers/plans/2026-06-10-backtest-and-ou-market-total.md` 分任务 TDD 执行，并为每个任务做本地 commit；未 push、未部署。
+- 修复 OU 大小球模型总进球恒定问题：新增 `prob_total_over`、`implied_total_mu`、`blended_mu`，`poisson.mu_market_weight: 0.7` 使逐场 `mu_total` 由 OU 市场去水概率与配置先验混合；无 OU 市场时回退先验，权重为 0 时可回到旧行为。
+- `pipeline.analyze_match_input` 现在先聚合 OU 市场，再使用逐场 `mu_total_used` 计算比分矩阵；本地 snapshot `model.mu_total` 记录实际使用值，现有 API / ingest / store 契约为增量兼容。
+- 新增 `worldcup.backtest` 离线回测框架：CSV 加载、单场概率重放、Brier / Log Loss、校准分箱、EV 与赔率分层、AH 实际回报、按 Elo 差分桶的总进球诊断、market / uniform 基线和 CLI。
+- 新增合成样例 `tests/data/backtest_sample.csv`，仅用于测试和格式演示，不得用于正式结论；真实历史数据（赛前 Elo + 收盘赔率）来源仍需单独确认。
+- 本地验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `218/218 tests passed`；CLI smoke `python3 -m worldcup.backtest --csv tests/data/backtest_sample.csv --min-sample 5` 成功生成被忽略的 `data/local/backtest/report.json`。
+- 后续建议：先确认真实历史数据来源，用真实数据跑回测后再调整 `poisson.mu_market_weight`、Elo/Poisson ensemble 权重和 EV/Edge 阈值；OU 信号会因市场锚定明显趋于保守，属于预期行为。
+- 本次未触发 live refresh、未调用 The Odds API、未写入线上 snapshot、未改 scheduler / ingest / HMAC / 数据库 schema。
+
 ## 2026-06-10 研究台账行内变化与 S/A 徽章已上线
 
 - 已提交并推送 `e06536a feat: move signal changes into ledger rows` 到 `origin/main`。
