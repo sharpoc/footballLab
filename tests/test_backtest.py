@@ -206,6 +206,66 @@ def test_run_backtest_reports_model_matched_subset():
     assert report["markets"]["ou_2_5"]["model"]["n"] == 7
 
 
+def test_apply_overrides_returns_modified_copy():
+    from worldcup.backtest import apply_overrides
+
+    cfg = {"poisson": {"dc_rho": 0.0}, "ou_main_line": 2.5}
+    out = apply_overrides(cfg, ["poisson.dc_rho=-0.1", "ou_main_line=3.5"])
+    assert out["poisson"]["dc_rho"] == -0.1
+    assert out["ou_main_line"] == 3.5
+    assert cfg["poisson"]["dc_rho"] == 0.0
+    assert cfg["ou_main_line"] == 2.5
+
+
+def test_apply_overrides_parses_int_bool_string():
+    from worldcup.backtest import apply_overrides
+
+    cfg = {"odds": {"min_books": 3}}
+    out = apply_overrides(cfg, ["odds.min_books=5", "odds.flag=true", "odds.name=abc"])
+    assert out["odds"]["min_books"] == 5
+    assert out["odds"]["flag"] is True
+    assert out["odds"]["name"] == "abc"
+
+
+def test_apply_overrides_invalid_format_raises():
+    from worldcup.backtest import apply_overrides
+
+    for bad in ("poisson.dc_rho", "=1", "unknown.key=1"):
+        try:
+            apply_overrides({"poisson": {}}, [bad])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for {bad!r}")
+
+
+def test_cli_accepts_set_overrides():
+    import json
+    import tempfile
+
+    from worldcup.backtest import main
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path = Path(tmp) / "report.json"
+        code = main(
+            [
+                "--csv",
+                str(SAMPLE_CSV),
+                "--out",
+                str(out_path),
+                "--min-sample",
+                "5",
+                "--set",
+                "poisson.mu_market_weight=0",
+            ]
+        )
+        assert code == 0
+        report = json.loads(out_path.read_text(encoding="utf-8"))
+        mus = [b["mean_mu_used"] for b in report["totals_by_abs_dr"] if b["n"]]
+        for mu in mus:
+            assert math.isclose(mu, 2.6, abs_tol=1e-9)
+
+
 def test_cli_writes_report_json():
     import json
     import tempfile

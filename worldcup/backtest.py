@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 from dataclasses import dataclass
@@ -336,15 +337,54 @@ def run_backtest(matches: list[BacktestMatch], cfg: dict, min_sample: int = 200)
     }
 
 
+def _parse_override_value(value: str):
+    lowered = value.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def apply_overrides(cfg: dict, overrides: list[str]) -> dict:
+    out = copy.deepcopy(cfg)
+    for item in overrides:
+        key, sep, raw_value = item.partition("=")
+        if not sep or not key or not raw_value.strip():
+            raise ValueError(f"invalid override (expect section.key=value): {item!r}")
+        section, dot, name = key.partition(".")
+        parsed = _parse_override_value(raw_value.strip())
+        if not dot:
+            out[key] = parsed
+            continue
+        if section not in out or not isinstance(out[section], dict):
+            raise ValueError(f"unknown config section: {section!r}")
+        out[section][name] = parsed
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Offline backtest for the worldcup engine")
     parser.add_argument("--csv", required=True, help="historical matches csv path")
     parser.add_argument("--config", default=None, help="settings.yaml path override")
     parser.add_argument("--out", default="data/local/backtest/report.json")
     parser.add_argument("--min-sample", type=int, default=200)
+    parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        dest="overrides",
+        metavar="SECTION.KEY=VALUE",
+        help="override a config value for this run, e.g. --set poisson.dc_rho=-0.1",
+    )
     args = parser.parse_args(argv)
 
-    cfg = load_config(args.config)
+    cfg = apply_overrides(load_config(args.config), args.overrides)
     report = run_backtest(load_matches(args.csv), cfg, min_sample=args.min_sample)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
