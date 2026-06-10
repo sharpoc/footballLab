@@ -338,7 +338,12 @@ def _sample_match_input_with_three_markets():
     return build_match_inputs(fixtures, events, ratings, aliases).inputs[0]
 
 
-def _ou_match_input(over_odds: float, under_odds: float, with_ou: bool = True) -> MatchAnalysisInput:
+def _ou_match_input(
+    over_odds: float,
+    under_odds: float,
+    with_ou: bool = True,
+    books: tuple[str, ...] = ("book1", "book2", "book3"),
+) -> MatchAnalysisInput:
     kickoff = datetime(2026, 6, 12, 18, 0, tzinfo=timezone.utc)
     quotes = [
         OddsQuote("book1", MarketType.X12, "home", 2.5),
@@ -346,7 +351,7 @@ def _ou_match_input(over_odds: float, under_odds: float, with_ou: bool = True) -
         OddsQuote("book1", MarketType.X12, "away", 2.9),
     ]
     if with_ou:
-        for book in ("book1", "book2", "book3"):
+        for book in books:
             quotes.append(OddsQuote(book, MarketType.OU, "over", over_odds, line=2.5))
             quotes.append(OddsQuote(book, MarketType.OU, "under", under_odds, line=2.5))
     fixture = Fixture(
@@ -388,4 +393,10 @@ def test_ou_probability_varies_with_market_total():
 def test_ou_falls_back_to_prior_without_market():
     cfg = load_config()
     analysis = analyze_match_input(_ou_match_input(0.0, 0.0, with_ou=False), cfg)
+    assert math.isclose(analysis.mu_total_used, cfg["poisson"]["mu_total"])
+
+
+def test_ou_anchor_requires_min_books():
+    cfg = load_config()
+    analysis = analyze_match_input(_ou_match_input(1.55, 2.45, books=("book1",)), cfg)
     assert math.isclose(analysis.mu_total_used, cfg["poisson"]["mu_total"])

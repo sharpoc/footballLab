@@ -195,8 +195,13 @@ def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnal
         selections=["over", "under"],
         ratio=ratio,
     )
+    p_over_market = market_ou_2_5["market_probs"].get("over")
+    if p_over_market is not None:
+        ou_books = market_ou_2_5["n_books_by_selection"]
+        if min(ou_books.get("over", 0), ou_books.get("under", 0)) < cfg["odds"]["min_books"]:
+            p_over_market = None
     mu_total_used = poisson.blended_mu(
-        market_ou_2_5["market_probs"].get("over"),
+        p_over_market,
         ou_line,
         cfg["poisson"],
     )
