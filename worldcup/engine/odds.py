@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timezone
 from statistics import median
 
 from worldcup.models import MarketType, OddsQuote
@@ -54,15 +55,26 @@ def aggregate_market(
 ) -> dict:
     odds: dict[str, float] = {}
     n_books: dict[str, int] = {}
+    fetched_times = [
+        q.fetched_at.astimezone(timezone.utc)
+        for q in quotes
+        if q.market_type == market_type
+        and q.selection in selections
+        and q.line == line
+        and q.fetched_at is not None
+    ]
+    last_update_at = max(fetched_times).isoformat() if fetched_times else None
     for selection in selections:
         agg = aggregate(quotes, market_type, selection, line=line, ratio=ratio)
         n_books[selection] = agg["n_books"]
         if agg["odds"] is not None:
             odds[selection] = agg["odds"]
-    if set(odds) != set(selections):
-        return {"odds": odds, "market_probs": {}, "n_books_by_selection": n_books}
-    return {
+    base = {
         "odds": odds,
-        "market_probs": devig(odds),
+        "market_probs": {},
         "n_books_by_selection": n_books,
+        "last_update_at": last_update_at,
     }
+    if set(odds) != set(selections):
+        return base
+    return {**base, "market_probs": devig(odds)}

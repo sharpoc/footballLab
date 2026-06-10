@@ -1,4 +1,7 @@
+from copy import deepcopy
+
 from worldcup.ledger import (
+    build_snapshot_change_items,
     build_signal_explanation,
     build_summary_metrics,
     derive_quality_status,
@@ -31,6 +34,7 @@ def _snapshot():
                 "group": "Group A",
                 "home_team": "Mexico",
                 "away_team": "South Africa",
+                "odds_updated_at": "2026-06-09T07:30:00+00:00",
                 "model": {"combined_1x2": {"home": 0.61, "draw": 0.23, "away": 0.16}},
                 "market": {"1x2": {"market_probs": {"home": 0.57, "draw": 0.25, "away": 0.18}}},
                 "signals": [
@@ -148,6 +152,8 @@ def test_project_signal_rows_expands_signals_without_money_fields():
     assert rows[0]["matchup"] == "墨西哥 对 南非"
     assert rows[0]["kickoff_date"] == "2026 年 6 月 12 日 星期五"
     assert rows[0]["kickoff_time"] == "03:00"
+    assert rows[0]["updated_time"] == "15:30"
+    assert rows[0]["updated_label"] == "赔率源更新"
     assert rows[0]["stage_group"] == "小组赛第 1 轮 | A 组"
     assert rows[0]["market_label"] == "胜平负 - 主队"
     assert rows[0]["model_prob"] == "61.0%"
@@ -175,6 +181,7 @@ def test_project_signal_rows_includes_detail_items_for_expandable_analysis():
     assert details["模型与市场"] == "模型 61.0%，市场 57.0%，Edge +4.1%"
     assert details["EV"] == "+5.2%"
     assert details["等级状态"] == "A / OK / 新鲜"
+    assert details["更新时间"] == "赔率源更新：2026 年 6 月 9 日 星期二 15:30"
     assert details["风险提示"] == "当前数据新鲜，未触发额外降级原因。"
 
 
@@ -261,6 +268,44 @@ def test_project_signal_rows_sorts_by_kickoff_then_grade_descending():
         "Early High 对 Match",
         "Early Low 对 Match",
         "Late 对 Match",
+    ]
+
+
+def test_build_snapshot_change_items_compares_previous_signal_values():
+    previous = _snapshot()
+    previous["matches"][0]["market"]["1x2"]["odds"] = {"home": 2.0, "draw": 3.3, "away": 4.0}
+    current = deepcopy(previous)
+    current["snapshot_at"] = "2026-06-09T10:00:00+00:00"
+    current["matches"][0]["market"]["1x2"]["odds"]["home"] = 1.85
+    current["matches"][0]["market"]["1x2"]["market_probs"]["home"] = 0.54
+    current["matches"][0]["signals"][0]["grade"] = "S"
+    current["matches"][0]["signals"][0]["ev"] = 0.092
+    current["matches"][0]["signals"][0]["edge"] = 0.071
+
+    items = build_snapshot_change_items(
+        previous,
+        current,
+        cfg={"ev_change": 0.03, "odds_move": 0.05},
+    )
+
+    assert len(items) == 1
+    assert items[0]["title"] == "墨西哥 对 南非 | 胜平负 - 主队"
+    assert "等级 A → S" in items[0]["detail"]
+    assert "EV +5.2% → +9.2%" in items[0]["detail"]
+    assert "Edge +4.1% → +7.1%" in items[0]["detail"]
+    assert "市场概率 57.0% → 54.0%" in items[0]["detail"]
+    assert "赔率 2.00 → 1.85" in items[0]["detail"]
+
+
+def test_build_snapshot_change_items_handles_missing_previous_snapshot():
+    items = build_snapshot_change_items(None, _snapshot())
+
+    assert items == [
+        {
+            "tone": "neutral",
+            "title": "暂无上一轮数据",
+            "detail": "当前只有一轮快照，下一次更新后会展示等级、EV、概率和赔率变化。",
+        }
     ]
 
 

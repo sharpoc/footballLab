@@ -24,6 +24,7 @@ class FakePostgresConnection:
         self.rows = rows
         self.statements = statements
         self._last_row = None
+        self._last_rows = []
         self.commits = 0
 
     def __enter__(self):
@@ -36,6 +37,7 @@ class FakePostgresConnection:
         normalized = " ".join(sql.split())
         self.statements.append((normalized, params))
         upper = normalized.upper()
+        self._last_rows = []
         if upper.startswith("CREATE TABLE") or upper.startswith("CREATE INDEX"):
             self._last_row = None
         elif upper.startswith("INSERT INTO SNAPSHOTS"):
@@ -59,26 +61,35 @@ class FakePostgresConnection:
             if not self.rows:
                 self._last_row = None
             else:
-                latest = sorted(
+                sorted_rows = sorted(
                     self.rows.values(),
                     key=lambda row: (row["stored_at"], row["idempotency_key"]),
                     reverse=True,
-                )[0]
-                self._last_row = (
-                    latest["idempotency_key"],
-                    latest["run_id"],
-                    latest["snapshot_id"],
-                    latest["snapshot_at"],
-                    latest["stored_at"],
-                    latest["payload_json"],
-                    latest["snapshot_json"],
                 )
+                if params:
+                    sorted_rows = sorted_rows[: params[0]]
+                self._last_rows = [
+                    (
+                        row["idempotency_key"],
+                        row["run_id"],
+                        row["snapshot_id"],
+                        row["snapshot_at"],
+                        row["stored_at"],
+                        row["payload_json"],
+                        row["snapshot_json"],
+                    )
+                    for row in sorted_rows
+                ]
+                self._last_row = self._last_rows[0]
         else:
             raise AssertionError(f"Unexpected SQL: {normalized}")
         return self
 
     def fetchone(self):
         return self._last_row
+
+    def fetchall(self):
+        return self._last_rows
 
     def commit(self):
         self.commits += 1
@@ -159,3 +170,31 @@ def test_postgres_snapshot_store_latest_snapshot_returns_latest_by_stored_at():
     assert latest["idempotency_key"] == "run-2:snapshot-2"
     assert latest["snapshot"]["counts"]["matches"] == 1
     assert json.loads(latest["payload_json"])["run_id"] == "run-2"
+
+
+def test_postgres_snapshot_store_list_recent_snapshots_returns_newest_first():
+    factory = FakePostgresFactory()
+    store = PostgresSnapshotStore(
+        dsn="postgresql://example.invalid/worldcup",
+        connection_factory=factory,
+    )
+    store.put_snapshot(
+        idempotency_key="run-1:snapshot-1",
+        payload=_payload(run_id="run-1", snapshot_id="snapshot-1"),
+        stored_at="2026-06-08T00:02:00+00:00",
+    )
+    store.put_snapshot(
+        idempotency_key="run-2:snapshot-2",
+        payload=_payload(run_id="run-2", snapshot_id="snapshot-2"),
+        stored_at="2026-06-08T00:03:00+00:00",
+    )
+    store.put_snapshot(
+        idempotency_key="run-3:snapshot-3",
+        payload=_payload(run_id="run-3", snapshot_id="snapshot-3"),
+        stored_at="2026-06-08T00:04:00+00:00",
+    )
+
+    recent = store.list_recent_snapshots(limit=2)
+
+    assert [item["run_id"] for item in recent] == ["run-3", "run-2"]
+    assert any("LIMIT %s" in sql for sql, _ in factory.statements)

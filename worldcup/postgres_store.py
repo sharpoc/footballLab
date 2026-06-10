@@ -19,6 +19,23 @@ def _json_loads(value: Any) -> Any:
     return value
 
 
+def _record_from_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    idempotency_key, run_id, snapshot_id, snapshot_at, stored_at, payload_json, snapshot_json = row
+    payload = _json_loads(payload_json)
+    snapshot = _json_loads(snapshot_json)
+    return {
+        "idempotency_key": idempotency_key,
+        "run_id": run_id,
+        "snapshot_id": snapshot_id,
+        "snapshot_at": snapshot_at,
+        "stored_at": stored_at,
+        "payload_json": json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        "snapshot_json": json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
+        "payload": payload,
+        "snapshot": snapshot,
+    }
+
+
 class PostgresSnapshotStore(SnapshotStore):
     def __init__(self, dsn: str, connection_factory: ConnectionFactory | None = None) -> None:
         self.dsn = dsn
@@ -127,17 +144,26 @@ class PostgresSnapshotStore(SnapshotStore):
             ).fetchone()
         if row is None:
             return None
-        idempotency_key, run_id, snapshot_id, snapshot_at, stored_at, payload_json, snapshot_json = row
-        payload = _json_loads(payload_json)
-        snapshot = _json_loads(snapshot_json)
-        return {
-            "idempotency_key": idempotency_key,
-            "run_id": run_id,
-            "snapshot_id": snapshot_id,
-            "snapshot_at": snapshot_at,
-            "stored_at": stored_at,
-            "payload_json": json.dumps(payload, ensure_ascii=False, sort_keys=True),
-            "snapshot_json": json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
-            "payload": payload,
-            "snapshot": snapshot,
-        }
+        return _record_from_row(row)
+
+    def list_recent_snapshots(self, limit: int = 2) -> list[dict[str, Any]]:
+        self.initialize()
+        bounded_limit = max(1, min(int(limit), 20))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                  idempotency_key,
+                  run_id,
+                  snapshot_id,
+                  snapshot_at,
+                  stored_at,
+                  payload_json,
+                  snapshot_json
+                FROM snapshots
+                ORDER BY stored_at DESC, idempotency_key DESC
+                LIMIT %s
+                """,
+                (bounded_limit,),
+            ).fetchall()
+        return [_record_from_row(row) for row in rows]

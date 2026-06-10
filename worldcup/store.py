@@ -13,6 +13,22 @@ def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _row_to_snapshot_record(row: sqlite3.Row) -> dict[str, Any]:
+    payload = json.loads(row["payload_json"])
+    snapshot = json.loads(row["snapshot_json"])
+    return {
+        "idempotency_key": row["idempotency_key"],
+        "run_id": row["run_id"],
+        "snapshot_id": row["snapshot_id"],
+        "snapshot_at": row["snapshot_at"],
+        "stored_at": row["stored_at"],
+        "payload_json": row["payload_json"],
+        "snapshot_json": row["snapshot_json"],
+        "payload": payload,
+        "snapshot": snapshot,
+    }
+
+
 class SQLiteSnapshotStore(SnapshotStore):
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -108,16 +124,27 @@ class SQLiteSnapshotStore(SnapshotStore):
             ).fetchone()
         if row is None:
             return None
-        payload = json.loads(row["payload_json"])
-        snapshot = json.loads(row["snapshot_json"])
-        return {
-            "idempotency_key": row["idempotency_key"],
-            "run_id": row["run_id"],
-            "snapshot_id": row["snapshot_id"],
-            "snapshot_at": row["snapshot_at"],
-            "stored_at": row["stored_at"],
-            "payload_json": row["payload_json"],
-            "snapshot_json": row["snapshot_json"],
-            "payload": payload,
-            "snapshot": snapshot,
-        }
+        return _row_to_snapshot_record(row)
+
+    def list_recent_snapshots(self, limit: int = 2) -> list[dict[str, Any]]:
+        self.initialize()
+        bounded_limit = max(1, min(int(limit), 20))
+        with sqlite3.connect(self.path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT
+                  idempotency_key,
+                  run_id,
+                  snapshot_id,
+                  snapshot_at,
+                  stored_at,
+                  payload_json,
+                  snapshot_json
+                FROM snapshots
+                ORDER BY stored_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+        return [_row_to_snapshot_record(row) for row in rows]

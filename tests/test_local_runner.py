@@ -38,9 +38,11 @@ def _write_probe_files(root: Path) -> None:
                     "bookmakers": [
                         {
                             "key": "bk1",
+                            "last_update": "2026-06-08T01:00:00Z",
                             "markets": [
                                 {
                                     "key": "h2h",
+                                    "last_update": "2026-06-08T02:00:00Z",
                                     "outcomes": [
                                         {"name": "Mexico", "price": 1.8},
                                         {"name": "South Africa", "price": 4.8},
@@ -49,6 +51,7 @@ def _write_probe_files(root: Path) -> None:
                                 },
                                 {
                                     "key": "totals",
+                                    "last_update": "2026-06-08T03:00:00Z",
                                     "outcomes": [
                                         {"name": "Over", "price": 1.9, "point": 2.5},
                                         {"name": "Under", "price": 2.0, "point": 2.5},
@@ -56,6 +59,7 @@ def _write_probe_files(root: Path) -> None:
                                 },
                                 {
                                     "key": "spreads",
+                                    "last_update": "2026-06-08T04:00:00Z",
                                     "outcomes": [
                                         {"name": "Mexico", "price": 1.9, "point": -0.5},
                                         {"name": "South Africa", "price": 1.9, "point": 0.5},
@@ -83,6 +87,9 @@ def test_build_snapshot_from_probe_serializes_match_analysis():
         assert snapshot["counts"]["fixtures"] == 1
         assert snapshot["counts"]["match_inputs"] == 1
         assert snapshot["matches"][0]["home_team"] == "Mexico"
+        assert snapshot["matches"][0]["odds_updated_at"] == "2026-06-08T04:00:00+00:00"
+        assert snapshot["matches"][0]["market"]["1x2"]["last_update_at"] == "2026-06-08T02:00:00+00:00"
+        assert snapshot["matches"][0]["market"]["ou_2_5"]["last_update_at"] == "2026-06-08T03:00:00+00:00"
         assert snapshot["matches"][0]["model"]["combined_1x2"]["home"] > 0
         assert snapshot["matches"][0]["signals"]
 

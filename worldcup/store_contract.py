@@ -21,3 +21,6 @@ class SnapshotStore(Protocol):
 
     def latest_snapshot(self) -> dict[str, Any] | None:
         pass
+
+    def list_recent_snapshots(self, limit: int = 2) -> list[dict[str, Any]]:
+        pass

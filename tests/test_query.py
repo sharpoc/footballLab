@@ -1,7 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from worldcup.query import load_latest_snapshot, project_match_rows
+from worldcup.query import load_latest_snapshot, load_recent_snapshots, project_match_rows
 from worldcup.store import SQLiteSnapshotStore
 
 
@@ -34,6 +34,9 @@ class MemorySnapshotStore:
 
     def latest_snapshot(self):
         return self.latest
+
+    def list_recent_snapshots(self, limit=2):
+        return [self.latest] if self.latest else []
 
 
 def _snapshot():
@@ -109,6 +112,47 @@ def test_load_latest_snapshot_reads_from_injected_store():
 
     assert snapshot["counts"]["matches"] == 2
     assert snapshot["run"]["run_id"] == "20260608T000000Z-live"
+
+
+def test_load_recent_snapshots_reads_recent_from_sqlite_store():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        store = SQLiteSnapshotStore(db_path)
+        store.put_snapshot(
+            idempotency_key="run-1:snapshot-1",
+            payload={
+                "run_id": "run-1",
+                "snapshot_id": "snapshot-1",
+                "snapshot_at": "2026-06-08T00:00:00+00:00",
+                "snapshot": {"run": {"run_id": "run-1"}, "counts": {"matches": 1}},
+            },
+            stored_at="2026-06-08T00:02:00+00:00",
+        )
+        store.put_snapshot(
+            idempotency_key="run-2:snapshot-2",
+            payload={
+                "run_id": "run-2",
+                "snapshot_id": "snapshot-2",
+                "snapshot_at": "2026-06-08T01:00:00+00:00",
+                "snapshot": {"run": {"run_id": "run-2"}, "counts": {"matches": 2}},
+            },
+            stored_at="2026-06-08T01:02:00+00:00",
+        )
+
+        snapshots = load_recent_snapshots(db_path, limit=2)
+
+        assert [snapshot["run"]["run_id"] for snapshot in snapshots] == ["run-2", "run-1"]
+
+
+def test_load_recent_snapshots_falls_back_to_latest_for_minimal_store():
+    class LatestOnlyStore:
+        def latest_snapshot(self):
+            return {"snapshot": _snapshot()}
+
+    snapshots = load_recent_snapshots(store=LatestOnlyStore())
+
+    assert len(snapshots) == 1
+    assert snapshots[0]["counts"]["matches"] == 2
 
 
 def test_project_match_rows_returns_preview_safe_rows():

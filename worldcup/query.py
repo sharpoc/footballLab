@@ -20,6 +20,20 @@ def load_latest_snapshot(
     return latest["snapshot"]
 
 
+def load_recent_snapshots(
+    db_path: str | Path = "data/local/worldcup.db",
+    store: SnapshotStore | None = None,
+    limit: int = 2,
+) -> list[dict[str, Any]]:
+    snapshot_store = store or SQLiteSnapshotStore(db_path)
+    if hasattr(snapshot_store, "list_recent_snapshots"):
+        records = snapshot_store.list_recent_snapshots(limit=limit)
+    else:
+        latest = snapshot_store.latest_snapshot()
+        records = [latest] if latest is not None else []
+    return [record["snapshot"] for record in records if record is not None]
+
+
 def _top_grade(signals: list[dict[str, Any]]) -> str:
     grades = [signal.get("grade", "") for signal in signals]
     known = [grade for grade in grades if grade in GRADE_ORDER]

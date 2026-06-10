@@ -15,14 +15,14 @@ def test_scheduler_refreshes_when_no_previous_run():
 
     assert decision.should_refresh is True
     assert decision.reason == "no_previous_refresh"
-    assert decision.policy_reason == "tournament_window"
-    assert decision.interval_seconds == 21600
+    assert decision.policy_reason == "pre_7d_window"
+    assert decision.interval_seconds == 43200
     assert decision.next_due_at is None
 
 
-def test_scheduler_skips_until_interval_has_elapsed():
+def test_scheduler_uses_twelve_hours_inside_seven_day_window():
     decision = build_refresh_decision(
-        now="2026-06-08T03:00:00+00:00",
+        now="2026-06-08T11:00:00+00:00",
         last_refresh_at="2026-06-08T00:00:00+00:00",
         next_kickoff_at="2026-06-11T19:00:00+00:00",
         quota_remaining=494,
@@ -30,9 +30,37 @@ def test_scheduler_skips_until_interval_has_elapsed():
 
     assert decision.should_refresh is False
     assert decision.reason == "not_due"
-    assert decision.policy_reason == "tournament_window"
+    assert decision.policy_reason == "pre_7d_window"
+    assert decision.interval_seconds == 43200
+    assert decision.next_due_at == "2026-06-08T12:00:00+00:00"
+
+
+def test_scheduler_uses_six_hours_inside_three_day_window():
+    decision = build_refresh_decision(
+        now="2026-06-09T03:00:00+00:00",
+        last_refresh_at="2026-06-09T00:00:00+00:00",
+        next_kickoff_at="2026-06-11T19:00:00+00:00",
+        quota_remaining=494,
+    )
+
+    assert decision.should_refresh is False
+    assert decision.policy_reason == "pre_3d_window"
     assert decision.interval_seconds == 21600
-    assert decision.next_due_at == "2026-06-08T06:00:00+00:00"
+    assert decision.next_due_at == "2026-06-09T06:00:00+00:00"
+
+
+def test_scheduler_uses_two_hours_inside_one_day_window():
+    decision = build_refresh_decision(
+        now="2026-06-10T19:30:00+00:00",
+        last_refresh_at="2026-06-10T18:00:00+00:00",
+        next_kickoff_at="2026-06-11T19:00:00+00:00",
+        quota_remaining=494,
+    )
+
+    assert decision.should_refresh is False
+    assert decision.policy_reason == "pre_1d_window"
+    assert decision.interval_seconds == 7200
+    assert decision.next_due_at == "2026-06-10T20:00:00+00:00"
 
 
 def test_scheduler_slows_down_when_free_tier_quota_is_low():
@@ -110,13 +138,13 @@ def test_scheduler_report_reads_snapshot_and_quota_without_refreshing():
         )
 
         report = build_scheduler_report(
-            now="2026-06-08T03:00:00+00:00",
+            now="2026-06-08T11:00:00+00:00",
             snapshot_path=snapshot_path,
             quota_path=quota_path,
         )
 
         assert report["mode"] == "dry-run"
         assert report["decision"]["should_refresh"] is False
-        assert report["decision"]["next_due_at"] == "2026-06-08T06:00:00+00:00"
+        assert report["decision"]["next_due_at"] == "2026-06-08T12:00:00+00:00"
         assert report["quota"]["theoddsapi"]["remaining"] == 494
         assert report["last_refresh_at"] == "2026-06-08T00:00:00+00:00"

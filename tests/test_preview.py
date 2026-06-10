@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -9,6 +10,12 @@ def _snapshot():
         "snapshot_at": "2026-06-08T00:00:00+00:00",
         "run": {
             "run_id": "20260608T000000Z-live",
+            "observed_at": "2026-06-08T00:00:00+00:00",
+            "policy": {
+                "policy_reason": "pre_7d_window",
+                "interval_seconds": 43200,
+                "next_due_at": "2026-06-08T12:00:00+00:00",
+            },
             "quota": {"theoddsapi": {"remaining": 494, "used": 6}},
             "stale_sources": [],
             "source_errors": [],
@@ -26,8 +33,14 @@ def _snapshot():
                 "group": "Group A",
                 "home_team": "Mexico",
                 "away_team": "South Africa",
+                "odds_updated_at": "2026-06-08T03:30:00+00:00",
                 "model": {"combined_1x2": {"home": 0.61, "draw": 0.23, "away": 0.16}},
-                "market": {"1x2": {"market_probs": {"home": 0.57, "draw": 0.25, "away": 0.18}}},
+                "market": {
+                    "1x2": {
+                        "odds": {"home": 1.85, "draw": 3.3, "away": 4.0},
+                        "market_probs": {"home": 0.57, "draw": 0.25, "away": 0.18},
+                    }
+                },
                 "signals": [
                     {
                         "market_type": "1X2_90min",
@@ -55,11 +68,28 @@ def test_build_preview_html_renders_research_ledger_surface():
     assert "最后更新<br>2026 年 6 月 8 日 星期一 08:00" in html
     assert "最后更新：</strong><br>2026 年 6 月 8 日 星期一 08:00" in html
     assert "2026-06-08T00:00:00+00:00" not in html
+    assert '<th scope="col">更新</th>' in html
+    assert "赔率源更新" in html
+    assert "11:30" in html
     assert "胜平负 - 主队" in html
     assert "+4.1%" in html
+    assert 'class="grade-pill grade-a"' in html
+    assert ".grade-s" in html
+    assert ".grade-a" in html
+    assert ".grade-b" in html
+    assert ".grade-c" in html
+    assert ".grade-d" in html
     assert "模型概率高于去水后的市场概率。" in html
     assert "方法说明" in html
     assert "数据源健康" in html
+    assert "更新规则" in html
+    assert "常规：24 小时" in html
+    assert "赛前 7 天内：12 小时" in html
+    assert "赛前 3 天内：6 小时" in html
+    assert "赛前 1 天内：2 小时" in html
+    assert "低额度：24 小时" in html
+    assert "当前规则：赛前 7 天内" in html
+    assert "下次计划：2026 年 6 月 8 日 星期一 20:00" in html
     assert "注意事项" in html
     assert "Research Ledger" not in html
     assert "Research only, not betting advice." not in html
@@ -183,6 +213,24 @@ def test_build_preview_html_includes_expandable_signal_detail_rows():
     assert "<dt>模型与市场</dt><dd>模型 61.0%，市场 57.0%，Edge +4.1%</dd>" in html
     assert "toggleSignalDetail" in html
     assert "keydown" in html
+
+
+def test_build_preview_html_includes_recent_change_summary():
+    previous = _snapshot()
+    previous["matches"][0]["market"]["1x2"]["odds"]["home"] = 2.0
+    current = deepcopy(previous)
+    current["snapshot_at"] = "2026-06-08T12:00:00+00:00"
+    current["matches"][0]["market"]["1x2"]["odds"]["home"] = 1.85
+    current["matches"][0]["signals"][0]["grade"] = "S"
+    current["matches"][0]["signals"][0]["ev"] = 0.092
+
+    html = build_preview_html(current, previous_snapshot=previous)
+
+    assert "最近变化" in html
+    assert "墨西哥 对 南非 | 胜平负 - 主队" in html
+    assert "等级 A → S" in html
+    assert "EV +5.2% → +9.2%" in html
+    assert "赔率 2.00 → 1.85" in html
 
 
 def test_build_preview_html_keeps_mobile_table_scroll_inside_ledger_panel():

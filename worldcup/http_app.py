@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 from worldcup.ingest_app import process_local_ingest
 from worldcup.preview import build_preview_html
-from worldcup.query import load_latest_snapshot, project_match_rows
+from worldcup.query import load_latest_snapshot, load_recent_snapshots, project_match_rows
 from worldcup.refresh_runner import _load_env
 from worldcup.store_contract import SnapshotStore
 
@@ -82,10 +82,11 @@ def handle_request(
         return _json_response(200, {"matches": project_match_rows(snapshot)})
 
     if method_upper == "GET" and route == "/preview":
-        snapshot = _latest_or_404(db_path, store=store)
-        if snapshot is None:
+        recent = load_recent_snapshots(db_path, store=store, limit=2)
+        if not recent:
             return _html_response(404, "<!doctype html><title>Not Found</title><p>snapshot_not_found</p>")
-        return _html_response(200, build_preview_html(snapshot))
+        previous = recent[1] if len(recent) > 1 else None
+        return _html_response(200, build_preview_html(recent[0], previous_snapshot=previous))
 
     return _json_response(404, {"error": "not_found"})
 

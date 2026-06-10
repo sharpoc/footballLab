@@ -8,8 +8,11 @@ from typing import Any
 from worldcup.ledger_html import build_research_ledger_html
 
 
-def build_preview_html(snapshot: dict[str, Any]) -> str:
-    return build_research_ledger_html(snapshot)
+def build_preview_html(
+    snapshot: dict[str, Any],
+    previous_snapshot: dict[str, Any] | None = None,
+) -> str:
+    return build_research_ledger_html(snapshot, previous_snapshot=previous_snapshot)
 
 
 def write_preview(snapshot: dict[str, Any], output_path: str | Path) -> None:

@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -52,7 +53,17 @@ def _snapshot(run_id="20260608T000000Z-live"):
                 "stage": "Matchday 1",
                 "home_team": "Mexico",
                 "away_team": "South Africa",
-                "signals": [{"grade": "A"}],
+                "market": {"1x2": {"odds": {"home": 2.0}, "market_probs": {"home": 0.57}}},
+                "model": {"combined_1x2": {"home": 0.61}},
+                "signals": [
+                    {
+                        "market_type": "1X2_90min",
+                        "selection": "home",
+                        "grade": "A",
+                        "ev": 0.052,
+                        "edge": 0.041,
+                    }
+                ],
             }
         ],
     }
@@ -152,6 +163,52 @@ def test_http_get_preview_returns_html():
         assert response["headers"]["Content-Type"] == "text/html; charset=utf-8"
         assert "仅用于研究分析，不构成投注建议" in response["body"]
         assert "墨西哥 对 南非" in response["body"]
+
+
+def test_http_get_preview_compares_latest_two_snapshots():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        store = SQLiteSnapshotStore(db_path)
+        previous = _snapshot("run-1")
+        current = deepcopy(previous)
+        current["run"]["run_id"] = "run-2"
+        current["matches"][0]["market"]["1x2"]["odds"]["home"] = 1.85
+        current["matches"][0]["signals"][0]["grade"] = "S"
+        current["matches"][0]["signals"][0]["ev"] = 0.092
+        store.put_snapshot(
+            idempotency_key="run-1:snapshot-1",
+            payload={
+                "run_id": "run-1",
+                "snapshot_id": "snapshot-1",
+                "snapshot_at": "2026-06-08T00:00:00+00:00",
+                "snapshot": previous,
+            },
+            stored_at="2026-06-08T00:02:00+00:00",
+        )
+        store.put_snapshot(
+            idempotency_key="run-2:snapshot-2",
+            payload={
+                "run_id": "run-2",
+                "snapshot_id": "snapshot-2",
+                "snapshot_at": "2026-06-08T12:00:00+00:00",
+                "snapshot": current,
+            },
+            stored_at="2026-06-08T12:02:00+00:00",
+        )
+
+        response = handle_request(
+            method="GET",
+            path="/preview",
+            headers={},
+            body="",
+            db_path=db_path,
+            secret="test-hmac-secret",
+        )
+
+        assert response["status"] == 200
+        assert "最近变化" in response["body"]
+        assert "等级 A → S" in response["body"]
+        assert "赔率 2.00 → 1.85" in response["body"]
 
 
 def test_http_post_ingest_snapshot_stores_signed_request():

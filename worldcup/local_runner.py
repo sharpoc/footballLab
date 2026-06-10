@@ -36,6 +36,17 @@ def _signal_to_dict(signal: Signal) -> dict[str, Any]:
     }
 
 
+def _latest_quote_update_iso(analysis) -> str | None:
+    fetched_times = [
+        quote.fetched_at.astimezone(timezone.utc)
+        for quote in analysis.match_input.quotes
+        if quote.fetched_at is not None
+    ]
+    if not fetched_times:
+        return None
+    return max(fetched_times).isoformat()
+
+
 def _analysis_to_dict(analysis, signals: list[Signal]) -> dict[str, Any]:
     match_input = analysis.match_input
     fixture = match_input.fixture
@@ -50,6 +61,7 @@ def _analysis_to_dict(analysis, signals: list[Signal]) -> dict[str, Any]:
         "away_team": fixture.away_team_name,
         "home_canonical": fixture.home_canonical,
         "away_canonical": fixture.away_canonical,
+        "odds_updated_at": _latest_quote_update_iso(analysis),
         "elo": {
             "home": match_input.home_elo.rating,
             "away": match_input.away_elo.rating,

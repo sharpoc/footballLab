@@ -1,4 +1,5 @@
 import math
+from datetime import datetime, timezone
 
 from worldcup.engine.odds import aggregate, aggregate_market, devig, filter_outliers, implied_prob
 from worldcup.models import MarketType, OddsQuote
@@ -33,13 +34,14 @@ def test_aggregate_same_line_average():
 
 def test_aggregate_market_devigs_all_selections_same_line():
     quotes = [
-        OddsQuote("bk1", MarketType.OU, "over", 1.9, line=2.5),
-        OddsQuote("bk2", MarketType.OU, "over", 2.1, line=2.5),
-        OddsQuote("bk1", MarketType.OU, "under", 1.8, line=2.5),
-        OddsQuote("bk2", MarketType.OU, "under", 2.0, line=2.5),
+        OddsQuote("bk1", MarketType.OU, "over", 1.9, line=2.5, fetched_at=datetime(2026, 6, 8, 1, tzinfo=timezone.utc)),
+        OddsQuote("bk2", MarketType.OU, "over", 2.1, line=2.5, fetched_at=datetime(2026, 6, 8, 2, tzinfo=timezone.utc)),
+        OddsQuote("bk1", MarketType.OU, "under", 1.8, line=2.5, fetched_at=datetime(2026, 6, 8, 3, tzinfo=timezone.utc)),
+        OddsQuote("bk2", MarketType.OU, "under", 2.0, line=2.5, fetched_at=datetime(2026, 6, 8, 4, tzinfo=timezone.utc)),
         OddsQuote("bk1", MarketType.OU, "over", 1.7, line=2.25),
     ]
     out = aggregate_market(quotes, MarketType.OU, line=2.5, selections=["over", "under"])
     assert out["n_books_by_selection"] == {"over": 2, "under": 2}
     assert set(out["odds"]) == {"over", "under"}
     assert math.isclose(sum(out["market_probs"].values()), 1.0, abs_tol=1e-9)
+    assert out["last_update_at"] == "2026-06-08T04:00:00+00:00"

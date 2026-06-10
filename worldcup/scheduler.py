@@ -11,8 +11,12 @@ from worldcup.quota import load_quota_ledger
 
 POLICY_VERSION = "free-tier-v1"
 DEFAULT_INTERVAL_SECONDS = 86400
-TOURNAMENT_WINDOW_DAYS = 7
-TOURNAMENT_INTERVAL_SECONDS = 21600
+PRE_7D_WINDOW_SECONDS = 7 * 86400
+PRE_7D_INTERVAL_SECONDS = 43200
+PRE_3D_WINDOW_SECONDS = 3 * 86400
+PRE_3D_INTERVAL_SECONDS = 21600
+PRE_1D_WINDOW_SECONDS = 86400
+PRE_1D_INTERVAL_SECONDS = 7200
 QUOTA_LOW_REMAINING = 30
 QUOTA_LOW_INTERVAL_SECONDS = 86400
 
@@ -56,8 +60,12 @@ def _select_interval(
 
     if next_kickoff_at is not None:
         seconds_to_kickoff = (next_kickoff_at - now).total_seconds()
-        if 0 <= seconds_to_kickoff <= timedelta(days=TOURNAMENT_WINDOW_DAYS).total_seconds():
-            return TOURNAMENT_INTERVAL_SECONDS, "tournament_window"
+        if 0 <= seconds_to_kickoff <= PRE_1D_WINDOW_SECONDS:
+            return PRE_1D_INTERVAL_SECONDS, "pre_1d_window"
+        if 0 <= seconds_to_kickoff <= PRE_3D_WINDOW_SECONDS:
+            return PRE_3D_INTERVAL_SECONDS, "pre_3d_window"
+        if 0 <= seconds_to_kickoff <= PRE_7D_WINDOW_SECONDS:
+            return PRE_7D_INTERVAL_SECONDS, "pre_7d_window"
 
     return DEFAULT_INTERVAL_SECONDS, "default"
 

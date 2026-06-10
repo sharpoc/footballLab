@@ -8,6 +8,7 @@ from typing import Any
 from worldcup.ledger import (
     BEIJING_TZ,
     WEEKDAY_LABELS,
+    build_snapshot_change_items,
     build_summary_metrics,
     derive_quality_status,
     project_signal_rows,
@@ -121,6 +122,13 @@ def _grade_bucket(grade: Any) -> str:
     return "all"
 
 
+def _grade_class(grade: Any) -> str:
+    normalized = str(grade or "").upper()
+    if normalized in {"S", "A", "B", "C", "D"}:
+        return f"grade-{normalized.lower()}"
+    return "grade-unknown"
+
+
 def _row_search_text(row: dict[str, Any]) -> str:
     parts = [
         row.get("matchup", ""),
@@ -130,6 +138,8 @@ def _row_search_text(row: dict[str, Any]) -> str:
         row.get("kickoff_at_utc", ""),
         row.get("kickoff_date", ""),
         row.get("kickoff_time", ""),
+        row.get("updated_time", ""),
+        row.get("updated_label", ""),
         row.get("market_label", ""),
         row.get("model_prob", ""),
         row.get("market_prob", ""),
@@ -181,11 +191,12 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
     detail_index = 0
     for kickoff_date, date_rows in grouped.items():
         table_rows.append(
-            "<tr class=\"date-row\"><th colspan=\"9\">{}</th></tr>".format(_text(kickoff_date))
+            "<tr class=\"date-row\"><th colspan=\"10\">{}</th></tr>".format(_text(kickoff_date))
         )
         for row in date_rows:
             grade = row.get("grade", "")
             grade_bucket = _grade_bucket(grade)
+            grade_class = _grade_class(grade)
             search_text = _row_search_text(row)
             detail_id = f"signal-detail-{detail_index}"
             table_rows.append(
@@ -195,11 +206,12 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
                 "data-search=\"{search}\">"
                 "<td><strong>{matchup}</strong><span>{stage_group}</span></td>"
                 "<td>{kickoff}</td>"
+                "<td><strong>{updated}</strong><span>{updated_label}</span></td>"
                 "<td>{market}</td>"
                 "<td>{model_prob}</td>"
                 "<td>{market_prob}</td>"
                 "<td><strong>{ev}</strong><span>{edge}</span></td>"
-                "<td><span class=\"grade-pill\">{grade}</span></td>"
+                "<td><span class=\"grade-pill {grade_class}\">{grade}</span></td>"
                 "<td>{freshness}</td>"
                 "<td>{why}</td>"
                 "</tr>".format(
@@ -209,11 +221,14 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
                     matchup=_text(row.get("matchup")),
                     stage_group=_text(row.get("stage_group")),
                     kickoff=_text(row.get("kickoff_time") or row.get("kickoff_at_utc")),
+                    updated=_text(row.get("updated_time")),
+                    updated_label=_text(row.get("updated_label")),
                     market=_text(row.get("market_label")),
                     model_prob=_text(row.get("model_prob")),
                     market_prob=_text(row.get("market_prob")),
                     ev=_text(row.get("ev")),
                     edge=_text(row.get("edge")),
+                    grade_class=_text(grade_class),
                     grade=_text(grade),
                     freshness=_text(row.get("freshness")),
                     why=_text(row.get("explanation")),
@@ -221,7 +236,7 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
             )
             table_rows.append(
                 "<tr class=\"signal-detail-row\" id=\"{detail_id}\" hidden>"
-                "<td colspan=\"9\">{detail}</td>"
+                "<td colspan=\"10\">{detail}</td>"
                 "</tr>".format(
                     detail_id=_text(detail_id),
                     detail=_render_signal_detail(row),
@@ -237,6 +252,7 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
           <tr>
             <th scope="col">对阵</th>
             <th scope="col">开赛 (北京时间)</th>
+            <th scope="col">更新</th>
             <th scope="col">盘口</th>
             <th scope="col">模型概率</th>
             <th scope="col">市场概率</th>
@@ -253,6 +269,88 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
       <p class="no-results" hidden>没有符合当前筛选的信号。</p>
     </section>
     """.format(rows="\n".join(table_rows))
+
+
+def _render_change_summary(
+    snapshot: dict[str, Any],
+    previous_snapshot: dict[str, Any] | None,
+) -> str:
+    items = build_snapshot_change_items(previous_snapshot, snapshot)
+    rows = []
+    for item in items:
+        rows.append(
+            "<li data-tone=\"{tone}\">"
+            "<strong>{title}</strong>"
+            "<span>{detail}</span>"
+            "</li>".format(
+                tone=_slug(item.get("tone", "neutral")),
+                title=_text(item.get("title")),
+                detail=_text(item.get("detail")),
+            )
+        )
+    return """
+    <section class="change-summary" aria-label="最近变化">
+      <div>
+        <h2>最近变化</h2>
+        <p>对比上一轮快照，展示超过阈值的等级、EV、概率和赔率变化。</p>
+      </div>
+      <ul>{items}</ul>
+    </section>
+    """.format(items="".join(rows))
+
+
+def _format_interval(seconds: Any) -> str:
+    try:
+        value = int(seconds)
+    except (TypeError, ValueError):
+        return "未记录"
+    if value % 86400 == 0:
+        return f"{value // 86400} 天"
+    if value % 3600 == 0:
+        return f"{value // 3600} 小时"
+    return f"{value} 秒"
+
+
+def _policy_reason_label(reason: Any) -> str:
+    labels = {
+        "default": "常规",
+        "pre_7d_window": "赛前 7 天内",
+        "pre_3d_window": "赛前 3 天内",
+        "pre_1d_window": "赛前 1 天内",
+        "quota_low": "低额度",
+    }
+    return labels.get(str(reason or ""), "按当前调度策略")
+
+
+def _render_update_policy(snapshot: dict[str, Any]) -> str:
+    policy = (snapshot.get("run") or {}).get("policy") or {}
+    reason_label = _policy_reason_label(policy.get("policy_reason"))
+    interval_label = _format_interval(policy.get("interval_seconds"))
+    next_due = _format_snapshot_time(policy.get("next_due_at"))
+    next_due_html = (
+        "<p><strong>下次计划：{}</strong></p>".format(_text(next_due))
+        if next_due
+        else "<p><strong>下次计划：待下一轮调度确认</strong></p>"
+    )
+    return """
+    <section class="rail-card">
+      <h2>更新规则</h2>
+      <ul class="policy-list">
+        <li>常规：24 小时</li>
+        <li>赛前 7 天内：12 小时</li>
+        <li>赛前 3 天内：6 小时</li>
+        <li>赛前 1 天内：2 小时</li>
+        <li>低额度：24 小时</li>
+      </ul>
+      <p><strong>当前规则：{reason}</strong></p>
+      <p><strong>当前间隔：</strong>{interval}</p>
+      {next_due}
+    </section>
+    """.format(
+        reason=_text(reason_label),
+        interval=_text(interval_label),
+        next_due=next_due_html,
+    )
 
 
 def _render_source_health(snapshot: dict[str, Any]) -> str:
@@ -310,6 +408,7 @@ def _render_right_rail(snapshot: dict[str, Any]) -> str:
         <p>等级用于研究优先级排序，并会受输入新鲜度影响。</p>
       </section>
       {source_health}
+      {update_policy}
       <section class="rail-card">
         <h2>注意事项</h2>
         <ul>
@@ -325,11 +424,15 @@ def _render_right_rail(snapshot: dict[str, Any]) -> str:
     </aside>
     """.format(
         source_health=_render_source_health(snapshot),
+        update_policy=_render_update_policy(snapshot),
         snapshot_at=_text(snapshot_at),
     )
 
 
-def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
+def build_research_ledger_html(
+    snapshot: dict[str, Any],
+    previous_snapshot: dict[str, Any] | None = None,
+) -> str:
     snapshot_at = _format_snapshot_time(snapshot.get("snapshot_at"))
     return """<!doctype html>
 <html lang="zh-CN">
@@ -396,7 +499,7 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
       gap: 10px;
       margin: 18px 0;
     }}
-    .metric-card, .rail-card, .ledger-table-wrap, .empty-state {{
+    .metric-card, .rail-card, .ledger-table-wrap, .empty-state, .change-summary {{
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -454,7 +557,7 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
       background: #fff;
     }}
     .ledger-table-wrap {{ overflow-x: auto; }}
-    .ledger-table {{ width: 100%; min-width: 980px; border-collapse: collapse; }}
+    .ledger-table {{ width: 100%; min-width: 1080px; border-collapse: collapse; }}
     caption {{
       padding: 12px;
       text-align: left;
@@ -546,12 +649,46 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
       color: #1f2937;
       font-weight: 800;
     }}
+    .grade-s {{ background: #dcfce7; color: #166534; border: 1px solid #86efac; }}
+    .grade-a {{ background: #e0f2fe; color: #075985; border: 1px solid #7dd3fc; }}
+    .grade-b {{ background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; }}
+    .grade-c {{ background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; }}
+    .grade-d {{ background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; }}
+    .grade-unknown {{ background: #f3f4f6; color: #4b5563; border: 1px solid #d1d5db; }}
+    .change-summary {{
+      display: grid;
+      grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
+      gap: 14px;
+      margin: 0 0 18px;
+      padding: 16px;
+    }}
+    .change-summary p {{ color: var(--muted); font-size: 13px; }}
+    .change-summary ul {{
+      display: grid;
+      gap: 8px;
+      padding: 0;
+      list-style: none;
+    }}
+    .change-summary li {{
+      margin: 0;
+      padding: 10px 12px;
+      border: 1px solid #e5edf3;
+      border-left: 4px solid #94a3b8;
+      border-radius: 6px;
+      background: #f8fafc;
+    }}
+    .change-summary li[data-tone="strong"] {{ border-left-color: #16a34a; }}
+    .change-summary li[data-tone="warn"] {{ border-left-color: var(--warn); }}
+    .change-summary li strong, .change-summary li span {{ display: block; }}
+    .change-summary li span {{ margin-top: 4px; color: var(--muted); line-height: 1.45; }}
+    .policy-list {{ margin-bottom: 12px; }}
     .right-rail {{ display: grid; gap: 12px; }}
     .rail-card {{ padding: 16px; }}
     .no-results, .empty-state {{ padding: 18px; }}
     @media (max-width: 980px) {{
       header, .ledger-controls {{ flex-direction: column; align-items: stretch; }}
       .content-grid {{ grid-template-columns: 1fr; }}
+      .change-summary {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -566,6 +703,7 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
       <p class="meta">最后更新<br>{snapshot_at}</p>
     </header>
     {summary}
+    {changes}
     <div class="content-grid">
       <div class="ledger-panel">
         {controls}
@@ -662,6 +800,7 @@ def build_research_ledger_html(snapshot: dict[str, Any]) -> str:
 """.format(
         snapshot_at=_text(snapshot_at),
         summary=_render_summary(snapshot),
+        changes=_render_change_summary(snapshot, previous_snapshot),
         controls=_render_controls(),
         table=_render_signal_table(snapshot),
         right_rail=_render_right_rail(snapshot),
