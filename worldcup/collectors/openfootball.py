@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from worldcup.collectors.models import Fixture
+from worldcup.collectors.models import Fixture, MatchResult
 from worldcup.collectors.team_aliases import canonicalize_team
 
 
@@ -65,3 +65,37 @@ def parse_openfootball_fixtures(raw: dict[str, Any]) -> list[Fixture]:
         )
     return fixtures
 
+
+def _extract_score(match: dict[str, Any]) -> tuple[int, int] | None:
+    score1, score2 = match.get("score1"), match.get("score2")
+    if isinstance(score1, int) and isinstance(score2, int):
+        return score1, score2
+    score = match.get("score")
+    if isinstance(score, dict):
+        ft = score.get("ft")
+        if isinstance(ft, list) and len(ft) == 2 and all(isinstance(v, int) for v in ft):
+            return ft[0], ft[1]
+    return None
+
+
+def parse_openfootball_results(raw: dict[str, Any]) -> list[MatchResult]:
+    results: list[MatchResult] = []
+    fixtures = parse_openfootball_fixtures(raw)
+    for fixture, match in zip(fixtures, raw.get("matches", [])):
+        if fixture.has_placeholder_team:
+            continue
+        score = _extract_score(match)
+        if score is None:
+            continue
+        results.append(
+            MatchResult(
+                kickoff_at_utc=fixture.kickoff_at_utc,
+                home_team_name=fixture.home_team_name,
+                away_team_name=fixture.away_team_name,
+                home_canonical=fixture.home_canonical,
+                away_canonical=fixture.away_canonical,
+                home_score=score[0],
+                away_score=score[1],
+            )
+        )
+    return results

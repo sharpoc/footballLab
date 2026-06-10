@@ -35,6 +35,17 @@ class Fixture:
 
 
 @dataclass(frozen=True)
+class MatchResult:
+    kickoff_at_utc: datetime
+    home_team_name: str
+    away_team_name: str
+    home_canonical: str | None
+    away_canonical: str | None
+    home_score: int
+    away_score: int
+
+
+@dataclass(frozen=True)
 class EloRating:
     code: str
     rank: int
@@ -51,4 +62,3 @@ class ParsedOddsEvent:
     home_canonical: str | None
     away_canonical: str | None
     quotes: list[OddsQuote] = field(default_factory=list)
-
