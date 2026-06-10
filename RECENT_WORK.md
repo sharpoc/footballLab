@@ -2,6 +2,17 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-10 回测加固与 OU/DC 算法代码已上线
+
+- 已将本地 `main` 推送到 `origin/main`，推送范围包含两批改动：`codex/backtest-ou-market-total` 和 `codex/backtest-hardening-dixon-coles`。
+- 已将 release `6ffa888` 部署到 ECS，`/opt/worldcup/current` 已从 `/opt/worldcup/releases/e06536a` 切到 `/opt/worldcup/releases/6ffa888`。
+- `worldcup.service` 已重启并保持 active；`nginx` 保持 active。
+- 本地验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `228/228 tests passed`。
+- 服务器本机与公网 `/healthz` 均返回 ok；公网 `/` 保留“仅用于研究分析，不构成投注建议”免责声明和“研究台账”页面。
+- 公网 `/api/matches` 与服务器本机 `/api/matches` 均返回 72 场；敏感/资金相关字段扫描未命中。
+- 服务器 SQLite 当前 5 条 snapshot；本次部署只切换代码并重启服务，未主动触发 source refresh、未调用 The Odds API、未写入新 snapshot。
+- systemd journal 最近 10 分钟敏感关键词扫描对 API key、HMAC secret、signature、token、cookie、private-key 标记返回 0。
+
 ## 2026-06-10 回测加固 + Dixon-Coles 门控实现完成
 
 - 新建分支 `codex/backtest-hardening-dixon-coles`，基于 `codex/backtest-ou-market-total` 按 `docs/superpowers/plans/2026-06-10-backtest-hardening-and-dixon-coles.md` 分任务 TDD 执行；每个任务已做本地 commit，未 push、未部署。
