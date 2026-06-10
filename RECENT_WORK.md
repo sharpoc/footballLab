@@ -2,6 +2,17 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-10 mu-dr 总进球先验证据
+
+- 新建分支 `codex/mu-dr-prior-results-capture`，已完成计划 A 前 5 个任务并按任务本地提交；未 push、未部署。
+- 新增 `poisson.prior_mu(dr, cfg)`，并将 pipeline/backtest 的 `dr` 接入 `blended_mu`；`config/settings.yaml` 只新增 `poisson.mu_dr_slope: 0.0`，`mu_total` 保持 `2.6`，默认生产行为关闭。
+- 已跑 3x6 网格（base `2.2/2.3/2.4` x slope `0/0.001/0.0015/0.002/0.0025/0.003`），原始产物写入被忽略的 `data/local/backtest/mu_fit_*`。
+- 绝对 OU Log Loss 最优为 `mu_total=2.2, mu_dr_slope=0.002`，但相对 18 格中 1X2 最优劣化 `0.002783108866`，超过 `0.002` 护栏。
+- 通过护栏的推荐候选为 `mu_total=2.2, mu_dr_slope=0.0015`：OU Log Loss `0.679537590346`，相对现状基线改善 `0.011705408636`；1X2 Log Loss `0.893132261182`，相对 18 格中 1X2 最优劣化 `0.001790110834`，在护栏内。
+- 证据报告见 `docs/research/2026-06-10-mu-dr-fit.md`；该候选只供与 `dc_rho` 一起决策，当前未启用。
+- 本地验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `248/248 tests passed`。
+- 本次未触发 live refresh、未调用 The Odds API、未写入线上 snapshot、未部署、未 push；只生成本地 ignored 回测产物。
+
 ## 2026-06-10 Elo replay + 真实历史回测基线
 
 - 新建分支 `codex/elo-replay-real-backtest`，按 `docs/superpowers/plans/2026-06-10-elo-replay-real-backtest.md` 分任务 TDD 执行并做本地 commit；未 push、未部署。
