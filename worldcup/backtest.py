@@ -49,3 +49,16 @@ def calibration_bins(records: list[tuple[float, bool]], n_bins: int = 10) -> lis
         for b in raw
         if b["n"]
     ]
+
+
+def outcome_1x2(home_score: int, away_score: int) -> str:
+    if home_score > away_score:
+        return "home"
+    if home_score < away_score:
+        return "away"
+    return "draw"
+
+
+def ah_realized_return(goal_diff: int, line: float, odds: float) -> float:
+    """Realized profit per 1 unit stake for the home side of an AH bet."""
+    return handicap.ev_handicap({goal_diff: 1.0}, line, odds)
