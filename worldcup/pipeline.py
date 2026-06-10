@@ -61,6 +61,7 @@ class MatchAnalysis:
     handicap_dist: dict[int, float]
     market_1x2: dict
     market_ou_2_5: dict
+    market_ah_main: dict | None
 
 
 def _match_label(fixture: Fixture) -> str:
@@ -242,6 +243,7 @@ def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnal
             ratio=ratio,
         ),
         market_ou_2_5=market_ou_2_5,
+        market_ah_main=_aggregate_ah_main(match_input.quotes, ratio),
     )
 
 
@@ -363,6 +365,19 @@ def _main_home_ah_line(quotes: list[OddsQuote]) -> float | None:
     if not counts:
         return None
     return sorted(counts, key=lambda line: (-counts[line], abs(line), line))[0]
+
+
+def _aggregate_ah_main(quotes: list[OddsQuote], ratio: float) -> dict | None:
+    home_line = _main_home_ah_line(quotes)
+    if home_line is None:
+        return None
+    block: dict = {"line_home": home_line, "odds": {}, "n_books_by_selection": {}}
+    for selection, line in (("home", home_line), ("away", -home_line)):
+        agg = odds.aggregate(quotes, MarketType.AH, selection, line=line, ratio=ratio)
+        block["n_books_by_selection"][selection] = agg["n_books"]
+        if agg["odds"] is not None:
+            block["odds"][selection] = agg["odds"]
+    return block
 
 
 def _invert_dist(dist: dict[int, float]) -> dict[int, float]:

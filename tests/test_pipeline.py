@@ -416,3 +416,25 @@ def test_ou_anchor_requires_min_books():
     cfg = load_config()
     analysis = analyze_match_input(_ou_match_input(1.55, 2.45, books=("book1",)), cfg)
     assert math.isclose(analysis.mu_total_used, cfg["poisson"]["mu_total"])
+
+
+def test_analyze_match_input_aggregates_main_ah_market():
+    analysis = analyze_match_input(_sample_match_input_with_three_markets(), load_config())
+
+    assert analysis.market_ah_main == {
+        "line_home": -0.5,
+        "odds": {"home": 1.9, "away": 1.9},
+        "n_books_by_selection": {"home": 1, "away": 1},
+    }
+
+
+def test_analyze_match_input_without_ah_quotes_has_no_ah_market():
+    match_input = _sample_match_input_with_three_markets()
+    match_input = replace(
+        match_input,
+        quotes=[q for q in match_input.quotes if q.market_type != MarketType.AH],
+    )
+
+    analysis = analyze_match_input(match_input, load_config())
+
+    assert analysis.market_ah_main is None
