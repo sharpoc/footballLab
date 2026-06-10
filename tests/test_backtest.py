@@ -279,3 +279,38 @@ def test_cli_writes_report_json():
         report = json.loads(out_path.read_text(encoding="utf-8"))
         assert report["sample"]["n_matches"] == 7
         assert report["sample"]["sample_too_small"] is False
+
+
+def test_cli_sweep_writes_variant_reports():
+    import tempfile
+
+    from worldcup.backtest import main
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path = Path(tmp) / "report.json"
+        code = main(
+            [
+                "--csv",
+                str(SAMPLE_CSV),
+                "--out",
+                str(out_path),
+                "--min-sample",
+                "5",
+                "--sweep",
+                "poisson.dc_rho=0,-0.1",
+            ]
+        )
+        assert code == 0
+        assert (Path(tmp) / "report.poisson.dc_rho.0.json").exists()
+        assert (Path(tmp) / "report.poisson.dc_rho.-0.1.json").exists()
+
+
+def test_cli_sweep_invalid_format_exits_nonzero():
+    from worldcup.backtest import main
+
+    try:
+        main(["--csv", str(SAMPLE_CSV), "--sweep", "poisson.dc_rho"])
+    except SystemExit as exc:
+        assert exc.code not in (0, None)
+    else:
+        raise AssertionError("expected SystemExit")

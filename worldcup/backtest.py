@@ -384,9 +384,41 @@ def main(argv: list[str] | None = None) -> int:
         metavar="SECTION.KEY=VALUE",
         help="override a config value for this run, e.g. --set poisson.dc_rho=-0.1",
     )
+    parser.add_argument(
+        "--sweep",
+        default=None,
+        metavar="SECTION.KEY=V1,V2,...",
+        help="run once per value and write report.<key>.<value>.json variants",
+    )
     args = parser.parse_args(argv)
 
     cfg = apply_overrides(load_config(args.config), args.overrides)
+    if args.sweep:
+        key, sep, raw_values = args.sweep.partition("=")
+        if not sep or not key.strip() or not raw_values.strip():
+            raise SystemExit(f"invalid --sweep (expect section.key=v1,v2): {args.sweep!r}")
+        matches = load_matches(args.csv)
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        summary = []
+        for raw in raw_values.split(","):
+            value = raw.strip()
+            cfg_variant = apply_overrides(cfg, [f"{key}={value}"])
+            report = run_backtest(matches, cfg_variant, min_sample=args.min_sample)
+            variant_path = out.with_name(f"{out.stem}.{key}.{value}{out.suffix}")
+            variant_path.write_text(
+                json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            summary.append(
+                {
+                    "value": value,
+                    "1x2_model": report["markets"]["1x2"]["model"],
+                    "ou_model": report["markets"]["ou_2_5"]["model"],
+                }
+            )
+        print(json.dumps({"sweep": key, "results": summary}, indent=2, ensure_ascii=False))
+        return 0
+
     report = run_backtest(load_matches(args.csv), cfg, min_sample=args.min_sample)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
