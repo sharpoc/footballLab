@@ -71,6 +71,12 @@ def _analysis_to_dict(
 ) -> dict[str, Any]:
     match_input = analysis.match_input
     fixture = match_input.fixture
+    market: dict[str, Any] = {
+        "1x2": analysis.market_1x2,
+        "ou_2_5": analysis.market_ou_2_5,
+    }
+    if analysis.market_ah_main is not None:
+        market["ah_main"] = analysis.market_ah_main
     match = {
         "source_event_id": match_input.odds_event.source_event_id,
         "source_match_no": fixture.source_match_no,
@@ -99,10 +105,7 @@ def _analysis_to_dict(
             "combined_1x2": analysis.combined_1x2,
             "ou_2_5": analysis.ou_2_5,
         },
-        "market": {
-            "1x2": analysis.market_1x2,
-            "ou_2_5": analysis.market_ou_2_5,
-        },
+        "market": market,
         "signals": [_signal_to_dict(signal) for signal in signals],
     }
     result = (result_index or {}).get(

@@ -173,3 +173,31 @@ def test_build_snapshot_caps_signals_when_odds_quotes_are_stale():
         )
         assert home_signal["grade"] == "B"
         assert "stale_odds" in home_signal["reasons"]
+
+
+def test_build_snapshot_from_probe_includes_main_ah_market():
+    with TemporaryDirectory() as tmp:
+        probe_dir = Path(tmp) / "probe"
+        _write_probe_files(probe_dir)
+
+        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T00:00:00+00:00")
+
+        ah_main = snapshot["matches"][0]["market"]["ah_main"]
+        assert ah_main["line_home"] == -0.5
+        assert ah_main["odds"] == {"home": 1.9, "away": 1.9}
+
+
+def test_build_snapshot_from_probe_omits_ah_market_without_spreads():
+    with TemporaryDirectory() as tmp:
+        probe_dir = Path(tmp) / "probe"
+        _write_probe_files(probe_dir)
+        odds_path = probe_dir / "theoddsapi_wc_odds.json"
+        events = json.loads(odds_path.read_text())
+        events[0]["bookmakers"][0]["markets"] = [
+            m for m in events[0]["bookmakers"][0]["markets"] if m["key"] != "spreads"
+        ]
+        odds_path.write_text(json.dumps(events))
+
+        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T00:00:00+00:00")
+
+        assert "ah_main" not in snapshot["matches"][0]["market"]
