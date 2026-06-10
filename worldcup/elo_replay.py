@@ -5,6 +5,10 @@ and does not participate in the live pipeline.
 """
 from __future__ import annotations
 
+import csv
+from dataclasses import dataclass
+from pathlib import Path
+
 from worldcup.engine.elo import expected_score
 
 DEFAULT_INITIAL_RATING = 1500.0
@@ -65,3 +69,61 @@ def update_pair(
         w = 0.0
     delta = k * goal_index(home_score - away_score) * (w - we)
     return rating_home + delta, rating_away - delta
+
+
+@dataclass(frozen=True)
+class ReplayMatch:
+    date: str
+    home_team: str
+    away_team: str
+    home_score: int
+    away_score: int
+    tournament: str
+    neutral: bool
+
+
+def load_results(path: str | Path) -> list[ReplayMatch]:
+    out: list[ReplayMatch] = []
+    with open(path, newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            home_score = (row.get("home_score") or "").strip()
+            away_score = (row.get("away_score") or "").strip()
+            if not home_score.isdigit() or not away_score.isdigit():
+                continue
+            out.append(
+                ReplayMatch(
+                    date=row["date"].strip(),
+                    home_team=row["home_team"].strip(),
+                    away_team=row["away_team"].strip(),
+                    home_score=int(home_score),
+                    away_score=int(away_score),
+                    tournament=(row.get("tournament") or "").strip(),
+                    neutral=(row.get("neutral") or "").strip().upper() == "TRUE",
+                )
+            )
+    return out
+
+
+def replay(
+    matches: list[ReplayMatch],
+    initial: float = DEFAULT_INITIAL_RATING,
+    home_adv: float = DEFAULT_HOME_ADV,
+) -> tuple[list[tuple[ReplayMatch, float, float]], dict[str, float]]:
+    ratings: dict[str, float] = {}
+    replayed: list[tuple[ReplayMatch, float, float]] = []
+    for match in sorted(matches, key=lambda m: m.date):
+        rating_home = ratings.get(match.home_team, initial)
+        rating_away = ratings.get(match.away_team, initial)
+        replayed.append((match, rating_home, rating_away))
+        new_home, new_away = update_pair(
+            rating_home,
+            rating_away,
+            match.home_score,
+            match.away_score,
+            k=k_factor(match.tournament),
+            neutral=match.neutral,
+            home_adv=home_adv,
+        )
+        ratings[match.home_team] = new_home
+        ratings[match.away_team] = new_away
+    return replayed, ratings
