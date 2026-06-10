@@ -1,8 +1,8 @@
 """Join archived snapshots with captured results into an odds-bearing backtest CSV.
 
 只读 data/local/history/ 与 data/local/results/，不联网。
-已知局限：neutral 一律按 1 处理（snapshot 未保存东道主修正），
-AH 不进评估（snapshot market 块无 AH 聚合赔率）。
+已知局限：neutral 一律按 1 处理（snapshot 未保存东道主修正）。
+AH 取 closing snapshot 的主盘 `market.ah_main`；老归档快照无该块时 AH 三列为空。
 """
 from __future__ import annotations
 
@@ -27,6 +27,9 @@ OUTPUT_COLUMNS = (
     "odds_away",
     "odds_over",
     "odds_under",
+    "ah_line",
+    "odds_ah_home",
+    "odds_ah_away",
 )
 
 
@@ -75,6 +78,19 @@ def _market_odds(entry: dict, market: str, selections: tuple[str, ...]) -> dict[
     return {}
 
 
+def _ah_main_fields(entry: dict) -> dict:
+    block = ((entry.get("market") or {}).get("ah_main")) or {}
+    line = block.get("line_home")
+    ah_odds = block.get("odds") or {}
+    if line is None or "home" not in ah_odds or "away" not in ah_odds:
+        return {"ah_line": "", "odds_ah_home": "", "odds_ah_away": ""}
+    return {
+        "ah_line": line,
+        "odds_ah_home": ah_odds["home"],
+        "odds_ah_away": ah_odds["away"],
+    }
+
+
 def build_rows(snapshots: list[dict], results_rows: list[dict]) -> tuple[list[dict], int]:
     rows: list[dict] = []
     skipped = 0
@@ -109,6 +125,7 @@ def build_rows(snapshots: list[dict], results_rows: list[dict]) -> tuple[list[di
                 "odds_away": odds_1x2.get("away", ""),
                 "odds_over": odds_ou.get("over", ""),
                 "odds_under": odds_ou.get("under", ""),
+                **_ah_main_fields(entry),
             }
         )
     return rows, skipped
