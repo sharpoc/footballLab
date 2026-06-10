@@ -136,3 +136,40 @@ def test_replay_match_home_advantage_applied_when_not_neutral():
     result = replay_match(non_neutral, cfg)
     base_dr = non_neutral.home_elo_before - non_neutral.away_elo_before
     assert math.isclose(result["dr"], base_dr + cfg["elo"]["home_adv"])
+
+
+def test_run_backtest_report_structure_and_small_sample_flag():
+    from worldcup.backtest import load_matches, run_backtest
+    from worldcup.config import load_config
+
+    cfg = load_config()
+    report = run_backtest(load_matches(SAMPLE_CSV), cfg, min_sample=200)
+    sample = report["sample"]
+    assert sample["n_matches"] == 7
+    assert sample["n_1x2"] == 7
+    assert sample["n_ou"] == 6
+    assert sample["n_ah"] == 6
+    assert sample["sample_too_small"] is True
+
+    metrics = report["markets"]["1x2"]
+    for source in ("model", "market", "uniform"):
+        assert metrics[source]["n"] == 7
+        assert 0.0 <= metrics[source]["brier"] <= 2.0
+        assert metrics[source]["log_loss"] > 0.0
+    assert report["markets"]["ou_2_5"]["model"]["n"] == 7
+    assert report["markets"]["ou_2_5"]["market"]["n"] == 6
+
+    assert report["calibration_1x2"]
+    assert sum(b["n"] for b in report["ev_buckets_1x2"]) == 21
+    assert sum(b["n"] for b in report["odds_buckets_1x2"]) == 21
+    assert sum(b["n"] for b in report["ah_ev_buckets"]) == 6
+    assert report["totals_by_abs_dr"]
+    assert "no staking advice" in report["notes"]
+
+
+def test_run_backtest_not_small_when_min_sample_met():
+    from worldcup.backtest import load_matches, run_backtest
+    from worldcup.config import load_config
+
+    report = run_backtest(load_matches(SAMPLE_CSV), load_config(), min_sample=5)
+    assert report["sample"]["sample_too_small"] is False

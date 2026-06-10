@@ -169,3 +169,157 @@ def replay_match(match: BacktestMatch, cfg: dict) -> dict:
         "market_ou": market_ou,
         "diff_dist": handicap.diff_distribution(matrix),
     }
+
+
+EV_BUCKETS = ((-9.0, 0.0), (0.0, 0.03), (0.03, 0.05), (0.05, 0.08), (0.08, 9.0))
+ODDS_BUCKETS = ((1.0, 1.5), (1.5, 2.0), (2.0, 3.0), (3.0, 5.0), (5.0, 1000.0))
+DR_BUCKETS = ((0.0, 100.0), (100.0, 200.0), (200.0, 300.0), (300.0, 10000.0))
+
+
+def _mean_metrics(rows: list[tuple[dict[str, float], str]]) -> dict:
+    if not rows:
+        return {"n": 0, "brier": None, "log_loss": None}
+    return {
+        "n": len(rows),
+        "brier": sum(brier_multiclass(p, o) for p, o in rows) / len(rows),
+        "log_loss": sum(log_loss(p, o) for p, o in rows) / len(rows),
+    }
+
+
+def _bucket_rows(buckets: tuple, value: float) -> int | None:
+    for idx, (lo, hi) in enumerate(buckets):
+        if lo <= value < hi:
+            return idx
+    return None
+
+
+def run_backtest(matches: list[BacktestMatch], cfg: dict, min_sample: int = 200) -> dict:
+    model_1x2_rows: list[tuple[dict, str]] = []
+    market_1x2_rows: list[tuple[dict, str]] = []
+    uniform_1x2_rows: list[tuple[dict, str]] = []
+    model_ou_rows: list[tuple[dict, str]] = []
+    market_ou_rows: list[tuple[dict, str]] = []
+    uniform_ou_rows: list[tuple[dict, str]] = []
+    calibration_records: list[tuple[float, bool]] = []
+    ev_buckets = [{"n": 0, "return_sum": 0.0} for _ in EV_BUCKETS]
+    odds_buckets = [{"n": 0, "hits": 0, "implied_sum": 0.0} for _ in ODDS_BUCKETS]
+    ah_buckets = [{"n": 0, "return_sum": 0.0} for _ in EV_BUCKETS]
+    dr_buckets = [{"n": 0, "total_sum": 0, "mu_sum": 0.0} for _ in DR_BUCKETS]
+    n_1x2 = n_ou = n_ah = 0
+
+    uniform_1x2 = {k: 1 / 3 for k in OUTCOMES}
+    uniform_ou = {"over": 0.5, "under": 0.5}
+
+    for match in matches:
+        replay = replay_match(match, cfg)
+        result = outcome_1x2(match.home_score, match.away_score)
+        total_goals = match.home_score + match.away_score
+        ou_result = "over" if total_goals > OU_LINE else "under"
+
+        model_1x2_rows.append((replay["model_1x2"], result))
+        uniform_1x2_rows.append((uniform_1x2, result))
+        model_ou_rows.append((replay["model_ou"], ou_result))
+        uniform_ou_rows.append((uniform_ou, ou_result))
+        for selection in OUTCOMES:
+            calibration_records.append(
+                (replay["model_1x2"][selection], selection == result)
+            )
+
+        if match.odds_1x2:
+            n_1x2 += 1
+            market_1x2_rows.append((replay["market_1x2"], result))
+            for selection in OUTCOMES:
+                odds_value = match.odds_1x2[selection]
+                ev_value = replay["model_1x2"][selection] * odds_value - 1.0
+                realized = (odds_value - 1.0) if selection == result else -1.0
+                ev_idx = _bucket_rows(EV_BUCKETS, ev_value)
+                if ev_idx is not None:
+                    ev_buckets[ev_idx]["n"] += 1
+                    ev_buckets[ev_idx]["return_sum"] += realized
+                odds_idx = _bucket_rows(ODDS_BUCKETS, odds_value)
+                if odds_idx is not None:
+                    odds_buckets[odds_idx]["n"] += 1
+                    odds_buckets[odds_idx]["hits"] += int(selection == result)
+                    odds_buckets[odds_idx]["implied_sum"] += 1.0 / odds_value
+
+        if match.odds_ou:
+            n_ou += 1
+            market_ou_rows.append((replay["market_ou"], ou_result))
+
+        if match.odds_ah and match.ah_line is not None:
+            n_ah += 1
+            predicted = handicap.ev_handicap(
+                replay["diff_dist"], match.ah_line, match.odds_ah["home"]
+            )
+            realized = ah_realized_return(
+                match.home_score - match.away_score, match.ah_line, match.odds_ah["home"]
+            )
+            idx = _bucket_rows(EV_BUCKETS, predicted)
+            if idx is not None:
+                ah_buckets[idx]["n"] += 1
+                ah_buckets[idx]["return_sum"] += realized
+
+        dr_idx = _bucket_rows(DR_BUCKETS, abs(replay["dr"]))
+        if dr_idx is not None:
+            dr_buckets[dr_idx]["n"] += 1
+            dr_buckets[dr_idx]["total_sum"] += total_goals
+            dr_buckets[dr_idx]["mu_sum"] += replay["mu_used"]
+
+    return {
+        "sample": {
+            "n_matches": len(matches),
+            "n_1x2": n_1x2,
+            "n_ou": n_ou,
+            "n_ah": n_ah,
+            "min_sample": min_sample,
+            "sample_too_small": len(matches) < min_sample,
+        },
+        "markets": {
+            "1x2": {
+                "model": _mean_metrics(model_1x2_rows),
+                "market": _mean_metrics(market_1x2_rows),
+                "uniform": _mean_metrics(uniform_1x2_rows),
+            },
+            "ou_2_5": {
+                "model": _mean_metrics(model_ou_rows),
+                "market": _mean_metrics(market_ou_rows),
+                "uniform": _mean_metrics(uniform_ou_rows),
+            },
+        },
+        "calibration_1x2": calibration_bins(calibration_records),
+        "ev_buckets_1x2": [
+            {
+                "range": list(EV_BUCKETS[i]),
+                "n": b["n"],
+                "mean_return": (b["return_sum"] / b["n"]) if b["n"] else None,
+            }
+            for i, b in enumerate(ev_buckets)
+        ],
+        "odds_buckets_1x2": [
+            {
+                "range": list(ODDS_BUCKETS[i]),
+                "n": b["n"],
+                "hit_rate": (b["hits"] / b["n"]) if b["n"] else None,
+                "implied_mean": (b["implied_sum"] / b["n"]) if b["n"] else None,
+            }
+            for i, b in enumerate(odds_buckets)
+        ],
+        "ah_ev_buckets": [
+            {
+                "range": list(EV_BUCKETS[i]),
+                "n": b["n"],
+                "mean_return": (b["return_sum"] / b["n"]) if b["n"] else None,
+            }
+            for i, b in enumerate(ah_buckets)
+        ],
+        "totals_by_abs_dr": [
+            {
+                "range": list(DR_BUCKETS[i]),
+                "n": b["n"],
+                "mean_total_goals": (b["total_sum"] / b["n"]) if b["n"] else None,
+                "mean_mu_used": (b["mu_sum"] / b["n"]) if b["n"] else None,
+            }
+            for i, b in enumerate(dr_buckets)
+        ],
+        "notes": "research metrics only; no staking advice",
+    }
