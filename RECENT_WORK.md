@@ -8,6 +8,7 @@
 - 回测 CSV 加载器现在校验所有十进制赔率必须 > 1.0，并在错误中带 CSV 行号，避免无效赔率静默进入指标。
 - 回测报告新增 `markets.*.model_matched`：模型在“有市场赔率的同样本行”上的指标，用于和 `market` 基线公平比较；`markets.*.model` 仍保留全样本模型指标。
 - `worldcup.backtest` CLI 新增 `--set section.key=value` 单次配置覆盖，使用深拷贝避免污染共享配置；可用于 `poisson.dc_rho`、`poisson.mu_market_weight` 等参数实验。
+- 收尾 review 补充校验：`--set poisson.=1` 这类空嵌套 key 现在会按无效覆盖报错，不再静默写入空配置键。
 - OU 市场锚定新增 `odds.min_books` 守卫：只有 over/under 双边报价家数均达标才用市场反推 `mu_total`，否则回退 `poisson.mu_total`；当前本地缓存抽查为 `anchored: 68 / 72`，4 场单 book 回退属预期。
 - Poisson 比分矩阵新增配置门控 Dixon-Coles 低比分修正，`poisson.dc_rho: 0.0` 默认关闭且行为与历史版本一致；rho 取值必须等真实历史数据回测后再启用。
 - 本地验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 已通过 `228/228 tests passed`；CLI smoke `python3 -m worldcup.backtest --csv tests/data/backtest_sample.csv --min-sample 5 --out data/local/backtest/dc_probe.json --set poisson.dc_rho=-0.1` 成功。

@@ -230,7 +230,7 @@ def test_apply_overrides_parses_int_bool_string():
 def test_apply_overrides_invalid_format_raises():
     from worldcup.backtest import apply_overrides
 
-    for bad in ("poisson.dc_rho", "=1", "unknown.key=1"):
+    for bad in ("poisson.dc_rho", "=1", "poisson.=1", "unknown.key=1"):
         try:
             apply_overrides({"poisson": {}}, [bad])
         except ValueError:

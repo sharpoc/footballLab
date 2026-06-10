@@ -362,6 +362,8 @@ def apply_overrides(cfg: dict, overrides: list[str]) -> dict:
         if not dot:
             out[key] = parsed
             continue
+        if not name:
+            raise ValueError(f"invalid override (expect section.key=value): {item!r}")
         if section not in out or not isinstance(out[section], dict):
             raise ValueError(f"unknown config section: {section!r}")
         out[section][name] = parsed
