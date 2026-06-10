@@ -4,12 +4,18 @@
 
 ## 2026-06-10 台账赛后预测结果显示
 
+- 已提交并推送 `2243951 feat: show post-match prediction results` 到 `origin/main`，并部署到 ECS。
+- 已将 release `2243951` 部署到 ECS，`/opt/worldcup/current` 已从 `/opt/worldcup/releases/6ffa888` 切到 `/opt/worldcup/releases/2243951`。
+- `worldcup.service` 与 `nginx` 均为 active；服务器本机与公网 `/healthz` 返回 ok，公网 `/api/matches` 返回 72 场，`/api/snapshot/latest` 仍返回 404。
+- 公网页面包含新增 `prediction-result` 渲染样式、保留“仅用于研究分析，不构成投注建议”免责声明，资金/下注相关词扫描未命中。
+- 服务器 SQLite 当前 6 条 snapshot；本次部署只切换代码并重启服务，未主动触发 source refresh、未调用 The Odds API、未写入新 snapshot。
+- `worldcup.service` 最近 10 分钟 journal 敏感关键词扫描对 API key、HMAC secret、DATABASE_URL、signature、token、cookie、private-key 标记返回 0。
 - 新增赛后验证显示：当 openfootball 缓存已有完赛比分时，snapshot 中对应 match 会附加 `result.status=finished`、`home_score`、`away_score`。
 - 研究信号台账会在“信号原因”栏显示“预测结果：命中 / 未中 / 走水”，并展示比分和方向；展开“分析详情”会新增“赛后验证”行。
 - 判定规则：胜平负按主胜/平/客胜；大小球按总进球与盘口线；亚洲让球按所选球队让球线结算，走盘显示为“走水”。
 - 赛果缺失或比赛未完赛时页面保持现状，不显示赛后验证块；不读取 secret，不显示下注金额或资金相关字段。
 - 本地验证先看到新增测试因缺少 `result` / `prediction_result` / HTML 渲染失败，再实现；最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `265/265 tests passed`。
-- 本次只改本地 snapshot 投影与台账渲染；未触发 live refresh、未调用 The Odds API、未部署、未 push、未改 LaunchAgent。
+- 本次未触发 live refresh、未调用 The Odds API、未改 LaunchAgent。
 
 ## 2026-06-10 自动刷新归档验收工具
 
@@ -18,7 +24,7 @@
 - 当前只读检查结果：历史归档已有 1 份 `snapshot_20260610T090754Z-live.json`，`matches=72`、`source_errors_count=0`、`stale_sources=[]`。
 - 当前 LaunchAgent 指向 `/Users/eagod/Library/LaunchAgents/xin.celab.football.scheduled-publish.plist`，每 900 秒运行 `worldcup.scheduled_publish --live`，工作目录为 `/Users/eagod/ai-dev/足彩`。
 - 本地验证先看到新增测试因缺少 `worldcup.refresh_audit` 失败，再实现；最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `260/260 tests passed`。
-- 本次只新增本地验收工具和文档记录；未触发 live refresh、未调用 The Odds API、未部署、未 push、未改 LaunchAgent。
+- 已随 `2243951` 一并推送并部署；本工具本身只读，未触发 live refresh、未调用 The Odds API、未改 LaunchAgent。
 
 ## 2026-06-10 赛果回填与自有赔率评估链路
 
