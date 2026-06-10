@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ class RefreshResult:
     source_errors: list[dict]
     stale_sources: list[str]
     run_metadata: dict
+    archive_path: Path | None = None
 
 
 def _load_env(path: str | Path = ".env") -> dict[str, str]:
@@ -66,6 +68,7 @@ def refresh_cache_and_build_snapshot(
     openfootball_transport: Callable[[str], object] | None = None,
     theoddsapi_transport: Callable[[str], object] | None = None,
     elo_transport: Callable[[str], object] | None = None,
+    history_dir: str | Path = "data/local/history",
     observed_at: str | None = None,
 ) -> RefreshResult:
     observed = observed_at or _now_utc_iso()
@@ -135,6 +138,15 @@ def refresh_cache_and_build_snapshot(
     )
     snapshot["run"] = run_metadata
     write_snapshot(snapshot, snapshot_output)
+    archive_path: Path | None = None
+    try:
+        archive_dir = Path(history_dir)
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = archive_dir / f"snapshot_{run_metadata['run_id']}.json"
+        write_snapshot(snapshot, archive_path)
+    except OSError as exc:
+        print(f"warning: snapshot archive failed: {exc}", file=sys.stderr)
+        archive_path = None
     return RefreshResult(
         cache_dir=cache,
         snapshot_path=snapshot_output,
@@ -143,6 +155,7 @@ def refresh_cache_and_build_snapshot(
         source_errors=source_errors,
         stale_sources=stale_sources,
         run_metadata=run_metadata,
+        archive_path=archive_path,
     )
 
 

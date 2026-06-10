@@ -101,6 +101,7 @@ def test_refresh_cache_and_build_snapshot_with_injected_transports():
             openfootball_transport=openfootball_transport,
             theoddsapi_transport=theoddsapi_transport,
             elo_transport=elo_transport,
+            history_dir=root / "history",
             observed_at="2026-06-08T00:00:00+00:00",
         )
 
@@ -113,6 +114,10 @@ def test_refresh_cache_and_build_snapshot_with_injected_transports():
         assert result.cache_dir.joinpath("openfootball_2026.json").exists()
         assert result.cache_dir.joinpath("theoddsapi_wc_odds.json").exists()
         assert json.loads(result.quota_path.read_text())["providers"]["theoddsapi"]["remaining"] == 497
+        archive = root / "history" / "snapshot_20260608T000000Z-live.json"
+        assert result.archive_path == archive
+        assert archive.exists()
+        assert json.loads(archive.read_text())["run"]["run_id"] == "20260608T000000Z-live"
 
 
 def test_refresh_uses_stale_odds_cache_when_theoddsapi_times_out():
@@ -187,6 +192,7 @@ def test_refresh_uses_stale_odds_cache_when_theoddsapi_times_out():
             openfootball_transport=openfootball_transport,
             elo_transport=elo_transport,
             theoddsapi_transport=fail_theoddsapi,
+            history_dir=root / "history",
         )
 
         assert result.snapshot["counts"]["matches"] == 1
