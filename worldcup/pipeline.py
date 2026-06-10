@@ -53,6 +53,7 @@ class MatchAnalysis:
     match_input: MatchAnalysisInput
     lambdas: tuple[float, float]
     poisson_tail: float
+    mu_total_used: float
     elo_1x2: dict[str, float]
     poisson_1x2: dict[str, float]
     combined_1x2: dict[str, float]
@@ -185,7 +186,21 @@ def _elo_home_advantage(match_input: MatchAnalysisInput, cfg: dict) -> float | N
 
 def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnalysis:
     dr = _adjusted_dr(match_input, cfg)
-    lh, la = poisson.lambdas(dr, cfg["poisson"])
+    ou_line = cfg.get("ou_main_line", 2.5)
+    ratio = cfg["odds"]["outlier_ratio"]
+    market_ou_2_5 = odds.aggregate_market(
+        match_input.quotes,
+        market_type=MarketType.OU,
+        line=ou_line,
+        selections=["over", "under"],
+        ratio=ratio,
+    )
+    mu_total_used = poisson.blended_mu(
+        market_ou_2_5["market_probs"].get("over"),
+        ou_line,
+        cfg["poisson"],
+    )
+    lh, la = poisson.lambdas(dr, cfg["poisson"], mu_total=mu_total_used)
     matrix, tail = poisson.score_matrix(lh, la, cfg["poisson"])
     handicap_dist = handicap.diff_distribution(matrix)
     poisson_1x2 = poisson.probs_1x2(matrix)
@@ -202,13 +217,12 @@ def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnal
         cfg["ensemble"]["w_elo"],
         cfg["ensemble"]["w_poisson"],
     )
-    ou_line = cfg.get("ou_main_line", 2.5)
     p_over = poisson.prob_over(matrix, ou_line)
-    ratio = cfg["odds"]["outlier_ratio"]
     return MatchAnalysis(
         match_input=match_input,
         lambdas=(lh, la),
         poisson_tail=tail,
+        mu_total_used=mu_total_used,
         elo_1x2=elo_1x2,
         poisson_1x2=poisson_1x2,
         combined_1x2=combined_1x2,
@@ -221,13 +235,7 @@ def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnal
             selections=["home", "draw", "away"],
             ratio=ratio,
         ),
-        market_ou_2_5=odds.aggregate_market(
-            match_input.quotes,
-            market_type=MarketType.OU,
-            line=ou_line,
-            selections=["over", "under"],
-            ratio=ratio,
-        ),
+        market_ou_2_5=market_ou_2_5,
     )
 
 

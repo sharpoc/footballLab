@@ -1,11 +1,19 @@
+import math
 from dataclasses import replace
+from datetime import datetime, timezone
 
+from worldcup.collectors.models import EloRating, Fixture, ParsedOddsEvent
 from worldcup.collectors.eloratings import parse_elo_ratings, parse_elo_team_aliases
 from worldcup.collectors.openfootball import parse_openfootball_fixtures
 from worldcup.collectors.theoddsapi import parse_theoddsapi_events
 from worldcup.config import load_config
 from worldcup.models import Grade, MarketType, OddsQuote
-from worldcup.pipeline import analyze_match_input, build_match_inputs, generate_value_signals
+from worldcup.pipeline import (
+    MatchAnalysisInput,
+    analyze_match_input,
+    build_match_inputs,
+    generate_value_signals,
+)
 
 
 def test_build_match_inputs_matches_fixture_odds_and_elo_aliases():
@@ -328,3 +336,56 @@ def _sample_match_input_with_three_markets():
     ratings = parse_elo_ratings("1\t1\tMX\t1875\n2\t2\tZA\t1700\n")
     aliases = parse_elo_team_aliases("MX\tMexico\nZA\tSouth Africa\n")
     return build_match_inputs(fixtures, events, ratings, aliases).inputs[0]
+
+
+def _ou_match_input(over_odds: float, under_odds: float, with_ou: bool = True) -> MatchAnalysisInput:
+    kickoff = datetime(2026, 6, 12, 18, 0, tzinfo=timezone.utc)
+    quotes = [
+        OddsQuote("book1", MarketType.X12, "home", 2.5),
+        OddsQuote("book1", MarketType.X12, "draw", 3.2),
+        OddsQuote("book1", MarketType.X12, "away", 2.9),
+    ]
+    if with_ou:
+        for book in ("book1", "book2", "book3"):
+            quotes.append(OddsQuote(book, MarketType.OU, "over", over_odds, line=2.5))
+            quotes.append(OddsQuote(book, MarketType.OU, "under", under_odds, line=2.5))
+    fixture = Fixture(
+        source_match_no=1,
+        kickoff_at_utc=kickoff,
+        kickoff_time_raw="18:00",
+        home_team_name="Team A",
+        away_team_name="Team B",
+        home_canonical="team_a",
+        away_canonical="team_b",
+    )
+    event = ParsedOddsEvent(
+        source_event_id="event-ou",
+        sport_key="soccer_fifa_world_cup",
+        kickoff_at_utc=kickoff,
+        home_team_name="Team A",
+        away_team_name="Team B",
+        home_canonical="team_a",
+        away_canonical="team_b",
+        quotes=quotes,
+    )
+    return MatchAnalysisInput(
+        fixture=fixture,
+        odds_event=event,
+        home_elo=EloRating("AA", 1, 1800),
+        away_elo=EloRating("BB", 2, 1800),
+        quotes=quotes,
+    )
+
+
+def test_ou_probability_varies_with_market_total():
+    cfg = load_config()
+    high_total = analyze_match_input(_ou_match_input(1.55, 2.45), cfg)
+    low_total = analyze_match_input(_ou_match_input(2.45, 1.55), cfg)
+    assert high_total.mu_total_used > low_total.mu_total_used
+    assert high_total.ou_2_5["over"] > low_total.ou_2_5["over"]
+
+
+def test_ou_falls_back_to_prior_without_market():
+    cfg = load_config()
+    analysis = analyze_match_input(_ou_match_input(0.0, 0.0, with_ou=False), cfg)
+    assert math.isclose(analysis.mu_total_used, cfg["poisson"]["mu_total"])

@@ -6,6 +6,7 @@ poisson:
   lambda_max: 4.5
   max_goals: 10
   tail_mass_max: 0.01
+  mu_market_weight: 0.7
 
 elo:
   home_adv: 100

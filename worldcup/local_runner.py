@@ -72,6 +72,7 @@ def _analysis_to_dict(analysis, signals: list[Signal]) -> dict[str, Any]:
                 "away": analysis.lambdas[1],
             },
             "poisson_tail": analysis.poisson_tail,
+            "mu_total": analysis.mu_total_used,
             "elo_1x2": analysis.elo_1x2,
             "poisson_1x2": analysis.poisson_1x2,
             "combined_1x2": analysis.combined_1x2,
