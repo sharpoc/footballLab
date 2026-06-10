@@ -72,6 +72,13 @@ def load_matches(path: str | Path) -> list[BacktestMatch]:
                     raise ValueError(f"row {line_no}: missing value for {column}")
             ah_line = _opt_float(row, "ah_line")
             odds_ah = _market_dict(row, {"home": "odds_ah_home", "away": "odds_ah_away"})
+            odds_1x2 = _market_dict(
+                row, {"home": "odds_home", "draw": "odds_draw", "away": "odds_away"}
+            )
+            odds_ou = _market_dict(row, {"over": "odds_over", "under": "odds_under"})
+            for market in (odds_1x2, odds_ou, odds_ah):
+                if market and any(value <= 1.0 for value in market.values()):
+                    raise ValueError(f"row {line_no}: decimal odds must be > 1.0")
             matches.append(
                 BacktestMatch(
                     match_id=row["match_id"].strip(),
@@ -83,10 +90,8 @@ def load_matches(path: str | Path) -> list[BacktestMatch]:
                     home_elo_before=float(row["home_elo_before"]),
                     away_elo_before=float(row["away_elo_before"]),
                     neutral=(row.get("neutral") or "1").strip() != "0",
-                    odds_1x2=_market_dict(
-                        row, {"home": "odds_home", "draw": "odds_draw", "away": "odds_away"}
-                    ),
-                    odds_ou=_market_dict(row, {"over": "odds_over", "under": "odds_under"}),
+                    odds_1x2=odds_1x2,
+                    odds_ou=odds_ou,
                     ah_line=ah_line if odds_ah is not None else None,
                     odds_ah=odds_ah if ah_line is not None else None,
                 )

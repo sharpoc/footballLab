@@ -100,6 +100,26 @@ def test_load_matches_missing_required_value_raises():
         raise AssertionError("expected ValueError")
 
 
+def test_load_matches_rejects_odds_not_above_one():
+    import tempfile
+
+    from worldcup.backtest import load_matches
+
+    header = (
+        "match_id,kickoff_at_utc,home_team,away_team,home_score,away_score,"
+        "home_elo_before,away_elo_before,odds_home,odds_draw,odds_away\n"
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as fh:
+        fh.write(header + "m1,2025-06-01T18:00:00Z,Alpha,Beta,2,0,1900,1700,1.00,3.90,6.00\n")
+        path = fh.name
+    try:
+        load_matches(path)
+    except ValueError as exc:
+        assert "row 2" in str(exc) and "odds" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_replay_match_produces_model_and_market_probs():
     from worldcup.backtest import load_matches, replay_match
     from worldcup.config import load_config
