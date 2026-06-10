@@ -185,6 +185,23 @@ def test_project_signal_rows_includes_detail_items_for_expandable_analysis():
     assert details["风险提示"] == "当前数据新鲜，未触发额外降级原因。"
 
 
+def test_project_signal_rows_attaches_recent_changes_to_matching_signal_row():
+    previous = _snapshot()
+    previous["run"]["stale_sources"] = []
+    previous["matches"][0]["market"]["1x2"]["odds"] = {"home": 2.0}
+    current = deepcopy(previous)
+    current["matches"][0]["market"]["1x2"]["odds"]["home"] = 1.85
+    current["matches"][0]["signals"][0]["grade"] = "S"
+    current["matches"][0]["signals"][0]["ev"] = 0.092
+
+    rows = project_signal_rows(current, previous_snapshot=previous)
+    details = {item["label"]: item["value"] for item in rows[0]["detail_items"]}
+
+    assert rows[0]["recent_change"]["tone"] == "strong"
+    assert rows[0]["recent_change"]["detail"] == "等级 A → S；EV +5.2% → +9.2%；赔率 2.00 → 1.85"
+    assert details["本轮变化"] == "等级 A → S；EV +5.2% → +9.2%；赔率 2.00 → 1.85"
+
+
 def test_project_signal_rows_explains_quality_guard_reasons():
     snapshot = _snapshot()
     snapshot["run"]["stale_sources"] = []

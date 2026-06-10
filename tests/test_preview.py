@@ -73,7 +73,7 @@ def test_build_preview_html_renders_research_ledger_surface():
     assert "11:30" in html
     assert "胜平负 - 主队" in html
     assert "+4.1%" in html
-    assert 'class="grade-pill grade-a"' in html
+    assert 'class="grade-pill grade-a grade-priority"' in html
     assert ".grade-s" in html
     assert ".grade-a" in html
     assert ".grade-b" in html
@@ -226,11 +226,26 @@ def test_build_preview_html_includes_recent_change_summary():
 
     html = build_preview_html(current, previous_snapshot=previous)
 
-    assert "最近变化" in html
-    assert "墨西哥 对 南非 | 胜平负 - 主队" in html
+    assert 'class="change-summary"' not in html
+    assert "最近变化</h2>" not in html
+    assert 'class="signal-change signal-change-strong"' in html
+    assert "本轮变化" in html
     assert "等级 A → S" in html
     assert "EV +5.2% → +9.2%" in html
     assert "赔率 2.00 → 1.85" in html
+    assert "<dt>本轮变化</dt><dd>等级 A → S；EV +5.2% → +9.2%；赔率 2.00 → 1.85</dd>" in html
+
+
+def test_build_preview_html_renders_stronger_signal_grade_badges():
+    previous = _snapshot()
+    current = deepcopy(previous)
+    current["matches"][0]["signals"][0]["grade"] = "S"
+
+    html = build_preview_html(current, previous_snapshot=previous)
+
+    assert 'class="grade-pill grade-s grade-priority"' in html
+    assert ".grade-priority" in html
+    assert "letter-spacing" not in html
 
 
 def test_build_preview_html_keeps_mobile_table_scroll_inside_ledger_panel():

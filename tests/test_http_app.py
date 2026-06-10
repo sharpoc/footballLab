@@ -206,7 +206,8 @@ def test_http_get_preview_compares_latest_two_snapshots():
         )
 
         assert response["status"] == 200
-        assert "最近变化" in response["body"]
+        assert 'class="change-summary"' not in response["body"]
+        assert "本轮变化" in response["body"]
         assert "等级 A → S" in response["body"]
         assert "赔率 2.00 → 1.85" in response["body"]
 

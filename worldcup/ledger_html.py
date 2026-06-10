@@ -8,7 +8,6 @@ from typing import Any
 from worldcup.ledger import (
     BEIJING_TZ,
     WEEKDAY_LABELS,
-    build_snapshot_change_items,
     build_summary_metrics,
     derive_quality_status,
     project_signal_rows,
@@ -125,11 +124,13 @@ def _grade_bucket(grade: Any) -> str:
 def _grade_class(grade: Any) -> str:
     normalized = str(grade or "").upper()
     if normalized in {"S", "A", "B", "C", "D"}:
-        return f"grade-{normalized.lower()}"
+        priority = " grade-priority" if normalized in {"S", "A"} else ""
+        return f"grade-{normalized.lower()}{priority}"
     return "grade-unknown"
 
 
 def _row_search_text(row: dict[str, Any]) -> str:
+    recent_change = row.get("recent_change") or {}
     parts = [
         row.get("matchup", ""),
         row.get("source_matchup", ""),
@@ -148,6 +149,7 @@ def _row_search_text(row: dict[str, Any]) -> str:
         row.get("grade", ""),
         row.get("freshness", ""),
         row.get("explanation", ""),
+        recent_change.get("detail", ""),
     ]
     return " ".join(str(part) for part in parts).lower()
 
@@ -171,8 +173,34 @@ def _render_signal_detail(row: dict[str, Any]) -> str:
     ).format(items="".join(items))
 
 
-def _render_signal_table(snapshot: dict[str, Any]) -> str:
-    rows = project_signal_rows(snapshot)
+def _render_signal_change(row: dict[str, Any]) -> str:
+    recent_change = row.get("recent_change") or {}
+    detail = recent_change.get("detail")
+    if not detail:
+        return ""
+    tone = _slug(recent_change.get("tone", "neutral"))
+    return (
+        "<span class=\"signal-change signal-change-{tone}\">"
+        "<strong>本轮变化</strong>{detail}"
+        "</span>"
+    ).format(
+        tone=_text(tone),
+        detail=_text(detail),
+    )
+
+
+def _render_signal_reason(row: dict[str, Any]) -> str:
+    return "{change}<span class=\"signal-why\">{why}</span>".format(
+        change=_render_signal_change(row),
+        why=_text(row.get("explanation")),
+    )
+
+
+def _render_signal_table(
+    snapshot: dict[str, Any],
+    previous_snapshot: dict[str, Any] | None = None,
+) -> str:
+    rows = project_signal_rows(snapshot, previous_snapshot=previous_snapshot)
     if not rows:
         return """
         <section class="ledger-table-wrap">
@@ -199,6 +227,7 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
             grade_class = _grade_class(grade)
             search_text = _row_search_text(row)
             detail_id = f"signal-detail-{detail_index}"
+            reason = _render_signal_reason(row)
             table_rows.append(
                 "<tr class=\"signal-row\" role=\"button\" tabindex=\"0\" "
                 "aria-expanded=\"false\" aria-controls=\"{detail_id}\" "
@@ -231,7 +260,7 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
                     grade_class=_text(grade_class),
                     grade=_text(grade),
                     freshness=_text(row.get("freshness")),
-                    why=_text(row.get("explanation")),
+                    why=reason,
                 )
             )
             table_rows.append(
@@ -269,34 +298,6 @@ def _render_signal_table(snapshot: dict[str, Any]) -> str:
       <p class="no-results" hidden>没有符合当前筛选的信号。</p>
     </section>
     """.format(rows="\n".join(table_rows))
-
-
-def _render_change_summary(
-    snapshot: dict[str, Any],
-    previous_snapshot: dict[str, Any] | None,
-) -> str:
-    items = build_snapshot_change_items(previous_snapshot, snapshot)
-    rows = []
-    for item in items:
-        rows.append(
-            "<li data-tone=\"{tone}\">"
-            "<strong>{title}</strong>"
-            "<span>{detail}</span>"
-            "</li>".format(
-                tone=_slug(item.get("tone", "neutral")),
-                title=_text(item.get("title")),
-                detail=_text(item.get("detail")),
-            )
-        )
-    return """
-    <section class="change-summary" aria-label="最近变化">
-      <div>
-        <h2>最近变化</h2>
-        <p>对比上一轮快照，展示超过阈值的等级、EV、概率和赔率变化。</p>
-      </div>
-      <ul>{items}</ul>
-    </section>
-    """.format(items="".join(rows))
 
 
 def _format_interval(seconds: Any) -> str:
@@ -499,7 +500,7 @@ def build_research_ledger_html(
       gap: 10px;
       margin: 18px 0;
     }}
-    .metric-card, .rail-card, .ledger-table-wrap, .empty-state, .change-summary {{
+    .metric-card, .rail-card, .ledger-table-wrap, .empty-state {{
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -640,47 +641,61 @@ def build_research_ledger_html(
     }}
     .grade-pill {{
       display: inline-flex;
-      width: 34px;
+      width: 36px;
       min-height: 28px;
       align-items: center;
       justify-content: center;
-      border-radius: 999px;
+      border-radius: 7px;
       background: #e9eef5;
       color: #1f2937;
       font-weight: 800;
     }}
-    .grade-s {{ background: #dcfce7; color: #166534; border: 1px solid #86efac; }}
-    .grade-a {{ background: #e0f2fe; color: #075985; border: 1px solid #7dd3fc; }}
+    .grade-priority {{
+      width: 48px;
+      min-height: 34px;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 16px;
+      font-weight: 900;
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
+    }}
+    .grade-s {{ background: #14532d; color: #f0fdf4; border: 1px solid #22c55e; }}
+    .grade-a {{ background: #1d4ed8; color: #eff6ff; border: 1px solid #60a5fa; }}
     .grade-b {{ background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; }}
     .grade-c {{ background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; }}
     .grade-d {{ background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; }}
     .grade-unknown {{ background: #f3f4f6; color: #4b5563; border: 1px solid #d1d5db; }}
-    .change-summary {{
-      display: grid;
-      grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
-      gap: 14px;
-      margin: 0 0 18px;
-      padding: 16px;
-    }}
-    .change-summary p {{ color: var(--muted); font-size: 13px; }}
-    .change-summary ul {{
-      display: grid;
-      gap: 8px;
-      padding: 0;
-      list-style: none;
-    }}
-    .change-summary li {{
-      margin: 0;
-      padding: 10px 12px;
-      border: 1px solid #e5edf3;
-      border-left: 4px solid #94a3b8;
+    .signal-change {{
+      display: block;
+      margin: 0 0 8px;
+      padding: 8px 10px;
+      border: 1px solid #d5dee8;
+      border-left: 4px solid #64748b;
       border-radius: 6px;
       background: #f8fafc;
+      color: #243447;
+      font-size: 13px;
+      line-height: 1.45;
     }}
-    .change-summary li[data-tone="strong"] {{ border-left-color: #16a34a; }}
-    .change-summary li[data-tone="warn"] {{ border-left-color: var(--warn); }}
-    .change-summary li strong, .change-summary li span {{ display: block; }}
-    .change-summary li span {{ margin-top: 4px; color: var(--muted); line-height: 1.45; }}
+    .signal-change strong {{
+      display: block;
+      margin: 0 0 3px;
+      color: #0f172a;
+      font-size: 12px;
+    }}
+    .signal-change-strong {{
+      border-color: #bbf7d0;
+      border-left-color: #16a34a;
+      background: #f0fdf4;
+      color: #14532d;
+    }}
+    .signal-change-warn {{
+      border-color: #fde68a;
+      border-left-color: var(--warn);
+      background: #fffbeb;
+      color: #7c2d12;
+    }}
+    .signal-why {{ color: var(--muted); }}
     .policy-list {{ margin-bottom: 12px; }}
     .right-rail {{ display: grid; gap: 12px; }}
     .rail-card {{ padding: 16px; }}
@@ -688,7 +703,6 @@ def build_research_ledger_html(
     @media (max-width: 980px) {{
       header, .ledger-controls {{ flex-direction: column; align-items: stretch; }}
       .content-grid {{ grid-template-columns: 1fr; }}
-      .change-summary {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -703,7 +717,6 @@ def build_research_ledger_html(
       <p class="meta">最后更新<br>{snapshot_at}</p>
     </header>
     {summary}
-    {changes}
     <div class="content-grid">
       <div class="ledger-panel">
         {controls}
@@ -800,8 +813,7 @@ def build_research_ledger_html(
 """.format(
         snapshot_at=_text(snapshot_at),
         summary=_render_summary(snapshot),
-        changes=_render_change_summary(snapshot, previous_snapshot),
         controls=_render_controls(),
-        table=_render_signal_table(snapshot),
+        table=_render_signal_table(snapshot, previous_snapshot),
         right_rail=_render_right_rail(snapshot),
     )

@@ -2,6 +2,24 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-10 研究台账行内变化与 S/A 徽章
+
+- 新建分支 `codex/ledger-row-changes-signal-badges`。
+- 研究台账移除独立“最近变化”区块，把本轮等级、EV、Edge、概率和赔率变化挂到对应比赛/盘口信号行，并在展开详情中显示“本轮变化”。
+- S/A 等级徽章改为更醒目的高对比块状样式，保留 B/C/D 的低干扰样式。
+- 本地浏览器检查通过：桌面预览无独立 `change-summary`，变化 chip 出现在对应行；390px 移动视口下页面无整体横向溢出，宽表格仍在容器内滚动。
+- 本次只改本地 UI/投影代码和测试，未提交、未 push、未部署、未触发 live refresh、未调用 The Odds API、未写入线上 snapshot。
+
+## 2026-06-10 回测框架 + OU 市场锚定实现计划（待 Codex 执行）
+
+- 算法评估发现关键缺陷：OU 模型 `lh + la = mu_total = 2.6` 恒成立，两独立 Poisson 之和仍是 Poisson(2.6)，已数值验证 dr 0~600 时 `P(over 2.5)` 全部为 0.4816（极端 clamp 时 0.5063），当前 OU 信号无信息量。
+- 新增实现计划 `docs/superpowers/plans/2026-06-10-backtest-and-ou-market-total.md`，对应 spec `2026-06-10-signal-quality-backtest-design.md` 第二阶段。
+- 计划共 10 个任务、全 TDD：引擎新增 `prob_total_over` / `implied_total_mu` / `blended_mu`（`mu_market_weight: 0.7` 市场锚定逐场总进球，无市场回退先验、权重 0 即旧行为）；pipeline 先聚合 OU 市场再算矩阵，snapshot 增量字段 `model.mu_total`；新建 `worldcup/backtest.py`（CSV 加载、概率重放、Brier / Log Loss / 校准分箱、EV 与赔率分层、AH 实盈、|dr| 总进球诊断、市场与 uniform 基线、`sample_too_small` 标记、CLI）。
+- 已确认现有测试只断言 OU 输出结构、不断言具体数值，行为变更不会打破存量测试；`MatchAnalysis` 仅在 `pipeline.py` 一处按关键字构造，加字段安全。
+- 用户决定由 Codex 按计划执行；验证命令仍为 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py`。
+- 注意：真实历史数据（赛前 Elo + 收盘赔率）来源需单独确认，本计划只交付框架与合成样例；OU 信号修复后会显著趋于保守，属预期行为。
+- 本次只写计划与近期记录，未改业务代码、未触发 live refresh、未调用 The Odds API、未部署、未 push、未 commit。
+
 ## 2026-06-10 信号质量防抖代码已上线
 
 - 已提交并推送 `0a926c8 feat: add signal quality guards` 到 `origin/main`。

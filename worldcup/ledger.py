@@ -461,6 +461,55 @@ def _change_cfg(cfg: dict[str, Any] | None) -> dict[str, Any]:
         return dict(DEFAULT_CHANGE_CFG)
 
 
+def _selection_change_parts(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    change_cfg: dict[str, Any],
+) -> tuple[list[str], str]:
+    ev_threshold = _as_float(change_cfg.get("ev_change")) or DEFAULT_CHANGE_CFG["ev_change"]
+    odds_threshold = _as_float(change_cfg.get("odds_move")) or DEFAULT_CHANGE_CFG["odds_move"]
+    changes: list[str] = []
+    tone = "neutral"
+
+    if before.get("grade") != after.get("grade"):
+        changes.append(f"等级 {before.get('grade') or EM_DASH} → {after.get('grade') or EM_DASH}")
+        tone = _grade_tone(before.get("grade"), after.get("grade"))
+    before_ev, after_ev = before.get("ev"), after.get("ev")
+    if before_ev is not None and after_ev is not None and abs(after_ev - before_ev) >= ev_threshold:
+        changes.append(_format_change_pair("EV", before_ev, after_ev, percent=True))
+    before_edge, after_edge = before.get("edge"), after.get("edge")
+    if (
+        before_edge is not None
+        and after_edge is not None
+        and abs(after_edge - before_edge) >= EDGE_CHANGE_THRESHOLD
+    ):
+        changes.append(_format_change_pair("Edge", before_edge, after_edge, percent=True))
+    before_model, after_model = before.get("model_prob"), after.get("model_prob")
+    if (
+        before_model is not None
+        and after_model is not None
+        and abs(after_model - before_model) >= PROB_CHANGE_THRESHOLD
+    ):
+        changes.append(_format_change_pair("模型概率", before_model, after_model, percent=True))
+    before_market, after_market = before.get("market_prob"), after.get("market_prob")
+    if (
+        before_market is not None
+        and after_market is not None
+        and abs(after_market - before_market) >= PROB_CHANGE_THRESHOLD
+    ):
+        changes.append(_format_change_pair("市场概率", before_market, after_market, percent=True))
+    before_odds, after_odds = before.get("odds"), after.get("odds")
+    if (
+        before_odds is not None
+        and after_odds is not None
+        and before_odds > 0
+        and abs(after_odds - before_odds) / before_odds >= odds_threshold
+    ):
+        changes.append(_format_change_pair("赔率", before_odds, after_odds, percent=False))
+
+    return changes, tone
+
+
 def build_snapshot_change_items(
     previous_snapshot: dict[str, Any] | None,
     current_snapshot: dict[str, Any],
@@ -477,8 +526,6 @@ def build_snapshot_change_items(
         ]
 
     change_cfg = _change_cfg(cfg)
-    ev_threshold = _as_float(change_cfg.get("ev_change")) or DEFAULT_CHANGE_CFG["ev_change"]
-    odds_threshold = _as_float(change_cfg.get("odds_move")) or DEFAULT_CHANGE_CFG["odds_move"]
     prev_index = _snapshot_signal_index(previous_snapshot)
     curr_index = _snapshot_signal_index(current_snapshot)
     items: list[dict[str, str]] = []
@@ -512,44 +559,7 @@ def build_snapshot_change_items(
         for key in sorted(set(previous_selections) & set(current_selections)):
             before = previous_selections[key]
             after = current_selections[key]
-            changes: list[str] = []
-            tone = "neutral"
-
-            if before.get("grade") != after.get("grade"):
-                changes.append(f"等级 {before.get('grade') or EM_DASH} → {after.get('grade') or EM_DASH}")
-                tone = _grade_tone(before.get("grade"), after.get("grade"))
-            before_ev, after_ev = before.get("ev"), after.get("ev")
-            if before_ev is not None and after_ev is not None and abs(after_ev - before_ev) >= ev_threshold:
-                changes.append(_format_change_pair("EV", before_ev, after_ev, percent=True))
-            before_edge, after_edge = before.get("edge"), after.get("edge")
-            if (
-                before_edge is not None
-                and after_edge is not None
-                and abs(after_edge - before_edge) >= EDGE_CHANGE_THRESHOLD
-            ):
-                changes.append(_format_change_pair("Edge", before_edge, after_edge, percent=True))
-            before_model, after_model = before.get("model_prob"), after.get("model_prob")
-            if (
-                before_model is not None
-                and after_model is not None
-                and abs(after_model - before_model) >= PROB_CHANGE_THRESHOLD
-            ):
-                changes.append(_format_change_pair("模型概率", before_model, after_model, percent=True))
-            before_market, after_market = before.get("market_prob"), after.get("market_prob")
-            if (
-                before_market is not None
-                and after_market is not None
-                and abs(after_market - before_market) >= PROB_CHANGE_THRESHOLD
-            ):
-                changes.append(_format_change_pair("市场概率", before_market, after_market, percent=True))
-            before_odds, after_odds = before.get("odds"), after.get("odds")
-            if (
-                before_odds is not None
-                and after_odds is not None
-                and before_odds > 0
-                and abs(after_odds - before_odds) / before_odds >= odds_threshold
-            ):
-                changes.append(_format_change_pair("赔率", before_odds, after_odds, percent=False))
+            changes, tone = _selection_change_parts(before, after, change_cfg)
 
             if changes:
                 items.append(
@@ -571,12 +581,38 @@ def build_snapshot_change_items(
     return items[: max(1, limit)]
 
 
-def project_signal_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+def _recent_signal_change(
+    previous_index: dict[str, dict[str, Any]],
+    match_id: str,
+    signal_key: str,
+    after: dict[str, Any],
+    change_cfg: dict[str, Any],
+) -> dict[str, str] | None:
+    previous_match = previous_index.get(match_id)
+    if not previous_match or signal_key not in previous_match["selections"]:
+        return {"tone": "neutral", "detail": "本轮新增可比较信号。"}
+
+    before = previous_match["selections"][signal_key]
+    changes, tone = _selection_change_parts(before, after, change_cfg)
+    if not changes:
+        return None
+    return {"tone": tone, "detail": "；".join(changes)}
+
+
+def project_signal_rows(
+    snapshot: dict[str, Any],
+    previous_snapshot: dict[str, Any] | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     stale = bool(_quality_values(snapshot, "stale_sources"))
     run = snapshot.get("run") or {}
     snapshot_updated_raw = run.get("observed_at") or snapshot.get("snapshot_at")
+    previous_index = _snapshot_signal_index(previous_snapshot) if previous_snapshot else {}
+    current_index = _snapshot_signal_index(snapshot) if previous_snapshot else {}
+    change_cfg = _change_cfg(cfg) if previous_snapshot else {}
     rows: list[dict[str, Any]] = []
     for match in snapshot.get("matches", []):
+        match_id = _match_identity(match)
         kickoff_at_utc = match.get("kickoff_at_utc", "")
         parsed_kickoff = _parse_datetime(kickoff_at_utc)
         display_kickoff = _to_beijing_time(parsed_kickoff)
@@ -587,6 +623,7 @@ def project_signal_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         home_team = match.get("home_team", "")
         away_team = match.get("away_team", "")
         for signal in match.get("signals") or []:
+            signal_key = _signal_identity(signal)
             market_type = signal.get("market_type")
             selection = signal.get("selection")
             line = _signal_line(signal)
@@ -599,6 +636,12 @@ def project_signal_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             status = signal.get("status", "")
             freshness = "过期" if stale else "新鲜"
             explanation = build_signal_explanation(signal, stale)
+            after = ((current_index.get(match_id) or {}).get("selections") or {}).get(signal_key)
+            recent_change = (
+                _recent_signal_change(previous_index, match_id, signal_key, after, change_cfg)
+                if after
+                else None
+            )
             row = {
                 "matchup": format_matchup_label(home_team, away_team),
                 "source_matchup": f"{home_team} vs {away_team}",
@@ -626,6 +669,7 @@ def project_signal_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "freshness": freshness,
                 "stale": stale,
                 "explanation": explanation,
+                "recent_change": recent_change,
                 "detail_items": _build_signal_detail_items(
                     explanation=explanation,
                     market_label=market_label,
@@ -642,6 +686,10 @@ def project_signal_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             row["detail_items"].append(
                 {"label": "更新时间", "value": f"{updated_label}：{updated_full}"}
             )
+            if recent_change:
+                row["detail_items"].append(
+                    {"label": "本轮变化", "value": recent_change["detail"]}
+                )
             rows.append(row)
 
     rows.sort(
