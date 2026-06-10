@@ -2,6 +2,19 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-10 Elo replay + 真实历史回测基线
+
+- 新建分支 `codex/elo-replay-real-backtest`，按 `docs/superpowers/plans/2026-06-10-elo-replay-real-backtest.md` 分任务 TDD 执行并做本地 commit；未 push、未部署。
+- 新增 `worldcup.elo_replay`：按 eloratings 公开公式实现 K 因子、净胜球指数、零和更新，并从 1872 年国际比赛结果重放推演赛前 Elo。
+- replay vs 官方榜对照 CLI 已跑通：`matches_replayed=49378`、`teams_rated=336`、`teams_mapped_to_codes=236`、官方 top-10 在 replay top-30 中 `overlap_hits=10/10`，未触发低 overlap 停止条件。
+- 新增 `worldcup.backtest_data`：将 `data/probe/intl_results_martj42.csv` 转为回测 CSV，过滤 2010-01-01 起且双方可映射 Elo alias 的比赛；生成本地样本 `source_rows=49378`、`output_rows=14901`。
+- `worldcup.backtest` 新增 `--sweep` 参数扫描；已跑 `poisson.dc_rho=0,-0.05,-0.1,-0.15`，未修改 `config/settings.yaml`。
+- 首份真实历史回测报告已写入 `docs/research/2026-06-10-intl-backtest-baseline.md`：基线 1X2 model Brier `0.5252676489648002`、Log Loss `0.8933331617985814`；uniform Brier `0.6666666666666667`、Log Loss `1.0986122886681098`。
+- 扫描结果中 `dc_rho=-0.15` 的 1X2 Log Loss 最低为 `0.891783627002631`，相对 `dc_rho=0` 的 Log Loss 改善 `0.0015495347959503247`；这只是证据，不自动改生产配置。
+- 无赔率历史样本时，`model_matched` / `market` 样本数均为 0，不能校准 EV/Edge 阈值或 `poisson.mu_market_weight`；后续要等世界杯期间自有赔率快照和赛果回填。
+- 本地验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `240/240 tests passed`。
+- 本次未触发 live refresh、未调用 The Odds API、未写入线上 snapshot、未部署、未 push；本地产物仅写入被忽略的 `data/local/backtest/`。
+
 ## 2026-06-10 回测加固与 OU/DC 算法代码已上线
 
 - 已将本地 `main` 推送到 `origin/main`，推送范围包含两批改动：`codex/backtest-ou-market-total` 和 `codex/backtest-hardening-dixon-coles`。

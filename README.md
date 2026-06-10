@@ -13,7 +13,7 @@
 
 - Git 仓库已初始化。
 - Plan 1 引擎核心已完成第一版。
-- 本地测试执行器通过：`160/160 tests passed`。
+- 本地测试执行器通过：`240/240 tests passed`。
 - Plan 0 核心数据源探测已完成第一轮：openfootball 赛程、eloratings Elo、The Odds API 赔率可用；API-Football Free plan 不能访问 2026 season。
 - Plan 2 已启动：当前完成纯离线解析层、单场价值信号、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、低频调度策略、run metadata、调度执行包装、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照，本地 runner 生成的快照也包含 ingest 所需 run metadata。
 - Plan 3A FastAPI 本地适配层已实现并完成测试。
@@ -68,6 +68,9 @@ docs/superpowers/plans/
 worldcup/
   config.py                     # 配置读取
   models.py                     # 数据模型与枚举
+  elo_replay.py                 # 国际比赛历史 Elo replay 与官方榜对照
+  backtest_data.py              # 国际比赛历史结果转换为回测 CSV
+  backtest.py                   # 离线回测、指标报告与参数扫描
   differ.py                     # 两轮变化检测
   pipeline.py                   # collector 输出对齐 + 单场分析编排
   local_runner.py               # 本地样例/缓存 → 分析快照 JSON
@@ -154,7 +157,9 @@ python3 -m worldcup.backtest --csv data/local/backtest/history.csv --min-sample 
 ```
 
 - CSV 列契约见 `tests/data/backtest_sample.csv`（合成样例，仅演示格式，不得用于正式结论）。
-- 真实历史数据（赛前 Elo、收盘赔率）来源需单独确认后再接入。
+- 历史数据链路：`python3 -m worldcup.backtest_data` 把 `data/probe/` 的国际比赛结果样例（含 `worldcup.elo_replay` 推演的赛前 Elo）转换成回测 CSV；`python3 -m worldcup.elo_replay` 输出 replay 与官方 eloratings 榜单的对照。
+- 参数扫描：`--sweep poisson.dc_rho=0,-0.05,-0.1,-0.15` 一次产出多取值对比报告；首份真实回测证据见 `docs/research/2026-06-10-intl-backtest-baseline.md`。
+- 真实历史收盘赔率来源需单独确认后再接入。
 - 报告默认写入被忽略的 `data/local/backtest/report.json`。
 - 样本量低于 `--min-sample` 时报告带 `sample_too_small: true`，不能据此下强结论。
 - 报告中 `markets.*.model` 是全样本模型指标，`model_matched` 是与市场基线同样本（有收盘赔率的行）的模型指标；对比模型 vs 市场请用 `model_matched` vs `market`。
@@ -212,4 +217,4 @@ DATABASE_URL=
 - 本地预览页必须保留研究免责声明，不显示资金相关字段。
 - readiness check 只报告变量名、文件状态和内容完整性，不能输出密钥值；`.env.example` 必须只含变量名和空值。
 - 所有公开输出都必须保留免责声明。
-- 当前模型未经历史回测验证，公开页只能显示研究价值信号。
+- 当前 EV/Edge 阈值未经历史赔率回测验证，公开页只能显示研究价值信号。
