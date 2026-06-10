@@ -2,6 +2,25 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-10 一键只读运维检查
+
+- 新增 `python3 -m worldcup.ops_check`，用于一键汇总本机 snapshot/history/quota/LaunchAgent、本机 scheduled-publish 日志、公网健康与页面更新时间、ECS 服务/SQLite/latest snapshot 和日志安全计数。
+- 该命令只读执行：不触发 refresh、不调用 The Odds API、不发送 ingest、不重启服务、不部署、不读取或打印 `.env` secret。
+- 输出会保留元数据摘要，例如 run_id、场次数、quota 数字、HTTP 状态、SQLite 最新 snapshot 元数据和敏感词/error 计数；远端 payload/snapshot 正文会被过滤。
+- 新增 `tests/test_ops_check.py`，覆盖本机+公网摘要、远端元数据过滤、敏感词计数不泄露值；TDD 先确认缺少 `worldcup.ops_check` 的红测试，再实现。
+- 本地验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `269/269 tests passed`；真实只读 smoke `python3 -m worldcup.ops_check` 返回 `ok=true`、`errors=0`、`warnings=0`。
+- 本次仅新增只读运维工具、测试和 README 用法；未 push、未部署、未触发 live refresh、未写线上。
+
+## 2026-06-10 强制发布追平线上快照
+
+- 经用户确认，已执行一次 `worldcup.scheduled_publish --live --force`，新 run 为 `20260610T100725Z-live`，向 `https://football.celab.xin/api/ingest/snapshot` 发布成功；ECS 返回 HTTP 200 / `ingest_status=stored`。
+- 本地 `data/cache/analysis_snapshot.json` 与 `data/local/history/snapshot_20260610T100725Z-live.json` 均为 72 场，`source_errors=[]`、`stale_sources=[]`。
+- The Odds API quota 记录更新为 `remaining=473`、`used=27`，本次强制刷新消耗 3。
+- 公网页面 `/` 和 `/preview` 已显示“最后更新 2026 年 6 月 10 日 星期三 18:07”；`/api/matches` 返回 72 场；公网 `/api/snapshot/latest` 仍按 Nginx 规则返回 404。
+- ECS `worldcup.service` 与 `nginx` 均为 active；服务器 SQLite snapshot 行数增至 7，最新记录为 `20260610T100725Z-live`。
+- 本机 scheduled-publish 日志、ECS journal、Nginx error/access log 检查未发现项目 secret/header 泄露；公开页面和 `/api/matches` 未命中资金/下注类禁止词。
+- 本次未改代码、未重启服务、未部署 release、未 push。
+
 ## 2026-06-10 台账右栏下移
 
 - 已将研究台账右侧说明栏改为台账下方的全宽卡片区，移除桌面端 `1fr + 340px` 两列布局，避免“信号原因”列被右栏挤压只显示半截。

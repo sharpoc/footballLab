@@ -180,6 +180,12 @@ python3 -m worldcup.backtest --csv data/local/backtest/history.csv --min-sample 
 python3 -m worldcup.refresh_audit
 ```
 
+日常运维推荐使用一键只读检查命令；它会汇总本机 snapshot/history/quota/LaunchAgent、本机 scheduled-publish 日志、公网 `/healthz` / `/api/matches` / 页面更新时间、ECS 服务/SQLite/latest snapshot 和日志安全计数。该命令不触发 refresh、不发布、不读取或打印 secret。
+
+```bash
+python3 -m worldcup.ops_check
+```
+
 当 openfootball 缓存里已有完赛比分时，snapshot 会给对应比赛附加 `result`，研究信号台账会在“信号原因”栏显示赛后验证：胜平负 / 大小球显示“命中”或“未中”，亚洲让球显示“命中 / 未中 / 走水”。
 
 比赛日之后跑：
