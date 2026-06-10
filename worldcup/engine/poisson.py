@@ -58,13 +58,27 @@ def _pmf_series(lam: float, max_goals: int) -> list[float]:
     return vals
 
 
+def _clamped_rho(rho: float, lh: float, la: float) -> float:
+    if not rho:
+        return 0.0
+    lo = max(-1.0 / lh, -1.0 / la)
+    hi = min(1.0 / (lh * la), 1.0)
+    return _clamp(rho, lo, hi)
+
+
 def score_matrix(lh: float, la: float, cfg: dict) -> tuple[list[list[float]], float]:
     n = cfg["max_goals"]
     ph = _pmf_series(lh, n)
     pa = _pmf_series(la, n)
     raw = [[ph[i] * pa[j] for j in range(n + 1)] for i in range(n + 1)]
+    tail = 1.0 - sum(sum(row) for row in raw)
+    rho = _clamped_rho(cfg.get("dc_rho", 0.0), lh, la)
+    if rho:
+        raw[0][0] *= 1.0 - lh * la * rho
+        raw[0][1] *= 1.0 + lh * rho
+        raw[1][0] *= 1.0 + la * rho
+        raw[1][1] *= 1.0 - rho
     total = sum(sum(row) for row in raw)
-    tail = 1.0 - total
     matrix = [[raw[i][j] / total for j in range(n + 1)] for i in range(n + 1)]
     return matrix, tail
 

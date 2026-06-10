@@ -98,3 +98,35 @@ def test_blended_mu_full_weight_tracks_market():
     cfg["mu_market_weight"] = 1.0
     p_high = prob_total_over(3.2, 2.5)
     assert math.isclose(blended_mu(p_high, 2.5, cfg), 3.2, abs_tol=1e-6)
+
+
+def test_score_matrix_dc_rho_zero_is_noop():
+    base, tail_base = score_matrix(1.5, 1.1, CFG)
+    cfg = dict(CFG)
+    cfg["dc_rho"] = 0.0
+    same, tail_same = score_matrix(1.5, 1.1, cfg)
+    assert same == base
+    assert tail_same == tail_base
+
+
+def test_score_matrix_dc_negative_rho_boosts_low_score_draws():
+    cfg = dict(CFG)
+    cfg["dc_rho"] = -0.1
+    adjusted, _ = score_matrix(1.5, 1.1, cfg)
+    base, _ = score_matrix(1.5, 1.1, CFG)
+    assert adjusted[0][0] > base[0][0]
+    assert adjusted[1][1] > base[1][1]
+    assert adjusted[0][1] < base[0][1]
+    assert adjusted[1][0] < base[1][0]
+    assert math.isclose(sum(sum(row) for row in adjusted), 1.0, abs_tol=1e-9)
+    assert probs_1x2(adjusted)["draw"] > probs_1x2(base)["draw"]
+
+
+def test_score_matrix_dc_extreme_rho_clamped_no_negative_cells():
+    cfg = dict(CFG)
+    cfg["dc_rho"] = -5.0
+    adjusted, _ = score_matrix(1.5, 1.1, cfg)
+    base, _ = score_matrix(1.5, 1.1, CFG)
+    assert adjusted != base
+    assert min(min(row) for row in adjusted) >= 0.0
+    assert math.isclose(sum(sum(row) for row in adjusted), 1.0, abs_tol=1e-9)
