@@ -189,8 +189,25 @@ def _render_signal_change(row: dict[str, Any]) -> str:
     )
 
 
+def _render_prediction_result(row: dict[str, Any]) -> str:
+    result = row.get("prediction_result") or {}
+    if not result:
+        return ""
+    status = _slug(result.get("status", "unknown"))
+    return (
+        "<span class=\"prediction-result prediction-result-{status}\">"
+        "<strong>预测结果：{label}</strong>{detail}"
+        "</span>"
+    ).format(
+        status=_text(status),
+        label=_text(result.get("label")),
+        detail=_text(result.get("detail")),
+    )
+
+
 def _render_signal_reason(row: dict[str, Any]) -> str:
-    return "{change}<span class=\"signal-why\">{why}</span>".format(
+    return "{result}{change}<span class=\"signal-why\">{why}</span>".format(
+        result=_render_prediction_result(row),
         change=_render_signal_change(row),
         why=_text(row.get("explanation")),
     )
@@ -694,6 +711,42 @@ def build_research_ledger_html(
       border-left-color: var(--warn);
       background: #fffbeb;
       color: #7c2d12;
+    }}
+    .prediction-result {{
+      display: block;
+      margin: 0 0 8px;
+      padding: 8px 10px;
+      border: 1px solid #d5dee8;
+      border-left: 4px solid #64748b;
+      border-radius: 6px;
+      background: #f8fafc;
+      color: #243447;
+      font-size: 13px;
+      line-height: 1.45;
+    }}
+    .prediction-result strong {{
+      display: block;
+      margin: 0 0 3px;
+      color: #0f172a;
+      font-size: 12px;
+    }}
+    .prediction-result-hit {{
+      border-color: #bbf7d0;
+      border-left-color: #16a34a;
+      background: #f0fdf4;
+      color: #14532d;
+    }}
+    .prediction-result-miss {{
+      border-color: #fecaca;
+      border-left-color: #dc2626;
+      background: #fef2f2;
+      color: #7f1d1d;
+    }}
+    .prediction-result-push {{
+      border-color: #cbd5e1;
+      border-left-color: #64748b;
+      background: #f8fafc;
+      color: #334155;
     }}
     .signal-why {{ color: var(--muted); }}
     .policy-list {{ margin-bottom: 12px; }}

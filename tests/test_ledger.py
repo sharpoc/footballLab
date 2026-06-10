@@ -185,6 +185,63 @@ def test_project_signal_rows_includes_detail_items_for_expandable_analysis():
     assert details["风险提示"] == "当前数据新鲜，未触发额外降级原因。"
 
 
+def test_project_signal_rows_marks_finished_1x2_prediction_hit():
+    snapshot = _snapshot()
+    snapshot["matches"][0]["result"] = {"status": "finished", "home_score": 2, "away_score": 0}
+
+    rows = project_signal_rows(snapshot)
+    details = {item["label"]: item["value"] for item in rows[0]["detail_items"]}
+
+    assert rows[0]["prediction_result"] == {
+        "status": "hit",
+        "label": "命中",
+        "detail": "赛果：墨西哥 2-0 南非；方向：主胜",
+    }
+    assert details["赛后验证"] == "命中；赛果：墨西哥 2-0 南非；方向：主胜"
+
+
+def test_project_signal_rows_marks_finished_over_under_prediction_miss():
+    snapshot = _snapshot()
+    snapshot["matches"][0]["result"] = {"status": "finished", "home_score": 1, "away_score": 1}
+    snapshot["matches"][0]["model"] = {"ou_2_5": {"over": 0.54, "under": 0.46}}
+    snapshot["matches"][0]["market"] = {
+        "ou_2_5": {"market_probs": {"over": 0.51, "under": 0.49}}
+    }
+    snapshot["matches"][0]["signals"] = [
+        {
+            "market_type": "OverUnder_90min",
+            "selection": "Over",
+            "line": 2.5,
+            "grade": "A",
+        }
+    ]
+
+    rows = project_signal_rows(snapshot)
+
+    assert rows[0]["prediction_result"]["status"] == "miss"
+    assert rows[0]["prediction_result"]["label"] == "未中"
+    assert rows[0]["prediction_result"]["detail"] == "赛果：墨西哥 1-1 南非；方向：大 2.5"
+
+
+def test_project_signal_rows_marks_finished_ah_prediction_push():
+    snapshot = _snapshot()
+    snapshot["matches"][0]["result"] = {"status": "finished", "home_score": 1, "away_score": 0}
+    snapshot["matches"][0]["signals"] = [
+        {
+            "market_type": "AsianHandicap_90min",
+            "selection": "home_-1",
+            "line": -1.0,
+            "grade": "B",
+        }
+    ]
+
+    rows = project_signal_rows(snapshot)
+
+    assert rows[0]["prediction_result"]["status"] == "push"
+    assert rows[0]["prediction_result"]["label"] == "走水"
+    assert rows[0]["prediction_result"]["detail"] == "赛果：墨西哥 1-0 南非；方向：主队 -1"
+
+
 def test_project_signal_rows_attaches_recent_changes_to_matching_signal_row():
     previous = _snapshot()
     previous["run"]["stale_sources"] = []

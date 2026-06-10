@@ -4,6 +4,8 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from worldcup.engine.handicap import ev_handicap
+
 EM_DASH = "\u2014"
 BEIJING_TZ = timezone(timedelta(hours=8))
 WEEKDAY_LABELS = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
@@ -407,6 +409,78 @@ def _signal_market_odds(match: dict[str, Any], signal: dict[str, Any]) -> float 
     return None
 
 
+def _finished_score(match: dict[str, Any]) -> tuple[int, int] | None:
+    result = match.get("result") or {}
+    if result.get("status") != "finished":
+        return None
+    try:
+        return int(result["home_score"]), int(result["away_score"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _score_detail(
+    match: dict[str, Any],
+    home_score: int,
+    away_score: int,
+    direction: str,
+) -> str:
+    home = format_team_label(match.get("home_team"))
+    away = format_team_label(match.get("away_team"))
+    return f"赛果：{home} {home_score}-{away_score} {away}；方向：{direction}"
+
+
+def _prediction_result(match: dict[str, Any], signal: dict[str, Any]) -> dict[str, str] | None:
+    score = _finished_score(match)
+    if score is None:
+        return None
+    home_score, away_score = score
+    market_type = signal.get("market_type")
+    selection = _selection_key(signal.get("selection"))
+    line = _as_float(_signal_line(signal))
+
+    status: str | None = None
+    direction: str | None = None
+    if market_type == "1X2_90min":
+        actual = "home" if home_score > away_score else "away" if away_score > home_score else "draw"
+        direction_labels = {"home": "主胜", "draw": "平局", "away": "客胜"}
+        direction = direction_labels.get(selection or "")
+        if direction is None:
+            return None
+        status = "hit" if selection == actual else "miss"
+    elif market_type == "OverUnder_90min":
+        if line is None or selection not in {"over", "under"}:
+            return None
+        total_goals = home_score + away_score
+        if total_goals == line:
+            status = "push"
+        else:
+            actual = "over" if total_goals > line else "under"
+            status = "hit" if selection == actual else "miss"
+        direction = f"{'大' if selection == 'over' else '小'} {_line_key(line)}"
+    elif market_type == "AsianHandicap_90min":
+        if line is None or selection not in {"home", "away"}:
+            return None
+        goal_diff = home_score - away_score if selection == "home" else away_score - home_score
+        realized = ev_handicap({goal_diff: 1.0}, line, 2.0)
+        if realized > 0:
+            status = "hit"
+        elif realized < 0:
+            status = "miss"
+        else:
+            status = "push"
+        direction = f"{_selection_label(selection)}{_line_label(line, signed_positive=True)}"
+
+    if status is None or direction is None:
+        return None
+    labels = {"hit": "命中", "miss": "未中", "push": "走水"}
+    return {
+        "status": status,
+        "label": labels[status],
+        "detail": _score_detail(match, home_score, away_score, direction),
+    }
+
+
 def _snapshot_signal_index(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
     indexed: dict[str, dict[str, Any]] = {}
     for match in snapshot.get("matches") or []:
@@ -636,6 +710,7 @@ def project_signal_rows(
             status = signal.get("status", "")
             freshness = "过期" if stale else "新鲜"
             explanation = build_signal_explanation(signal, stale)
+            prediction_result = _prediction_result(match, signal)
             after = ((current_index.get(match_id) or {}).get("selections") or {}).get(signal_key)
             recent_change = (
                 _recent_signal_change(previous_index, match_id, signal_key, after, change_cfg)
@@ -669,6 +744,7 @@ def project_signal_rows(
                 "freshness": freshness,
                 "stale": stale,
                 "explanation": explanation,
+                "prediction_result": prediction_result,
                 "recent_change": recent_change,
                 "detail_items": _build_signal_detail_items(
                     explanation=explanation,
@@ -686,6 +762,13 @@ def project_signal_rows(
             row["detail_items"].append(
                 {"label": "更新时间", "value": f"{updated_label}：{updated_full}"}
             )
+            if prediction_result:
+                row["detail_items"].append(
+                    {
+                        "label": "赛后验证",
+                        "value": f"{prediction_result['label']}；{prediction_result['detail']}",
+                    }
+                )
             if recent_change:
                 row["detail_items"].append(
                     {"label": "本轮变化", "value": recent_change["detail"]}

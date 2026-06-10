@@ -94,6 +94,25 @@ def test_build_snapshot_from_probe_serializes_match_analysis():
         assert snapshot["matches"][0]["signals"]
 
 
+def test_build_snapshot_from_probe_attaches_finished_result_when_available():
+    with TemporaryDirectory() as tmp:
+        probe_dir = Path(tmp) / "probe"
+        _write_probe_files(probe_dir)
+        fixture_path = probe_dir / "openfootball_2026.json"
+        fixture_data = json.loads(fixture_path.read_text())
+        fixture_data["matches"][0]["score1"] = 2
+        fixture_data["matches"][0]["score2"] = 0
+        fixture_path.write_text(json.dumps(fixture_data))
+
+        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-12T00:00:00+00:00")
+
+        assert snapshot["matches"][0]["result"] == {
+            "status": "finished",
+            "home_score": 2,
+            "away_score": 0,
+        }
+
+
 def test_write_snapshot_creates_parent_directory_and_json_file():
     with TemporaryDirectory() as tmp:
         out = Path(tmp) / "nested" / "snapshot.json"

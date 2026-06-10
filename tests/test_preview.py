@@ -236,6 +236,18 @@ def test_build_preview_html_includes_recent_change_summary():
     assert "<dt>本轮变化</dt><dd>等级 A → S；EV +5.2% → +9.2%；赔率 2.00 → 1.85</dd>" in html
 
 
+def test_build_preview_html_shows_finished_prediction_result_in_reason_column():
+    snapshot = _snapshot()
+    snapshot["matches"][0]["result"] = {"status": "finished", "home_score": 2, "away_score": 0}
+
+    html = build_preview_html(snapshot)
+
+    assert 'class="prediction-result prediction-result-hit"' in html
+    assert "<strong>预测结果：命中</strong>" in html
+    assert "赛果：墨西哥 2-0 南非；方向：主胜" in html
+    assert "<dt>赛后验证</dt><dd>命中；赛果：墨西哥 2-0 南非；方向：主胜</dd>" in html
+
+
 def test_build_preview_html_renders_stronger_signal_grade_badges():
     previous = _snapshot()
     current = deepcopy(previous)

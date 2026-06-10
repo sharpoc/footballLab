@@ -2,6 +2,24 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-10 台账赛后预测结果显示
+
+- 新增赛后验证显示：当 openfootball 缓存已有完赛比分时，snapshot 中对应 match 会附加 `result.status=finished`、`home_score`、`away_score`。
+- 研究信号台账会在“信号原因”栏显示“预测结果：命中 / 未中 / 走水”，并展示比分和方向；展开“分析详情”会新增“赛后验证”行。
+- 判定规则：胜平负按主胜/平/客胜；大小球按总进球与盘口线；亚洲让球按所选球队让球线结算，走盘显示为“走水”。
+- 赛果缺失或比赛未完赛时页面保持现状，不显示赛后验证块；不读取 secret，不显示下注金额或资金相关字段。
+- 本地验证先看到新增测试因缺少 `result` / `prediction_result` / HTML 渲染失败，再实现；最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `265/265 tests passed`。
+- 本次只改本地 snapshot 投影与台账渲染；未触发 live refresh、未调用 The Odds API、未部署、未 push、未改 LaunchAgent。
+
+## 2026-06-10 自动刷新归档验收工具
+
+- 新增只读 CLI `python3 -m worldcup.refresh_audit`，用于检查 `data/local/history/` 最新归档 snapshot 摘要和 LaunchAgent 当前指向；不会联网、不会触发 refresh、不会读取 secret。
+- CLI 输出最近归档的 `run_id`、`snapshot_at`、场次数、`source_errors_count`、`stale_sources`，以及 LaunchAgent 的 label、Python、module、工作目录、日志路径和 interval。
+- 当前只读检查结果：历史归档已有 1 份 `snapshot_20260610T090754Z-live.json`，`matches=72`、`source_errors_count=0`、`stale_sources=[]`。
+- 当前 LaunchAgent 指向 `/Users/eagod/Library/LaunchAgents/xin.celab.football.scheduled-publish.plist`，每 900 秒运行 `worldcup.scheduled_publish --live`，工作目录为 `/Users/eagod/ai-dev/足彩`。
+- 本地验证先看到新增测试因缺少 `worldcup.refresh_audit` 失败，再实现；最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `260/260 tests passed`。
+- 本次只新增本地验收工具和文档记录；未触发 live refresh、未调用 The Odds API、未部署、未 push、未改 LaunchAgent。
+
 ## 2026-06-10 赛果回填与自有赔率评估链路
 
 - 已完成计划 B 并按任务本地提交；未 push、未部署、未触发 live refresh、未调用 The Odds API、未改 LaunchAgent。

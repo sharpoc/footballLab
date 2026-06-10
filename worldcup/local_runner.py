@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from worldcup.collectors.eloratings import parse_elo_ratings, parse_elo_team_aliases
-from worldcup.collectors.openfootball import parse_openfootball_fixtures
+from worldcup.collectors.models import MatchResult
+from worldcup.collectors.openfootball import parse_openfootball_fixtures, parse_openfootball_results
 from worldcup.collectors.theoddsapi import parse_theoddsapi_events
 from worldcup.config import load_config
 from worldcup.models import Signal
@@ -47,10 +48,30 @@ def _latest_quote_update_iso(analysis) -> str | None:
     return max(fetched_times).isoformat()
 
 
-def _analysis_to_dict(analysis, signals: list[Signal]) -> dict[str, Any]:
+def _result_key(
+    kickoff_at_utc: datetime,
+    home_canonical: str | None,
+    away_canonical: str | None,
+) -> tuple[str, str | None, str | None]:
+    return (kickoff_at_utc.isoformat(), home_canonical, away_canonical)
+
+
+def _result_to_dict(result: MatchResult) -> dict[str, Any]:
+    return {
+        "status": "finished",
+        "home_score": result.home_score,
+        "away_score": result.away_score,
+    }
+
+
+def _analysis_to_dict(
+    analysis,
+    signals: list[Signal],
+    result_index: dict[tuple[str, str | None, str | None], MatchResult] | None = None,
+) -> dict[str, Any]:
     match_input = analysis.match_input
     fixture = match_input.fixture
-    return {
+    match = {
         "source_event_id": match_input.odds_event.source_event_id,
         "source_match_no": fixture.source_match_no,
         "kickoff_at_utc": fixture.kickoff_at_utc.isoformat(),
@@ -84,6 +105,12 @@ def _analysis_to_dict(analysis, signals: list[Signal]) -> dict[str, Any]:
         },
         "signals": [_signal_to_dict(signal) for signal in signals],
     }
+    result = (result_index or {}).get(
+        _result_key(fixture.kickoff_at_utc, fixture.home_canonical, fixture.away_canonical)
+    )
+    if result is not None:
+        match["result"] = _result_to_dict(result)
+    return match
 
 
 def _next_kickoff_from_matches(matches: list[dict[str, Any]], observed_at: str) -> str | None:
@@ -133,7 +160,12 @@ def build_snapshot_from_probe(
     cfg = cfg or load_config()
     observed_at = snapshot_at or _now_utc_iso()
     stale_source_list = list(stale_sources or [])
-    fixtures = parse_openfootball_fixtures(_read_json(probe_path / "openfootball_2026.json"))
+    openfootball_raw = _read_json(probe_path / "openfootball_2026.json")
+    fixtures = parse_openfootball_fixtures(openfootball_raw)
+    result_index = {
+        _result_key(result.kickoff_at_utc, result.home_canonical, result.away_canonical): result
+        for result in parse_openfootball_results(openfootball_raw)
+    }
     odds_events = parse_theoddsapi_events(_read_json(probe_path / "theoddsapi_wc_odds.json"))
     elo_ratings = parse_elo_ratings((probe_path / "elo_world.tsv").read_text(encoding="utf-8"))
     elo_aliases = parse_elo_team_aliases((probe_path / "elo_teams.tsv").read_text(encoding="utf-8"))
@@ -148,7 +180,7 @@ def build_snapshot_from_probe(
             observed_at=observed_at,
             stale_sources=stale_source_list,
         )
-        matches.append(_analysis_to_dict(analysis, signals))
+        matches.append(_analysis_to_dict(analysis, signals, result_index=result_index))
 
     data_quality = {
         "missing_odds": build_result.missing_odds,

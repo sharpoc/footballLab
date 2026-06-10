@@ -174,7 +174,15 @@ python3 -m worldcup.backtest --csv data/local/backtest/history.csv --min-sample 
 
 ## 世界杯期间评估数据（自有赔率 + 赛果）
 
-每次 live refresh 会把 snapshot 归档到被忽略的 `data/local/history/`（merge 进本机 main 后自动生效，无需部署服务端）。比赛日之后跑：
+每次 live refresh 会把 snapshot 归档到被忽略的 `data/local/history/`（merge 进本机 main 后自动生效，无需部署服务端）。自动刷新链路可用只读验收命令检查最近归档和 LaunchAgent 指向：
+
+```bash
+python3 -m worldcup.refresh_audit
+```
+
+当 openfootball 缓存里已有完赛比分时，snapshot 会给对应比赛附加 `result`，研究信号台账会在“信号原因”栏显示赛后验证：胜平负 / 大小球显示“命中”或“未中”，亚洲让球显示“命中 / 未中 / 走水”。
+
+比赛日之后跑：
 
 ```bash
 # 1) 从已缓存的 openfootball 数据提取完赛比分（幂等，可重复跑）
