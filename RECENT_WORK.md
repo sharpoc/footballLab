@@ -2,6 +2,16 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-10 研究台账行内变化与 S/A 徽章已上线
+
+- 已提交并推送 `e06536a feat: move signal changes into ledger rows` 到 `origin/main`。
+- 已将 release `e06536a` 部署到 ECS，`/opt/worldcup/current` 已从 `/opt/worldcup/releases/0a926c8` 切到 `/opt/worldcup/releases/e06536a`。
+- `worldcup.service` 已重启并保持 active；服务器本机 `127.0.0.1:8788/healthz` 与公网 `/healthz` 均返回 ok。
+- 公网 `/` 和 `/preview` 返回 200，页面保留“仅用于研究分析，不构成投注建议”免责声明；独立 `change-summary` / “最近变化”标题已不再出现，`grade-priority` 样式已出现在页面中。
+- 公网 `/api/matches` 返回 72 场，未发现资金相关字段；服务器 SQLite 当前 5 条快照。
+- systemd journal 最近 10 分钟敏感关键词扫描对 API key、HMAC secret、signature、token、cookie、private-key 标记返回 0。
+- 本次上线只发布代码并重启服务，未主动触发 source refresh、未调用 The Odds API、未写入新 snapshot。
+
 ## 2026-06-10 研究台账行内变化与 S/A 徽章
 
 - 新建分支 `codex/ledger-row-changes-signal-badges`。
