@@ -547,7 +547,7 @@ def build_research_ledger_html(
     .metric-card[data-tone="error"] strong {{ color: var(--error); }}
     .content-grid {{
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 340px;
+      grid-template-columns: minmax(0, 1fr);
       gap: 18px;
       align-items: start;
     }}
@@ -802,12 +802,15 @@ def build_research_ledger_html(
     }}
     .signal-why {{ color: var(--muted); }}
     .policy-list {{ margin-bottom: 12px; }}
-    .right-rail {{ display: grid; gap: 12px; }}
+    .right-rail {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }}
     .rail-card {{ padding: 16px; }}
     .no-results, .empty-state {{ padding: 18px; }}
     @media (max-width: 980px) {{
       header, .ledger-controls {{ flex-direction: column; align-items: stretch; }}
-      .content-grid {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>

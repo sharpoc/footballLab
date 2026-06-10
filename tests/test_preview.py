@@ -268,3 +268,13 @@ def test_build_preview_html_keeps_mobile_table_scroll_inside_ledger_panel():
 
     assert 'class="ledger-panel"' in html
     assert ".ledger-panel { min-width: 0; }" in html
+
+
+def test_build_preview_html_places_context_cards_below_full_width_ledger():
+    html = build_preview_html(_snapshot())
+
+    assert 'class="content-grid"' in html
+    assert html.index('class="ledger-panel"') < html.index('class="right-rail"')
+    assert "grid-template-columns: minmax(0, 1fr) 340px;" not in html
+    assert "grid-template-columns: minmax(0, 1fr);" in html
+    assert "grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));" in html
