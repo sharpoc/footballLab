@@ -2,6 +2,18 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-10 赛果回填与自有赔率评估链路
+
+- 已完成计划 B 并按任务本地提交；未 push、未部署、未触发 live refresh、未调用 The Odds API、未改 LaunchAgent。
+- `refresh_runner` 在写完 `analysis_snapshot.json` 后会尝试把 snapshot 归档到 `data/local/history/snapshot_<run_id>.json`；归档失败只向 stderr 打 warning，不阻断刷新/发布主链路。
+- 归档功能合并进本机 `main` 后，从下一次 live refresh 开始自动积累；此前 08:27 这一轮不会被 retroactive 补归档。
+- 新增 `parse_openfootball_results`，兼容 openfootball 顶层 `score1/score2` 和 `score.ft` 两种完赛比分格式，跳过未完赛和占位队。
+- 新增 `worldcup.results_capture`：从本地 `data/cache/openfootball_2026.json` 幂等 upsert 到 `data/local/results/wc2026_results.csv`。
+- 新增 `worldcup.eval_data`：用“开球前最后一份”归档 snapshot 的 1X2/OU 聚合赔率 join 赛果，输出 `data/local/backtest/wc2026_eval.csv`，可交给现有 `worldcup.backtest`。
+- 开赛后日常命令：`python3 -m worldcup.results_capture`，`python3 -m worldcup.eval_data`，`python3 -m worldcup.backtest --csv data/local/backtest/wc2026_eval.csv --min-sample 30 --out data/local/backtest/wc2026_report.json`。
+- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `257/257 tests passed`；赛前 smoke `python3 -m worldcup.results_capture` 输出 `{"finished": 0, "added": 0, "updated": 0, "total": 0}` 属正常。
+- 已知局限：评估 CSV 的 `neutral` 一律为 1，AH 不进评估；openfootball 首个比赛日若真实比分字段格式不同，需要回来调整 `_extract_score`。
+
 ## 2026-06-10 mu-dr 总进球先验证据
 
 - 新建分支 `codex/mu-dr-prior-results-capture`，已完成计划 A 前 5 个任务并按任务本地提交；未 push、未部署。

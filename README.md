@@ -172,6 +172,23 @@ python3 -m worldcup.backtest --csv data/local/backtest/history.csv --min-sample 
 
 总进球先验支持随 Elo 差上升：`poisson.mu_dr_slope`（默认 `0.0` 关闭；clamp 见 `mu_prior_min/max` 代码默认 1.5/4.0）；拟合证据见 `docs/research/2026-06-10-mu-dr-fit.md`。
 
+## 世界杯期间评估数据（自有赔率 + 赛果）
+
+每次 live refresh 会把 snapshot 归档到被忽略的 `data/local/history/`（merge 进本机 main 后自动生效，无需部署服务端）。比赛日之后跑：
+
+```bash
+# 1) 从已缓存的 openfootball 数据提取完赛比分（幂等，可重复跑）
+python3 -m worldcup.results_capture
+
+# 2) 用"开球前最后一份"归档 snapshot 的赔率 join 赛果，生成带赔率的回测 CSV
+python3 -m worldcup.eval_data
+
+# 3) 用现有回测评估真实表现（EV 分层、model_matched vs market 此时有意义）
+python3 -m worldcup.backtest --csv data/local/backtest/wc2026_eval.csv --min-sample 30 --out data/local/backtest/wc2026_report.json
+```
+
+已知局限：评估 CSV 的 `neutral` 一律为 1（不含东道主修正）；AH 不进评估；样本量小时报告会标 `sample_too_small`，小组赛阶段结论只做方向参考。
+
 ## API 注册清单
 
 API-Football 与 The Odds API 已完成第一轮探测；其它赔率源可作为后续容灾或交叉校验候选。
