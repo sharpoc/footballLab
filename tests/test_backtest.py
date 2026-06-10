@@ -98,3 +98,41 @@ def test_load_matches_missing_required_value_raises():
         assert "row 2" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_replay_match_produces_model_and_market_probs():
+    from worldcup.backtest import load_matches, replay_match
+    from worldcup.config import load_config
+
+    cfg = load_config()
+    matches = load_matches(SAMPLE_CSV)
+    result = replay_match(matches[0], cfg)
+    assert math.isclose(sum(result["model_1x2"].values()), 1.0, abs_tol=1e-9)
+    assert math.isclose(sum(result["market_1x2"].values()), 1.0, abs_tol=1e-9)
+    assert result["model_1x2"]["home"] > result["model_1x2"]["away"]
+    assert 0.0 < result["model_ou"]["over"] < 1.0
+    assert result["mu_used"] > 0
+
+
+def test_replay_match_without_odds_keeps_model_only():
+    from worldcup.backtest import load_matches, replay_match
+    from worldcup.config import load_config
+
+    cfg = load_config()
+    last = load_matches(SAMPLE_CSV)[-1]
+    result = replay_match(last, cfg)
+    assert result["market_ou"] is None
+    assert math.isclose(result["mu_used"], cfg["poisson"]["mu_total"], abs_tol=1e-9)
+
+
+def test_replay_match_home_advantage_applied_when_not_neutral():
+    from worldcup.backtest import load_matches, replay_match
+    from worldcup.config import load_config
+
+    cfg = load_config()
+    matches = load_matches(SAMPLE_CSV)
+    non_neutral = matches[2]
+    assert non_neutral.neutral is False
+    result = replay_match(non_neutral, cfg)
+    base_dr = non_neutral.home_elo_before - non_neutral.away_elo_before
+    assert math.isclose(result["dr"], base_dr + cfg["elo"]["home_adv"])

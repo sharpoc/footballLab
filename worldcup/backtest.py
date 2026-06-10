@@ -136,3 +136,36 @@ def outcome_1x2(home_score: int, away_score: int) -> str:
 def ah_realized_return(goal_diff: int, line: float, odds: float) -> float:
     """Realized profit per 1 unit stake for the home side of an AH bet."""
     return handicap.ev_handicap({goal_diff: 1.0}, line, odds)
+
+
+def replay_match(match: BacktestMatch, cfg: dict) -> dict:
+    dr = match.home_elo_before - match.away_elo_before
+    if not match.neutral:
+        dr += cfg["elo"]["home_adv"]
+    market_1x2 = devig(match.odds_1x2) if match.odds_1x2 else None
+    market_ou = devig(match.odds_ou) if match.odds_ou else None
+    mu_used = poisson.blended_mu(
+        market_ou["over"] if market_ou else None, OU_LINE, cfg["poisson"]
+    )
+    lh, la = poisson.lambdas(dr, cfg["poisson"], mu_total=mu_used)
+    matrix, _ = poisson.score_matrix(lh, la, cfg["poisson"])
+    poisson_1x2 = poisson.probs_1x2(matrix)
+    elo_1x2 = elo.win_draw_loss(
+        match.home_elo_before,
+        match.away_elo_before,
+        neutral=match.neutral,
+        cfg=cfg["elo"],
+    )
+    combined_1x2 = ensemble.combine_1x2(
+        elo_1x2, poisson_1x2, cfg["ensemble"]["w_elo"], cfg["ensemble"]["w_poisson"]
+    )
+    p_over = poisson.prob_over(matrix, OU_LINE)
+    return {
+        "dr": dr,
+        "mu_used": mu_used,
+        "model_1x2": combined_1x2,
+        "market_1x2": market_1x2,
+        "model_ou": {"over": p_over, "under": 1.0 - p_over},
+        "market_ou": market_ou,
+        "diff_dist": handicap.diff_distribution(matrix),
+    }
