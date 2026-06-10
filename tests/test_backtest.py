@@ -1,6 +1,9 @@
 import math
+from pathlib import Path
 
 from worldcup.backtest import brier_multiclass, calibration_bins, log_loss
+
+SAMPLE_CSV = Path(__file__).resolve().parent / "data" / "backtest_sample.csv"
 
 
 def test_brier_perfect_prediction_is_zero():
@@ -43,3 +46,55 @@ def test_ah_realized_return_win_push_quarter():
     assert math.isclose(ah_realized_return(0, 0.0, 1.9), 0.0)
     assert math.isclose(ah_realized_return(0, -0.25, 1.9), -0.5)
     assert math.isclose(ah_realized_return(-1, 0.5, 1.8), -1.0)
+
+
+def test_load_matches_parses_sample():
+    from worldcup.backtest import load_matches
+
+    matches = load_matches(SAMPLE_CSV)
+    assert len(matches) == 7
+    first = matches[0]
+    assert first.match_id == "m1"
+    assert first.home_score == 2
+    assert first.odds_1x2 == {"home": 1.60, "draw": 3.90, "away": 6.00}
+    assert first.odds_ou == {"over": 1.85, "under": 1.95}
+    assert first.ah_line == -1.0
+    assert matches[2].neutral is False
+    last = matches[-1]
+    assert last.odds_ou is None and last.odds_ah is None and last.ah_line is None
+
+
+def test_load_matches_missing_required_column_raises():
+    import tempfile
+
+    from worldcup.backtest import load_matches
+
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as fh:
+        fh.write("match_id,home_team\nm1,Alpha\n")
+        path = fh.name
+    try:
+        load_matches(path)
+    except ValueError as exc:
+        assert "missing required columns" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_load_matches_missing_required_value_raises():
+    import tempfile
+
+    from worldcup.backtest import load_matches
+
+    header = (
+        "match_id,kickoff_at_utc,home_team,away_team,home_score,away_score,"
+        "home_elo_before,away_elo_before\n"
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as fh:
+        fh.write(header + "m1,2025-06-01T18:00:00Z,Alpha,Beta,2,,1900,1700\n")
+        path = fh.name
+    try:
+        load_matches(path)
+    except ValueError as exc:
+        assert "row 2" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
