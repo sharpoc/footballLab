@@ -195,6 +195,17 @@ def test_run_backtest_not_small_when_min_sample_met():
     assert report["sample"]["sample_too_small"] is False
 
 
+def test_run_backtest_reports_model_matched_subset():
+    from worldcup.backtest import load_matches, run_backtest
+    from worldcup.config import load_config
+
+    report = run_backtest(load_matches(SAMPLE_CSV), load_config(), min_sample=5)
+    assert report["markets"]["1x2"]["model_matched"]["n"] == 7
+    assert report["markets"]["ou_2_5"]["model_matched"]["n"] == 6
+    assert report["markets"]["ou_2_5"]["market"]["n"] == 6
+    assert report["markets"]["ou_2_5"]["model"]["n"] == 7
+
+
 def test_cli_writes_report_json():
     import json
     import tempfile

@@ -200,9 +200,11 @@ def _bucket_rows(buckets: tuple, value: float) -> int | None:
 
 def run_backtest(matches: list[BacktestMatch], cfg: dict, min_sample: int = 200) -> dict:
     model_1x2_rows: list[tuple[dict, str]] = []
+    model_matched_1x2_rows: list[tuple[dict, str]] = []
     market_1x2_rows: list[tuple[dict, str]] = []
     uniform_1x2_rows: list[tuple[dict, str]] = []
     model_ou_rows: list[tuple[dict, str]] = []
+    model_matched_ou_rows: list[tuple[dict, str]] = []
     market_ou_rows: list[tuple[dict, str]] = []
     uniform_ou_rows: list[tuple[dict, str]] = []
     calibration_records: list[tuple[float, bool]] = []
@@ -232,6 +234,7 @@ def run_backtest(matches: list[BacktestMatch], cfg: dict, min_sample: int = 200)
 
         if match.odds_1x2:
             n_1x2 += 1
+            model_matched_1x2_rows.append((replay["model_1x2"], result))
             market_1x2_rows.append((replay["market_1x2"], result))
             for selection in OUTCOMES:
                 odds_value = match.odds_1x2[selection]
@@ -249,6 +252,7 @@ def run_backtest(matches: list[BacktestMatch], cfg: dict, min_sample: int = 200)
 
         if match.odds_ou:
             n_ou += 1
+            model_matched_ou_rows.append((replay["model_ou"], ou_result))
             market_ou_rows.append((replay["market_ou"], ou_result))
 
         if match.odds_ah and match.ah_line is not None:
@@ -282,11 +286,13 @@ def run_backtest(matches: list[BacktestMatch], cfg: dict, min_sample: int = 200)
         "markets": {
             "1x2": {
                 "model": _mean_metrics(model_1x2_rows),
+                "model_matched": _mean_metrics(model_matched_1x2_rows),
                 "market": _mean_metrics(market_1x2_rows),
                 "uniform": _mean_metrics(uniform_1x2_rows),
             },
             "ou_2_5": {
                 "model": _mean_metrics(model_ou_rows),
+                "model_matched": _mean_metrics(model_matched_ou_rows),
                 "market": _mean_metrics(market_ou_rows),
                 "uniform": _mean_metrics(uniform_ou_rows),
             },
