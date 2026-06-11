@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-11 原始赔率响应逐轮归档
+
+- 已在 live refresh 成功获取新赔率后，把 The Odds API 原始逐家报价 gzip 归档到 `data/local/history/odds_raw_<run_id>.json.gz`；对应 `RefreshResult.odds_raw_archive_path` 会记录归档路径。
+- The Odds API 请求失败并使用本地赔率缓存兜底时不归档，避免把上一轮旧响应重复记成新 run；归档失败只输出 warning，不阻断 snapshot 生成、history snapshot 归档或后续发布链路。
+- 用途仅限赛后 odds movement / line movement 研究；本计划未提取 movement 特征、未增加 `late_steam` 信号护栏、未改模型或信号逻辑。
+- 已扩展 `tests/test_refresh_runner.py` 覆盖成功归档 gzip 内容和兜底轮不归档；本地全量验证通过。
+- 本次未 push、未部署、未触发 live refresh、未调用 The Odds API。
+
 ## 2026-06-11 刷新节奏简化为 Plan A
 
 - 已移除 7d / 3d / 1d / 6h 窗口分级，常规刷新改为每天 1 次；每场临赛锚点从 6 个改为 5 个：去掉 T-3h30 / T-70 / T-40，新增 T-12h / T-6h，并保留 T-90 / T-55 / T-25。
