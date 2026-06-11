@@ -129,3 +129,87 @@ def run_daily_eval(
 
     digest["status"] = "ok"
     return digest
+
+
+def _fmt_metric(metrics: dict | None) -> str:
+    if not metrics or not metrics.get("n"):
+        return "-"
+    return f"LogLoss {metrics['log_loss']:.4f} (n={metrics['n']})"
+
+
+def _fmt_tally(tally: dict[str, int]) -> str:
+    if not tally:
+        return "暂无"
+    return " ".join(f"{label}{count}" for label, count in sorted(tally.items()))
+
+
+def build_digest_message(digest: dict) -> dict[str, str]:
+    results = digest.get("results") or {}
+    lines = [
+        "世界杯赛后日报",
+        f"完赛 {results.get('total', 0)} 场"
+        f"（新增 {results.get('added', 0)}，更新 {results.get('updated', 0)}）",
+    ]
+    eval_stats = digest.get("eval")
+    if eval_stats:
+        lines.append(
+            f"评估样本 {eval_stats.get('joined', 0)} 场"
+            f"（无 closing 快照跳过 {eval_stats.get('skipped_no_closing', 0)}）"
+        )
+    backtest_stats = digest.get("backtest")
+    if backtest_stats:
+        lines.append(
+            f"1X2 模型 {_fmt_metric(backtest_stats.get('model_1x2'))}，"
+            f"市场 {_fmt_metric(backtest_stats.get('market_1x2'))}"
+        )
+        lines.append(
+            f"OU 模型 {_fmt_metric(backtest_stats.get('model_ou'))}，"
+            f"市场 {_fmt_metric(backtest_stats.get('market_ou'))}"
+        )
+        lines.append(f"AH 进评估 {backtest_stats.get('n_ah', 0)} 场")
+        if backtest_stats.get("sample_too_small"):
+            lines.append("样本不足（sample_too_small），指标仅记录不作结论")
+    tally = digest.get("signal_tally") or {}
+    lines.append(f"S 级信号：{_fmt_tally(tally.get('S') or {})}")
+    lines.append(f"A 级信号：{_fmt_tally(tally.get('A') or {})}")
+    lines.append("仅用于研究分析，不构成投注建议")
+    return {
+        "summary": f"世界杯赛后日报：完赛 {results.get('total', 0)} 场",
+        "content": "\n".join(lines),
+    }
+
+
+def main(argv: list[str] | None = None, notify_fn: Callable[..., dict] | None = None) -> int:
+    import argparse
+
+    from worldcup.notifications import send_wxpusher_notification
+
+    parser = argparse.ArgumentParser(description="Run daily post-match eval chain.")
+    parser.add_argument("--cache-dir", default="data/cache")
+    parser.add_argument("--history", default="data/local/history")
+    parser.add_argument("--results-out", default="data/local/results/wc2026_results.csv")
+    parser.add_argument("--eval-out", default="data/local/backtest/wc2026_eval.csv")
+    parser.add_argument("--report-out", default="data/local/backtest/wc2026_report.json")
+    parser.add_argument("--min-sample", type=int, default=30)
+    parser.add_argument("--notify", action="store_true", help="Send WxPusher digest.")
+    args = parser.parse_args(argv)
+
+    digest = run_daily_eval(
+        cache_dir=args.cache_dir,
+        history_dir=args.history,
+        results_out=args.results_out,
+        eval_out=args.eval_out,
+        report_out=args.report_out,
+        min_sample=args.min_sample,
+    )
+    notification = None
+    if args.notify and digest.get("status") == "ok":
+        message = build_digest_message(digest)
+        send = notify_fn or send_wxpusher_notification
+        notification = send(message["content"], summary=message["summary"])
+    print(json.dumps({**digest, "notification": notification}, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

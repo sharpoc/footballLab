@@ -104,3 +104,75 @@ def test_daily_eval_skips_backtest_without_results():
         assert digest["eval"] is None
         assert digest["backtest"] is None
         assert not Path(paths["report_out"]).exists()
+
+
+def test_daily_eval_notify_sends_digest_once():
+    from worldcup.daily_eval import main
+
+    with TemporaryDirectory() as tmp:
+        paths = _seed_project(Path(tmp), with_score=True)
+        calls = []
+
+        def notify_fn(content, *, summary):
+            calls.append({"content": content, "summary": summary})
+            return {"status": "sent", "exit_code": 0}
+
+        code = main(
+            [
+                "--cache-dir",
+                str(paths["cache_dir"]),
+                "--history",
+                str(paths["history_dir"]),
+                "--results-out",
+                str(paths["results_out"]),
+                "--eval-out",
+                str(paths["eval_out"]),
+                "--report-out",
+                str(paths["report_out"]),
+                "--min-sample",
+                "1",
+                "--notify",
+            ],
+            notify_fn=notify_fn,
+        )
+
+        assert code == 0
+        assert len(calls) == 1
+        assert "赛后日报" in calls[0]["summary"]
+        assert "S 级" in calls[0]["content"]
+        assert "命中" in calls[0]["content"]
+        assert "研究" in calls[0]["content"]
+
+
+def test_daily_eval_no_notify_without_new_results():
+    from worldcup.daily_eval import main
+
+    with TemporaryDirectory() as tmp:
+        paths = _seed_project(Path(tmp), with_score=False)
+        calls = []
+
+        def notify_fn(content, *, summary):
+            calls.append(summary)
+            return {"status": "sent", "exit_code": 0}
+
+        code = main(
+            [
+                "--cache-dir",
+                str(paths["cache_dir"]),
+                "--history",
+                str(paths["history_dir"]),
+                "--results-out",
+                str(paths["results_out"]),
+                "--eval-out",
+                str(paths["eval_out"]),
+                "--report-out",
+                str(paths["report_out"]),
+                "--min-sample",
+                "1",
+                "--notify",
+            ],
+            notify_fn=notify_fn,
+        )
+
+        assert code == 0
+        assert calls == []
