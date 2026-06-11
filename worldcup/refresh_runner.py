@@ -15,6 +15,17 @@ from worldcup.sources.openfootball import fetch_openfootball_2026
 from worldcup.sources.theoddsapi import fetch_worldcup_odds
 
 
+ELO_CACHE_GRACE_SECONDS = 48 * 3600
+
+
+def _cache_age_seconds(paths: list[Path]) -> float | None:
+    try:
+        oldest_mtime = min(path.stat().st_mtime for path in paths)
+    except OSError:
+        return None
+    return datetime.now(timezone.utc).timestamp() - oldest_mtime
+
+
 @dataclass(frozen=True)
 class RefreshResult:
     cache_dir: Path
@@ -100,7 +111,10 @@ def refresh_cache_and_build_snapshot(
         if not (elo_world_cache.exists() and elo_teams_cache.exists()):
             raise
         source_errors.append({"source": "eloratings", "error": f"{type(exc).__name__}: {exc}"})
-        stale_sources.append("eloratings")
+        # Elo changes only after finished matches; fresh cache should not downgrade signals.
+        age = _cache_age_seconds([elo_world_cache, elo_teams_cache])
+        if age is None or age > ELO_CACHE_GRACE_SECONDS:
+            stale_sources.append("eloratings")
 
     try:
         fetch_worldcup_odds(

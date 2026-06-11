@@ -206,3 +206,92 @@ def test_refresh_uses_stale_odds_cache_when_theoddsapi_times_out():
             if signal["market_type"] == "1X2_90min" and signal["selection"] == "home"
         )
         assert "unconfirmed_backup" in home_signal["reasons"]
+
+
+def _elo_grace_fixture(root: Path) -> Path:
+    cache = root / "cache"
+    cache.mkdir()
+    openfootball_body = json.dumps(
+        {
+            "matches": [
+                {
+                    "round": "Matchday 1",
+                    "date": "2026-06-11",
+                    "time": "13:00 UTC-6",
+                    "team1": "Mexico",
+                    "team2": "South Africa",
+                    "ground": "Mexico City",
+                }
+            ]
+        }
+    )
+    odds_body = json.dumps(
+        [
+            {
+                "id": "event-1",
+                "sport_key": "soccer_fifa_world_cup",
+                "commence_time": "2026-06-11T19:00:00Z",
+                "home_team": "Mexico",
+                "away_team": "South Africa",
+                "bookmakers": [
+                    {
+                        "key": "bk1",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "Mexico", "price": 1.8},
+                                    {"name": "South Africa", "price": 4.8},
+                                    {"name": "Draw", "price": 3.6},
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+    (cache / "openfootball_2026.json").write_text(openfootball_body)
+    (cache / "theoddsapi_wc_odds.json").write_text(odds_body)
+    (cache / "elo_world.tsv").write_text("1\t1\tMX\t1875\n2\t2\tZA\t1700\n")
+    (cache / "elo_teams.tsv").write_text("MX\tMexico\nZA\tSouth Africa\n")
+    return cache
+
+
+def test_refresh_keeps_elo_fresh_within_grace_window():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        cache = _elo_grace_fixture(root)
+        openfootball_body = (cache / "openfootball_2026.json").read_text()
+        odds_body = (cache / "theoddsapi_wc_odds.json").read_text()
+
+        def openfootball_transport(_url):
+            return FakeResponse(openfootball_body.encode())
+
+        def theoddsapi_transport(_url):
+            return FakeResponse(odds_body.encode())
+
+        def failing_elo_transport(_url):
+            raise ValueError("invalid Elo ratings TSV: parsed 0 rows")
+
+        result = refresh_cache_and_build_snapshot(
+            api_key="fake-key",
+            cache_dir=cache,
+            snapshot_path=root / "out" / "snapshot.json",
+            quota_path=cache / "quota.json",
+            openfootball_transport=openfootball_transport,
+            theoddsapi_transport=theoddsapi_transport,
+            elo_transport=failing_elo_transport,
+            history_dir=root / "history",
+        )
+
+        assert result.snapshot["data_quality"]["source_errors"][0]["source"] == "eloratings"
+        assert "parsed 0 rows" in result.snapshot["data_quality"]["source_errors"][0]["error"]
+        assert result.snapshot["data_quality"]["stale_sources"] == []
+        assert result.snapshot["run"]["stale_sources"] == []
+        home_signal = next(
+            signal
+            for signal in result.snapshot["matches"][0]["signals"]
+            if signal["market_type"] == "1X2_90min" and signal["selection"] == "home"
+        )
+        assert "unconfirmed_backup" not in home_signal["reasons"]
