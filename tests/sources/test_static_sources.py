@@ -48,3 +48,25 @@ def test_fetch_elo_files_writes_world_and_team_tsv_cache():
         assert result.teams.status == 200
         assert (Path(tmp) / "elo_world.tsv").read_text() == "1\t1\tES\t2155\n"
         assert (Path(tmp) / "elo_teams.tsv").read_text() == "ES\tSpain\n"
+
+
+def test_fetch_elo_files_rejects_html_challenge_without_overwriting_cache():
+    def fake_transport(_url):
+        return FakeResponse(b"<!DOCTYPE html><title>One moment, please...</title>")
+
+    with TemporaryDirectory() as tmp:
+        cache = Path(tmp)
+        world_cache = cache / "elo_world.tsv"
+        teams_cache = cache / "elo_teams.tsv"
+        world_cache.write_text("1\t1\tES\t2155\n", encoding="utf-8")
+        teams_cache.write_text("ES\tSpain\n", encoding="utf-8")
+
+        try:
+            fetch_elo_files(cache_dir=cache, transport=fake_transport)
+        except ValueError as exc:
+            assert "invalid Elo ratings TSV" in str(exc)
+        else:
+            raise AssertionError("invalid Elo response should be rejected")
+
+        assert world_cache.read_text(encoding="utf-8") == "1\t1\tES\t2155\n"
+        assert teams_cache.read_text(encoding="utf-8") == "ES\tSpain\n"

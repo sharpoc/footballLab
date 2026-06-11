@@ -48,6 +48,15 @@ def run_scheduled_publish(
             "publish": None,
         }
 
+    if int((refresh.get("refresh") or {}).get("matches") or 0) <= 0:
+        return {
+            "status": "blocked",
+            "reason": "empty_refreshed_snapshot",
+            "force": force,
+            "refresh": refresh,
+            "publish": None,
+        }
+
     resolved_secret = secret or env.get("INGEST_HMAC_SECRET")
     if not resolved_secret:
         raise ValueError("INGEST_HMAC_SECRET is missing")

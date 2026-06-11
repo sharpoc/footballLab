@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-11 线上空数据恢复与 Elo 缓存防线
+
+- 排查确认线上服务、Nginx、SQLite 均正常；空数据根因是 `20260610T191323Z-live` 自动刷新时 eloratings 返回 HTML 挑战页，`elo_world.tsv` / `elo_teams.tsv` 被当作 TSV 覆盖，导致 Elo 解析为 0 条、72 场全部进入 `missing_elo`，最终发布了 0 场 snapshot。
+- 已用上一份正常 72 场快照生成恢复 run `20260610T161313Z-live-restore` 并发布到 `https://football.celab.xin/api/ingest/snapshot`；ECS 返回 HTTP 200 / `ingest_status=stored`，公网 `/api/matches` 已恢复 72 场。
+- 已恢复本机 `data/cache/elo_world.tsv`、`data/cache/elo_teams.tsv` 和 `data/cache/analysis_snapshot.json` 到可用状态；Elo 缓存当前可解析 244 条 rating、502 条 alias，本机 snapshot 为 72 场。
+- 代码防线：`worldcup.sources.eloratings` 在写缓存前校验 HTTP 状态和 TSV 可解析性，HTML/空响应会抛错并保留旧缓存；`worldcup.scheduled_publish` 对刷新后 0 场 snapshot 返回 `blocked / empty_refreshed_snapshot`，不调用 publish。
+- 新增回归测试覆盖 Elo HTML 挑战页不覆盖缓存、0 场刷新结果不发布；本地验证 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `277/277 tests passed`。
+- 本次未调用 The Odds API、未刷新外部赔率；执行了一次已确认的线上恢复写入，未 push、未部署 release。
+
 ## 2026-06-10 AH 进入赛后评估链路
 
 - 已按 `docs/superpowers/plans/2026-06-10-ah-eval-coverage.md` 逐任务 TDD 执行，并按任务做本地 commit；未 push、未部署、未触发 live refresh、未调用 The Odds API。

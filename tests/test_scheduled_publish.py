@@ -113,3 +113,44 @@ def test_scheduled_publish_refreshes_then_publishes_when_due():
     assert publish_calls[0]["secret"] == "fake-secret"
     assert publish_calls[0]["live"] is True
     assert publish_calls[0]["endpoint"] == "https://football.celab.xin/api/ingest/snapshot"
+
+
+def test_scheduled_publish_blocks_empty_refreshed_snapshot():
+    publish_calls = []
+
+    def refresh_fn(**kwargs):
+        return FakeRefreshResult(
+            snapshot_path=Path(kwargs["snapshot_path"]),
+            snapshot={
+                "counts": {"fixtures": 104, "odds_events": 72, "match_inputs": 0, "matches": 0},
+                "data_quality": {"missing_elo": ["Mexico", "South Africa"]},
+            },
+            run_metadata={"run_id": "20260608T120000Z-live"},
+        )
+
+    def publish_fn(**kwargs):
+        publish_calls.append(kwargs)
+        raise AssertionError("empty snapshots must not be published")
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot_path, quota_path = _write_not_due_snapshot(root)
+
+        result = run_scheduled_publish(
+            now="2026-06-08T12:00:00+00:00",
+            live=True,
+            cache_dir=root / "cache",
+            snapshot_path=snapshot_path,
+            quota_path=quota_path,
+            endpoint="https://football.celab.xin/api/ingest/snapshot",
+            api_key="fake-key",
+            secret="fake-secret",
+            refresh_fn=refresh_fn,
+            publish_fn=publish_fn,
+        )
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "empty_refreshed_snapshot"
+    assert result["refresh"]["status"] == "refreshed"
+    assert result["publish"] is None
+    assert publish_calls == []
