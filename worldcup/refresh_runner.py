@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from worldcup.local_runner import build_snapshot_from_cache, write_snapshot
+from worldcup.local_runner import attach_refresh_plans, build_snapshot_from_cache, write_snapshot
 from worldcup.quota import load_quota_ledger
-from worldcup.scheduler import build_refresh_decision, build_run_metadata, make_run_id
+from worldcup.scheduler import build_match_refresh_decision, build_run_metadata, make_run_id
 from worldcup.sources.eloratings import fetch_elo_files
 from worldcup.sources.openfootball import fetch_openfootball_2026
 from worldcup.sources.theoddsapi import fetch_worldcup_odds
@@ -135,12 +135,13 @@ def refresh_cache_and_build_snapshot(
     snapshot.setdefault("data_quality", {})["stale_sources"] = stale_sources
     quota = load_quota_ledger(quota_output).get("providers", {})
     quota_remaining = quota.get("theoddsapi", {}).get("remaining")
-    decision = build_refresh_decision(
+    decision = build_match_refresh_decision(
         now=observed,
-        last_refresh_at=None,
-        next_kickoff_at=_next_kickoff_from_snapshot(snapshot, observed),
+        last_refresh_at=observed,
+        matches=snapshot.get("matches") or [],
         quota_remaining=quota_remaining,
     )
+    attach_refresh_plans(snapshot.get("matches") or [], decision.match_plans)
     run_metadata = build_run_metadata(
         run_id=make_run_id(observed, "live"),
         mode="live",

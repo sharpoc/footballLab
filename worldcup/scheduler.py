@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -17,8 +17,19 @@ PRE_3D_WINDOW_SECONDS = 3 * 86400
 PRE_3D_INTERVAL_SECONDS = 21600
 PRE_1D_WINDOW_SECONDS = 86400
 PRE_1D_INTERVAL_SECONDS = 7200
+PRE_6H_WINDOW_SECONDS = 6 * 3600
+PRE_6H_INTERVAL_SECONDS = 3600
 QUOTA_LOW_REMAINING = 30
 QUOTA_LOW_INTERVAL_SECONDS = 86400
+CRITICAL_LOW_QUOTA_ANCHORS = {"pre_90m_lineup_warmup", "pre_55m_lineup_main", "pre_25m_final_check"}
+MATCH_ANCHORS = (
+    (3 * 3600 + 30 * 60, "pre_3h30m_matchday_first", "T-3小时30分", "临赛第一轮"),
+    (90 * 60, "pre_90m_lineup_warmup", "T-1小时30分", "阵容/伤停预热"),
+    (70 * 60, "pre_70m_lineup_probe", "T-70分钟", "首发提前探针"),
+    (55 * 60, "pre_55m_lineup_main", "T-55分钟", "首发主抓点"),
+    (40 * 60, "pre_40m_lineup_confirm", "T-40分钟", "首发确认"),
+    (25 * 60, "pre_25m_final_check", "T-25分钟", "临场最终确认"),
+)
 
 
 @dataclass(frozen=True)
@@ -32,6 +43,7 @@ class RefreshDecision:
     next_due_at: str | None
     next_kickoff_at: str | None
     quota_remaining: int | None
+    match_plans: list[dict[str, Any]] = field(default_factory=list)
     policy_version: str = POLICY_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -60,6 +72,8 @@ def _select_interval(
 
     if next_kickoff_at is not None:
         seconds_to_kickoff = (next_kickoff_at - now).total_seconds()
+        if 0 <= seconds_to_kickoff <= PRE_6H_WINDOW_SECONDS:
+            return PRE_6H_INTERVAL_SECONDS, "pre_6h_window"
         if 0 <= seconds_to_kickoff <= PRE_1D_WINDOW_SECONDS:
             return PRE_1D_INTERVAL_SECONDS, "pre_1d_window"
         if 0 <= seconds_to_kickoff <= PRE_3D_WINDOW_SECONDS:
@@ -68,6 +82,228 @@ def _select_interval(
             return PRE_7D_INTERVAL_SECONDS, "pre_7d_window"
 
     return DEFAULT_INTERVAL_SECONDS, "default"
+
+
+def _match_label(match: dict[str, Any]) -> str:
+    home = str(match.get("home_team") or "").strip()
+    away = str(match.get("away_team") or "").strip()
+    return f"{home} vs {away}".strip()
+
+
+def _match_id(match: dict[str, Any]) -> str:
+    explicit = str(match.get("source_event_id") or match.get("match_id") or "").strip()
+    if explicit:
+        return explicit
+    return "|".join(
+        str(match.get(key) or "").strip()
+        for key in ("kickoff_at_utc", "home_team", "away_team")
+    )
+
+
+def _cadence_label(policy_reason: str, interval_seconds: int) -> tuple[str, str]:
+    labels = {
+        "default": "常规",
+        "pre_7d_window": "赛前7天",
+        "pre_3d_window": "赛前3天",
+        "pre_1d_window": "赛前24小时",
+        "pre_6h_window": "赛前6小时",
+        "quota_low": "低额度",
+    }
+    hours = interval_seconds // 3600 if interval_seconds % 3600 == 0 else None
+    interval_text = f"{hours} 小时" if hours else f"{interval_seconds} 秒"
+    label = labels.get(policy_reason, "按规则")
+    return label, f"按{interval_text}间隔刷新"
+
+
+def _select_match_interval(
+    now: datetime,
+    kickoff_at: datetime,
+    quota_remaining: int | None,
+) -> tuple[int, str]:
+    if quota_remaining is not None and quota_remaining <= 0:
+        return 0, "quota_exhausted"
+    return _select_interval(now, kickoff_at, quota_remaining)
+
+
+def build_match_refresh_plan(
+    now: str,
+    last_refresh_at: str | None,
+    match: dict[str, Any],
+    quota_remaining: int | None,
+) -> dict[str, Any]:
+    now_dt = _parse_utc(now)
+    kickoff_raw = str(match.get("kickoff_at_utc") or "").strip()
+    kickoff_dt = _parse_utc(kickoff_raw) if kickoff_raw else None
+    last_dt = _parse_utc(last_refresh_at) if last_refresh_at else None
+    base = {
+        "match_id": _match_id(match),
+        "match_label": _match_label(match),
+        "kickoff_at_utc": _iso_utc(kickoff_dt) if kickoff_dt else None,
+        "quota_remaining": quota_remaining,
+    }
+    if kickoff_dt is None:
+        return {
+            **base,
+            "next_update_at": None,
+            "policy_reason": "missing_kickoff",
+            "label": "缺少开赛时间",
+            "description": "无法计算单场更新时间",
+            "interval_seconds": None,
+            "should_refresh": False,
+        }
+    if kickoff_dt <= now_dt:
+        return {
+            **base,
+            "next_update_at": None,
+            "policy_reason": "post_kickoff",
+            "label": "赛前更新结束",
+            "description": "比赛已经开赛或结束",
+            "interval_seconds": None,
+            "should_refresh": False,
+        }
+
+    interval_seconds, cadence_reason = _select_match_interval(now_dt, kickoff_dt, quota_remaining)
+    if cadence_reason == "quota_exhausted":
+        return {
+            **base,
+            "next_update_at": None,
+            "policy_reason": "quota_exhausted",
+            "label": "额度耗尽",
+            "description": "等待额度恢复或人工刷新",
+            "interval_seconds": 0,
+            "should_refresh": False,
+        }
+
+    if last_dt is None:
+        label, description = _cadence_label(cadence_reason, interval_seconds)
+        return {
+            **base,
+            "next_update_at": _iso_utc(now_dt),
+            "policy_reason": "no_previous_refresh",
+            "label": label,
+            "description": description,
+            "interval_seconds": interval_seconds,
+            "should_refresh": True,
+        }
+
+    candidates: list[tuple[datetime, int, str, str, str]] = []
+    cadence_due = last_dt + timedelta(seconds=interval_seconds)
+    cadence_label, cadence_description = _cadence_label(cadence_reason, interval_seconds)
+    candidates.append(
+        (
+            now_dt if cadence_due <= now_dt else cadence_due,
+            1,
+            cadence_reason,
+            cadence_label,
+            cadence_description,
+        )
+    )
+
+    low_quota = quota_remaining is not None and 0 < quota_remaining <= QUOTA_LOW_REMAINING
+    for offset_seconds, reason, label, description in MATCH_ANCHORS:
+        if low_quota and reason not in CRITICAL_LOW_QUOTA_ANCHORS:
+            continue
+        anchor_dt = kickoff_dt - timedelta(seconds=offset_seconds)
+        if last_dt >= anchor_dt:
+            continue
+        candidates.append(
+            (
+                now_dt if anchor_dt <= now_dt else anchor_dt,
+                0,
+                reason,
+                label,
+                description,
+            )
+        )
+
+    next_dt, _priority, reason, label, description = min(candidates, key=lambda item: (item[0], item[1]))
+    return {
+        **base,
+        "next_update_at": _iso_utc(next_dt),
+        "policy_reason": reason,
+        "label": label,
+        "description": description,
+        "interval_seconds": interval_seconds,
+        "should_refresh": next_dt <= now_dt,
+    }
+
+
+def build_match_refresh_plans(
+    now: str,
+    last_refresh_at: str | None,
+    matches: list[dict[str, Any]],
+    quota_remaining: int | None,
+) -> list[dict[str, Any]]:
+    plans = [
+        build_match_refresh_plan(
+            now=now,
+            last_refresh_at=last_refresh_at,
+            match=match,
+            quota_remaining=quota_remaining,
+        )
+        for match in matches
+    ]
+    return sorted(
+        plans,
+        key=lambda plan: (
+            plan.get("next_update_at") is None,
+            str(plan.get("next_update_at") or ""),
+            str(plan.get("kickoff_at_utc") or ""),
+            str(plan.get("match_label") or ""),
+        ),
+    )
+
+
+def build_match_refresh_decision(
+    now: str,
+    last_refresh_at: str | None,
+    matches: list[dict[str, Any]],
+    quota_remaining: int | None,
+) -> RefreshDecision:
+    now_dt = _parse_utc(now)
+    last_dt = _parse_utc(last_refresh_at) if last_refresh_at else None
+    plans = build_match_refresh_plans(
+        now=now,
+        last_refresh_at=last_refresh_at,
+        matches=matches,
+        quota_remaining=quota_remaining,
+    )
+    upcoming_kickoffs = [
+        _parse_utc(str(plan["kickoff_at_utc"]))
+        for plan in plans
+        if plan.get("kickoff_at_utc") and _parse_utc(str(plan["kickoff_at_utc"])) >= now_dt
+    ]
+    next_kickoff = min(upcoming_kickoffs) if upcoming_kickoffs else None
+    active = [plan for plan in plans if plan.get("next_update_at")]
+    if not active:
+        return RefreshDecision(
+            should_refresh=False,
+            reason="not_due",
+            policy_reason="no_active_match_plan",
+            interval_seconds=0,
+            now=_iso_utc(now_dt),
+            last_refresh_at=_iso_utc(last_dt) if last_dt else None,
+            next_due_at=None,
+            next_kickoff_at=_iso_utc(next_kickoff) if next_kickoff else None,
+            quota_remaining=quota_remaining,
+            match_plans=plans,
+        )
+
+    first = active[0]
+    due_dt = _parse_utc(str(first["next_update_at"]))
+    should_refresh = due_dt <= now_dt or bool(first.get("should_refresh"))
+    return RefreshDecision(
+        should_refresh=should_refresh,
+        reason="due" if should_refresh else "not_due",
+        policy_reason=str(first.get("policy_reason") or ""),
+        interval_seconds=int(first.get("interval_seconds") or 0),
+        now=_iso_utc(now_dt),
+        last_refresh_at=_iso_utc(last_dt) if last_dt else None,
+        next_due_at=_iso_utc(due_dt),
+        next_kickoff_at=_iso_utc(next_kickoff) if next_kickoff else None,
+        quota_remaining=quota_remaining,
+        match_plans=plans,
+    )
 
 
 def build_refresh_decision(
@@ -173,12 +409,21 @@ def build_scheduler_report(
     quota_remaining = quota.get("theoddsapi", {}).get("remaining")
     last_refresh_at = _last_refresh_at_from_snapshot(snapshot)
     next_kickoff_at = _next_kickoff_at_from_snapshot(snapshot, now) if snapshot else None
-    decision = build_refresh_decision(
-        now=now,
-        last_refresh_at=last_refresh_at,
-        next_kickoff_at=next_kickoff_at,
-        quota_remaining=quota_remaining,
-    )
+    matches = snapshot.get("matches") or []
+    if matches:
+        decision = build_match_refresh_decision(
+            now=now,
+            last_refresh_at=last_refresh_at,
+            matches=matches,
+            quota_remaining=quota_remaining,
+        )
+    else:
+        decision = build_refresh_decision(
+            now=now,
+            last_refresh_at=last_refresh_at,
+            next_kickoff_at=next_kickoff_at,
+            quota_remaining=quota_remaining,
+        )
     return {
         "schema_version": 1,
         "mode": "dry-run",

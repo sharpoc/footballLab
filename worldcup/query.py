@@ -50,6 +50,7 @@ def project_match_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         home = match.get("home_team", "")
         away = match.get("away_team", "")
         signals = match.get("signals") or []
+        refresh_plan = match.get("refresh_plan") or {}
         rows.append(
             {
                 "kickoff_at_utc": match.get("kickoff_at_utc", ""),
@@ -60,6 +61,9 @@ def project_match_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "match_label": f"{home} vs {away}".strip(),
                 "signal_count": len(signals),
                 "top_grade": _top_grade(signals),
+                "next_update_at": refresh_plan.get("next_update_at"),
+                "next_update_label": refresh_plan.get("label"),
+                "next_update_description": refresh_plan.get("description"),
                 "stale": stale,
             }
         )

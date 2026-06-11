@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-11 首页下次更新时间列
+
+- 已把单场 `refresh_plan` 接入本地/实时 snapshot：每场比赛写入安全的 `next_update_at`、`policy_reason`、`label`、`description`、`interval_seconds`、`should_refresh`；`run.policy.match_plans` 保留完整调度决策。
+- `scheduler` dry-run 已改为用 72 场比赛的最早 `next_update_at` 决定全局 due，LaunchAgent 仍只需按全局任务唤醒。
+- 首页研究台账在“更新”后新增“下次更新”列，展开详情补充“下次更新”；右侧“更新规则”卡片显示“按每场比赛独立调度”和最近一次计划。
+- `/api/matches` / 静态导出行新增脱敏的 `next_update_at`、`next_update_label`、`next_update_description`，不输出 quota、secret 或资金相关字段。
+- TDD 先看到 `refresh_plan`、ledger/query 投影和首页表头断言失败，再实现转绿；最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `283/283 tests passed`。
+- 本次未触发 live refresh、未调用 The Odds API、未发布线上、未 push。
+
 ## 2026-06-11 Elo 缓存 48h 宽限期
 
 - 背景：`www.eloratings.net` 自 2026-06-11 起对非浏览器请求返回 HTTP 415，导致 live refresh 可走本地 Elo 缓存但被统一标为 `stale_sources=["eloratings"]`，信号被 `unconfirmed_backup` 封顶到 B。

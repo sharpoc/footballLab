@@ -352,6 +352,30 @@ def _format_datetime_full(value: datetime | None) -> str:
     return f"{value.year} 年 {value.month} 月 {value.day} 日 {weekday} {value:%H:%M}"
 
 
+def _format_refresh_plan(plan: dict[str, Any] | None) -> dict[str, str]:
+    plan = plan or {}
+    label = str(plan.get("label") or "待调度")
+    description = str(plan.get("description") or "等待下一轮调度确认")
+    next_update_at = str(plan.get("next_update_at") or "")
+    display_next = _to_beijing_time(_parse_datetime(next_update_at))
+    if display_next is None:
+        next_time = label
+        next_full = label
+    else:
+        next_time = display_next.strftime("%H:%M")
+        next_full = _format_datetime_full(display_next)
+    prefix = " ".join(part for part in (label, description) if part)
+    detail = f"{prefix}：{next_full}" if prefix else next_full
+    return {
+        "next_update_at": next_update_at,
+        "next_update_time": next_time,
+        "next_update_label": label,
+        "next_update_description": description,
+        "next_update_full": next_full,
+        "next_update_detail": detail,
+    }
+
+
 def _format_decimal(value: float | None) -> str:
     if value is None:
         return EM_DASH
@@ -694,6 +718,7 @@ def project_signal_rows(
         display_updated = _to_beijing_time(_parse_datetime(updated_raw))
         updated_label = "赔率源更新" if match.get("odds_updated_at") else "分析更新"
         updated_full = _format_datetime_full(display_updated)
+        refresh_plan = _format_refresh_plan(match.get("refresh_plan"))
         home_team = match.get("home_team", "")
         away_team = match.get("away_team", "")
         for signal in match.get("signals") or []:
@@ -730,6 +755,7 @@ def project_signal_rows(
                 "updated_time": display_updated.strftime("%H:%M") if display_updated else EM_DASH,
                 "updated_label": updated_label,
                 "updated_full": updated_full,
+                **refresh_plan,
                 "stage": _format_stage(match.get("stage", "")),
                 "group": _format_group(match.get("group", "")),
                 "stage_group": _format_stage_group(match.get("stage", ""), match.get("group", "")),
@@ -761,6 +787,9 @@ def project_signal_rows(
             }
             row["detail_items"].append(
                 {"label": "更新时间", "value": f"{updated_label}：{updated_full}"}
+            )
+            row["detail_items"].append(
+                {"label": "下次更新", "value": row["next_update_detail"]}
             )
             if prediction_result:
                 row["detail_items"].append(

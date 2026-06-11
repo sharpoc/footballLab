@@ -34,6 +34,12 @@ def _snapshot():
                 "home_team": "Mexico",
                 "away_team": "South Africa",
                 "odds_updated_at": "2026-06-08T03:30:00+00:00",
+                "refresh_plan": {
+                    "next_update_at": "2026-06-11T17:30:00+00:00",
+                    "policy_reason": "pre_90m_lineup_warmup",
+                    "label": "T-1小时30分",
+                    "description": "阵容/伤停预热",
+                },
                 "model": {"combined_1x2": {"home": 0.61, "draw": 0.23, "away": 0.16}},
                 "market": {
                     "1x2": {
@@ -69,10 +75,14 @@ def test_build_preview_html_renders_research_ledger_surface():
     assert "最后更新：</strong><br>2026 年 6 月 8 日 星期一 08:00" in html
     assert "2026-06-08T00:00:00+00:00" not in html
     assert '<th scope="col">更新</th>' in html
+    assert '<th scope="col">下次更新</th>' in html
     assert '<th scope="col">预测结果</th>' in html
     assert 'class="prediction-pill prediction-pending">待赛</span>' in html
     assert "赔率源更新" in html
     assert "11:30" in html
+    assert "01:30" in html
+    assert "T-1小时30分" in html
+    assert "阵容/伤停预热" in html
     assert "胜平负 - 主队" in html
     assert "+4.1%" in html
     assert 'class="grade-pill grade-a grade-priority"' in html
@@ -85,6 +95,7 @@ def test_build_preview_html_renders_research_ledger_surface():
     assert "方法说明" in html
     assert "数据源健康" in html
     assert "更新规则" in html
+    assert "按每场比赛独立调度" in html
     assert "常规：24 小时" in html
     assert "赛前 7 天内：12 小时" in html
     assert "赛前 3 天内：6 小时" in html

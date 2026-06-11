@@ -141,6 +141,9 @@ def _row_search_text(row: dict[str, Any]) -> str:
         row.get("kickoff_time", ""),
         row.get("updated_time", ""),
         row.get("updated_label", ""),
+        row.get("next_update_time", ""),
+        row.get("next_update_label", ""),
+        row.get("next_update_description", ""),
         row.get("market_label", ""),
         row.get("model_prob", ""),
         row.get("market_prob", ""),
@@ -250,7 +253,7 @@ def _render_signal_table(
     detail_index = 0
     for kickoff_date, date_rows in grouped.items():
         table_rows.append(
-            "<tr class=\"date-row\"><th colspan=\"11\">{}</th></tr>".format(_text(kickoff_date))
+            "<tr class=\"date-row\"><th colspan=\"12\">{}</th></tr>".format(_text(kickoff_date))
         )
         for row in date_rows:
             grade = row.get("grade", "")
@@ -268,6 +271,7 @@ def _render_signal_table(
                 "<td><strong>{matchup}</strong><span>{stage_group}</span></td>"
                 "<td>{kickoff}</td>"
                 "<td><strong>{updated}</strong><span>{updated_label}</span></td>"
+                "<td><strong>{next_update}</strong><span>{next_update_label}</span></td>"
                 "<td>{market}</td>"
                 "<td>{prediction}</td>"
                 "<td>{model_prob}</td>"
@@ -285,6 +289,8 @@ def _render_signal_table(
                     kickoff=_text(row.get("kickoff_time") or row.get("kickoff_at_utc")),
                     updated=_text(row.get("updated_time")),
                     updated_label=_text(row.get("updated_label")),
+                    next_update=_text(row.get("next_update_time")),
+                    next_update_label=_text(row.get("next_update_label")),
                     market=_text(row.get("market_label")),
                     prediction=prediction,
                     model_prob=_text(row.get("model_prob")),
@@ -299,7 +305,7 @@ def _render_signal_table(
             )
             table_rows.append(
                 "<tr class=\"signal-detail-row\" id=\"{detail_id}\" hidden>"
-                "<td colspan=\"11\">{detail}</td>"
+                "<td colspan=\"12\">{detail}</td>"
                 "</tr>".format(
                     detail_id=_text(detail_id),
                     detail=_render_signal_detail(row),
@@ -316,6 +322,7 @@ def _render_signal_table(
             <th scope="col">对阵</th>
             <th scope="col">开赛 (北京时间)</th>
             <th scope="col">更新</th>
+            <th scope="col">下次更新</th>
             <th scope="col">盘口</th>
             <th scope="col">预测结果</th>
             <th scope="col">模型概率</th>
@@ -353,9 +360,62 @@ def _policy_reason_label(reason: Any) -> str:
         "pre_7d_window": "赛前 7 天内",
         "pre_3d_window": "赛前 3 天内",
         "pre_1d_window": "赛前 1 天内",
+        "pre_6h_window": "赛前 6 小时内",
         "quota_low": "低额度",
     }
     return labels.get(str(reason or ""), "按当前调度策略")
+
+
+def _match_plan_candidates(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    policy = (snapshot.get("run") or {}).get("policy") or {}
+    plans = policy.get("match_plans")
+    if isinstance(plans, list) and plans:
+        return [plan for plan in plans if isinstance(plan, dict)]
+    candidates = []
+    for match in snapshot.get("matches") or []:
+        refresh_plan = match.get("refresh_plan")
+        if not isinstance(refresh_plan, dict):
+            continue
+        home = str(match.get("home_team") or "").strip()
+        away = str(match.get("away_team") or "").strip()
+        candidates.append(
+            {
+                **refresh_plan,
+                "match_label": f"{home} vs {away}".strip(),
+                "kickoff_at_utc": match.get("kickoff_at_utc"),
+            }
+        )
+    return candidates
+
+
+def _render_nearest_match_plan(snapshot: dict[str, Any]) -> str:
+    active = [
+        plan
+        for plan in _match_plan_candidates(snapshot)
+        if plan.get("next_update_at")
+    ]
+    if not active:
+        return "<p><strong>最近一次计划：</strong>待下一轮调度确认</p>"
+    first = min(
+        active,
+        key=lambda plan: (
+            str(plan.get("next_update_at") or ""),
+            str(plan.get("kickoff_at_utc") or ""),
+            str(plan.get("match_label") or ""),
+        ),
+    )
+    when = _format_snapshot_time(first.get("next_update_at"))
+    label = str(first.get("label") or "按规则")
+    description = str(first.get("description") or "")
+    rule = " ".join(part for part in (label, description) if part)
+    return (
+        "<p><strong>最近一次计划：</strong>{match}，{when}</p>"
+        "<p><strong>规则：</strong>{rule}</p>"
+    ).format(
+        match=_text(first.get("match_label") or "待确认比赛"),
+        when=_text(when),
+        rule=_text(rule),
+    )
 
 
 def _render_update_policy(snapshot: dict[str, Any]) -> str:
@@ -376,8 +436,11 @@ def _render_update_policy(snapshot: dict[str, Any]) -> str:
         <li>赛前 7 天内：12 小时</li>
         <li>赛前 3 天内：6 小时</li>
         <li>赛前 1 天内：2 小时</li>
-        <li>低额度：24 小时</li>
+        <li>赛前 6 小时内：1 小时</li>
+        <li>低额度：24 小时，并保留 T-90 / T-55 / T-25</li>
       </ul>
+      <p><strong>当前模式：按每场比赛独立调度</strong></p>
+      {nearest_match_plan}
       <p><strong>当前规则：{reason}</strong></p>
       <p><strong>当前间隔：</strong>{interval}</p>
       {next_due}
@@ -385,6 +448,7 @@ def _render_update_policy(snapshot: dict[str, Any]) -> str:
     """.format(
         reason=_text(reason_label),
         interval=_text(interval_label),
+        nearest_match_plan=_render_nearest_match_plan(snapshot),
         next_due=next_due_html,
     )
 

@@ -58,6 +58,11 @@ def _snapshot():
                 "group": "Group A",
                 "home_team": "Mexico",
                 "away_team": "South Africa",
+                "refresh_plan": {
+                    "next_update_at": "2026-06-11T17:30:00+00:00",
+                    "label": "T-1小时30分",
+                    "description": "阵容/伤停预热",
+                },
                 "signals": [
                     {"market_type": "1X2_90min", "selection": "Mexico", "grade": "A", "ev": 0.06},
                     {"market_type": "OverUnder_90min", "selection": "Over", "grade": "B", "ev": 0.03},
@@ -162,6 +167,9 @@ def test_project_match_rows_returns_preview_safe_rows():
     assert rows[0]["match_label"] == "Mexico vs South Africa"
     assert rows[0]["top_grade"] == "A"
     assert rows[0]["signal_count"] == 2
+    assert rows[0]["next_update_at"] == "2026-06-11T17:30:00+00:00"
+    assert rows[0]["next_update_label"] == "T-1小时30分"
+    assert rows[0]["next_update_description"] == "阵容/伤停预热"
     assert rows[0]["stale"] is True
     assert rows[1]["top_grade"] == ""
     assert rows[1]["signal_count"] == 0

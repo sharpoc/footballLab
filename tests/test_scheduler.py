@@ -2,7 +2,21 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from worldcup import scheduler
 from worldcup.scheduler import build_refresh_decision, build_run_metadata, build_scheduler_report
+
+
+def _match(
+    kickoff_at_utc: str,
+    home_team: str = "Mexico",
+    away_team: str = "South Africa",
+) -> dict:
+    return {
+        "source_event_id": f"{home_team}-{away_team}",
+        "kickoff_at_utc": kickoff_at_utc,
+        "home_team": home_team,
+        "away_team": away_team,
+    }
 
 
 def test_scheduler_refreshes_when_no_previous_run():
@@ -61,6 +75,70 @@ def test_scheduler_uses_two_hours_inside_one_day_window():
     assert decision.policy_reason == "pre_1d_window"
     assert decision.interval_seconds == 7200
     assert decision.next_due_at == "2026-06-10T20:00:00+00:00"
+
+
+def test_match_plan_uses_lineup_warmup_anchor_before_kickoff():
+    plan = scheduler.build_match_refresh_plan(
+        now="2026-06-11T17:25:00+00:00",
+        last_refresh_at="2026-06-11T16:45:00+00:00",
+        match=_match("2026-06-11T19:00:00+00:00"),
+        quota_remaining=494,
+    )
+
+    assert plan["match_label"] == "Mexico vs South Africa"
+    assert plan["next_update_at"] == "2026-06-11T17:30:00+00:00"
+    assert plan["policy_reason"] == "pre_90m_lineup_warmup"
+    assert plan["label"] == "T-1小时30分"
+    assert plan["description"] == "阵容/伤停预热"
+    assert plan["should_refresh"] is False
+
+
+def test_match_plan_low_quota_keeps_critical_lineup_anchor():
+    plan = scheduler.build_match_refresh_plan(
+        now="2026-06-11T17:50:00+00:00",
+        last_refresh_at="2026-06-11T17:35:00+00:00",
+        match=_match("2026-06-11T19:00:00+00:00"),
+        quota_remaining=24,
+    )
+
+    assert plan["next_update_at"] == "2026-06-11T18:05:00+00:00"
+    assert plan["policy_reason"] == "pre_55m_lineup_main"
+    assert plan["label"] == "T-55分钟"
+    assert plan["interval_seconds"] == 86400
+    assert plan["should_refresh"] is False
+
+
+def test_match_plan_blocks_when_quota_is_exhausted():
+    plan = scheduler.build_match_refresh_plan(
+        now="2026-06-11T17:50:00+00:00",
+        last_refresh_at="2026-06-11T17:20:00+00:00",
+        match=_match("2026-06-11T19:00:00+00:00"),
+        quota_remaining=0,
+    )
+
+    assert plan["next_update_at"] is None
+    assert plan["policy_reason"] == "quota_exhausted"
+    assert plan["label"] == "额度耗尽"
+    assert plan["should_refresh"] is False
+
+
+def test_match_refresh_decision_uses_earliest_match_plan():
+    decision = scheduler.build_match_refresh_decision(
+        now="2026-06-11T17:25:00+00:00",
+        last_refresh_at="2026-06-11T16:45:00+00:00",
+        matches=[
+            _match("2026-06-11T22:00:00+00:00", home_team="Canada", away_team="Qatar"),
+            _match("2026-06-11T19:00:00+00:00"),
+        ],
+        quota_remaining=494,
+    )
+
+    assert decision.should_refresh is False
+    assert decision.reason == "not_due"
+    assert decision.next_due_at == "2026-06-11T17:30:00+00:00"
+    assert decision.policy_reason == "pre_90m_lineup_warmup"
+    assert len(decision.match_plans) == 2
+    assert decision.match_plans[0]["next_update_at"] == "2026-06-11T17:30:00+00:00"
 
 
 def test_scheduler_slows_down_when_free_tier_quota_is_low():

@@ -13,7 +13,7 @@ from worldcup.collectors.theoddsapi import parse_theoddsapi_events
 from worldcup.config import load_config
 from worldcup.models import Signal
 from worldcup.pipeline import analyze_match_input, build_match_inputs, generate_value_signals
-from worldcup.scheduler import build_refresh_decision, build_run_metadata, make_run_id
+from worldcup.scheduler import build_match_refresh_decision, build_run_metadata, make_run_id
 
 
 def _read_json(path: Path) -> Any:
@@ -131,17 +131,54 @@ def _next_kickoff_from_matches(matches: list[dict[str, Any]], observed_at: str) 
     return min(upcoming).isoformat()
 
 
+def _refresh_match_id(match: dict[str, Any]) -> str:
+    explicit = str(match.get("source_event_id") or match.get("match_id") or "").strip()
+    if explicit:
+        return explicit
+    return "|".join(
+        str(match.get(key) or "").strip()
+        for key in ("kickoff_at_utc", "home_team", "away_team")
+    )
+
+
+def _public_refresh_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "next_update_at": plan.get("next_update_at"),
+        "policy_reason": plan.get("policy_reason"),
+        "label": plan.get("label"),
+        "description": plan.get("description"),
+        "interval_seconds": plan.get("interval_seconds"),
+        "should_refresh": bool(plan.get("should_refresh")),
+    }
+
+
+def attach_refresh_plans(
+    matches: list[dict[str, Any]],
+    match_plans: list[dict[str, Any]],
+) -> None:
+    plans_by_id = {
+        str(plan.get("match_id") or ""): _public_refresh_plan(plan)
+        for plan in match_plans
+        if plan.get("match_id")
+    }
+    for match in matches:
+        plan = plans_by_id.get(_refresh_match_id(match))
+        if plan is not None:
+            match["refresh_plan"] = plan
+
+
 def _local_run_metadata(
     snapshot_at: str,
     matches: list[dict[str, Any]],
     stale_sources: list[str] | None = None,
 ) -> dict[str, Any]:
-    decision = build_refresh_decision(
+    decision = build_match_refresh_decision(
         now=snapshot_at,
-        last_refresh_at=None,
-        next_kickoff_at=_next_kickoff_from_matches(matches, snapshot_at),
+        last_refresh_at=snapshot_at,
+        matches=matches,
         quota_remaining=None,
     )
+    attach_refresh_plans(matches, decision.match_plans)
     return build_run_metadata(
         run_id=make_run_id(snapshot_at, "local"),
         mode="local",

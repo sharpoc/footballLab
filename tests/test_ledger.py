@@ -35,6 +35,12 @@ def _snapshot():
                 "home_team": "Mexico",
                 "away_team": "South Africa",
                 "odds_updated_at": "2026-06-09T07:30:00+00:00",
+                "refresh_plan": {
+                    "next_update_at": "2026-06-11T17:30:00+00:00",
+                    "policy_reason": "pre_90m_lineup_warmup",
+                    "label": "T-1小时30分",
+                    "description": "阵容/伤停预热",
+                },
                 "model": {"combined_1x2": {"home": 0.61, "draw": 0.23, "away": 0.16}},
                 "market": {"1x2": {"market_probs": {"home": 0.57, "draw": 0.25, "away": 0.18}}},
                 "signals": [
@@ -154,6 +160,10 @@ def test_project_signal_rows_expands_signals_without_money_fields():
     assert rows[0]["kickoff_time"] == "03:00"
     assert rows[0]["updated_time"] == "15:30"
     assert rows[0]["updated_label"] == "赔率源更新"
+    assert rows[0]["next_update_time"] == "01:30"
+    assert rows[0]["next_update_label"] == "T-1小时30分"
+    assert rows[0]["next_update_description"] == "阵容/伤停预热"
+    assert rows[0]["next_update_full"] == "2026 年 6 月 12 日 星期五 01:30"
     assert rows[0]["stage_group"] == "小组赛第 1 轮 | A 组"
     assert rows[0]["market_label"] == "胜平负 - 主队"
     assert rows[0]["model_prob"] == "61.0%"
@@ -182,6 +192,7 @@ def test_project_signal_rows_includes_detail_items_for_expandable_analysis():
     assert details["EV"] == "+5.2%"
     assert details["等级状态"] == "A / OK / 新鲜"
     assert details["更新时间"] == "赔率源更新：2026 年 6 月 9 日 星期二 15:30"
+    assert details["下次更新"] == "T-1小时30分 阵容/伤停预热：2026 年 6 月 12 日 星期五 01:30"
     assert details["风险提示"] == "当前数据新鲜，未触发额外降级原因。"
 
 
