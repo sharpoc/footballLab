@@ -2,6 +2,16 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-11 Elo 改为本地基线重放
+
+- 背景：eloratings 自 2026-06-11 起返回 JS 挑战页，旧 48h Elo 缓存宽限期会在北京时间 2026-06-13 09:33 到期；已退役该宽限机制，避免到期后信号被 `unconfirmed_backup` 统一压级。
+- 新增 `worldcup.elo_local`：冻结可信官方 Elo 缓存为 `data/cache/elo_baseline_world.tsv` / `elo_baseline_teams.tsv` / `elo_baseline_meta.json`，每轮从基线 + openfootball 完赛比分按 eloratings 公式全量重算 `elo_world.tsv`；口径为 K=60、全按中立场，东道主优势仍由 pipeline 单独处理。
+- 重放是幂等全量计算，不做状态累积；产物必须可被 `parse_elo_ratings` 解析，且行数不少于基线行数，否则保留旧 `elo_world.tsv` 并记录 `elo_local` 错误。
+- eloratings 抓取成功时仅用于重新锚定基线；抓取失败只记 `data_quality.source_errors`，不标 `stale_sources`、不触发信号降级。
+- 已离线冻结当前基线：`baseline_at=2026-06-11T01:33:56.792283+00:00`，`baseline_teams=244`，`computed_rows=244`；离线 smoke 生成 `data/local/backtest/elo_smoke_snapshot.json`，72 场，样例 Elo 为 `home=1875`、`away=1518`。
+- 本地验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `312/312 tests passed`。
+- 本次未 push、未部署、未触发 live refresh、未真实访问 eloratings、未调用 The Odds API。
+
 ## 2026-06-11 The Odds API key 自动轮换
 
 - 已新增保守 key slot 选择：`THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY` 都配置时优先 primary，primary 在 quota ledger 中剩余额度为 0 时自动切到 secondary；两个配置槽都耗尽时继续报告 `quota_exhausted` 并暂停刷新。
@@ -11,6 +21,15 @@
 - 已同步 `.env.example` 空变量名、readiness 安全检查和 README 运维说明；本次未把真实 key 写入 git、文档或回复。
 - 本地验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `304/304 tests passed`。
 - 本次未 push、未部署、未触发 live refresh、未调用 The Odds API。
+
+## 2026-06-11 自算 Elo 与额度告警实现计划（待 Codex 执行）
+
+- 探测确认 eloratings WAF 为 JS 挑战页，加浏览器请求头无法绕过（Python UA 415；浏览器 UA 200 但返回 "One moment, please..." 挑战 HTML；cookie+Referer 仍 415）；方案结论与对比见 `docs/superpowers/specs/2026-06-11-elo-source-resilience-design.md`。
+- 待执行计划一 `docs/superpowers/plans/2026-06-11-self-computed-elo.md`：新增 `worldcup/elo_local.py`（冻结基线 / 增量重放 / 行数护栏 / CLI），`refresh_runner` 改为基线+openfootball 赛果自算 Elo，eloratings 抓取降级为可选重新锚定，48h 宽限期退役；含 CLAUDE/AGENTS/README 同步。**截止压力：Elo 缓存宽限期 2026-06-13 09:33（北京时间）到期，须在此前合入。**
+- 待执行计划二 `docs/superpowers/plans/2026-06-11-quota-low-alert.md`（已改 v2 适配 key 槽位轮换）：按 `.env` 配置的槽位分别监控 `theoddsapi_primary` / `theoddsapi_secondary`（未配置槽位回退 legacy），任一槽位向下跨过 100/30/10/0 阈值时随当轮发布发 WxPusher 告警；跨 0 即"槽位耗尽、自动切换/暂停"提示，提醒给耗尽槽位补新 key 并 force publish 复位台账。每槽位每阈值只发一次，走 `--no-notify` 总开关，不打印 key 值。
+- 执行顺序：先 Elo（有截止时间），后额度告警；两计划互不依赖。验证命令仍为 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py`。
+- 顺带事项：`docs/superpowers/plans/2026-06-11-plan-a-cadence-simplification.md`、`2026-06-11-raw-odds-archive.md` 与本轮新增 spec/plan 文档目前未跟踪，可随本轮 docs commit 一并入库。
+- 本次只写探测结论、设计与计划，未改业务代码、未 commit、未 push、未部署、未触发 live refresh、未调用 The Odds API。
 
 ## 2026-06-11 原始赔率响应逐轮归档
 

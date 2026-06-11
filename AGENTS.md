@@ -30,7 +30,7 @@
 - 引擎层必须保持纯函数，不联网、不连数据库、不依赖云。
 - 采集层使用保存的样例响应做离线解析测试。
 - source refresh 失败但本地缓存存在时，可以继续用上一轮缓存生成快照；必须在 `data_quality.source_errors` 和 `data_quality.stale_sources` 标记，不能静默当作新鲜数据。
-- 例外：eloratings 抓取失败但本地 Elo 缓存 mtime 在 48 小时宽限期内时，只记 `data_quality.source_errors`，不标 `stale_sources`、不触发信号降级（Elo 仅在完赛后变化，宽限期内缓存与真实值一致）；超过宽限期仍按上一条降级。常量为 `worldcup/refresh_runner.py` 的 `ELO_CACHE_GRACE_SECONDS`。
+- Elo 来源为本地基线重放：`data/cache/elo_baseline_*.tsv` + openfootball 完赛比分按 eloratings 公式（K=60、中立场）增量重放生成 `elo_world.tsv`；eloratings 抓取仅用于重新锚定基线，抓取失败只记 `data_quality.source_errors`，不标 `stale_sources`、不降级信号。重放计算失败时回退沿用现有 `elo_world.tsv` 并记 `elo_local` 错误。常量与实现见 `worldcup/elo_local.py`。
 - scheduler 默认 dry-run，只读取本地 snapshot / quota 并输出 JSON 决策；The Odds API 按免费额度使用，低额度时必须降频。
 - scheduled refresh 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会调用 refresh runner。
 - ingest 默认 dry-run；只构造请求体、HMAC 签名头和 body hash，不发送线上请求，不能打印 HMAC secret。
