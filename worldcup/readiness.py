@@ -10,6 +10,8 @@ from worldcup.store_factory import normalize_store_kind
 REQUIRED_ENV_EXAMPLE_NAMES = {
     "API_FOOTBALL_KEY",
     "THE_ODDS_API_KEY",
+    "THE_ODDS_API_KEY_PRIMARY",
+    "THE_ODDS_API_KEY_SECONDARY",
     "ODDS_API_IO_KEY",
     "ODDSPAPI_KEY",
     "INGEST_HMAC_SECRET",

@@ -2,6 +2,16 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-11 The Odds API key 自动轮换
+
+- 已新增保守 key slot 选择：`THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY` 都配置时优先 primary，primary 在 quota ledger 中剩余额度为 0 时自动切到 secondary；两个配置槽都耗尽时继续报告 `quota_exhausted` 并暂停刷新。
+- `THE_ODDS_API_KEY` 保持旧入口兼容，可作为 primary fallback；显式传 `api_key` 的测试/手工调用仍按 legacy provider 处理。
+- scheduled refresh / publish 已改为从调度报告和本地 `.env` 选择可用 slot，并把 `theoddsapi_provider` 传到 refresh runner；run summary 会记录安全的 `odds_api_key_slot` 和 provider alias，不记录真实 key。
+- The Odds API source 成功刷新后会把 quota 写入选中 provider（如 `theoddsapi_secondary`），并同步镜像到旧 `theoddsapi` provider，兼容现有页面和运维检查。
+- 已同步 `.env.example` 空变量名、readiness 安全检查和 README 运维说明；本次未把真实 key 写入 git、文档或回复。
+- 本地验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `304/304 tests passed`。
+- 本次未 push、未部署、未触发 live refresh、未调用 The Odds API。
+
 ## 2026-06-11 原始赔率响应逐轮归档
 
 - 已在 live refresh 成功获取新赔率后，把 The Odds API 原始逐家报价 gzip 归档到 `data/local/history/odds_raw_<run_id>.json.gz`；对应 `RefreshResult.odds_raw_archive_path` 会记录归档路径。

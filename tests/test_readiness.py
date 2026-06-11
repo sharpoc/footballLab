@@ -4,6 +4,19 @@ from tempfile import TemporaryDirectory
 from worldcup.readiness import run_readiness_checks
 
 
+ENV_EXAMPLE_TEMPLATE = (
+    "API_FOOTBALL_KEY=\n"
+    "THE_ODDS_API_KEY=\n"
+    "THE_ODDS_API_KEY_PRIMARY=\n"
+    "THE_ODDS_API_KEY_SECONDARY=\n"
+    "ODDS_API_IO_KEY=\n"
+    "ODDSPAPI_KEY=\n"
+    "INGEST_HMAC_SECRET=\n"
+    "WORLDCUP_STORE=\n"
+    "DATABASE_URL=\n"
+)
+
+
 def _write(path: Path, text: str = "{}"):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -15,7 +28,7 @@ def test_readiness_reports_ok_when_local_artifacts_exist():
         _write(root / ".env", "THE_ODDS_API_KEY=x\nINGEST_HMAC_SECRET=y\n")
         _write(
             root / ".env.example",
-            "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\nWORLDCUP_STORE=\nDATABASE_URL=\n",
+            ENV_EXAMPLE_TEMPLATE,
         )
         _write(
             root / "data/cache/analysis_snapshot.json",
@@ -75,7 +88,7 @@ def test_readiness_accepts_sqlite_store_without_database_url():
         _write(root / ".env", "THE_ODDS_API_KEY=x\nINGEST_HMAC_SECRET=y\nWORLDCUP_STORE=sqlite\n")
         _write(
             root / ".env.example",
-            "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\nWORLDCUP_STORE=\nDATABASE_URL=\n",
+            ENV_EXAMPLE_TEMPLATE,
         )
         _write(
             root / "data/cache/analysis_snapshot.json",
@@ -96,7 +109,7 @@ def test_readiness_requires_database_url_name_when_postgres_selected():
         _write(root / ".env", "THE_ODDS_API_KEY=x\nINGEST_HMAC_SECRET=y\nWORLDCUP_STORE=postgres\n")
         _write(
             root / ".env.example",
-            "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\nWORLDCUP_STORE=\nDATABASE_URL=\n",
+            ENV_EXAMPLE_TEMPLATE,
         )
         _write(
             root / "data/cache/analysis_snapshot.json",
@@ -122,7 +135,7 @@ def test_readiness_accepts_postgres_store_when_database_url_name_exists_without_
         )
         _write(
             root / ".env.example",
-            "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\nWORLDCUP_STORE=\nDATABASE_URL=\n",
+            ENV_EXAMPLE_TEMPLATE,
         )
         _write(
             root / "data/cache/analysis_snapshot.json",
@@ -144,7 +157,7 @@ def test_readiness_rejects_broken_snapshot_and_preview_without_disclaimer():
         _write(root / ".env", "THE_ODDS_API_KEY=x\nINGEST_HMAC_SECRET=y\n")
         _write(
             root / ".env.example",
-            "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\nWORLDCUP_STORE=\nDATABASE_URL=\n",
+            ENV_EXAMPLE_TEMPLATE,
         )
         _write(root / "data/cache/analysis_snapshot.json", '{"matches":[]}')
         _write(root / "data/cache/quota.json", "not json")
