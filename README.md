@@ -259,7 +259,7 @@ DATABASE_URL=
 - macmini 不直连 RDS/OSS，后续只调用 ECS ingest API。
 - source refresh 失败但本地缓存存在时，可以继续用上一轮缓存生成快照；必须在 `data_quality.source_errors` 和 `data_quality.stale_sources` 标记，不能静默当作新鲜数据。
 - Elo 来源为本地基线重放：`data/cache/elo_baseline_*.tsv` + openfootball 完赛比分按 eloratings 公式（K=60、中立场）增量重放生成 `elo_world.tsv`；eloratings 抓取仅用于重新锚定基线，抓取失败只记 `data_quality.source_errors`，不标 `stale_sources`、不降级信号。重放计算失败时回退沿用现有 `elo_world.tsv` 并记 `elo_local` 错误。实现见 `worldcup/elo_local.py`。
-- The Odds API 按免费额度使用：常规每天 1 次，每场保留 T-12小时 / T-6小时 / T-90 / T-55 / T-25 临赛锚点；低额度（≤30）只保 T-90 / T-55 / T-25。调度会按本地 quota ledger 保守轮换 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY`：primary 未耗尽时优先用 primary，primary 剩余额度为 0 时切到 secondary；两个配置槽都耗尽时继续暂停并报告 `quota_exhausted`。更换或新增 key 后，需经确认执行一次 `worldcup.scheduled_publish --live --force` 让新额度写回 quota ledger（耗尽状态下调度不会自行恢复）。
+- The Odds API 按免费额度使用：常规每天 1 次，每场保留 T-12小时 / T-6小时 / T-90 / T-55 / T-25 临赛锚点；低额度（≤30）只保 T-90 / T-55 / T-25。调度会按本地 quota ledger 保守轮换 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY`：primary 未耗尽时优先用 primary，primary 剩余额度为 0 时切到 secondary；两个配置槽都耗尽时继续暂停并报告 `quota_exhausted`。任一槽位剩余额度跌破 100 / 30 / 10 / 0 时会随当轮发布自动发 WxPusher 额度告警（每个槽位每个阈值只发一次，跨 0 即槽位耗尽/自动切换提示；`--no-notify` 可静音）。更换或新增 key 后，需经确认执行一次 `worldcup.scheduled_publish --live --force` 让新额度写回 quota ledger（耗尽状态下调度不会自行恢复）。
 - ingest 必须绑定 `timestamp`、`run_id`、`snapshot_id` 和 body hash 做 HMAC；dry-run 不发送请求，也不能打印 secret。
 - ingest server 默认防重放窗口为 300 秒；服务端必须用 `X-Worldcup-Idempotency-Key` 做幂等。
 - `/healthz` 只能报告服务存活，不得输出环境变量、密钥、quota 或 snapshot 内容。

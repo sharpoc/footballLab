@@ -2,6 +2,16 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-11 槽位额度跨阈值告警
+
+- 已在 `worldcup.scheduled_publish` 接入 The Odds API 槽位额度告警：刷新前后按 `.env` 配置监控 `theoddsapi_primary` / `theoddsapi_secondary`；未配置 slot 时回退 legacy `theoddsapi`。
+- 告警阈值为 100 / 30 / 10 / 0，判定口径是 `before > threshold >= after`，因此每个槽位每个阈值天然只触发一次，不需要额外状态文件。
+- 跨过 0 会作为槽位耗尽事件提示：primary 耗尽后下一轮调度会自动切 secondary；secondary 也耗尽时自动刷新继续暂停并报告 `quota_exhausted`。
+- 告警复用 scheduled publish 的 WxPusher 通知通道和 `--no-notify` 总开关；返回结果新增 `quota_alert`，只包含槽位名、剩余额度、跨过阈值和发送状态，不记录真实 key。
+- 告警文案提醒替换 `.env` 中耗尽槽位的 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY`，再经确认执行一次 `worldcup.scheduled_publish --live --force` 写回新额度。
+- 本地验证：先按 TDD 看到新增测试因缺少 `quota_alert` 红灯（`312/316 tests passed`），实现后 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `316/316 tests passed`。
+- 本次未 push、未部署、未触发 live refresh、未调用 The Odds API。
+
 ## 2026-06-11 Elo 改为本地基线重放
 
 - 背景：eloratings 自 2026-06-11 起返回 JS 挑战页，旧 48h Elo 缓存宽限期会在北京时间 2026-06-13 09:33 到期；已退役该宽限机制，避免到期后信号被 `unconfirmed_backup` 统一压级。
