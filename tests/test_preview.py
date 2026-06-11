@@ -12,8 +12,8 @@ def _snapshot():
             "run_id": "20260608T000000Z-live",
             "observed_at": "2026-06-08T00:00:00+00:00",
             "policy": {
-                "policy_reason": "pre_7d_window",
-                "interval_seconds": 43200,
+                "policy_reason": "default",
+                "interval_seconds": 86400,
                 "next_due_at": "2026-06-08T12:00:00+00:00",
             },
             "quota": {"theoddsapi": {"remaining": 494, "used": 6}},
@@ -96,12 +96,11 @@ def test_build_preview_html_renders_research_ledger_surface():
     assert "数据源健康" in html
     assert "更新规则" in html
     assert "按每场比赛独立调度" in html
-    assert "常规：24 小时" in html
-    assert "赛前 7 天内：12 小时" in html
-    assert "赛前 3 天内：6 小时" in html
-    assert "赛前 1 天内：2 小时" in html
-    assert "低额度：24 小时" in html
-    assert "当前规则：赛前 7 天内" in html
+    assert "常规：每天 1 次" in html
+    assert "临赛锚点：T-12小时 / T-6小时 / T-90分钟 / T-55分钟 / T-25分钟" in html
+    assert "低额度：每天 1 次，并保留 T-90 / T-55 / T-25" in html
+    assert "赛前 7 天内" not in html
+    assert "当前规则：常规" in html
     assert "下次计划：2026 年 6 月 8 日 星期一 20:00" in html
     assert "注意事项" in html
     assert "Research Ledger" not in html

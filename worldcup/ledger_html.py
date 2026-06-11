@@ -357,11 +357,12 @@ def _format_interval(seconds: Any) -> str:
 def _policy_reason_label(reason: Any) -> str:
     labels = {
         "default": "常规",
-        "pre_7d_window": "赛前 7 天内",
-        "pre_3d_window": "赛前 3 天内",
-        "pre_1d_window": "赛前 1 天内",
-        "pre_6h_window": "赛前 6 小时内",
         "quota_low": "低额度",
+        "pre_12h_checkpoint": "T-12小时",
+        "pre_6h_checkpoint": "T-6小时",
+        "pre_90m_lineup_warmup": "T-1小时30分",
+        "pre_55m_lineup_main": "T-55分钟",
+        "pre_25m_final_check": "T-25分钟",
     }
     return labels.get(str(reason or ""), "按当前调度策略")
 
@@ -432,12 +433,10 @@ def _render_update_policy(snapshot: dict[str, Any]) -> str:
     <section class="rail-card">
       <h2>更新规则</h2>
       <ul class="policy-list">
-        <li>常规：24 小时</li>
-        <li>赛前 7 天内：12 小时</li>
-        <li>赛前 3 天内：6 小时</li>
-        <li>赛前 1 天内：2 小时</li>
-        <li>赛前 6 小时内：1 小时</li>
-        <li>低额度：24 小时，并保留 T-90 / T-55 / T-25</li>
+        <li>常规：每天 1 次</li>
+        <li>临赛锚点：T-12小时 / T-6小时 / T-90分钟 / T-55分钟 / T-25分钟</li>
+        <li>低额度：每天 1 次，并保留 T-90 / T-55 / T-25</li>
+        <li>额度耗尽：暂停自动刷新</li>
       </ul>
       <p><strong>当前模式：按每场比赛独立调度</strong></p>
       {nearest_match_plan}
