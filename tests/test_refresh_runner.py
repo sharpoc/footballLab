@@ -1,6 +1,4 @@
 import json
-import os
-import time
 import gzip
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -225,7 +223,7 @@ def test_refresh_uses_stale_odds_cache_when_theoddsapi_times_out():
         assert list((root / "history").glob("odds_raw_*.json.gz")) == []
 
 
-def _elo_grace_fixture(root: Path) -> Path:
+def _elo_cache_fixture(root: Path) -> Path:
     cache = root / "cache"
     cache.mkdir()
     openfootball_body = json.dumps(
@@ -275,10 +273,10 @@ def _elo_grace_fixture(root: Path) -> Path:
     return cache
 
 
-def test_refresh_keeps_elo_fresh_within_grace_window():
+def test_refresh_elo_fetch_failure_records_error_without_stale():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
-        cache = _elo_grace_fixture(root)
+        cache = _elo_cache_fixture(root)
         openfootball_body = (cache / "openfootball_2026.json").read_text()
         odds_body = (cache / "theoddsapi_wc_odds.json").read_text()
 
@@ -314,16 +312,19 @@ def test_refresh_keeps_elo_fresh_within_grace_window():
         assert "unconfirmed_backup" not in home_signal["reasons"]
 
 
-def test_refresh_marks_elo_stale_beyond_grace_window():
+def test_refresh_applies_finished_results_to_local_elo():
+    from worldcup.elo_local import freeze_baseline
+
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
-        cache = _elo_grace_fixture(root)
-        openfootball_body = (cache / "openfootball_2026.json").read_text()
+        cache = _elo_cache_fixture(root)
+        fixture_data = json.loads((cache / "openfootball_2026.json").read_text())
+        fixture_data["matches"][0]["score1"] = 2
+        fixture_data["matches"][0]["score2"] = 0
+        openfootball_body = json.dumps(fixture_data)
+        (cache / "openfootball_2026.json").write_text(openfootball_body)
         odds_body = (cache / "theoddsapi_wc_odds.json").read_text()
-
-        stale_ts = time.time() - 49 * 3600
-        os.utime(cache / "elo_world.tsv", (stale_ts, stale_ts))
-        os.utime(cache / "elo_teams.tsv", (stale_ts, stale_ts))
+        freeze_baseline(cache, baseline_at="2026-06-01T00:00:00+00:00")
 
         def openfootball_transport(_url):
             return FakeResponse(openfootball_body.encode())
@@ -332,7 +333,7 @@ def test_refresh_marks_elo_stale_beyond_grace_window():
             return FakeResponse(odds_body.encode())
 
         def failing_elo_transport(_url):
-            raise ValueError("invalid Elo ratings TSV: parsed 0 rows")
+            raise ValueError("blocked")
 
         result = refresh_cache_and_build_snapshot(
             api_key="fake-key",
@@ -345,11 +346,48 @@ def test_refresh_marks_elo_stale_beyond_grace_window():
             history_dir=root / "history",
         )
 
-        assert result.snapshot["data_quality"]["stale_sources"] == ["eloratings"]
-        assert result.snapshot["run"]["stale_sources"] == ["eloratings"]
-        home_signal = next(
-            signal
-            for signal in result.snapshot["matches"][0]["signals"]
-            if signal["market_type"] == "1X2_90min" and signal["selection"] == "home"
+        assert result.snapshot["matches"][0]["elo"]["home"] > 1875
+        assert result.snapshot["matches"][0]["elo"]["away"] < 1700
+        elo_quality = result.snapshot["data_quality"]["elo"]
+        assert elo_quality["mode"] == "local_replay"
+        assert elo_quality["results_applied"] == 1
+
+
+def test_refresh_elo_fetch_success_reanchors_baseline():
+    from worldcup.elo_local import load_baseline
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        cache = _elo_cache_fixture(root)
+        openfootball_body = (cache / "openfootball_2026.json").read_text()
+        odds_body = (cache / "theoddsapi_wc_odds.json").read_text()
+
+        def openfootball_transport(_url):
+            return FakeResponse(openfootball_body.encode())
+
+        def theoddsapi_transport(_url):
+            return FakeResponse(odds_body.encode())
+
+        def elo_transport(url):
+            if url.endswith("World.tsv"):
+                return FakeResponse(b"1\t1\tMX\t1880\n2\t2\tZA\t1695\n")
+            if url.endswith("en.teams.tsv"):
+                return FakeResponse(b"MX\tMexico\nZA\tSouth Africa\n")
+            raise AssertionError(url)
+
+        result = refresh_cache_and_build_snapshot(
+            api_key="fake-key",
+            cache_dir=cache,
+            snapshot_path=root / "out" / "snapshot.json",
+            quota_path=cache / "quota.json",
+            openfootball_transport=openfootball_transport,
+            theoddsapi_transport=theoddsapi_transport,
+            elo_transport=elo_transport,
+            observed_at="2026-06-14T00:00:00+00:00",
+            history_dir=root / "history",
         )
-        assert "unconfirmed_backup" in home_signal["reasons"]
+
+        ratings, _aliases, baseline_at = load_baseline(cache)
+        assert ratings["MX"].rating == 1880
+        assert baseline_at == "2026-06-14T00:00:00+00:00"
+        assert result.snapshot["data_quality"]["source_errors"] == []

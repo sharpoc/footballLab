@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import json
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from worldcup.collectors.openfootball import parse_openfootball_results
+from worldcup.elo_local import compute_updated_world_tsv, freeze_baseline, has_baseline, load_baseline
 from worldcup.local_runner import attach_refresh_plans, build_snapshot_from_cache, write_snapshot
 from worldcup.quota import load_quota_ledger
 from worldcup.scheduler import build_match_refresh_decision, build_run_metadata, make_run_id
@@ -17,15 +20,13 @@ from worldcup.sources.theoddsapi import fetch_worldcup_odds
 from worldcup.theoddsapi_keys import LEGACY_PROVIDER
 
 
-ELO_CACHE_GRACE_SECONDS = 48 * 3600
-
-
-def _cache_age_seconds(paths: list[Path]) -> float | None:
-    try:
-        oldest_mtime = min(path.stat().st_mtime for path in paths)
-    except OSError:
-        return None
-    return datetime.now(timezone.utc).timestamp() - oldest_mtime
+def _count_results_applied(cache: Path) -> int:
+    _ratings, _aliases, baseline_at = load_baseline(cache)
+    cutoff = datetime.fromisoformat(baseline_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+    results = parse_openfootball_results(
+        json.loads((cache / "openfootball_2026.json").read_text(encoding="utf-8"))
+    )
+    return sum(1 for result in results if result.kickoff_at_utc.astimezone(timezone.utc) >= cutoff)
 
 
 @dataclass(frozen=True)
@@ -109,16 +110,27 @@ def refresh_cache_and_build_snapshot(
         source_errors.append({"source": "openfootball", "error": f"{type(exc).__name__}: {exc}"})
         stale_sources.append("openfootball")
 
+    elo_quality: dict = {"mode": "local_replay"}
     try:
         fetch_elo_files(cache_dir=cache, transport=elo_transport)
+        freeze_baseline(cache, baseline_at=observed)
+        elo_quality["reanchored"] = True
     except Exception as exc:
         if not (elo_world_cache.exists() and elo_teams_cache.exists()):
             raise
         source_errors.append({"source": "eloratings", "error": f"{type(exc).__name__}: {exc}"})
-        # Elo changes only after finished matches; fresh cache should not downgrade signals.
-        age = _cache_age_seconds([elo_world_cache, elo_teams_cache])
-        if age is None or age > ELO_CACHE_GRACE_SECONDS:
-            stale_sources.append("eloratings")
+
+    if not has_baseline(cache):
+        baseline_at = datetime.fromtimestamp(elo_world_cache.stat().st_mtime, tz=timezone.utc).isoformat()
+        freeze_baseline(cache, baseline_at=baseline_at)
+
+    try:
+        computed = compute_updated_world_tsv(cache)
+        elo_world_cache.write_text(computed, encoding="utf-8")
+        elo_quality["results_applied"] = _count_results_applied(cache)
+    except Exception as exc:
+        source_errors.append({"source": "elo_local", "error": f"{type(exc).__name__}: {exc}"})
+        elo_quality["mode"] = "cache_passthrough"
 
     try:
         fetch_worldcup_odds(
@@ -138,6 +150,7 @@ def refresh_cache_and_build_snapshot(
     snapshot = build_snapshot_from_cache(cache, snapshot_at=observed, stale_sources=stale_sources)
     snapshot.setdefault("data_quality", {})["source_errors"] = source_errors
     snapshot.setdefault("data_quality", {})["stale_sources"] = stale_sources
+    snapshot.setdefault("data_quality", {})["elo"] = elo_quality
     quota = load_quota_ledger(quota_output).get("providers", {})
     quota_entry = quota.get(theoddsapi_provider) or quota.get(LEGACY_PROVIDER) or {}
     quota_remaining = quota_entry.get("remaining")
