@@ -113,7 +113,7 @@ def test_refresh_cache_and_build_snapshot_with_injected_transports():
         assert result.run_metadata["run_id"] == "20260608T000000Z-live"
         assert result.snapshot["run"]["quota"]["theoddsapi"]["remaining"] == 497
         assert result.snapshot["run"]["stale_sources"] == []
-        assert result.snapshot["matches"][0]["refresh_plan"]["next_update_at"] == "2026-06-08T12:00:00+00:00"
+        assert result.snapshot["matches"][0]["refresh_plan"]["next_update_at"] == "2026-06-09T00:00:00+00:00"
         assert result.snapshot["run"]["policy"]["match_plans"][0]["quota_remaining"] == 497
         assert result.cache_dir.joinpath("openfootball_2026.json").exists()
         assert result.cache_dir.joinpath("theoddsapi_wc_odds.json").exists()

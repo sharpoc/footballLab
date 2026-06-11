@@ -78,7 +78,7 @@ def test_scheduled_publish_refreshes_then_publishes_when_due():
         return FakeRefreshResult(
             snapshot_path=Path(kwargs["snapshot_path"]),
             snapshot={"counts": {"matches": 72}},
-            run_metadata={"run_id": "20260608T120000Z-live"},
+            run_metadata={"run_id": "20260609T000000Z-live"},
         )
 
     def publish_fn(**kwargs):
@@ -87,7 +87,7 @@ def test_scheduled_publish_refreshes_then_publishes_when_due():
             "status": "sent",
             "http_status": 200,
             "ingest_status": "stored",
-            "request": {"run_id": "20260608T120000Z-live"},
+            "request": {"run_id": "20260609T000000Z-live"},
         }
 
     with TemporaryDirectory() as tmp:
@@ -95,7 +95,7 @@ def test_scheduled_publish_refreshes_then_publishes_when_due():
         snapshot_path, quota_path = _write_not_due_snapshot(root)
 
         result = run_scheduled_publish(
-            now="2026-06-08T12:00:00+00:00",
+            now="2026-06-09T00:00:00+00:00",
             live=True,
             cache_dir=root / "cache",
             snapshot_path=snapshot_path,
@@ -126,7 +126,7 @@ def test_scheduled_publish_blocks_empty_refreshed_snapshot():
                 "counts": {"fixtures": 104, "odds_events": 72, "match_inputs": 0, "matches": 0},
                 "data_quality": {"missing_elo": ["Mexico", "South Africa"]},
             },
-            run_metadata={"run_id": "20260608T120000Z-live"},
+            run_metadata={"run_id": "20260609T000000Z-live"},
         )
 
     def publish_fn(**kwargs):
@@ -138,7 +138,7 @@ def test_scheduled_publish_blocks_empty_refreshed_snapshot():
         snapshot_path, quota_path = _write_not_due_snapshot(root)
 
         result = run_scheduled_publish(
-            now="2026-06-08T12:00:00+00:00",
+            now="2026-06-09T00:00:00+00:00",
             live=True,
             cache_dir=root / "cache",
             snapshot_path=snapshot_path,
