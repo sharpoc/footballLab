@@ -343,3 +343,121 @@ def test_scheduled_publish_skips_notification_without_changes():
 
     assert result["notification"] == {"status": "skipped", "reason": "no_significant_changes"}
     assert notify_calls == []
+
+
+def _run_publish_with_quota(root, before, after, notify=True):
+    """before/after are {provider: remaining}, simulating quota around one refresh."""
+    snapshot_path, quota_path = _write_not_due_snapshot(root)
+    env_path = root / ".env"
+    env_path.write_text(
+        "THE_ODDS_API_KEY_PRIMARY=fake-primary\nTHE_ODDS_API_KEY_SECONDARY=fake-secondary\n",
+        encoding="utf-8",
+    )
+    quota_path.write_text(
+        json.dumps({"providers": {p: {"remaining": r, "last": 3} for p, r in before.items()}}),
+        encoding="utf-8",
+    )
+    notify_calls = []
+
+    def refresh_fn(**kwargs):
+        Path(kwargs["quota_path"]).write_text(
+            json.dumps({"providers": {p: {"remaining": r, "last": 3} for p, r in after.items()}}),
+            encoding="utf-8",
+        )
+        return FakeRefreshResult(
+            snapshot_path=Path(kwargs["snapshot_path"]),
+            snapshot={"counts": {"matches": 72}},
+            run_metadata={"run_id": "20260609T000000Z-live"},
+        )
+
+    def publish_fn(**kwargs):
+        return {
+            "status": "sent",
+            "http_status": 200,
+            "ingest_status": "stored",
+            "request": {"run_id": "20260609T000000Z-live"},
+        }
+
+    def notify_fn(content, *, summary):
+        notify_calls.append({"content": content, "summary": summary})
+        return {"status": "sent", "exit_code": 0}
+
+    result = run_scheduled_publish(
+        now="2026-06-09T00:00:00+00:00",
+        live=True,
+        env_path=env_path,
+        cache_dir=root / "cache",
+        snapshot_path=snapshot_path,
+        quota_path=quota_path,
+        endpoint="https://football.celab.xin/api/ingest/snapshot",
+        api_key="fake-key",
+        secret="fake-secret",
+        notify=notify,
+        refresh_fn=refresh_fn,
+        publish_fn=publish_fn,
+        notify_fn=notify_fn,
+    )
+    return result, notify_calls
+
+
+def test_quota_alert_sent_when_primary_crosses_threshold():
+    with TemporaryDirectory() as tmp:
+        result, notify_calls = _run_publish_with_quota(
+            Path(tmp),
+            before={"theoddsapi_primary": 102, "theoddsapi": 102},
+            after={"theoddsapi_primary": 99, "theoddsapi": 99},
+        )
+
+    assert result["status"] == "published"
+    assert result["quota_alert"]["status"] == "sent"
+    assert result["quota_alert"]["slots"] == [
+        {"slot": "PRIMARY", "remaining": 99, "thresholds_crossed": [100]}
+    ]
+    alert_calls = [c for c in notify_calls if "额度告警" in c["summary"]]
+    assert len(alert_calls) == 1
+    assert "PRIMARY" in alert_calls[0]["content"]
+    assert "99" in alert_calls[0]["content"]
+
+
+def test_quota_alert_reports_primary_exhaustion_as_switchover():
+    with TemporaryDirectory() as tmp:
+        result, notify_calls = _run_publish_with_quota(
+            Path(tmp),
+            before={"theoddsapi_primary": 2, "theoddsapi": 2},
+            after={"theoddsapi_primary": 0, "theoddsapi": 0},
+        )
+
+    assert result["quota_alert"]["slots"] == [
+        {"slot": "PRIMARY", "remaining": 0, "thresholds_crossed": [0]}
+    ]
+    alert_calls = [c for c in notify_calls if "额度告警" in c["summary"]]
+    assert len(alert_calls) == 1
+    assert "耗尽" in alert_calls[0]["content"]
+    assert "THE_ODDS_API_KEY" in alert_calls[0]["content"]
+
+
+def test_quota_alert_not_sent_without_crossing():
+    with TemporaryDirectory() as tmp:
+        result, notify_calls = _run_publish_with_quota(
+            Path(tmp),
+            before={"theoddsapi_primary": 200, "theoddsapi": 200},
+            after={"theoddsapi_primary": 197, "theoddsapi": 197},
+        )
+
+    assert result["status"] == "published"
+    assert result["quota_alert"] is None
+    assert [c for c in notify_calls if "额度告警" in c["summary"]] == []
+
+
+def test_quota_alert_respects_no_notify():
+    with TemporaryDirectory() as tmp:
+        result, notify_calls = _run_publish_with_quota(
+            Path(tmp),
+            before={"theoddsapi_primary": 102, "theoddsapi": 102},
+            after={"theoddsapi_primary": 99, "theoddsapi": 99},
+            notify=False,
+        )
+
+    assert result["status"] == "published"
+    assert result["quota_alert"] is None
+    assert notify_calls == []
