@@ -9,7 +9,8 @@
 - 通知通道使用全局 WxPusher 工具 `/Users/eagod/ai-dev/wxpusher-reminder/bin/wxpusher-remind`；代码捕获并丢弃原始 stdout/stderr，返回结果只保留 `status`、`exit_code`、summary 和条数，避免把 UID、URL、token 或原始响应写入 scheduled-publish 日志。
 - 新增 `tests/test_notifications.py` 与 `tests/test_scheduled_publish.py` 覆盖通知内容、无变化跳过、WxPusher 原始输出脱敏、发布成功后触发通知；TDD 红灯为缺少 `worldcup.notifications`。
 - 本地验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `290/290 tests passed`；`python3 -m worldcup.scheduled_publish ...` dry-run 返回 `notification=null`，未触发刷新、发布或通知。
-- 已按“直接上线”确认准备提交、推送并部署；本次实现不会主动消耗 The Odds API quota，下一次 scheduler due 且发布成功后才可能根据变化发通知。
+- 已按“直接上线”确认提交并推送 `f6708a0 feat: notify significant match updates`，部署到 ECS `/opt/worldcup/releases/f6708a0`；公网 `/healthz`、`/api/matches`、首页和 `/preview` 验证通过，远端最近日志敏感词/error 命中 0。
+- 本次实现不会主动消耗 The Odds API quota；当前 dry-run 为 `status=dry_run`、`notification=None`、`should_refresh=False`、下一轮 due `2026-06-11T06:00:00+00:00`、quota remaining `458`。下一次 scheduler due 且发布成功后才会根据变化发通知。
 
 ## 2026-06-11 下次更新时间整点对齐已上线
 
