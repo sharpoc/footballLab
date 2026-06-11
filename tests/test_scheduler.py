@@ -93,6 +93,20 @@ def test_match_plan_uses_lineup_warmup_anchor_before_kickoff():
     assert plan["should_refresh"] is False
 
 
+def test_match_plan_aligns_cadence_to_kickoff_clock_after_manual_refresh():
+    plan = scheduler.build_match_refresh_plan(
+        now="2026-06-11T02:58:55+00:00",
+        last_refresh_at="2026-06-11T02:58:55+00:00",
+        match=_match("2026-06-11T19:00:00+00:00"),
+        quota_remaining=461,
+    )
+
+    assert plan["next_update_at"] == "2026-06-11T05:00:00+00:00"
+    assert plan["policy_reason"] == "pre_1d_window"
+    assert plan["label"] == "赛前24小时"
+    assert plan["should_refresh"] is False
+
+
 def test_match_plan_low_quota_keeps_critical_lineup_anchor():
     plan = scheduler.build_match_refresh_plan(
         now="2026-06-11T17:50:00+00:00",

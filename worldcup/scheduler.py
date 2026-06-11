@@ -115,6 +115,20 @@ def _cadence_label(policy_reason: str, interval_seconds: int) -> tuple[str, str]
     return label, f"按{interval_text}间隔刷新"
 
 
+def _align_cadence_due_to_kickoff_clock(
+    cadence_due: datetime,
+    kickoff_at: datetime,
+) -> datetime:
+    aligned = cadence_due.replace(
+        minute=kickoff_at.minute,
+        second=kickoff_at.second,
+        microsecond=0,
+    )
+    if aligned < cadence_due:
+        aligned += timedelta(hours=1)
+    return aligned
+
+
 def _select_match_interval(
     now: datetime,
     kickoff_at: datetime,
@@ -188,10 +202,15 @@ def build_match_refresh_plan(
 
     candidates: list[tuple[datetime, int, str, str, str]] = []
     cadence_due = last_dt + timedelta(seconds=interval_seconds)
+    cadence_next = (
+        now_dt
+        if cadence_due <= now_dt
+        else _align_cadence_due_to_kickoff_clock(cadence_due, kickoff_dt)
+    )
     cadence_label, cadence_description = _cadence_label(cadence_reason, interval_seconds)
     candidates.append(
         (
-            now_dt if cadence_due <= now_dt else cadence_due,
+            cadence_next,
             1,
             cadence_reason,
             cadence_label,
