@@ -97,3 +97,46 @@ def compute_updated_world_tsv(cache_dir: str | Path, min_rows: int | None = None
     if parsed_rows < min_rows:
         raise ValueError(f"computed elo has {parsed_rows} rows, expected >= {min_rows}")
     return out
+
+
+def _default_baseline_at(cache: Path) -> str:
+    mtime = (cache / "elo_world.tsv").stat().st_mtime
+    return datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Freeze or inspect the local Elo baseline.")
+    parser.add_argument("--cache-dir", default="data/cache")
+    parser.add_argument("--freeze", action="store_true", help="Freeze current cache as baseline.")
+    parser.add_argument("--baseline-at", default=None, help="ISO time; default: elo_world.tsv mtime.")
+    parser.add_argument("--check", action="store_true", help="Report baseline and computed rows.")
+    args = parser.parse_args(argv)
+
+    cache = Path(args.cache_dir)
+    if args.freeze:
+        baseline_at = args.baseline_at or _default_baseline_at(cache)
+        meta = freeze_baseline(cache, baseline_at=baseline_at)
+        print(json.dumps({"frozen": True, **meta}, ensure_ascii=False))
+        return 0
+    if args.check:
+        ratings, _aliases, baseline_at = load_baseline(cache)
+        out = compute_updated_world_tsv(cache)
+        print(
+            json.dumps(
+                {
+                    "baseline_at": baseline_at,
+                    "baseline_teams": len(ratings),
+                    "computed_rows": len(parse_elo_ratings(out)),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    parser.error("pass --freeze or --check")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

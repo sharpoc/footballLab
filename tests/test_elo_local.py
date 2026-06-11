@@ -107,3 +107,33 @@ def test_load_baseline_raises_when_missing():
             pass
         else:
             raise AssertionError("expected FileNotFoundError")
+
+
+def test_cli_check_reports_baseline_and_pending_results(capsys=None):
+    from worldcup.elo_local import main
+
+    with TemporaryDirectory() as tmp:
+        cache = Path(tmp)
+        _seed_cache(cache)
+        freeze_baseline(cache, baseline_at="2026-06-01T00:00:00+00:00")
+
+        code = main(["--cache-dir", str(cache), "--check"])
+
+        assert code == 0
+
+
+def test_cli_freeze_writes_baseline_files():
+    from worldcup.elo_local import main
+
+    with TemporaryDirectory() as tmp:
+        cache = Path(tmp)
+        _seed_cache(cache)
+
+        code = main(
+            ["--cache-dir", str(cache), "--freeze", "--baseline-at", "2026-06-01T00:00:00+00:00"]
+        )
+
+        assert code == 0
+        ratings, _aliases, baseline_at = load_baseline(cache)
+        assert ratings["MX"].rating == 1875
+        assert baseline_at == "2026-06-01T00:00:00+00:00"
