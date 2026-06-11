@@ -9,25 +9,16 @@ from typing import Any
 
 from worldcup.quota import load_quota_ledger
 
-POLICY_VERSION = "free-tier-v1"
+POLICY_VERSION = "free-tier-v2"
 DEFAULT_INTERVAL_SECONDS = 86400
-PRE_7D_WINDOW_SECONDS = 7 * 86400
-PRE_7D_INTERVAL_SECONDS = 43200
-PRE_3D_WINDOW_SECONDS = 3 * 86400
-PRE_3D_INTERVAL_SECONDS = 21600
-PRE_1D_WINDOW_SECONDS = 86400
-PRE_1D_INTERVAL_SECONDS = 7200
-PRE_6H_WINDOW_SECONDS = 6 * 3600
-PRE_6H_INTERVAL_SECONDS = 3600
 QUOTA_LOW_REMAINING = 30
 QUOTA_LOW_INTERVAL_SECONDS = 86400
 CRITICAL_LOW_QUOTA_ANCHORS = {"pre_90m_lineup_warmup", "pre_55m_lineup_main", "pre_25m_final_check"}
 MATCH_ANCHORS = (
-    (3 * 3600 + 30 * 60, "pre_3h30m_matchday_first", "T-3小时30分", "临赛第一轮"),
+    (12 * 3600, "pre_12h_checkpoint", "T-12小时", "赛日早间检查"),
+    (6 * 3600, "pre_6h_checkpoint", "T-6小时", "赛前状态检查"),
     (90 * 60, "pre_90m_lineup_warmup", "T-1小时30分", "阵容/伤停预热"),
-    (70 * 60, "pre_70m_lineup_probe", "T-70分钟", "首发提前探针"),
     (55 * 60, "pre_55m_lineup_main", "T-55分钟", "首发主抓点"),
-    (40 * 60, "pre_40m_lineup_confirm", "T-40分钟", "首发确认"),
     (25 * 60, "pre_25m_final_check", "T-25分钟", "临场最终确认"),
 )
 
@@ -69,18 +60,6 @@ def _select_interval(
 ) -> tuple[int, str]:
     if quota_remaining is not None and quota_remaining <= QUOTA_LOW_REMAINING:
         return QUOTA_LOW_INTERVAL_SECONDS, "quota_low"
-
-    if next_kickoff_at is not None:
-        seconds_to_kickoff = (next_kickoff_at - now).total_seconds()
-        if 0 <= seconds_to_kickoff <= PRE_6H_WINDOW_SECONDS:
-            return PRE_6H_INTERVAL_SECONDS, "pre_6h_window"
-        if 0 <= seconds_to_kickoff <= PRE_1D_WINDOW_SECONDS:
-            return PRE_1D_INTERVAL_SECONDS, "pre_1d_window"
-        if 0 <= seconds_to_kickoff <= PRE_3D_WINDOW_SECONDS:
-            return PRE_3D_INTERVAL_SECONDS, "pre_3d_window"
-        if 0 <= seconds_to_kickoff <= PRE_7D_WINDOW_SECONDS:
-            return PRE_7D_INTERVAL_SECONDS, "pre_7d_window"
-
     return DEFAULT_INTERVAL_SECONDS, "default"
 
 
@@ -103,10 +82,6 @@ def _match_id(match: dict[str, Any]) -> str:
 def _cadence_label(policy_reason: str, interval_seconds: int) -> tuple[str, str]:
     labels = {
         "default": "常规",
-        "pre_7d_window": "赛前7天",
-        "pre_3d_window": "赛前3天",
-        "pre_1d_window": "赛前24小时",
-        "pre_6h_window": "赛前6小时",
         "quota_low": "低额度",
     }
     hours = interval_seconds // 3600 if interval_seconds % 3600 == 0 else None

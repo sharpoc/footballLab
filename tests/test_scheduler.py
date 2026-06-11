@@ -29,12 +29,12 @@ def test_scheduler_refreshes_when_no_previous_run():
 
     assert decision.should_refresh is True
     assert decision.reason == "no_previous_refresh"
-    assert decision.policy_reason == "pre_7d_window"
-    assert decision.interval_seconds == 43200
+    assert decision.policy_reason == "default"
+    assert decision.interval_seconds == 86400
     assert decision.next_due_at is None
 
 
-def test_scheduler_uses_twelve_hours_inside_seven_day_window():
+def test_scheduler_uses_daily_interval_regardless_of_kickoff_window():
     decision = build_refresh_decision(
         now="2026-06-08T11:00:00+00:00",
         last_refresh_at="2026-06-08T00:00:00+00:00",
@@ -44,37 +44,9 @@ def test_scheduler_uses_twelve_hours_inside_seven_day_window():
 
     assert decision.should_refresh is False
     assert decision.reason == "not_due"
-    assert decision.policy_reason == "pre_7d_window"
-    assert decision.interval_seconds == 43200
-    assert decision.next_due_at == "2026-06-08T12:00:00+00:00"
-
-
-def test_scheduler_uses_six_hours_inside_three_day_window():
-    decision = build_refresh_decision(
-        now="2026-06-09T03:00:00+00:00",
-        last_refresh_at="2026-06-09T00:00:00+00:00",
-        next_kickoff_at="2026-06-11T19:00:00+00:00",
-        quota_remaining=494,
-    )
-
-    assert decision.should_refresh is False
-    assert decision.policy_reason == "pre_3d_window"
-    assert decision.interval_seconds == 21600
-    assert decision.next_due_at == "2026-06-09T06:00:00+00:00"
-
-
-def test_scheduler_uses_two_hours_inside_one_day_window():
-    decision = build_refresh_decision(
-        now="2026-06-10T19:30:00+00:00",
-        last_refresh_at="2026-06-10T18:00:00+00:00",
-        next_kickoff_at="2026-06-11T19:00:00+00:00",
-        quota_remaining=494,
-    )
-
-    assert decision.should_refresh is False
-    assert decision.policy_reason == "pre_1d_window"
-    assert decision.interval_seconds == 7200
-    assert decision.next_due_at == "2026-06-10T20:00:00+00:00"
+    assert decision.policy_reason == "default"
+    assert decision.interval_seconds == 86400
+    assert decision.next_due_at == "2026-06-09T00:00:00+00:00"
 
 
 def test_match_plan_uses_lineup_warmup_anchor_before_kickoff():
@@ -97,17 +69,17 @@ def test_match_plan_aligns_cadence_to_kickoff_clock_after_manual_refresh():
     plan = scheduler.build_match_refresh_plan(
         now="2026-06-11T02:58:55+00:00",
         last_refresh_at="2026-06-11T02:58:55+00:00",
-        match=_match("2026-06-11T19:00:00+00:00"),
+        match=_match("2026-06-13T19:00:00+00:00"),
         quota_remaining=461,
     )
 
-    assert plan["next_update_at"] == "2026-06-11T05:00:00+00:00"
-    assert plan["policy_reason"] == "pre_1d_window"
-    assert plan["label"] == "赛前24小时"
+    assert plan["next_update_at"] == "2026-06-12T03:00:00+00:00"
+    assert plan["policy_reason"] == "default"
+    assert plan["label"] == "常规"
     assert plan["should_refresh"] is False
 
 
-def test_match_plan_waits_for_aligned_cadence_when_raw_interval_has_elapsed():
+def test_match_plan_holds_for_pre_12h_anchor_on_matchday():
     plan = scheduler.build_match_refresh_plan(
         now="2026-06-11T05:13:46+00:00",
         last_refresh_at="2026-06-11T03:08:26+00:00",
@@ -115,8 +87,9 @@ def test_match_plan_waits_for_aligned_cadence_when_raw_interval_has_elapsed():
         quota_remaining=455,
     )
 
-    assert plan["next_update_at"] == "2026-06-11T06:00:00+00:00"
-    assert plan["policy_reason"] == "pre_1d_window"
+    assert plan["next_update_at"] == "2026-06-11T07:00:00+00:00"
+    assert plan["policy_reason"] == "pre_12h_checkpoint"
+    assert plan["label"] == "T-12小时"
     assert plan["should_refresh"] is False
 
 
@@ -130,7 +103,7 @@ def test_match_refresh_decision_uses_aligned_cadence_due_time():
 
     assert decision.should_refresh is False
     assert decision.reason == "not_due"
-    assert decision.next_due_at == "2026-06-11T06:00:00+00:00"
+    assert decision.next_due_at == "2026-06-11T07:00:00+00:00"
 
 
 def test_match_plan_low_quota_keeps_critical_lineup_anchor():
@@ -263,6 +236,32 @@ def test_scheduler_report_reads_snapshot_and_quota_without_refreshing():
 
         assert report["mode"] == "dry-run"
         assert report["decision"]["should_refresh"] is False
-        assert report["decision"]["next_due_at"] == "2026-06-08T12:00:00+00:00"
+        assert report["decision"]["next_due_at"] == "2026-06-09T00:00:00+00:00"
         assert report["quota"]["theoddsapi"]["remaining"] == 494
         assert report["last_refresh_at"] == "2026-06-08T00:00:00+00:00"
+
+
+def test_match_plan_uses_pre_6h_checkpoint_anchor():
+    plan = scheduler.build_match_refresh_plan(
+        now="2026-06-11T08:00:00+00:00",
+        last_refresh_at="2026-06-11T07:30:00+00:00",
+        match=_match("2026-06-11T19:00:00+00:00"),
+        quota_remaining=494,
+    )
+
+    assert plan["next_update_at"] == "2026-06-11T13:00:00+00:00"
+    assert plan["policy_reason"] == "pre_6h_checkpoint"
+    assert plan["label"] == "T-6小时"
+    assert plan["should_refresh"] is False
+
+
+def test_match_plan_skips_removed_t70_anchor_between_t90_and_t55():
+    plan = scheduler.build_match_refresh_plan(
+        now="2026-06-11T17:40:00+00:00",
+        last_refresh_at="2026-06-11T17:35:00+00:00",
+        match=_match("2026-06-11T19:00:00+00:00"),
+        quota_remaining=494,
+    )
+
+    assert plan["next_update_at"] == "2026-06-11T18:05:00+00:00"
+    assert plan["policy_reason"] == "pre_55m_lineup_main"
