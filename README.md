@@ -247,7 +247,7 @@ DATABASE_URL=
 - macmini 不直连 RDS/OSS，后续只调用 ECS ingest API。
 - source refresh 失败但本地缓存存在时，可以继续用上一轮缓存生成快照；必须在 `data_quality.source_errors` 和 `data_quality.stale_sources` 标记，不能静默当作新鲜数据。
 - 例外：eloratings 抓取失败但本地 Elo 缓存 mtime 在 48 小时宽限期内时，只记 `data_quality.source_errors`，不标 `stale_sources`、不触发信号降级（Elo 仅在完赛后变化，宽限期内缓存与真实值一致）；超过宽限期仍按上一条降级。常量为 `worldcup/refresh_runner.py` 的 `ELO_CACHE_GRACE_SECONDS`。
-- The Odds API 按免费额度使用：低额度时 scheduler 会降频，但保留 T-90 / T-55 / T-25 等关键临赛锚点；上线前不得默认高频刷新。
+- The Odds API 按免费额度使用：常规每天 1 次，每场保留 T-12小时 / T-6小时 / T-90 / T-55 / T-25 临赛锚点；低额度（≤30）只保 T-90 / T-55 / T-25。额度耗尽后更换 `.env` 的 `THE_ODDS_API_KEY`，再经确认执行一次 `worldcup.scheduled_publish --live --force` 让新额度写回 quota ledger（耗尽状态下调度不会自行恢复）。
 - ingest 必须绑定 `timestamp`、`run_id`、`snapshot_id` 和 body hash 做 HMAC；dry-run 不发送请求，也不能打印 secret。
 - ingest server 默认防重放窗口为 300 秒；服务端必须用 `X-Worldcup-Idempotency-Key` 做幂等。
 - `/healthz` 只能报告服务存活，不得输出环境变量、密钥、quota 或 snapshot 内容。

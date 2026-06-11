@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-11 刷新节奏简化为 Plan A
+
+- 已移除 7d / 3d / 1d / 6h 窗口分级，常规刷新改为每天 1 次；每场临赛锚点从 6 个改为 5 个：去掉 T-3h30 / T-70 / T-40，新增 T-12h / T-6h，并保留 T-90 / T-55 / T-25。
+- `policy_version` 已升为 `free-tier-v2`；低额度（≤30）只保 T-90 / T-55 / T-25，额度耗尽暂停的既有保护不变。
+- 预期消耗口径维持小组赛约 828 credits；用户已确认额度耗尽后更换免费 `THE_ODDS_API_KEY` 的策略。换 key 后需经确认执行一次 `worldcup.scheduled_publish --live --force`，让新额度写回 quota ledger。
+- 已同步预览页“更新规则”卡片、scheduler / snapshot / refresh / scheduled publish 测试期望和 README 运维要点。
+- 本次未 push、未部署、未触发 live refresh、未调用 The Odds API。
+
 ## 2026-06-11 调度触发时间与页面显示对齐
 
 - 排查确认 `20260611T051346Z-live` 是北京时间 13:13:46 自动刷新：The Odds API 整包刷新 72 场，quota `458 -> 455`，并因 14 条显著变化发出手机通知；14:00 前后的 LaunchAgent 唤醒只是 skipped。
