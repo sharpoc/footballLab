@@ -72,6 +72,7 @@ worldcup/
   elo_replay.py                 # 国际比赛历史 Elo replay 与官方榜对照
   backtest_data.py              # 国际比赛历史结果转换为回测 CSV
   backtest.py                   # 离线回测、指标报告与参数扫描
+  daily_eval.py                 # 赛后每日 results/eval/backtest 编排与日报
   differ.py                     # 两轮变化检测
   pipeline.py                   # collector 输出对齐 + 单场分析编排
   local_runner.py               # 本地样例/缓存 → 分析快照 JSON
@@ -198,6 +199,8 @@ python3 -m worldcup.elo_local --check
 `worldcup.scheduled_publish --live` 发布成功后会复用研究台账的“本轮变化”规则：比较刷新前后的本地 snapshot，只有等级、EV、Edge、模型概率、市场概率或赔率超过展示阈值时，才调用 `/Users/eagod/ai-dev/wxpusher-reminder/bin/wxpusher-remind` 发送手机通知。通知结果只记录发送状态、摘要和条数，不记录 WxPusher UID、URL、token 或原始响应；临时禁用可加 `--no-notify`。
 
 当 openfootball 缓存里已有完赛比分时，snapshot 会给对应比赛附加 `result`，研究信号台账会在“信号原因”栏显示赛后验证：胜平负 / 大小球显示“命中”或“未中”，亚洲让球显示“命中 / 未中 / 走水”。
+
+赛后链路已由 LaunchAgent `xin.celab.football.daily-eval` 每天北京时间 12:30 自动执行 `python3 -m worldcup.daily_eval --notify`：依次 `results_capture` → `eval_data` → `backtest` 并推送研究日报（完赛数、评估样本、模型 vs 市场指标、S/A 级信号命中统计）；无新增赛果不推送。手动补跑同一命令即可，幂等。
 
 比赛日之后跑：
 

@@ -2,6 +2,25 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-11 赛后链路每日自动化
+
+- 新增 `worldcup.daily_eval`：进程内复用 `results_capture` → `eval_data` → `backtest` 三个既有 CLI 契约，生成 digest（完赛数、评估样本、1X2/OU 模型 vs 市场指标、AH 样本数、S/A 级信号命中统计）。
+- `signal_tally` 复用 `ledger._prediction_result`，口径与页面“预测结果”列一致；当前只统计当前 snapshot 中已完赛比赛的 S/A 信号。
+- CLI 支持 `python3 -m worldcup.daily_eval --notify`；仅当本轮有新增/更新赛果且 digest `status=ok` 时才通过 WxPusher 推送研究日报，无新增赛果返回 `no_new_results` 且不推送，重复跑幂等。
+- 已安装本机 LaunchAgent `~/Library/LaunchAgents/xin.celab.football.daily-eval.plist`，每天北京时间 12:30 在 `/Users/eagod/ai-dev/足彩` 执行 bundled Python 的 `worldcup.daily_eval --notify`，日志写入 `~/Library/Logs/worldcup/daily-eval.*.log`。
+- 真实 smoke：手动运行与 kickstart 均输出 `status=no_new_results`、`notification=null`；stdout/stderr 日志敏感词扫描 `api[_-]?key|secret|token|signature|cookie` 计数均为 0。
+- 本地验证：先按 TDD 看到缺少 `worldcup.daily_eval` 与 `main` 的红灯，最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `320/320 tests passed`。
+- 本次未 push、未部署、未触发 live refresh、未调用 The Odds API。
+
+## 2026-06-11 赛后链路每日自动化实现计划（待 Codex 执行）
+
+- 新增实现计划 `docs/superpowers/plans/2026-06-11-daily-eval-automation.md`：新增 `worldcup.daily_eval` 编排器，进程内串联 `results_capture` → `eval_data` → `backtest` 三个既有 CLI 契约，生成 digest（完赛数 / 评估样本 / 模型 vs 市场指标 / S 与 A 级信号命中统计，口径与页面"预测结果"列一致）。
+- 推送规则：`--notify` 且 `status=ok`（有新增/更新赛果）才发 WxPusher 日报；无新增赛果跳过推送，重复运行幂等不重发。文案保留研究免责声明，不含资金字段。
+- Task 3 安装每日 LaunchAgent `xin.celab.football.daily-eval`（北京时间 12:30，复用现有 plist 的 Python 路径），kickstart smoke 赛前应为 `no_new_results` 不发推送；这是计划中唯一系统状态变更，用户已确认要定时执行。
+- 注意：6-12 首批完赛后建议先人工跑一遍 `python3 -m worldcup.daily_eval`（不带 `--notify`）核对 `_extract_score` 真实比分格式解析，再交给定时任务。
+- 全链路只读 `data/cache/`、读写 `data/local/`，不联网、不消耗 The Odds API 额度、不写线上；验证命令仍为 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py`，当前基线 `316/316`，完成后预计 `322/322`。
+- 本次只写计划与近期记录，未改业务代码、未 commit、未 push、未部署、未触发 live refresh、未调用 The Odds API。
+
 ## 2026-06-11 槽位额度跨阈值告警
 
 - 已在 `worldcup.scheduled_publish` 接入 The Odds API 槽位额度告警：刷新前后按 `.env` 配置监控 `theoddsapi_primary` / `theoddsapi_secondary`；未配置 slot 时回退 legacy `theoddsapi`。
