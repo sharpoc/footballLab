@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 
 from worldcup import scheduler
 from worldcup.scheduler import build_refresh_decision, build_run_metadata, build_scheduler_report
+from worldcup.theoddsapi_keys import PRIMARY_PROVIDER, SECONDARY_PROVIDER
 
 
 def _match(
@@ -239,6 +240,82 @@ def test_scheduler_report_reads_snapshot_and_quota_without_refreshing():
         assert report["decision"]["next_due_at"] == "2026-06-09T00:00:00+00:00"
         assert report["quota"]["theoddsapi"]["remaining"] == 494
         assert report["last_refresh_at"] == "2026-06-08T00:00:00+00:00"
+
+
+def test_scheduler_report_uses_secondary_quota_when_primary_is_exhausted():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot_path = root / "analysis_snapshot.json"
+        quota_path = root / "quota.json"
+        snapshot_path.write_text(
+            json.dumps(
+                {
+                    "snapshot_at": "2026-06-08T00:00:00+00:00",
+                    "run": {"observed_at": "2026-06-08T00:00:00+00:00"},
+                    "matches": [{"kickoff_at_utc": "2026-06-11T19:00:00+00:00"}],
+                }
+            )
+        )
+        quota_path.write_text(
+            json.dumps(
+                {
+                    "providers": {
+                        PRIMARY_PROVIDER: {"remaining": 0, "last": 3},
+                        SECONDARY_PROVIDER: {"remaining": 497, "last": 3},
+                        "theoddsapi": {"remaining": 0, "last": 3},
+                    }
+                }
+            )
+        )
+
+        report = build_scheduler_report(
+            now="2026-06-08T11:00:00+00:00",
+            snapshot_path=snapshot_path,
+            quota_path=quota_path,
+            env={"THE_ODDS_API_KEY_PRIMARY": "primary", "THE_ODDS_API_KEY_SECONDARY": "secondary"},
+        )
+
+        assert report["decision"]["policy_reason"] == "default"
+        assert report["decision"]["quota_remaining"] == 497
+        assert report["decision"]["should_refresh"] is False
+
+
+def test_scheduler_report_blocks_when_all_configured_keys_are_exhausted():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot_path = root / "analysis_snapshot.json"
+        quota_path = root / "quota.json"
+        snapshot_path.write_text(
+            json.dumps(
+                {
+                    "snapshot_at": "2026-06-08T00:00:00+00:00",
+                    "run": {"observed_at": "2026-06-08T00:00:00+00:00"},
+                    "matches": [{"kickoff_at_utc": "2026-06-11T19:00:00+00:00"}],
+                }
+            )
+        )
+        quota_path.write_text(
+            json.dumps(
+                {
+                    "providers": {
+                        PRIMARY_PROVIDER: {"remaining": 0, "last": 3},
+                        SECONDARY_PROVIDER: {"remaining": 0, "last": 3},
+                        "theoddsapi": {"remaining": 497, "last": 3},
+                    }
+                }
+            )
+        )
+
+        report = build_scheduler_report(
+            now="2026-06-08T11:00:00+00:00",
+            snapshot_path=snapshot_path,
+            quota_path=quota_path,
+            env={"THE_ODDS_API_KEY_PRIMARY": "primary", "THE_ODDS_API_KEY_SECONDARY": "secondary"},
+        )
+
+        assert report["decision"]["policy_reason"] == "quota_exhausted"
+        assert report["decision"]["quota_remaining"] == 0
+        assert report["decision"]["should_refresh"] is False
 
 
 def test_match_plan_uses_pre_6h_checkpoint_anchor():

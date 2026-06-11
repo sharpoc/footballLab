@@ -34,7 +34,6 @@ def run_scheduled_publish(
     notify_fn: Callable[..., dict] = send_wxpusher_notification,
 ) -> dict:
     env = _load_env(env_path)
-    resolved_api_key = api_key or env.get("THE_ODDS_API_KEY")
     previous_snapshot = load_snapshot_if_exists(snapshot_path) if notify else None
     refresh = run_scheduled_refresh(
         now=now,
@@ -44,7 +43,7 @@ def run_scheduled_publish(
         cache_dir=cache_dir,
         snapshot_path=snapshot_path,
         quota_path=quota_path,
-        api_key=resolved_api_key,
+        api_key=api_key,
         refresh_fn=refresh_fn,
     )
 

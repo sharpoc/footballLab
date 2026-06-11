@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from worldcup.scheduled_publish import run_scheduled_publish
+from worldcup.theoddsapi_keys import PRIMARY_PROVIDER, SECONDARY_PROVIDER
 
 
 @dataclass(frozen=True)
@@ -93,16 +94,34 @@ def test_scheduled_publish_refreshes_then_publishes_when_due():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         snapshot_path, quota_path = _write_not_due_snapshot(root)
+        env_path = root / ".env"
+        quota_path.write_text(
+            json.dumps(
+                {
+                    "providers": {
+                        PRIMARY_PROVIDER: {"remaining": 0, "last": 3},
+                        SECONDARY_PROVIDER: {"remaining": 497, "last": 3},
+                        "theoddsapi": {"remaining": 0, "last": 3},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        env_path.write_text(
+            "THE_ODDS_API_KEY_PRIMARY=primary-key\n"
+            "THE_ODDS_API_KEY_SECONDARY=secondary-key\n"
+            "INGEST_HMAC_SECRET=fake-secret\n",
+            encoding="utf-8",
+        )
 
         result = run_scheduled_publish(
             now="2026-06-09T00:00:00+00:00",
             live=True,
+            env_path=env_path,
             cache_dir=root / "cache",
             snapshot_path=snapshot_path,
             quota_path=quota_path,
             endpoint="https://football.celab.xin/api/ingest/snapshot",
-            api_key="fake-key",
-            secret="fake-secret",
             refresh_fn=refresh_fn,
             publish_fn=publish_fn,
         )
@@ -110,7 +129,8 @@ def test_scheduled_publish_refreshes_then_publishes_when_due():
     assert result["status"] == "published"
     assert result["refresh"]["status"] == "refreshed"
     assert result["publish"]["ingest_status"] == "stored"
-    assert refresh_calls[0]["api_key"] == "fake-key"
+    assert refresh_calls[0]["api_key"] == "secondary-key"
+    assert refresh_calls[0]["theoddsapi_provider"] == SECONDARY_PROVIDER
     assert publish_calls[0]["secret"] == "fake-secret"
     assert publish_calls[0]["live"] is True
     assert publish_calls[0]["endpoint"] == "https://football.celab.xin/api/ingest/snapshot"

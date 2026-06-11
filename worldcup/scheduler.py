@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from worldcup.quota import load_quota_ledger
+from worldcup.theoddsapi_keys import quota_remaining_for_scheduler
 
 POLICY_VERSION = "free-tier-v2"
 DEFAULT_INTERVAL_SECONDS = 86400
@@ -266,10 +267,13 @@ def build_match_refresh_decision(
     next_kickoff = min(upcoming_kickoffs) if upcoming_kickoffs else None
     active = [plan for plan in plans if plan.get("next_update_at")]
     if not active:
+        inactive_reason = "no_active_match_plan"
+        if any(plan.get("policy_reason") == "quota_exhausted" for plan in plans):
+            inactive_reason = "quota_exhausted"
         return RefreshDecision(
             should_refresh=False,
             reason="not_due",
-            policy_reason="no_active_match_plan",
+            policy_reason=inactive_reason,
             interval_seconds=0,
             now=_iso_utc(now_dt),
             last_refresh_at=_iso_utc(last_dt) if last_dt else None,
@@ -393,10 +397,11 @@ def build_scheduler_report(
     now: str,
     snapshot_path: str | Path = "data/cache/analysis_snapshot.json",
     quota_path: str | Path = "data/cache/quota.json",
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     snapshot = _read_json_if_exists(snapshot_path)
     quota = load_quota_ledger(quota_path).get("providers", {})
-    quota_remaining = quota.get("theoddsapi", {}).get("remaining")
+    quota_remaining = quota_remaining_for_scheduler(quota, env)
     last_refresh_at = _last_refresh_at_from_snapshot(snapshot)
     next_kickoff_at = _next_kickoff_at_from_snapshot(snapshot, now) if snapshot else None
     matches = snapshot.get("matches") or []

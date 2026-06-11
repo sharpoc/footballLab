@@ -8,6 +8,7 @@ from typing import Callable
 
 from worldcup.refresh_runner import _load_env, refresh_cache_and_build_snapshot
 from worldcup.scheduler import build_scheduler_report
+from worldcup.theoddsapi_keys import LEGACY_PROVIDER, choose_key_slot
 
 
 def _now_utc_iso() -> str:
@@ -26,10 +27,12 @@ def run_scheduled_refresh(
     refresh_fn: Callable[..., object] = refresh_cache_and_build_snapshot,
 ) -> dict:
     observed = now or _now_utc_iso()
+    env = _load_env(env_path)
     report = build_scheduler_report(
         now=observed,
         snapshot_path=snapshot_path,
         quota_path=quota_path,
+        env=None if api_key else env,
     )
     decision = report["decision"]
 
@@ -49,9 +52,19 @@ def run_scheduled_refresh(
             "refresh": None,
         }
 
-    key = api_key or _load_env(env_path).get("THE_ODDS_API_KEY")
-    if not key:
-        raise ValueError("THE_ODDS_API_KEY is missing")
+    if api_key:
+        key = api_key
+        provider = LEGACY_PROVIDER
+        slot = "legacy"
+    else:
+        selected = choose_key_slot(env, report.get("quota") or {})
+        if selected is None:
+            raise ValueError(
+                "THE_ODDS_API_KEY_PRIMARY, THE_ODDS_API_KEY_SECONDARY, or THE_ODDS_API_KEY is missing or exhausted"
+            )
+        key = selected.api_key
+        provider = selected.provider
+        slot = selected.slot
 
     refresh_result = refresh_fn(
         api_key=key,
@@ -59,6 +72,7 @@ def run_scheduled_refresh(
         snapshot_path=snapshot_path,
         quota_path=quota_path,
         observed_at=observed,
+        theoddsapi_provider=provider,
     )
     return {
         "status": "refreshed",
@@ -68,6 +82,8 @@ def run_scheduled_refresh(
             "snapshot_path": str(refresh_result.snapshot_path),
             "matches": refresh_result.snapshot["counts"]["matches"],
             "run_id": refresh_result.run_metadata.get("run_id"),
+            "odds_api_key_slot": slot,
+            "theoddsapi_provider": provider,
         },
     }
 
