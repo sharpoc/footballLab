@@ -14,6 +14,7 @@ from worldcup.scheduler import build_match_refresh_decision, build_run_metadata,
 from worldcup.sources.eloratings import fetch_elo_files
 from worldcup.sources.openfootball import fetch_openfootball_2026
 from worldcup.sources.theoddsapi import fetch_worldcup_odds
+from worldcup.theoddsapi_keys import LEGACY_PROVIDER
 
 
 ELO_CACHE_GRACE_SECONDS = 48 * 3600
@@ -83,6 +84,7 @@ def refresh_cache_and_build_snapshot(
     elo_transport: Callable[[str], object] | None = None,
     history_dir: str | Path = "data/local/history",
     observed_at: str | None = None,
+    theoddsapi_provider: str = LEGACY_PROVIDER,
 ) -> RefreshResult:
     observed = observed_at or _now_utc_iso()
     cache = Path(cache_dir)
@@ -125,6 +127,7 @@ def refresh_cache_and_build_snapshot(
             cache_path=odds_cache,
             quota_path=quota_output,
             observed_at=observed,
+            quota_provider=theoddsapi_provider,
         )
     except Exception as exc:
         if not odds_cache.exists():
@@ -136,7 +139,8 @@ def refresh_cache_and_build_snapshot(
     snapshot.setdefault("data_quality", {})["source_errors"] = source_errors
     snapshot.setdefault("data_quality", {})["stale_sources"] = stale_sources
     quota = load_quota_ledger(quota_output).get("providers", {})
-    quota_remaining = quota.get("theoddsapi", {}).get("remaining")
+    quota_entry = quota.get(theoddsapi_provider) or quota.get(LEGACY_PROVIDER) or {}
+    quota_remaining = quota_entry.get("remaining")
     decision = build_match_refresh_decision(
         now=observed,
         last_refresh_at=observed,

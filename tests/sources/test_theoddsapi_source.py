@@ -3,6 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from worldcup.sources.theoddsapi import fetch_worldcup_odds
+from worldcup.theoddsapi_keys import LEGACY_PROVIDER, SECONDARY_PROVIDER
 
 
 class FakeResponse:
@@ -44,3 +45,26 @@ def test_fetch_worldcup_odds_uses_transport_and_writes_cache_and_quota():
         assert json.loads(cache_path.read_text()) == [{"id": "event-1"}]
         quota = json.loads(quota_path.read_text())
         assert quota["providers"]["theoddsapi"]["remaining"] == 497
+
+
+def test_fetch_worldcup_odds_writes_slot_quota_and_legacy_alias():
+    def fake_transport(_url):
+        return FakeResponse()
+
+    with TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "theoddsapi_wc_odds.json"
+        quota_path = Path(tmp) / "quota.json"
+
+        result = fetch_worldcup_odds(
+            api_key="fake-key",
+            transport=fake_transport,
+            cache_path=cache_path,
+            quota_path=quota_path,
+            observed_at="2026-06-08T00:00:00+00:00",
+            quota_provider=SECONDARY_PROVIDER,
+        )
+
+        quota = json.loads(quota_path.read_text())
+        assert result.quota_entry == quota["providers"][SECONDARY_PROVIDER]
+        assert quota["providers"][SECONDARY_PROVIDER]["remaining"] == 497
+        assert quota["providers"][LEGACY_PROVIDER]["remaining"] == 497

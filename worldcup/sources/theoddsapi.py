@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from worldcup.quota import update_quota_from_headers
+from worldcup.theoddsapi_keys import LEGACY_PROVIDER
 
 
 BASE_URL = "https://api.the-odds-api.com/v4"
@@ -56,6 +57,7 @@ def fetch_worldcup_odds(
     cache_path: str | Path | None = None,
     quota_path: str | Path | None = None,
     observed_at: str | None = None,
+    quota_provider: str = LEGACY_PROVIDER,
     regions: str = "eu",
     markets: tuple[str, ...] = DEFAULT_MARKETS,
 ) -> SourceFetchResult:
@@ -73,11 +75,19 @@ def fetch_worldcup_odds(
     if quota_path is not None:
         quota_entry = update_quota_from_headers(
             quota_path,
-            "theoddsapi",
+            quota_provider,
             headers,
             estimated_last=len(markets),
             observed_at=observed_at,
         )
+        if quota_provider != LEGACY_PROVIDER:
+            update_quota_from_headers(
+                quota_path,
+                LEGACY_PROVIDER,
+                headers,
+                estimated_last=len(markets),
+                observed_at=observed_at,
+            )
 
     return SourceFetchResult(
         status=int(getattr(response, "status", 200)),

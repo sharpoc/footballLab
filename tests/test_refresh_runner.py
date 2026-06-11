@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from worldcup.refresh_runner import refresh_cache_and_build_snapshot
+from worldcup.theoddsapi_keys import SECONDARY_PROVIDER
 
 
 class FakeResponse:
@@ -106,12 +107,14 @@ def test_refresh_cache_and_build_snapshot_with_injected_transports():
             elo_transport=elo_transport,
             history_dir=root / "history",
             observed_at="2026-06-08T00:00:00+00:00",
+            theoddsapi_provider=SECONDARY_PROVIDER,
         )
 
         assert result.snapshot["counts"]["matches"] == 1
         assert result.snapshot["snapshot_at"] == "2026-06-08T00:00:00+00:00"
         assert result.snapshot_path.exists()
         assert result.run_metadata["run_id"] == "20260608T000000Z-live"
+        assert result.snapshot["run"]["quota"][SECONDARY_PROVIDER]["remaining"] == 497
         assert result.snapshot["run"]["quota"]["theoddsapi"]["remaining"] == 497
         assert result.snapshot["run"]["stale_sources"] == []
         assert result.snapshot["matches"][0]["refresh_plan"]["next_update_at"] == "2026-06-09T00:00:00+00:00"
