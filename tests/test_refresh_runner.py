@@ -1,4 +1,6 @@
 import json
+import os
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -295,3 +297,44 @@ def test_refresh_keeps_elo_fresh_within_grace_window():
             if signal["market_type"] == "1X2_90min" and signal["selection"] == "home"
         )
         assert "unconfirmed_backup" not in home_signal["reasons"]
+
+
+def test_refresh_marks_elo_stale_beyond_grace_window():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        cache = _elo_grace_fixture(root)
+        openfootball_body = (cache / "openfootball_2026.json").read_text()
+        odds_body = (cache / "theoddsapi_wc_odds.json").read_text()
+
+        stale_ts = time.time() - 49 * 3600
+        os.utime(cache / "elo_world.tsv", (stale_ts, stale_ts))
+        os.utime(cache / "elo_teams.tsv", (stale_ts, stale_ts))
+
+        def openfootball_transport(_url):
+            return FakeResponse(openfootball_body.encode())
+
+        def theoddsapi_transport(_url):
+            return FakeResponse(odds_body.encode())
+
+        def failing_elo_transport(_url):
+            raise ValueError("invalid Elo ratings TSV: parsed 0 rows")
+
+        result = refresh_cache_and_build_snapshot(
+            api_key="fake-key",
+            cache_dir=cache,
+            snapshot_path=root / "out" / "snapshot.json",
+            quota_path=cache / "quota.json",
+            openfootball_transport=openfootball_transport,
+            theoddsapi_transport=theoddsapi_transport,
+            elo_transport=failing_elo_transport,
+            history_dir=root / "history",
+        )
+
+        assert result.snapshot["data_quality"]["stale_sources"] == ["eloratings"]
+        assert result.snapshot["run"]["stale_sources"] == ["eloratings"]
+        home_signal = next(
+            signal
+            for signal in result.snapshot["matches"][0]["signals"]
+            if signal["market_type"] == "1X2_90min" and signal["selection"] == "home"
+        )
+        assert "unconfirmed_backup" in home_signal["reasons"]
