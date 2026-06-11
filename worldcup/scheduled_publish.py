@@ -5,6 +5,11 @@ import json
 from pathlib import Path
 from typing import Callable
 
+from worldcup.notifications import (
+    build_change_notification,
+    load_snapshot_if_exists,
+    send_wxpusher_notification,
+)
 from worldcup.publish import publish_snapshot
 from worldcup.refresh_runner import _load_env, refresh_cache_and_build_snapshot
 from worldcup.scheduled_refresh import run_scheduled_refresh
@@ -23,11 +28,14 @@ def run_scheduled_publish(
     endpoint: str = DEFAULT_ENDPOINT,
     api_key: str | None = None,
     secret: str | None = None,
+    notify: bool = True,
     refresh_fn: Callable[..., object] = refresh_cache_and_build_snapshot,
     publish_fn: Callable[..., dict] = publish_snapshot,
+    notify_fn: Callable[..., dict] = send_wxpusher_notification,
 ) -> dict:
     env = _load_env(env_path)
     resolved_api_key = api_key or env.get("THE_ODDS_API_KEY")
+    previous_snapshot = load_snapshot_if_exists(snapshot_path) if notify else None
     refresh = run_scheduled_refresh(
         now=now,
         live=live,
@@ -46,6 +54,7 @@ def run_scheduled_publish(
             "force": force,
             "refresh": refresh,
             "publish": None,
+            "notification": None,
         }
 
     if int((refresh.get("refresh") or {}).get("matches") or 0) <= 0:
@@ -55,6 +64,7 @@ def run_scheduled_publish(
             "force": force,
             "refresh": refresh,
             "publish": None,
+            "notification": None,
         }
 
     resolved_secret = secret or env.get("INGEST_HMAC_SECRET")
@@ -68,11 +78,29 @@ def run_scheduled_publish(
         timestamp=now,
         live=live,
     )
+    notification_result = None
+    if notify:
+        current_snapshot = load_snapshot_if_exists(refresh["refresh"]["snapshot_path"])
+        if current_snapshot is None:
+            notification_result = {"status": "skipped", "reason": "missing_current_snapshot"}
+        else:
+            notification = build_change_notification(previous_snapshot, current_snapshot)
+            if notification["should_send"]:
+                sent = notify_fn(notification["content"], summary=notification["summary"])
+                notification_result = {
+                    **sent,
+                    "summary": notification["summary"],
+                    "item_count": len(notification["items"]),
+                }
+            else:
+                notification_result = {"status": "skipped", "reason": "no_significant_changes"}
+
     return {
         "status": "published",
         "force": force,
         "refresh": refresh,
         "publish": publish,
+        "notification": notification_result,
     }
 
 
@@ -88,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--now", default=None)
     parser.add_argument("--live", action="store_true", help="Refresh and publish when due.")
     parser.add_argument("--force", action="store_true", help="With --live, refresh even when not due.")
+    parser.add_argument("--no-notify", action="store_true", help="Do not send WxPusher change notifications.")
     args = parser.parse_args(argv)
 
     result = run_scheduled_publish(
@@ -99,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         snapshot_path=args.snapshot_path,
         quota_path=args.quota_path,
         endpoint=args.endpoint,
+        notify=not args.no_notify,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0

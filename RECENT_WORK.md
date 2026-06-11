@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-11 手机推送通知链路已上线
+
+- 已接入 `worldcup.notifications`：复用研究台账“本轮变化”规则，对比发布前后的 snapshot，只在等级、EV、Edge、模型概率、市场概率或赔率出现显著变化时生成通知。
+- `worldcup.scheduled_publish --live` 在刷新并成功发布后自动发送手机通知；未到点、dry-run、空快照、发布失败或无显著变化都不发送；临时关闭可加 `--no-notify`。
+- 通知通道使用全局 WxPusher 工具 `/Users/eagod/ai-dev/wxpusher-reminder/bin/wxpusher-remind`；代码捕获并丢弃原始 stdout/stderr，返回结果只保留 `status`、`exit_code`、summary 和条数，避免把 UID、URL、token 或原始响应写入 scheduled-publish 日志。
+- 新增 `tests/test_notifications.py` 与 `tests/test_scheduled_publish.py` 覆盖通知内容、无变化跳过、WxPusher 原始输出脱敏、发布成功后触发通知；TDD 红灯为缺少 `worldcup.notifications`。
+- 本地验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `290/290 tests passed`；`python3 -m worldcup.scheduled_publish ...` dry-run 返回 `notification=null`，未触发刷新、发布或通知。
+- 已按“直接上线”确认准备提交、推送并部署；本次实现不会主动消耗 The Odds API quota，下一次 scheduler due 且发布成功后才可能根据变化发通知。
+
 ## 2026-06-11 下次更新时间整点对齐已上线
 
 - 线上截图发现 03:00 开赛比赛在 10:58 手动刷新后显示“下次更新 12:58”；根因是单场普通 cadence 直接使用 `last_refresh_at + interval`，把手动刷新时的分钟秒带进了下一轮计划。
