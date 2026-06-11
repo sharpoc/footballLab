@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-11 调度触发时间与页面显示对齐
+
+- 排查确认 `20260611T051346Z-live` 是北京时间 13:13:46 自动刷新：The Odds API 整包刷新 72 场，quota `458 -> 455`，并因 14 条显著变化发出手机通知；14:00 前后的 LaunchAgent 唤醒只是 skipped。
+- 根因：`build_match_refresh_plan` 的普通 cadence 只有在 `last_refresh_at + interval` 尚未到达时才对齐到开赛时钟；一旦 raw interval 已经过了，就把 `next_update_at` 设成当前唤醒时间，导致真实触发早于页面显示。
+- 已修复为普通 cadence 始终先对齐到该场开赛时间的分钟/秒，只有对齐后的时间也已过去才 due；临赛固定锚点仍保留“错过即补刷”行为。
+- 新增回归测试覆盖 `03:08:26` 上次刷新、`05:13:46` 唤醒时仍等待 `06:00:00` 的单场计划和全局 decision。
+- 本地验证：先看到新增测试红灯（`290/292 tests passed`），修复后 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `292/292 tests passed`。
+- 只读模拟验证：用 `snapshot_20260611T030826Z-live.json` 在 `2026-06-11T05:13:46+00:00` 计算，结果 `should_refresh=False`、`next_due_at=2026-06-11T06:00:00+00:00`；当前真实 dry-run 为 `status=dry_run`、`next_due_at=2026-06-11T08:00:00+00:00`，未触发刷新、发布或通知。
+
 ## 2026-06-11 手机推送通知链路已上线
 
 - 已接入 `worldcup.notifications`：复用研究台账“本轮变化”规则，对比发布前后的 snapshot，只在等级、EV、Edge、模型概率、市场概率或赔率出现显著变化时生成通知。

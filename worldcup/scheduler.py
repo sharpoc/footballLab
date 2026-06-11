@@ -202,11 +202,7 @@ def build_match_refresh_plan(
 
     candidates: list[tuple[datetime, int, str, str, str]] = []
     cadence_due = last_dt + timedelta(seconds=interval_seconds)
-    cadence_next = (
-        now_dt
-        if cadence_due <= now_dt
-        else _align_cadence_due_to_kickoff_clock(cadence_due, kickoff_dt)
-    )
+    cadence_next = _align_cadence_due_to_kickoff_clock(cadence_due, kickoff_dt)
     cadence_label, cadence_description = _cadence_label(cadence_reason, interval_seconds)
     candidates.append(
         (

@@ -107,6 +107,32 @@ def test_match_plan_aligns_cadence_to_kickoff_clock_after_manual_refresh():
     assert plan["should_refresh"] is False
 
 
+def test_match_plan_waits_for_aligned_cadence_when_raw_interval_has_elapsed():
+    plan = scheduler.build_match_refresh_plan(
+        now="2026-06-11T05:13:46+00:00",
+        last_refresh_at="2026-06-11T03:08:26+00:00",
+        match=_match("2026-06-11T19:00:00+00:00"),
+        quota_remaining=455,
+    )
+
+    assert plan["next_update_at"] == "2026-06-11T06:00:00+00:00"
+    assert plan["policy_reason"] == "pre_1d_window"
+    assert plan["should_refresh"] is False
+
+
+def test_match_refresh_decision_uses_aligned_cadence_due_time():
+    decision = scheduler.build_match_refresh_decision(
+        now="2026-06-11T05:13:46+00:00",
+        last_refresh_at="2026-06-11T03:08:26+00:00",
+        matches=[_match("2026-06-11T19:00:00+00:00")],
+        quota_remaining=455,
+    )
+
+    assert decision.should_refresh is False
+    assert decision.reason == "not_due"
+    assert decision.next_due_at == "2026-06-11T06:00:00+00:00"
+
+
 def test_match_plan_low_quota_keeps_critical_lineup_anchor():
     plan = scheduler.build_match_refresh_plan(
         now="2026-06-11T17:50:00+00:00",
