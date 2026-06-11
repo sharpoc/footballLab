@@ -2,6 +2,17 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-11 下次更新时间整点对齐已上线
+
+- 线上截图发现 03:00 开赛比赛在 10:58 手动刷新后显示“下次更新 12:58”；根因是单场普通 cadence 直接使用 `last_refresh_at + interval`，把手动刷新时的分钟秒带进了下一轮计划。
+- 已在 `worldcup/scheduler.py` 将普通 cadence 改为先满足原间隔，再对齐到该场开赛时间的分钟/秒；03:00 开赛场次会显示整点，:30 开赛场次会显示半点，临赛固定锚点不变。
+- 新增回归测试 `test_match_plan_aligns_cadence_to_kickoff_clock_after_manual_refresh`，覆盖 `10:58:55 -> 13:00`；全量测试 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `284/284 tests passed`。
+- 已提交并推送 `1205e2a fix: align match refresh cadence to kickoff clock` 到 `origin/main`，并部署到 ECS `/opt/worldcup/releases/1205e2a`；`worldcup.service` 与 `nginx` 均为 active。
+- 已按确认再次强制刷新/发布 run `20260611T030826Z-live`，线上 ingest 返回 `stored`，72 场；当前最新 snapshot 的墨西哥 vs 南非下次更新为 `2026-06-11T06:00:00+00:00`（北京时间 14:00），页面不再出现 `12:58`。
+- The Odds API quota 当前 `remaining=458`、`used=42`，本次强制刷新消耗 3。
+- 公网 `/healthz`、`/api/matches`、首页和 `/preview` 验证通过，首页/preview 最后更新时间为北京时间 `2026 年 6 月 11 日 星期四 11:08`；资金/下注词扫描未命中，最近 10 分钟服务日志敏感词/error 命中 0。
+- `python3 -m worldcup.ops_check` 返回 `ok=true`、`errors=0`、`warnings=2`；warning 来自 Nginx 历史 5xx/upstream 计数，非本次发布后的新错误。
+
 ## 2026-06-11 首页下次更新时间列已上线
 
 - 已把单场 `refresh_plan` 接入本地/实时 snapshot：每场比赛写入安全的 `next_update_at`、`policy_reason`、`label`、`description`、`interval_seconds`、`should_refresh`；`run.policy.match_plans` 保留完整调度决策。
