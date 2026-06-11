@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import gzip
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -122,6 +123,13 @@ def test_refresh_cache_and_build_snapshot_with_injected_transports():
         assert result.archive_path == archive
         assert archive.exists()
         assert json.loads(archive.read_text())["run"]["run_id"] == "20260608T000000Z-live"
+        odds_raw = root / "history" / "odds_raw_20260608T000000Z-live.json.gz"
+        assert result.odds_raw_archive_path == odds_raw
+        assert odds_raw.exists()
+
+        archived_events = json.loads(gzip.open(odds_raw, "rb").read().decode("utf-8"))
+        assert archived_events[0]["id"] == "event-1"
+        assert archived_events[0]["bookmakers"][0]["key"] == "bk1"
 
 
 def test_refresh_uses_stale_odds_cache_when_theoddsapi_times_out():
@@ -210,6 +218,8 @@ def test_refresh_uses_stale_odds_cache_when_theoddsapi_times_out():
             if signal["market_type"] == "1X2_90min" and signal["selection"] == "home"
         )
         assert "unconfirmed_backup" in home_signal["reasons"]
+        assert result.odds_raw_archive_path is None
+        assert list((root / "history").glob("odds_raw_*.json.gz")) == []
 
 
 def _elo_grace_fixture(root: Path) -> Path:

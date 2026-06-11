@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -36,6 +37,7 @@ class RefreshResult:
     stale_sources: list[str]
     run_metadata: dict
     archive_path: Path | None = None
+    odds_raw_archive_path: Path | None = None
 
 
 def _load_env(path: str | Path = ".env") -> dict[str, str]:
@@ -162,6 +164,17 @@ def refresh_cache_and_build_snapshot(
     except OSError as exc:
         print(f"warning: snapshot archive failed: {exc}", file=sys.stderr)
         archive_path = None
+    odds_raw_archive_path: Path | None = None
+    if "theoddsapi" not in stale_sources and odds_cache.exists():
+        try:
+            archive_dir = Path(history_dir)
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            odds_raw_archive_path = archive_dir / f"odds_raw_{run_metadata['run_id']}.json.gz"
+            with gzip.open(odds_raw_archive_path, "wb") as fh:
+                fh.write(odds_cache.read_bytes())
+        except OSError as exc:
+            print(f"warning: raw odds archive failed: {exc}", file=sys.stderr)
+            odds_raw_archive_path = None
     return RefreshResult(
         cache_dir=cache,
         snapshot_path=snapshot_output,
@@ -171,6 +184,7 @@ def refresh_cache_and_build_snapshot(
         stale_sources=stale_sources,
         run_metadata=run_metadata,
         archive_path=archive_path,
+        odds_raw_archive_path=odds_raw_archive_path,
     )
 
 
