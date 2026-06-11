@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-11 Elo 缓存 48h 宽限期
+
+- 背景：`www.eloratings.net` 自 2026-06-11 起对非浏览器请求返回 HTTP 415，导致 live refresh 可走本地 Elo 缓存但被统一标为 `stale_sources=["eloratings"]`，信号被 `unconfirmed_backup` 封顶到 B。
+- 已在 `worldcup/refresh_runner.py` 增加 `ELO_CACHE_GRACE_SECONDS = 48 * 3600`：Elo 抓取失败且 `elo_world.tsv` / `elo_teams.tsv` mtime 仍在宽限期内时，只记录 `data_quality.source_errors`，不标 `stale_sources`、不触发信号降级；超过宽限期仍保持旧降级行为。
+- 新增离线回归测试覆盖宽限期内不降级、49 小时超期仍降级；故障注入验证把宽限期临时放大到 999 小时时，超期测试会变红。
+- 已同步 `CLAUDE.md` / `AGENTS.md` / `README.md` 的 source refresh stale 规则，说明 Elo 例外和常量位置。
+- 本地验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `279/279 tests passed`。
+- 遗留事项：eloratings 抓取本身仍被 WAF 拦截，另案处理；本次未 push、未部署、未触发 live refresh、未调用 The Odds API。
+
 ## 2026-06-11 线上空数据恢复与 Elo 缓存防线
 
 - 排查确认线上服务、Nginx、SQLite 均正常；空数据根因是 `20260610T191323Z-live` 自动刷新时 eloratings 返回 HTML 挑战页，`elo_world.tsv` / `elo_teams.tsv` 被当作 TSV 覆盖，导致 Elo 解析为 0 条、72 场全部进入 `missing_elo`，最终发布了 0 场 snapshot。

@@ -243,6 +243,7 @@ DATABASE_URL=
 - API key、RDS 连接串、HMAC 密钥、Cookie、token 不得写入 git、文档或回复。
 - macmini 不直连 RDS/OSS，后续只调用 ECS ingest API。
 - source refresh 失败但本地缓存存在时，可以继续用上一轮缓存生成快照；必须在 `data_quality.source_errors` 和 `data_quality.stale_sources` 标记，不能静默当作新鲜数据。
+- 例外：eloratings 抓取失败但本地 Elo 缓存 mtime 在 48 小时宽限期内时，只记 `data_quality.source_errors`，不标 `stale_sources`、不触发信号降级（Elo 仅在完赛后变化，宽限期内缓存与真实值一致）；超过宽限期仍按上一条降级。常量为 `worldcup/refresh_runner.py` 的 `ELO_CACHE_GRACE_SECONDS`。
 - The Odds API 按免费额度使用：低额度时 scheduler 会降频；上线前不得默认高频刷新。
 - ingest 必须绑定 `timestamp`、`run_id`、`snapshot_id` 和 body hash 做 HMAC；dry-run 不发送请求，也不能打印 secret。
 - ingest server 默认防重放窗口为 300 秒；服务端必须用 `X-Worldcup-Idempotency-Key` 做幂等。
