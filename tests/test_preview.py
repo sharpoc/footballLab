@@ -209,9 +209,21 @@ def test_build_preview_html_includes_filter_dom_accessibility_contract():
     assert 'data-view-panel="live"' in html
     assert 'data-view-panel="history"' in html
     assert 'data-date-filter="all"' in html
-    assert ">全部日期</button>" in html
-    assert 'data-date-filter="2026 年 6 月 12 日 星期五"' in html
+    assert 'data-date-filter="today"' in html
+    assert 'data-date-filter="tomorrow"' in html
+    assert 'data-date-filter="next3"' in html
+    assert 'data-date-filter="next7"' in html
+    assert 'data-date-filter="custom"' in html
+    assert ">全部</button>" in html
+    assert ">今日</button>" in html
+    assert ">明日</button>" in html
+    assert ">未来3天</button>" in html
+    assert ">未来7天</button>" in html
+    assert ">选择日期</button>" in html
+    assert 'id="date-picker"' in html
+    assert '<option value="2026-06-12">6/12 周五 · 1场 · 1信号</option>' in html
     assert 'data-date="2026 年 6 月 12 日 星期五"' in html
+    assert 'data-date-iso="2026-06-12"' in html
     assert 'id="league-filter"' in html
     assert '<option value="worldcup">世界杯</option>' in html
     assert '<option value="csl">中超</option>' in html
@@ -226,6 +238,53 @@ def test_build_preview_html_includes_filter_dom_accessibility_contract():
     assert 'aria-pressed="false"' in html
     assert "<caption>研究信号台账</caption>" in html
     assert '<th scope="col">对阵</th>' in html
+
+
+def _snapshot_with_two_matches_many_signals() -> dict:
+    snapshot = deepcopy(_snapshot())
+    first = snapshot["matches"][0]
+    first["kickoff_at_utc"] = "2026-06-12T19:00:00+00:00"
+    first["stage"] = "Matchday 2"
+    first["group"] = "Group B"
+    first["home_team"] = "Canada"
+    first["away_team"] = "Bosnia and Herzegovina"
+    first["signals"] = [
+        {"market_type": "1X2_90min", "selection": "home", "grade": "S", "ev": 0.246, "edge": 0.154, "status": "OK"},
+        {"market_type": "1X2_90min", "selection": "draw", "grade": "C", "ev": -0.282, "edge": -0.069, "status": "OK"},
+        {"market_type": "1X2_90min", "selection": "away", "grade": "C", "ev": -0.428, "edge": -0.086, "status": "OK"},
+        {"market_type": "AsianHandicap_90min", "selection": "away", "line": 0.5, "grade": "C", "ev": -0.308, "edge": None, "status": "OK"},
+        {"market_type": "OverUnder_90min", "selection": "over", "line": 2.5, "grade": "C", "ev": -0.024, "edge": 0.013, "status": "OK"},
+        {"market_type": "OverUnder_90min", "selection": "under", "line": 2.5, "grade": "C", "ev": -0.075, "edge": -0.013, "status": "OK"},
+        {"market_type": "AsianHandicap_90min", "selection": "home", "line": -0.5, "grade": "B", "ev": 0.052, "edge": None, "status": "OK"},
+    ]
+    second = deepcopy(first)
+    second["kickoff_at_utc"] = "2026-06-13T01:00:00+00:00"
+    second["group"] = "Group D"
+    second["home_team"] = "United States"
+    second["away_team"] = "Paraguay"
+    second["signals"][0]["ev"] = 0.56
+    second["signals"][0]["edge"] = 0.142
+    snapshot["matches"] = [first, second]
+    snapshot["counts"]["matches"] = 2
+    return snapshot
+
+
+def test_build_preview_html_defaults_to_match_grouped_ledger():
+    html = build_preview_html(_snapshot_with_two_matches_many_signals())
+
+    assert 'data-mode-filter="match"' in html
+    assert 'data-mode-filter="signal"' in html
+    assert 'data-mode-panel="match"' in html
+    assert 'data-mode-panel="signal" hidden' in html
+    assert "<span>按比赛查看</span>" in html
+    assert "本日比赛：2 场 / 14 条信号" in html
+    assert html.count('class="match-row"') == 2
+    assert html.count('class="match-detail-row"') == 2
+    assert 'data-signal-count="7"' in html
+    assert 'data-grade-buckets="strong watch weak"' in html
+    assert "展开 7条" in html
+    assert "加拿大 对 Bosnia and Herzegovina" in html
+    assert "United States 对 巴拉圭" in html
 
 
 def test_build_preview_html_includes_expandable_signal_detail_rows():

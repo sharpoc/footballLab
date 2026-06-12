@@ -2,6 +2,22 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-12 比赛分组台账与范围日期筛选
+
+- 台账日期筛选从逐日按钮改为固定范围：`全部 / 今日 / 明日 / 未来3天 / 未来7天 / 选择日期`；具体日期进入 `#date-picker`，选项显示 `日期 · 场次 · 信号数`。
+- 实时信号默认新增 `按比赛` 模式：每场比赛一条主行，展示信号数、盘口类型、最强等级、最高 EV/Edge，并可展开该场全部信号；原信号流水保留为 `按信号` 模式。
+- 实时、历史行都补充北京日期 ISO，用于前端范围筛选；历史回顾继续共用日期/赛事/等级/搜索过滤。
+- 本地验证：新增预览契约测试先红灯后转绿；最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `348/348 tests passed`。
+- Browser QA：本地静态预览桌面默认 `按比赛`，71 场比赛 / 497 条信号，展开首场显示 7 条信号；切换 `按信号` 正常；`今日` 过滤显示 1 个日期分组 / 7 条信号；390px 视口页面级无横向溢出，日期和比赛表格都限制在内部滚动。
+- 本轮代码将随本次确认推送并部署；部署只切换页面渲染代码并重启服务，不触发 live refresh、不调用 The Odds API、不写入新 snapshot。
+
+## 2026-06-12 台账筛选上线与联赛筛选补强
+
+- 已将台账日期筛选、赛事筛选、视图切换和历史回顾入口推送并部署；当前线上 release 为 `e2375fc`，路径 `/opt/worldcup/releases/e2375fc`。
+- 部署后补强了联赛筛选脚本：过滤时直接读取 `#league-filter` 当前值，并同时监听 `input` / `change`，避免下拉值与列表状态不同步。
+- 本地验证：新增回归断言先红灯后转绿，最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `347/347 tests passed`。
+- 本次部署只切换页面渲染代码并重启 `worldcup.service`，未触发 live refresh、未调用 The Odds API、未写入新 snapshot。
+
 ## 2026-06-12 台账筛选区与历史回顾入口
 
 - 首页/预览页台账顶部新增一级视图切换：`实时信号` / `历史回顾`；历史回顾面板默认隐藏，切换后显示已完赛战绩或空状态。
@@ -10,6 +26,16 @@
 - 日期按钮较多时限制在控件内部横向滚动；桌面与 390px 移动视口检查无页面级横向溢出，历史切换能正确隐藏实时表格。
 - 本地验证：先看到新增预览 DOM 契约测试红灯，再实现转绿；最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `347/347 tests passed`。
 - 本次只改本地静态预览渲染层与测试，未 push、未部署、未触发 live refresh、未调用 The Odds API。
+
+## 2026-06-12 推送与 ECS 部署
+
+- 已将本地 `main` 推送到 `origin/main`：`70c75f9 docs: add finished record and odds trend plan`。
+- 已将 release `70c75f9` 部署到 ECS：`/opt/worldcup/current` 已从实际线上 release `/opt/worldcup/releases/90b7d94` 切到 `/opt/worldcup/releases/70c75f9`；部署使用本地 git archive + scp/ssh 解包，未在服务器使用 git。
+- `worldcup.service` 已重启并保持 active；`nginx` 保持 active。公网 `/healthz` 返回 200，`/api/matches` 返回 71 场，首页和 `/preview` 返回 200 且保留免责声明；公网 `/api/snapshot/latest` 仍返回 404。
+- 页面与 API 资金/下注禁词扫描未命中；`worldcup.service` 部署后 15 分钟 journal 敏感词/error 命中 0；`football.celab.xin` 专属 Nginx access/error 日志 tail 敏感词和 5xx/upstream 命中 0。
+- in-app Browser 验收通过：桌面与 390px 视口均能渲染，标题为“2026 世界杯 | 研究台账”，免责声明存在，页面级无横向溢出，console error/warn 为空。
+- 当前线上最新 snapshot 仍是部署前 run `20260612T014553Z-live`，`snapshot.finished` 不存在，因此页面暂时没有“本届信号战绩”卡和“已完赛战绩”区是预期；下一轮本机 live 发布生成并入库新 snapshot 后才会显示。
+- 本次部署未触发 live refresh、未调用 The Odds API、未写入新 snapshot；P3 页面渲染代码、Plan A“更新规则”卡新文案，以及此前未部署的 key 轮换、自算 Elo、额度告警、scores 接入等代码已随 release 上线。
 
 ## 2026-06-12 已完赛战绩区与赔率走势
 

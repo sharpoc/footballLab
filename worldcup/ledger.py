@@ -921,7 +921,7 @@ def build_finished_view(snapshot: dict[str, Any]) -> dict[str, Any]:
         date_label = _format_kickoff_date(kickoff)
         day = days.setdefault(
             date_key,
-            {"date_label": date_label, "matches": [], "_sort_key": date_key},
+            {"date_label": date_label, "date_iso": date_key, "matches": [], "_sort_key": date_key},
         )
         result = record.get("result") or {}
         detail_signals = []
