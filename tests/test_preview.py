@@ -200,6 +200,22 @@ def test_build_preview_html_renders_empty_signal_state():
 def test_build_preview_html_includes_filter_dom_accessibility_contract():
     html = build_preview_html(_snapshot())
 
+    assert 'class="view-tabs"' in html
+    assert 'aria-label="视图切换"' in html
+    assert 'data-view-filter="live"' in html
+    assert 'data-view-filter="history"' in html
+    assert ">实时信号</button>" in html
+    assert ">历史回顾</button>" in html
+    assert 'data-view-panel="live"' in html
+    assert 'data-view-panel="history"' in html
+    assert 'data-date-filter="all"' in html
+    assert ">全部日期</button>" in html
+    assert 'data-date-filter="2026 年 6 月 12 日 星期五"' in html
+    assert 'data-date="2026 年 6 月 12 日 星期五"' in html
+    assert 'id="league-filter"' in html
+    assert '<option value="worldcup">世界杯</option>' in html
+    assert '<option value="csl">中超</option>' in html
+    assert 'data-league="worldcup"' in html
     assert 'data-filter="strong"' in html
     assert ">强信号 (S/A)</button>" in html
     assert ">弱信号 (C/D)</button>" in html
