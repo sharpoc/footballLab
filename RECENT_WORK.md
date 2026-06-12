@@ -10,7 +10,12 @@
 - `build_finished_view` 补充历史 workbench 所需展示字段：北京日期、源队名/中文队名、开球时间和 closing snapshot 时间。
 - 本地验证：新增历史 workbench DOM 契约测试，先红灯后转绿；最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `370/370 tests passed`。
 - Browser QA：用临时 `127.0.0.1:8765` 静态服务验证 `data/cache/preview.html`；实时页选 `2026-06-13` 后切历史仍显示 2 场历史比赛；历史盘口分类切到 `胜平负` 后显示 3 条信号，信号行可展开并显示赔率走势；390×844 视口无页面级横向溢出，console error/warn 为空。临时服务已停止。
-- 本次按用户确认进入提交、push 与 ECS 上线流程；上线只切换页面渲染代码并重启服务，不触发 live refresh、不调用 The Odds API、不写入新 snapshot。
+- 功能代码已提交并推送 `b0e1255 feat: align history review workbench` 到 `origin/main`；随后将包含本条记录补记的最新 `origin/main` release 部署到 ECS。部署使用本地 `git archive` + SSH stdin 上传/解包，未在服务器使用 git。
+- 部署后 `worldcup.service` 与 `nginx` 均为 active；公网 `/healthz`、`/api/matches`、首页和 `/preview` 均返回 200，`/api/matches` 返回 70 场。
+- 线上 HTML 已验证包含 `history-workbench-shell` / `history-match-row`，旧 `class="finished-row"` 与 `class="finished-table"` 不存在，closing 复盘口径和研究免责声明保留。
+- 线上 Chrome QA：历史页显示 2 场，`胜平负` 分类显示 3 条信号，首条信号可展开；390×844 视口无页面级横向溢出，二次 console 与 4xx/5xx response 采样为空。
+- `worldcup.ops_check` 主链路显示当前 release、服务、公网接口均正常；总检查非零来自既有本地日志敏感词计数和 Nginx 历史 5xx/upstream 累计窗口。按 21:18 发布后窗口过滤，`worldcup.service` 关键词命中 0，Nginx 5xx 命中 0。
+- 本次上线只切换页面渲染代码并重启服务，未触发 live refresh、未调用 The Odds API、未写入新 snapshot。
 
 ## 2026-06-12 高级赛事情报台视觉重做
 
