@@ -162,7 +162,8 @@ def build_finished_block(
 ) -> dict[str, Any]:
     store_file = Path(store_path)
     store = _load_store(store_file)
-    results_rows = _load_results(Path(results_csv))
+    results_file = Path(results_csv)
+    results_rows = _load_results(results_file)
 
     skipped = 0
     for row in results_rows:
@@ -185,11 +186,12 @@ def build_finished_block(
         record["closing_snapshot_at"] = _closing_snapshot_at(window, row)
         store[key] = record
 
-    try:
-        store_file.parent.mkdir(parents=True, exist_ok=True)
-        store_file.write_text(json.dumps(store, ensure_ascii=False), encoding="utf-8")
-    except OSError:
-        pass
+    if results_file.exists():
+        try:
+            store_file.parent.mkdir(parents=True, exist_ok=True)
+            store_file.write_text(json.dumps(store, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
 
     records = sorted(store.values(), key=lambda record: record.get("kickoff_at_utc") or "")
     return {

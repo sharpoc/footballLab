@@ -11,7 +11,9 @@ from typing import Callable
 
 from worldcup.collectors.openfootball import parse_openfootball_results
 from worldcup.elo_local import compute_updated_world_tsv, freeze_baseline, has_baseline, load_baseline
+from worldcup.finished_record import build_finished_block
 from worldcup.local_runner import attach_refresh_plans, build_snapshot_from_cache, write_snapshot
+from worldcup.odds_trend import attach_trends
 from worldcup.quota import load_quota_ledger
 from worldcup.scheduler import build_match_refresh_decision, build_run_metadata, make_run_id
 from worldcup.sources.eloratings import fetch_elo_files
@@ -86,6 +88,8 @@ def refresh_cache_and_build_snapshot(
     history_dir: str | Path = "data/local/history",
     observed_at: str | None = None,
     theoddsapi_provider: str = LEGACY_PROVIDER,
+    results_csv: str | Path = "data/local/results/wc2026_results.csv",
+    finished_store: str | Path = "data/local/finished_record_store.json",
 ) -> RefreshResult:
     observed = observed_at or _now_utc_iso()
     cache = Path(cache_dir)
@@ -171,6 +175,11 @@ def refresh_cache_and_build_snapshot(
         stale_sources=stale_sources,
     )
     snapshot["run"] = run_metadata
+    try:
+        attach_trends(snapshot, history_dir, now=observed)
+        snapshot["finished"] = build_finished_block(history_dir, results_csv, finished_store)
+    except Exception as exc:
+        print(f"warning: site enrichment failed: {exc}", file=sys.stderr)
     write_snapshot(snapshot, snapshot_output)
     archive_path: Path | None = None
     try:

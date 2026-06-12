@@ -391,3 +391,83 @@ def test_refresh_elo_fetch_success_reanchors_baseline():
         assert ratings["MX"].rating == 1880
         assert baseline_at == "2026-06-14T00:00:00+00:00"
         assert result.snapshot["data_quality"]["source_errors"] == []
+
+
+def test_refresh_attaches_trend_and_finished_block():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        cache = _elo_cache_fixture(root)
+        openfootball_body = (cache / "openfootball_2026.json").read_text()
+        odds_body = (cache / "theoddsapi_wc_odds.json").read_text()
+        history = root / "history"
+        history.mkdir()
+
+        def openfootball_transport(_url):
+            return FakeResponse(openfootball_body.encode())
+
+        def theoddsapi_transport(_url):
+            return FakeResponse(odds_body.encode())
+
+        def elo_transport(url):
+            if url.endswith("World.tsv"):
+                return FakeResponse(b"1\t1\tMX\t1875\n2\t2\tZA\t1700\n")
+            if url.endswith("en.teams.tsv"):
+                return FakeResponse(b"MX\tMexico\nZA\tSouth Africa\n")
+            raise AssertionError(url)
+
+        for observed in ("2026-06-08T00:00:00+00:00", "2026-06-08T01:00:00+00:00"):
+            result = refresh_cache_and_build_snapshot(
+                api_key="fake-key",
+                cache_dir=cache,
+                snapshot_path=root / "out" / "snapshot.json",
+                quota_path=cache / "quota.json",
+                openfootball_transport=openfootball_transport,
+                theoddsapi_transport=theoddsapi_transport,
+                elo_transport=elo_transport,
+                history_dir=history,
+                observed_at=observed,
+            )
+
+        match = result.snapshot["matches"][0]
+        assert "odds_trend" in match
+        assert match["odds_trend"]["1x2"]["home"], "trend points should exist from first archive"
+        assert "finished" in result.snapshot
+        assert result.snapshot["finished"]["tally"]["S"] == {"hit": 0, "miss": 0, "push": 0}
+
+
+def test_refresh_survives_enrichment_failure(monkeypatch=None):
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        cache = _elo_cache_fixture(root)
+        openfootball_body = (cache / "openfootball_2026.json").read_text()
+        odds_body = (cache / "theoddsapi_wc_odds.json").read_text()
+        bad_results = root / "results_dir"
+        bad_results.mkdir()
+
+        def openfootball_transport(_url):
+            return FakeResponse(openfootball_body.encode())
+
+        def theoddsapi_transport(_url):
+            return FakeResponse(odds_body.encode())
+
+        def elo_transport(url):
+            if url.endswith("World.tsv"):
+                return FakeResponse(b"1\t1\tMX\t1875\n2\t2\tZA\t1700\n")
+            if url.endswith("en.teams.tsv"):
+                return FakeResponse(b"MX\tMexico\nZA\tSouth Africa\n")
+            raise AssertionError(url)
+
+        result = refresh_cache_and_build_snapshot(
+            api_key="fake-key",
+            cache_dir=cache,
+            snapshot_path=root / "out" / "snapshot.json",
+            quota_path=cache / "quota.json",
+            openfootball_transport=openfootball_transport,
+            theoddsapi_transport=theoddsapi_transport,
+            elo_transport=elo_transport,
+            history_dir=root / "history",
+            results_csv=bad_results,
+            observed_at="2026-06-08T00:00:00+00:00",
+        )
+
+        assert result.snapshot["counts"]["matches"] == 1
