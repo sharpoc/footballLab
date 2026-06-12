@@ -425,6 +425,7 @@ def test_refresh_attaches_trend_and_finished_block():
                 theoddsapi_transport=theoddsapi_transport,
                 elo_transport=elo_transport,
                 history_dir=history,
+                finished_store=root / "finished_store.json",
                 observed_at=observed,
             )
 
@@ -467,6 +468,7 @@ def test_refresh_survives_enrichment_failure(monkeypatch=None):
             elo_transport=elo_transport,
             history_dir=root / "history",
             results_csv=bad_results,
+            finished_store=root / "finished_store.json",
             observed_at="2026-06-08T00:00:00+00:00",
         )
 
