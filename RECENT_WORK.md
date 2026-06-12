@@ -14,7 +14,10 @@
 - 旧 `按比赛/按信号` 模式栏继续保留 DOM 兼容但隐藏，首屏顺序调整为日期 timeline → 筛选 → workbench，更贴近设计目标。
 - 本地验证：新增/调整预览契约测试，最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `369/369 tests passed`。
 - Browser QA：刷新 `/tmp/worldcup-grade-badge-preview.html` 后用 `127.0.0.1:18766` 静态服务检查 1440×1024、390×844 和当前浏览器视口；页面级无横向溢出，左侧队列表格无横向溢出，左侧等级列紧跟对阵列，右侧等级列保持第二列，右侧表格内部滚动，右侧首条信号可展开，console error/warn 为空。
-- 本次只改本地页面渲染层与测试，未 commit、未 push、未部署、未触发 live refresh、未调用 The Odds API、未写入新 snapshot；本地临时预览服务继续保持可访问。
+- 已提交并推送 `a3f5c0b feat: refine premium workbench layout` 到 `origin/main`，并部署到 ECS `/opt/worldcup/releases/a3f5c0b`；部署使用本地 `git archive` + `scp/ssh` 解包，未在服务器使用 git。
+- 部署后 `worldcup.service` 与 `nginx` 均为 active；公网 `/`、`/preview`、`/api/matches`、`/healthz` 均返回 200，`/api/matches` 返回 70 场，页面保留研究免责声明且禁词扫描为空。
+- 线上 HTML 已验证左侧队列表头顺序为 `开赛时间 → 对阵 → 最强等级 → 组别 → 信号数 → 最高 EDGE`，首行对阵在等级前，波黑/美国未回退英文；最近 5 分钟 `worldcup.service` 日志错误/敏感词扫描为空。
+- 本次未触发 live refresh、未调用 The Odds API、未写入新 snapshot；本地临时预览服务继续保持可访问。
 
 ## 2026-06-12 2022 世界杯 OddsPortal 赔率移动粗检
 
