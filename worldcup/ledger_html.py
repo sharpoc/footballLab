@@ -1750,6 +1750,7 @@ def build_research_ledger_html(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>2026 世界杯 | 研究台账</title>
+  <link rel="icon" href="data:,">
   <style>
     :root {{
       color-scheme: light;

@@ -504,6 +504,7 @@ def _snapshot_with_finished_for_preview() -> dict:
 def test_preview_renders_record_card_and_finished_section():
     html = build_preview_html(_snapshot_with_finished_for_preview())
 
+    assert '<link rel="icon" href="data:,">' in html
     assert "S 级战绩" in html
     assert "命中 1 · 未中 0 · 走水 0 · 命中率 100%" in html
     assert "已完赛战绩" in html

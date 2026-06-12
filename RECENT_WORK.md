@@ -14,6 +14,7 @@
 - 部署后 `worldcup.service` 与 `nginx` 均为 active；公网 `/healthz`、`/api/matches`、首页和 `/preview` 均返回 200，`/api/matches` 返回 70 场。
 - 线上 HTML 已验证包含 `history-workbench-shell` / `history-match-row`，旧 `class="finished-row"` 与 `class="finished-table"` 不存在，closing 复盘口径和研究免责声明保留。
 - 线上 Chrome QA：历史页显示 2 场，`胜平负` 分类显示 3 条信号，首条信号可展开；390×844 视口无页面级横向溢出，二次 console 与 4xx/5xx response 采样为空。
+- 线上 Chrome 复测时发现浏览器自动请求缺失的 `/favicon.ico` 会产生 console 404，已在页面 head 增加空 `data:,` favicon 声明并补充测试，避免无关资源缺失污染前端 QA。
 - `worldcup.ops_check` 主链路显示当前 release、服务、公网接口均正常；总检查非零来自既有本地日志敏感词计数和 Nginx 历史 5xx/upstream 累计窗口。按 21:18 发布后窗口过滤，`worldcup.service` 关键词命中 0，Nginx 5xx 命中 0。
 - 本次上线只切换页面渲染代码并重启服务，未触发 live refresh、未调用 The Odds API、未写入新 snapshot。
 
