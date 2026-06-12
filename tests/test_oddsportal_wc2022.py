@@ -1,8 +1,13 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 from worldcup.oddsportal_wc2022 import (
+    join_with_history,
     merge_markets,
     normalize_1x2,
     normalize_ah,
     normalize_ou,
+    write_backtest_csv,
 )
 
 
@@ -138,3 +143,84 @@ def test_merge_markets_keeps_match_with_missing_market():
 
     assert len(merged) == 1
     assert merged[0].close_ah is None
+
+
+def _intl_rows() -> list[dict]:
+    return [
+        {
+            "match_id": "2022-12-13_argentina_croatia",
+            "kickoff_at_utc": "2022-12-13T12:00:00Z",
+            "home_team": "Argentina",
+            "away_team": "Croatia",
+            "home_score": "3",
+            "away_score": "0",
+            "home_elo_before": "2140.0",
+            "away_elo_before": "1930.0",
+            "neutral": "1",
+        },
+        {
+            "match_id": "2022-12-14_france_morocco",
+            "kickoff_at_utc": "2022-12-14T12:00:00Z",
+            "home_team": "France",
+            "away_team": "Morocco",
+            "home_score": "2",
+            "away_score": "0",
+            "home_elo_before": "2050.0",
+            "away_elo_before": "1840.0",
+            "neutral": "1",
+        },
+    ]
+
+
+def _normalized_argentina() -> "NormalizedMatch":
+    return merge_markets([normalize_1x2(RAW_1X2)], [normalize_ah(RAW_AH)], [normalize_ou(RAW_OU)])[0]
+
+
+def test_join_matches_by_date_and_canonical_names():
+    joined, unmatched = join_with_history([_normalized_argentina()], _intl_rows())
+
+    assert len(joined) == 1
+    assert unmatched == []
+    rec = joined[0]
+    assert rec["match_id"] == "2022-12-13_argentina_croatia"
+    assert rec["home_elo_before"] == "2140.0"
+    assert rec["odds_home"] == "2.03"
+    assert rec["odds_draw"] == "3.12"
+    assert rec["ah_line"] == "-0.5"
+    assert rec["open_ah_line"] == "-0.5"
+    assert rec["open_odds_home"] == "1.89"
+
+
+def test_join_tolerates_one_day_offset():
+    moved = _normalized_argentina()
+    moved.date = "2022-12-12"
+    joined, unmatched = join_with_history([moved], _intl_rows())
+
+    assert len(joined) == 1
+    assert unmatched == []
+
+
+def test_join_reports_unmatched():
+    ghost = _normalized_argentina()
+    ghost.away_canonical = "atlantis"
+    joined, unmatched = join_with_history([ghost], _intl_rows())
+
+    assert joined == []
+    assert unmatched and unmatched[0]["away_canonical"] == "atlantis"
+
+
+def test_write_backtest_csv_is_loadable_by_backtest_module():
+    from worldcup.backtest import load_matches
+
+    joined, _ = join_with_history([_normalized_argentina()], _intl_rows())
+    with TemporaryDirectory() as tmp:
+        out = Path(tmp) / "wc2022_history.csv"
+        write_backtest_csv(joined, out)
+        matches = load_matches(out)
+
+    assert len(matches) == 1
+    match = matches[0]
+    assert match.odds_1x2 == {"home": 2.03, "draw": 3.12, "away": 4.79}
+    assert match.ah_line == -0.5
+    assert match.odds_ah == {"home": 2.085, "away": 1.91}
+    assert match.odds_ou == {"over": 2.38, "under": 1.61}

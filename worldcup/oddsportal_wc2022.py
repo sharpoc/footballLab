@@ -4,10 +4,42 @@
 """
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
+from datetime import date as _date
+import json
+from pathlib import Path
 import re
 
 from worldcup.collectors.team_aliases import canonicalize_team
+
+CSV_COLUMNS = (
+    "match_id",
+    "kickoff_at_utc",
+    "home_team",
+    "away_team",
+    "home_score",
+    "away_score",
+    "home_elo_before",
+    "away_elo_before",
+    "neutral",
+    "odds_home",
+    "odds_draw",
+    "odds_away",
+    "odds_over",
+    "odds_under",
+    "ah_line",
+    "odds_ah_home",
+    "odds_ah_away",
+    "open_odds_home",
+    "open_odds_draw",
+    "open_odds_away",
+    "open_odds_over",
+    "open_odds_under",
+    "open_ah_line",
+    "open_odds_ah_home",
+    "open_odds_ah_away",
+)
 
 
 @dataclass
@@ -189,3 +221,108 @@ def merge_markets(
             row.open_ou, row.close_ou = ou.open_ou, ou.close_ou
         out.append(row)
     return out
+
+
+def _date_near(a: str, b: str) -> bool:
+    da, db = _date.fromisoformat(a), _date.fromisoformat(b)
+    return abs((da - db).days) <= 1
+
+
+def _fmt(value) -> str:
+    return "" if value is None else str(value)
+
+
+def join_with_history(normalized: list[NormalizedMatch], intl_rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Use scraped WC2022 rows as the driver, matched to intl history by team/date."""
+    index: dict[tuple[str, str], list[dict]] = {}
+    for row in intl_rows:
+        key = (canonicalize_team(row["home_team"]), canonicalize_team(row["away_team"]))
+        index.setdefault(key, []).append(row)
+
+    joined: list[dict] = []
+    unmatched: list[dict] = []
+    for match in normalized:
+        candidates = index.get((match.home_canonical, match.away_canonical), [])
+        hit = next((row for row in candidates if _date_near(row["kickoff_at_utc"][:10], match.date)), None)
+        if hit is None:
+            unmatched.append(
+                {
+                    "date": match.date,
+                    "home_canonical": match.home_canonical,
+                    "away_canonical": match.away_canonical,
+                    "home_team": match.home_team,
+                    "away_team": match.away_team,
+                }
+            )
+            continue
+
+        rec = {key: hit.get(key, "") for key in CSV_COLUMNS[:9]}
+        close_1x2, open_1x2 = match.close_1x2 or {}, match.open_1x2 or {}
+        close_ou, open_ou = match.close_ou or {}, match.open_ou or {}
+        close_ah, open_ah = match.close_ah or {}, match.open_ah or {}
+        rec.update(
+            {
+                "odds_home": _fmt(close_1x2.get("home")),
+                "odds_draw": _fmt(close_1x2.get("draw")),
+                "odds_away": _fmt(close_1x2.get("away")),
+                "odds_over": _fmt(close_ou.get("over")),
+                "odds_under": _fmt(close_ou.get("under")),
+                "ah_line": _fmt(match.close_ah_line),
+                "odds_ah_home": _fmt(close_ah.get("home")),
+                "odds_ah_away": _fmt(close_ah.get("away")),
+                "open_odds_home": _fmt(open_1x2.get("home")),
+                "open_odds_draw": _fmt(open_1x2.get("draw")),
+                "open_odds_away": _fmt(open_1x2.get("away")),
+                "open_odds_over": _fmt(open_ou.get("over")),
+                "open_odds_under": _fmt(open_ou.get("under")),
+                "open_ah_line": _fmt(match.open_ah_line),
+                "open_odds_ah_home": _fmt(open_ah.get("home")),
+                "open_odds_ah_away": _fmt(open_ah.get("away")),
+            }
+        )
+        joined.append(rec)
+    return joined, unmatched
+
+
+def write_backtest_csv(rows: list[dict], path: str | Path) -> None:
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(CSV_COLUMNS))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _load_export(path: str) -> list[dict]:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(data, list):
+        return data
+    return data.get("matches", [])
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Join scraped WC2022 odds with intl history into backtest CSV")
+    parser.add_argument("--raw-1x2", required=True, help="OddsHarvester 1x2 JSON export")
+    parser.add_argument("--raw-ah", required=True, help="OddsHarvester Asian Handicap JSON export")
+    parser.add_argument("--raw-ou", required=True, help="OddsHarvester Over/Under JSON export")
+    parser.add_argument("--history", default="data/local/backtest/intl_history.csv")
+    parser.add_argument("--out", default="data/local/backtest/wc2022_history.csv")
+    args = parser.parse_args(argv)
+
+    rows_1x2 = [normalize_1x2(item) for item in _load_export(args.raw_1x2)]
+    rows_ah = [normalize_ah(item) for item in _load_export(args.raw_ah)]
+    rows_ou = [normalize_ou(item) for item in _load_export(args.raw_ou)]
+    merged = merge_markets(rows_1x2, rows_ah, rows_ou)
+
+    with open(args.history, newline="", encoding="utf-8") as fh:
+        intl_rows = list(csv.DictReader(fh))
+    joined, unmatched = join_with_history(merged, intl_rows)
+    write_backtest_csv(joined, args.out)
+    print(json.dumps({"scraped": len(merged), "joined": len(joined), "unmatched": unmatched}, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
