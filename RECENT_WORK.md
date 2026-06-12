@@ -2,6 +2,20 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-12 高级赛事情报台视觉重做
+
+- 按 Product Design 生成的“高级赛事情报台 Premium Match Intelligence Workbench”方向重做研究台账视觉：顶部主导航、轻量日期 timeline、日期下方筛选行、左右 workbench、右侧 KPI 条、盘口 tabs 与信号表格。
+- 修复等级列视觉：移除旧 `grade-priority` 大块样式，S/A/B/C 统一为小 badge；列表/表格内默认 28×22，KPI 区 30×24，文字居中；颜色改为 S=香槟金、A=靛紫、B=绿色、C/D=slate 灰。
+- 左侧比赛队列补充国旗与中文队名别名，`Bosnia and Herzegovina` 显示为 `波黑`、`United States` 显示为 `美国`；对阵列固定 22% 宽度，表格 `table-layout: fixed`，左侧不再出现横向滚动条。
+- 左侧比赛队列列顺序调整为 `开赛时间 → 对阵 → 最强等级 → 组别 → 信号数 → 最高 EDGE`，让等级紧跟在对阵信息后面。
+- 右侧 workbench 信号行恢复可展开交互，每条信号可点击/键盘展开轻量明细，包含盘口方向、预测状态、模型/市场概率、EV/EDGE、等级、新鲜度和信号原因。
+- 右侧信号表列顺序调整为 `市场/盘口 → 等级 → 预测 → 模型概率 → 市场概率 → EV/EDGE → 新鲜度 → 信号原因`，让等级成为第二视觉判断点。
+- 新增过期/stale 展示层：过期信号行降权、显示 `过期` 小 badge，信号原因改为“盘口数据已过期，等待下一轮刷新。”，右侧明细底部显示轻量 warning strip。
+- 旧 `按比赛/按信号` 模式栏继续保留 DOM 兼容但隐藏，首屏顺序调整为日期 timeline → 筛选 → workbench，更贴近设计目标。
+- 本地验证：新增/调整预览契约测试，最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `369/369 tests passed`。
+- Browser QA：刷新 `/tmp/worldcup-grade-badge-preview.html` 后用 `127.0.0.1:18766` 静态服务检查 1440×1024、390×844 和当前浏览器视口；页面级无横向溢出，左侧队列表格无横向溢出，左侧等级列紧跟对阵列，右侧等级列保持第二列，右侧表格内部滚动，右侧首条信号可展开，console error/warn 为空。
+- 本次只改本地页面渲染层与测试，未 commit、未 push、未部署、未触发 live refresh、未调用 The Odds API、未写入新 snapshot；本地临时预览服务继续保持可访问。
+
 ## 2026-06-12 2022 世界杯 OddsPortal 赔率移动粗检
 
 - 按修订后的漏斗式计划执行：不硬跑 AH 全盘口枚举；先用 OddsHarvester / OddsPortal 的 1x2 + OU 2.5 做 2022 世界杯粗检，AH 仅在粗检通过时再投入。
@@ -30,6 +44,7 @@
 - 页面继续保留研究免责声明，不新增下注金额或资金相关字段；本次不改模型、数据、采集、云端 ingest 或业务文字。
 - 本地验证：新增工作台布局 DOM 契约测试，最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `349/349 tests passed`。
 - Browser QA：临时 `127.0.0.1` 静态服务检查桌面和 390px 视口；工作台可见、点击比赛切换明细、盘口分类联动正常，console error/warn 为空；根级横向滚动隐藏，日期条和表格在各自容器内横向滚动。
+
 ## 2026-06-12 比赛分组台账与范围日期筛选
 
 - 台账日期筛选从逐日按钮改为固定范围：`全部 / 今日 / 明日 / 未来3天 / 未来7天 / 选择日期`；具体日期进入 `#date-picker`，选项显示 `日期 · 场次 · 信号数`。

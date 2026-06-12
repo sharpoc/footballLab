@@ -71,7 +71,8 @@ def test_build_preview_html_renders_research_ledger_surface():
     assert "墨西哥 对 南非" in html
     assert "2026 年 6 月 12 日 星期五" in html
     assert "03:00" in html
-    assert "最后更新<br>2026 年 6 月 8 日 星期一 08:00" in html
+    assert "数据更新 2026 年 6 月 8 日 星期一 08:00" in html
+    assert "刷新成功" in html
     assert "最后更新：</strong><br>2026 年 6 月 8 日 星期一 08:00" in html
     assert "2026-06-08T00:00:00+00:00" not in html
     assert '<th scope="col">更新</th>' in html
@@ -85,7 +86,8 @@ def test_build_preview_html_renders_research_ledger_surface():
     assert "阵容/伤停预热" in html
     assert "胜平负 - 主队" in html
     assert "+4.1%" in html
-    assert 'class="grade-pill grade-a grade-priority"' in html
+    assert 'class="grade-pill grade-a"' in html
+    assert "grade-priority" not in html
     assert ".grade-s" in html
     assert ".grade-a" in html
     assert ".grade-b" in html
@@ -283,13 +285,14 @@ def test_build_preview_html_defaults_to_match_grouped_ledger():
     assert 'data-signal-count="7"' in html
     assert 'data-grade-buckets="strong watch weak"' in html
     assert "展开 7条" in html
-    assert "加拿大 对 Bosnia and Herzegovina" in html
-    assert "United States 对 巴拉圭" in html
+    assert "加拿大 对 波黑" in html
+    assert "美国 对 巴拉圭" in html
 
 
 def test_build_preview_html_uses_workbench_signal_layout():
     html = build_preview_html(_snapshot_with_two_matches_many_signals())
 
+    assert 'class="workbench-shell premium-intelligence-workbench"' in html
     assert 'class="date-strip"' in html
     assert 'class="date-card active" data-date-filter="all"' in html
     assert 'class="date-card" data-date-filter="2026-06-13"' in html
@@ -301,10 +304,72 @@ def test_build_preview_html_uses_workbench_signal_layout():
     assert 'class="match-list-row active"' in html
     assert 'data-workbench-match-target="workbench-match-0"' in html
     assert 'class="workbench-detail active" id="workbench-match-0"' in html
-    assert "加拿大 vs Bosnia and Herzegovina · 信号明细" in html
+    assert "加拿大 vs 波黑" in html
     assert "最强等级" in html
     assert "最高 EDGE" in html
-    assert "<th>市场 / 盘口</th>" in html
+    assert (
+        "<tr><th>开赛时间</th><th>对阵</th><th>最强等级</th>"
+        "<th>组别</th><th>信号数</th><th>最高 EDGE</th></tr>"
+    ) in html
+    match_list_row = html[
+        html.index('<tr class="match-list-row active"') : html.index(
+            "</tr>", html.index('<tr class="match-list-row active"')
+        )
+    ]
+    assert match_list_row.index("<td>03:00</td>") < match_list_row.index(
+        '<td><strong><span class="team-matchup"'
+    ) < match_list_row.index(
+        '<td><span class="grade-pill grade-s">S</span></td>'
+    )
+    assert (
+        "<th>市场 / 盘口</th><th>等级</th><th>预测</th><th>模型概率</th>"
+        "<th>市场概率</th><th>EV / EDGE</th><th>新鲜度</th><th>信号原因</th>"
+    ) in html
+    assert (
+        "<td>胜平负 - 主队</td>"
+        '<td><span class="grade-pill grade-s">S</span></td>'
+        '<td><span class="prediction-pill prediction-pending">待赛</span></td>'
+    ) in html
+    assert ".grade-pill" in html
+    assert "height: 24px;" in html
+    assert "width: 30px;" in html
+    assert "grade-priority" not in html
+
+
+def test_build_preview_html_renders_workbench_flags_and_compact_interaction():
+    html = build_preview_html(_snapshot_with_two_matches_many_signals())
+
+    assert 'class="team-matchup"' in html
+    assert '<span class="team-flag" aria-hidden="true">🇨🇦</span>' in html
+    assert '<span class="team-flag" aria-hidden="true">🇧🇦</span>' in html
+    assert '<span class="team-flag" aria-hidden="true">🇺🇸</span>' in html
+    assert '<span class="team-flag" aria-hidden="true">🇵🇾</span>' in html
+    assert "加拿大 vs 波黑" in html
+    assert "美国 vs 巴拉圭" in html
+    assert "Bosnia and Herzegovina · 信号明细" not in html
+    assert "United States vs 巴拉圭" not in html
+    assert ".match-list-scroll" in html
+    assert "overflow-x: hidden;" in html
+    assert "width: 22%;" in html
+    assert 'class="workbench-signal-row" role="button" tabindex="0" aria-expanded="false"' in html
+    assert 'class="workbench-inline-detail-row" id="workbench-signal-detail-0-0" hidden' in html
+    assert "function setWorkbenchSignalDetail" in html
+    assert "盘口方向" in html
+    assert "信号原因" in html
+
+
+def test_build_preview_html_renders_premium_stale_signal_state():
+    snapshot = _snapshot_with_two_matches_many_signals()
+    snapshot["run"]["stale_sources"] = ["theoddsapi"]
+    snapshot["data_quality"]["stale_sources"] = ["theoddsapi"]
+
+    html = build_preview_html(snapshot)
+
+    assert 'class="workbench-signal-row is-stale"' in html
+    assert 'class="freshness-badge freshness-stale">过期</span>' in html
+    assert "盘口数据已过期，等待下一轮刷新。" in html
+    assert 'class="workbench-warning-strip"' in html
+    assert "部分信号来自缓存数据，盘口数据已过期，等待下一轮刷新。" in html
 
 
 def test_build_preview_html_includes_expandable_signal_detail_rows():
@@ -365,9 +430,11 @@ def test_build_preview_html_renders_stronger_signal_grade_badges():
 
     html = build_preview_html(current, previous_snapshot=previous)
 
-    assert 'class="grade-pill grade-s grade-priority"' in html
-    assert ".grade-priority" in html
-    assert "letter-spacing" not in html
+    assert 'class="grade-pill grade-s"' in html
+    assert "grade-priority" not in html
+    assert "height: 24px;" in html
+    assert "width: 30px;" in html
+    assert "letter-spacing: 0;" in html
 
 
 def test_build_preview_html_keeps_mobile_table_scroll_inside_ledger_panel():
