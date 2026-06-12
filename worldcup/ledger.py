@@ -951,10 +951,18 @@ def build_finished_view(snapshot: dict[str, Any]) -> dict[str, Any]:
         away_score = result.get("away_score", EM_DASH)
         day["matches"].append(
             {
+                "kickoff_at_utc": record.get("kickoff_at_utc"),
+                "kickoff_date": date_label,
+                "kickoff_date_iso": date_key,
+                "home_team": format_team_label(record.get("home_team")),
+                "away_team": format_team_label(record.get("away_team")),
+                "source_home_team": record.get("home_team"),
+                "source_away_team": record.get("away_team"),
                 "matchup": format_matchup_label(record.get("home_team"), record.get("away_team")),
                 "score_label": f"{home_score} - {away_score}",
                 "stage_group": _format_stage_group(record.get("stage"), record.get("group")),
                 "kickoff_time": kickoff.strftime("%H:%M") if kickoff else "",
+                "closing_snapshot_at": record.get("closing_snapshot_at"),
                 "sa_badges": sa_badges,
                 "detail_signals": detail_signals,
             }

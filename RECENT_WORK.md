@@ -2,6 +2,16 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-12 历史回顾工作台交互
+
+- 将“历史回顾”从单独的 `finished-table` 表格改为与“实时信号”一致的 workbench：日期条、等级/搜索/赛事筛选、左侧历史比赛列表、右侧盘口分类 tabs 与信号明细。
+- 历史详情使用 closing（开球前最后一轮）口径展示赛果、收盘快照、收盘赔率、命中/未中/走水与赔率走势；旧 `finished-row` 结构已从渲染契约中移除。
+- 筛选状态按 `实时信号` / `历史回顾` 分视图保存，修复实时页选择未来日期后切到历史导致历史记录被隐藏的问题。
+- `build_finished_view` 补充历史 workbench 所需展示字段：北京日期、源队名/中文队名、开球时间和 closing snapshot 时间。
+- 本地验证：新增历史 workbench DOM 契约测试，先红灯后转绿；最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `370/370 tests passed`。
+- Browser QA：用临时 `127.0.0.1:8765` 静态服务验证 `data/cache/preview.html`；实时页选 `2026-06-13` 后切历史仍显示 2 场历史比赛；历史盘口分类切到 `胜平负` 后显示 3 条信号，信号行可展开并显示赔率走势；390×844 视口无页面级横向溢出，console error/warn 为空。临时服务已停止。
+- 本次按用户确认进入提交、push 与 ECS 上线流程；上线只切换页面渲染代码并重启服务，不触发 live refresh、不调用 The Odds API、不写入新 snapshot。
+
 ## 2026-06-12 高级赛事情报台视觉重做
 
 - 按 Product Design 生成的“高级赛事情报台 Premium Match Intelligence Workbench”方向重做研究台账视觉：顶部主导航、轻量日期 timeline、日期下方筛选行、左右 workbench、右侧 KPI 条、盘口 tabs 与信号表格。

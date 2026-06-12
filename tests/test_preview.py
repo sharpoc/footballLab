@@ -508,7 +508,7 @@ def test_preview_renders_record_card_and_finished_section():
     assert "命中 1 · 未中 0 · 走水 0 · 命中率 100%" in html
     assert "已完赛战绩" in html
     assert "2 - 0" in html
-    assert "finished-row" in html
+    assert "history-match-0" in html
 
 
 def test_preview_renders_trend_sparkline_in_detail():
@@ -518,6 +518,26 @@ def test_preview_renders_trend_sparkline_in_detail():
     assert "<polyline" in html
     assert "赔率走势" in html
     assert "1.85" in html and "1.78" in html
+
+
+def test_preview_renders_history_with_workbench_interaction_contract():
+    html = build_preview_html(_snapshot_with_finished_for_preview())
+
+    assert 'data-view-panel="history"' in html
+    assert 'class="workbench-shell history-workbench-shell premium-intelligence-workbench"' in html
+    assert 'class="date-card active" data-date-filter="all"' in html
+    assert 'class="match-list-row active history-match-row"' in html
+    assert 'data-workbench-match-target="history-match-0"' in html
+    assert 'class="workbench-detail active history-workbench-detail" id="history-match-0"' in html
+    assert 'data-workbench-market-filter="all"' in html
+    assert 'data-workbench-market-filter="1x2"' in html
+    assert 'class="workbench-signal-row history-signal-row" role="button"' in html
+    assert 'data-workbench-signal-detail="history-signal-detail-0-0"' in html
+    assert "预测状态</dt><dd>命中" in html
+    assert "已完赛战绩" in html
+    assert "closing（开球前最后一轮）口径" in html
+    assert 'class="finished-table"' not in html
+    assert 'class="finished-row"' not in html
 
 
 def test_preview_tolerates_missing_finished_and_trend():

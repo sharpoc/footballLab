@@ -290,7 +290,10 @@ def _render_controls(rows: list[dict[str, Any]]) -> str:
     """.format(date_options=_date_filter_options(rows))
 
 
-def _render_workbench_filter_row() -> str:
+def _render_workbench_filter_row(
+    search_id: str = "ledger-search",
+    league_id: str = "league-filter",
+) -> str:
     return """
       <div class="ledger-filter-row workbench-filter-row">
         <div class="filter-group grade-filter-group" role="group" aria-label="等级筛选">
@@ -302,11 +305,11 @@ def _render_workbench_filter_row() -> str:
         <div class="workbench-tools">
           <label class="search-label">
             <span>搜索</span>
-            <input type="search" id="ledger-search" placeholder="搜索球队、盘口、等级" autocomplete="off">
+            <input type="search" id="{search_id}" data-search-control placeholder="搜索球队、盘口、等级" autocomplete="off">
           </label>
           <label class="league-label">
             <span>赛事筛选</span>
-            <select id="league-filter" autocomplete="off">
+            <select id="{league_id}" data-league-filter-control autocomplete="off">
               <option value="all">全部赛事</option>
               <option value="worldcup">世界杯</option>
               <option value="premier-league">英超</option>
@@ -319,7 +322,7 @@ def _render_workbench_filter_row() -> str:
           </label>
         </div>
       </div>
-    """
+    """.format(search_id=_text(search_id), league_id=_text(league_id))
 
 
 def _render_view_tabs() -> str:
@@ -745,7 +748,7 @@ def _workbench_detail_value(value: Any) -> str:
 def _render_workbench_inline_detail(signal: dict[str, Any]) -> str:
     prediction_result = signal.get("prediction_result") or {}
     prediction_label = prediction_result.get("label") or "待赛"
-    items = [
+    items = signal.get("inline_detail_items") or [
         ("盘口方向", signal.get("market_label")),
         ("预测状态", prediction_label),
         ("模型", signal.get("model_prob")),
@@ -767,17 +770,26 @@ def _render_workbench_inline_detail(signal: dict[str, Any]) -> str:
     return (
         '<div class="workbench-inline-detail">'
         '<dl class="workbench-inline-detail-grid">{items}</dl>'
+        "{trend}"
         "</div>"
-    ).format(items="".join(detail_items))
+    ).format(
+        items="".join(detail_items),
+        trend=_render_odds_trend(signal.get("odds_trend_points") or []),
+    )
 
 
-def _render_workbench_signal_rows(signals: list[dict[str, Any]], match_index: int) -> str:
+def _render_workbench_signal_rows(
+    signals: list[dict[str, Any]],
+    match_index: int,
+    detail_prefix: str = "workbench-signal-detail",
+    row_class: str = "",
+) -> str:
     rows = []
     for signal_index, signal in enumerate(signals):
         stale_class = " is-stale" if signal.get("stale") else ""
-        detail_id = f"workbench-signal-detail-{match_index}-{signal_index}"
+        detail_id = f"{detail_prefix}-{match_index}-{signal_index}"
         rows.append(
-            '<tr class="workbench-signal-row{stale_class}" role="button" tabindex="0" '
+            '<tr class="workbench-signal-row{stale_class}{row_class}" role="button" tabindex="0" '
             'aria-expanded="false" aria-controls="{detail_id}" data-workbench-signal-detail="{detail_id}" '
             'data-workbench-market="{market_bucket}" '
             'data-grade="{grade_bucket}" data-date="{date}" data-date-iso="{date_iso}" '
@@ -794,6 +806,7 @@ def _render_workbench_signal_rows(signals: list[dict[str, Any]], match_index: in
             '<tr class="workbench-inline-detail-row" id="{detail_id}" hidden>'
             '<td colspan="8">{detail}</td></tr>'.format(
                 stale_class=stale_class,
+                row_class=row_class,
                 detail_id=_text(detail_id),
                 market_bucket=_text(_market_bucket(signal)),
                 grade_bucket=_text(_grade_bucket(signal.get("grade"))),
@@ -1477,86 +1490,252 @@ def _finished_search_text(match: dict[str, Any]) -> str:
     return " ".join(str(part) for part in parts).lower()
 
 
+def _format_odds(value: Any) -> str:
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _history_top_signal(signals: list[dict[str, Any]]) -> dict[str, Any]:
+    if not signals:
+        return {"grade": "", "ev": "—", "edge": "—"}
+    scores = {"S": 5, "A": 4, "B": 3, "C": 2, "D": 1}
+    return max(signals, key=lambda signal: scores.get(str(signal.get("grade") or ""), 0))
+
+
+def _history_signal_row(
+    item: dict[str, Any],
+    match: dict[str, Any],
+    day: dict[str, Any],
+) -> dict[str, Any]:
+    outcome = str(item.get("outcome") or "")
+    odds = _format_odds(item.get("odds"))
+    prediction_result = {
+        "status": _outcome_class(outcome),
+        "label": outcome or "已完赛",
+        "detail": item.get("detail") or "",
+    }
+    return {
+        "kickoff_at_utc": match.get("kickoff_at_utc"),
+        "kickoff_date": day.get("date_label"),
+        "kickoff_time": match.get("kickoff_time"),
+        "matchup": match.get("matchup"),
+        "source_matchup": match.get("matchup"),
+        "source_home_team": match.get("source_home_team"),
+        "source_away_team": match.get("source_away_team"),
+        "stage_group": match.get("stage_group"),
+        "market_label": item.get("market_label"),
+        "prediction_result": prediction_result,
+        "model_prob": "—",
+        "market_prob": "—",
+        "ev": odds,
+        "edge": "收盘赔率",
+        "grade": item.get("grade"),
+        "freshness": "收盘",
+        "explanation": "使用开球前最后一轮 closing 快照定格，赛后按实际比分复盘。",
+        "odds_trend_points": item.get("trend_points") or [],
+        "inline_detail_items": [
+            ("盘口方向", item.get("market_label")),
+            ("预测状态", outcome or "已完赛"),
+            ("收盘赔率", odds),
+            ("等级", item.get("grade")),
+            ("赛果说明", item.get("detail") or "—"),
+            ("复盘口径", "closing（开球前最后一轮）定格"),
+        ],
+    }
+
+
+def _history_workbench_groups(view: dict[str, Any]) -> list[dict[str, Any]]:
+    groups = []
+    for day in view["days"]:
+        for match in day["matches"]:
+            signals = [
+                _history_signal_row(item, match, day)
+                for item in match.get("detail_signals") or []
+            ]
+            top = _history_top_signal(signals)
+            grade_buckets = []
+            for signal in signals:
+                bucket = _grade_bucket(signal.get("grade"))
+                if bucket != "all" and bucket not in grade_buckets:
+                    grade_buckets.append(bucket)
+            groups.append(
+                {
+                    "rows": signals,
+                    "top_signal": top,
+                    "matchup": match.get("matchup"),
+                    "home_team": match.get("home_team"),
+                    "away_team": match.get("away_team"),
+                    "source_home_team": match.get("source_home_team"),
+                    "source_away_team": match.get("source_away_team"),
+                    "stage_group": match.get("stage_group"),
+                    "kickoff_at_utc": match.get("kickoff_at_utc"),
+                    "kickoff_date": day.get("date_label"),
+                    "kickoff_date_iso": day.get("date_iso"),
+                    "kickoff_time": match.get("kickoff_time"),
+                    "closing_snapshot_at": match.get("closing_snapshot_at"),
+                    "score_label": match.get("score_label"),
+                    "grade_buckets": grade_buckets or ["all"],
+                    "search_text": _finished_search_text(match),
+                }
+            )
+    return groups
+
+
+def _render_history_workbench(groups: list[dict[str, Any]]) -> str:
+    if not groups:
+        return (
+            '<div data-view-panel="history" hidden>'
+            '<section class="workbench-shell history-workbench-shell premium-intelligence-workbench">'
+            '<section class="date-strip" aria-label="历史日期">'
+            '<button class="date-card active" data-date-filter="all" type="button" aria-pressed="true">'
+            "<span>全部 日期</span><strong>0场 · 0信号</strong></button></section>"
+            '{filters}<section class="ledger-workbench"><div class="empty-state">'
+            "<h2>暂无历史回顾</h2><p>还没有可用于复盘的已完赛 closing 记录。</p>"
+            "</div></section></section></div>"
+        ).format(
+            filters=_render_workbench_filter_row(
+                search_id="history-ledger-search",
+                league_id="history-league-filter",
+            )
+        )
+
+    list_rows = []
+    detail_panels = []
+    for index, group in enumerate(groups):
+        signals = group["rows"]
+        top = group["top_signal"]
+        detail_id = f"history-match-{index}"
+        active_class = " active" if index == 0 else ""
+        grade = top.get("grade", "")
+        grade_class = _grade_class(grade)
+        signal_count = len(signals)
+        matchup_html = _render_matchup_teams(
+            group.get("home_team"),
+            group.get("away_team"),
+            group.get("source_home_team"),
+            group.get("source_away_team"),
+            separator="对",
+            fallback=group.get("matchup"),
+        )
+        title_html = _render_matchup_teams(
+            group.get("home_team"),
+            group.get("away_team"),
+            group.get("source_home_team"),
+            group.get("source_away_team"),
+            separator="vs",
+            inline=True,
+            fallback=group.get("matchup"),
+        )
+        list_rows.append(
+            '<tr class="match-list-row{active} history-match-row" role="button" tabindex="0" '
+            'aria-expanded="{expanded}" data-workbench-match-target="{detail_id}" '
+            'data-signal-count="{signal_count}" data-grade="{grade_bucket}" '
+            'data-grade-buckets="{grade_buckets}" data-date="{date}" data-date-iso="{date_iso}" '
+            'data-league="worldcup" data-search="{search}">'
+            "<td>{kickoff}</td><td><strong>{matchup}</strong></td>"
+            '<td><span class="grade-pill {grade_class}">{grade}</span></td>'
+            "<td>{stage_group}</td><td><strong>{signal_count}条信号</strong></td>"
+            "<td><strong>{score}</strong><span>赛果</span></td></tr>".format(
+                active=active_class,
+                expanded="true" if index == 0 else "false",
+                detail_id=_text(detail_id),
+                signal_count=_text(signal_count),
+                grade_bucket=_text(_grade_bucket(grade)),
+                grade_buckets=_text(" ".join(group["grade_buckets"])),
+                date=_text(group.get("kickoff_date")),
+                date_iso=_text(group.get("kickoff_date_iso")),
+                search=_text(group.get("search_text")),
+                kickoff=_text(group.get("kickoff_time")),
+                matchup=matchup_html,
+                stage_group=_text(group.get("stage_group")),
+                grade_class=_text(grade_class),
+                grade=_text(grade or "—"),
+                score=_text(group.get("score_label")),
+            )
+        )
+        detail_panels.append(
+            '<section class="workbench-detail{active} history-workbench-detail" id="{detail_id}" '
+            'data-workbench-detail="{detail_id}" {hidden}>'
+            '<div class="detail-title-row"><h2>{title} · 历史回顾</h2></div>'
+            '<p class="muted history-workbench-note"><strong>已完赛战绩</strong>：'
+            "closing（开球前最后一轮）口径；仅用于研究分析，不构成投注建议。</p>"
+            '<div class="detail-metrics">'
+            '<div><span>最强等级</span><strong><span class="grade-pill {grade_class}">{grade}</span></strong></div>'
+            "<div><span>赛果</span><strong>{score}</strong></div>"
+            "<div><span>收盘快照</span><strong>{closing}</strong></div>"
+            "<div><span>信号数</span><strong>{signal_count}</strong></div>"
+            "</div>"
+            "{tabs}"
+            '<div class="workbench-table-wrap"><table class="workbench-signal-table">'
+            "<thead><tr><th>市场 / 盘口</th><th>等级</th><th>预测</th><th>模型概率</th>"
+            "<th>市场概率</th><th>收盘赔率</th><th>状态</th><th>信号原因</th></tr></thead>"
+            "<tbody>{signal_rows}</tbody></table></div>"
+            '<p class="workbench-market-empty" hidden>当前分类下没有信号。</p>'
+            "</section>".format(
+                active=active_class,
+                detail_id=_text(detail_id),
+                hidden="" if index == 0 else "hidden",
+                title=title_html,
+                grade_class=_text(grade_class),
+                grade=_text(grade or "—"),
+                score=_text(group.get("score_label")),
+                closing=_text(_format_snapshot_time(group.get("closing_snapshot_at")) or "未记录"),
+                signal_count=_text(signal_count),
+                tabs=_render_workbench_market_tabs(signals),
+                signal_rows=_render_workbench_signal_rows(
+                    signals,
+                    index,
+                    detail_prefix="history-signal-detail",
+                    row_class=" history-signal-row",
+                ),
+            )
+        )
+
+    return """
+    <div data-view-panel="history" hidden>
+      <section class="workbench-shell history-workbench-shell premium-intelligence-workbench">
+        {date_strip}
+        {filters}
+        <section class="ledger-workbench">
+          <aside class="match-list-panel">
+            <div class="panel-heading">
+              <h2>历史比赛 {match_count}场</h2>
+            </div>
+            <div class="match-list-scroll">
+              <table class="match-list-table">
+                <thead>
+                  <tr><th>开赛时间</th><th>对阵</th><th>最强等级</th><th>阶段</th><th>信号数</th><th>赛果</th></tr>
+                </thead>
+                <tbody>{list_rows}</tbody>
+              </table>
+            </div>
+            <p class="workbench-no-results" hidden>没有符合当前筛选的历史比赛。</p>
+          </aside>
+          <section class="signal-detail-panel">
+            {detail_panels}
+          </section>
+        </section>
+      </section>
+    </div>
+    """.format(
+        date_strip=_render_date_strip(groups),
+        filters=_render_workbench_filter_row(
+            search_id="history-ledger-search",
+            league_id="history-league-filter",
+        ),
+        match_count=_text(len(groups)),
+        list_rows="".join(list_rows),
+        detail_panels="".join(detail_panels),
+    )
+
+
 def _render_finished_section(snapshot: dict[str, Any]) -> str:
     view = build_finished_view(snapshot)
-    if not view["days"]:
-        return (
-            '<section class="panel finished-panel" data-view-panel="history" hidden>'
-            "<h2>历史回顾</h2>"
-            '<div class="empty-state">'
-            "<h3>暂无历史回顾</h3>"
-            "<p>还没有可用于复盘的已完赛 closing 记录。</p>"
-            "</div>"
-            "</section>"
-        )
-    day_blocks = []
-    for day in view["days"]:
-        match_rows = []
-        for match in day["matches"]:
-            grade_bucket = _finished_grade_bucket(match)
-            search_text = _finished_search_text(match)
-            badges = "".join(
-                '<span class="grade-chip {grade_class}">{grade}</span>'
-                '<span class="outcome outcome-{slug}">{label}</span>'.format(
-                    grade_class=_text(_grade_class(item["grade"])),
-                    grade=_text(item["grade"]),
-                    slug=_text(_outcome_class(item["outcome"])),
-                    label=_text(item["outcome"]),
-                )
-                for item in match["sa_badges"]
-            ) or '<span class="muted">无 S/A 信号</span>'
-            details = "".join(
-                (
-                    '<li><span class="grade-chip {grade_class}">{grade}</span> '
-                    "{market} @ {odds} - {outcome}（{detail}）{trend}</li>"
-                ).format(
-                    grade_class=_text(_grade_class(item["grade"])),
-                    grade=_text(item["grade"]),
-                    market=_text(item["market_label"]),
-                    odds=_text(item["odds"] if item["odds"] is not None else "—"),
-                    outcome=_text(item["outcome"] or "—"),
-                    detail=_text(item["detail"]),
-                    trend=_render_odds_trend(item.get("trend_points") or []),
-                )
-                for item in match["detail_signals"]
-            ) or '<li class="muted">暂无 closing 信号</li>'
-            match_rows.append(
-                '<tr class="finished-row" role="button" tabindex="0" aria-expanded="false" '
-                'data-date="{date}" data-date-iso="{date_iso}" data-league="worldcup" data-grade="{grade_bucket}" '
-                'data-search="{search}">'
-                "<td>{time}</td><td>{matchup}</td><td>{score}</td><td>{stage}</td><td>{badges}</td>"
-                "</tr>"
-                '<tr class="finished-detail-row" hidden><td colspan="5"><ul>{details}</ul></td></tr>'.format(
-                    date=_text(day["date_label"]),
-                    date_iso=_text(day.get("date_iso")),
-                    grade_bucket=_text(grade_bucket),
-                    search=_text(search_text),
-                    time=_text(match["kickoff_time"]),
-                    matchup=_text(match["matchup"]),
-                    score=_text(match["score_label"]),
-                    stage=_text(match["stage_group"]),
-                    badges=badges,
-                    details=details,
-                )
-            )
-        day_blocks.append(
-            '<tr class="finished-day" data-finished-date-row="{date}"><td colspan="5">{label}</td></tr>{rows}'.format(
-                date=_text(day["date_label"]),
-                label=_text(day["date_label"]),
-                rows="".join(match_rows),
-            )
-        )
-    return (
-        '<section class="panel finished-panel" data-view-panel="history" hidden><h2>历史回顾</h2>'
-        '<p class="muted"><strong>已完赛战绩</strong>：closing（开球前最后一轮）口径；'
-        "仅用于研究分析，不构成投注建议。</p>"
-        '<div class="table-scroll"><table class="finished-table">'
-        "<thead><tr><th>开赛 (北京时间)</th><th>对阵</th><th>比分</th><th>阶段</th>"
-        "<th>S/A 信号与结果</th></tr></thead>"
-        "<tbody>{body}</tbody></table></div>"
-        '<p class="history-no-results" hidden>没有符合当前筛选的历史记录。</p>'
-        "</section>"
-    ).format(body="".join(day_blocks))
+    return _render_history_workbench(_history_workbench_groups(view))
 
 
 def build_research_ledger_html(
@@ -2826,6 +3005,10 @@ def build_research_ledger_html(
       var activeDate = 'all';
       var activeGrade = 'all';
       var activeMode = 'match';
+      var filterStateByView = {{
+        live: {{ date: 'all', grade: 'all' }},
+        history: {{ date: 'all', grade: 'all' }}
+      }};
       var viewButtons = Array.prototype.slice.call(document.querySelectorAll('[data-view-filter]'));
       var viewPanels = Array.prototype.slice.call(document.querySelectorAll('[data-view-panel]'));
       var dateButtons = Array.prototype.slice.call(document.querySelectorAll('[data-date-filter]'));
@@ -2833,8 +3016,8 @@ def build_research_ledger_html(
       var gradeButtons = Array.prototype.slice.call(document.querySelectorAll('[data-filter]'));
       var modeButtons = Array.prototype.slice.call(document.querySelectorAll('[data-mode-filter]'));
       var modePanels = Array.prototype.slice.call(document.querySelectorAll('[data-mode-panel]'));
-      var league = document.getElementById('league-filter');
-      var search = document.getElementById('ledger-search');
+      var leagueControls = Array.prototype.slice.call(document.querySelectorAll('[data-league-filter-control]'));
+      var searchControls = Array.prototype.slice.call(document.querySelectorAll('[data-search-control]'));
       var rows = Array.prototype.slice.call(document.querySelectorAll('.signal-row'));
       var dateRows = Array.prototype.slice.call(document.querySelectorAll('.date-row'));
       var matchRows = Array.prototype.slice.call(document.querySelectorAll('.match-row'));
@@ -2848,7 +3031,7 @@ def build_research_ledger_html(
       var finishedDateRows = Array.prototype.slice.call(document.querySelectorAll('.finished-day'));
       var noResults = document.querySelector('.no-results');
       var matchNoResults = document.querySelector('.match-no-results');
-      var workbenchNoResults = document.querySelector('.workbench-no-results');
+      var workbenchNoResults = Array.prototype.slice.call(document.querySelectorAll('.workbench-no-results'));
       var historyNoResults = document.querySelector('.history-no-results');
       var activeWorkbenchId = workbenchRows[0] ? (workbenchRows[0].dataset.workbenchMatchTarget || '') : '';
 
@@ -2862,8 +3045,33 @@ def build_research_ledger_html(
         }});
       }}
 
+      function currentFilterState() {{
+        if (!filterStateByView[activeView]) {{
+          filterStateByView[activeView] = {{ date: 'all', grade: 'all' }};
+        }}
+        return filterStateByView[activeView];
+      }}
+
+      function setButtonsByValue(buttons, datasetKey, activeValue) {{
+        buttons.forEach(function (button) {{
+          var value = button.dataset[datasetKey] || '';
+          var active = value === activeValue;
+          button.classList.toggle('active', active);
+          button.setAttribute('aria-pressed', active ? 'true' : 'false');
+        }});
+      }}
+
+      function syncFilterButtons() {{
+        setButtonsByValue(dateButtons, 'dateFilter', activeDate);
+        setButtonsByValue(gradeButtons, 'filter', activeGrade);
+      }}
+
       function setView(view) {{
         activeView = view;
+        var state = currentFilterState();
+        activeDate = state.date || 'all';
+        activeGrade = state.grade || 'all';
+        syncFilterButtons();
         viewButtons.forEach(function (button) {{
           var active = (button.dataset.viewFilter || 'live') === activeView;
           button.classList.toggle('active', active);
@@ -2943,8 +3151,29 @@ def build_research_ledger_html(
         setFinishedDetail(row, !expanded);
       }}
 
+      function getActiveViewPanel() {{
+        return document.querySelector('[data-view-panel="' + activeView + '"]');
+      }}
+
+      function getCurrentControl(selector, fallbackId) {{
+        var panel = getActiveViewPanel();
+        var scoped = panel ? panel.querySelector(selector) : null;
+        return scoped || document.getElementById(fallbackId);
+      }}
+
       function getSelectedLeague() {{
-        return league ? (league.value || 'all') : 'all';
+        var control = getCurrentControl('[data-league-filter-control]', 'league-filter');
+        return control ? (control.value || 'all') : 'all';
+      }}
+
+      function getSearchTerm() {{
+        var control = getCurrentControl('[data-search-control]', 'ledger-search');
+        return control ? control.value.trim().toLowerCase() : '';
+      }}
+
+      function workbenchView(element) {{
+        var panel = element ? element.closest('[data-view-panel]') : null;
+        return panel ? (panel.dataset.viewPanel || 'live') : 'live';
       }}
 
       function getBeijingTodayIso() {{
@@ -3013,12 +3242,15 @@ def build_research_ledger_html(
 
       function setWorkbenchMatch(row) {{
         activeWorkbenchId = row ? (row.dataset.workbenchMatchTarget || '') : '';
+        var targetView = row ? workbenchView(row) : activeView;
         workbenchRows.forEach(function (candidate) {{
+          if (workbenchView(candidate) !== targetView) return;
           var active = !!activeWorkbenchId && candidate.dataset.workbenchMatchTarget === activeWorkbenchId && !candidate.hidden;
           candidate.classList.toggle('active', active);
           candidate.setAttribute('aria-expanded', active ? 'true' : 'false');
         }});
         workbenchDetails.forEach(function (detail) {{
+          if (workbenchView(detail) !== targetView) return;
           var active = !!activeWorkbenchId && detail.dataset.workbenchDetail === activeWorkbenchId;
           detail.classList.toggle('active', active);
           detail.hidden = !active;
@@ -3029,10 +3261,13 @@ def build_research_ledger_html(
       }}
 
       function syncWorkbenchSelection() {{
-        var visibleRows = workbenchRows.filter(function (row) {{ return !row.hidden; }});
+        var visibleRows = workbenchRows.filter(function (row) {{
+          return workbenchView(row) === activeView && !row.hidden;
+        }});
         if (!visibleRows.length) {{
           activeWorkbenchId = '';
           workbenchDetails.forEach(function (detail) {{
+            if (workbenchView(detail) !== activeView) return;
             detail.classList.remove('active');
             detail.hidden = true;
           }});
@@ -3045,18 +3280,19 @@ def build_research_ledger_html(
       }}
 
       function applyFilters() {{
-        var term = search ? search.value.trim().toLowerCase() : '';
+        var term = getSearchTerm();
         var workbenchVisible = 0;
         workbenchRows.forEach(function (row) {{
           var show = rowMatches(row, term);
           row.hidden = !show;
-          if (show) {{
+          if (workbenchView(row) === activeView && show) {{
             workbenchVisible += 1;
           }}
         }});
-        if (workbenchNoResults) {{
-          workbenchNoResults.hidden = workbenchVisible !== 0;
-        }}
+        workbenchNoResults.forEach(function (empty) {{
+          if (workbenchView(empty) !== activeView) return;
+          empty.hidden = workbenchVisible !== 0;
+        }});
         syncWorkbenchSelection();
 
         var visible = 0;
@@ -3213,19 +3449,16 @@ def build_research_ledger_html(
       dateButtons.forEach(function (button) {{
         button.addEventListener('click', function () {{
           activeDate = button.dataset.dateFilter || 'all';
-          setActiveButton(dateButtons, button);
+          currentFilterState().date = activeDate;
+          syncFilterButtons();
           applyFilters();
         }});
       }});
       if (datePicker) {{
         datePicker.addEventListener('change', function () {{
           activeDate = 'custom';
-          var customButton = dateButtons.filter(function (button) {{
-            return button.dataset.dateFilter === 'custom';
-          }})[0];
-          if (customButton) {{
-            setActiveButton(dateButtons, customButton);
-          }}
+          currentFilterState().date = activeDate;
+          syncFilterButtons();
           applyFilters();
         }});
       }}
@@ -3233,17 +3466,18 @@ def build_research_ledger_html(
       gradeButtons.forEach(function (button) {{
         button.addEventListener('click', function () {{
           activeGrade = button.dataset.filter || 'all';
-          setActiveButton(gradeButtons, button);
+          currentFilterState().grade = activeGrade;
+          syncFilterButtons();
           applyFilters();
         }});
       }});
-      if (league) {{
-        league.addEventListener('input', applyFilters);
-        league.addEventListener('change', applyFilters);
-      }}
-      if (search) {{
-        search.addEventListener('input', applyFilters);
-      }}
+      leagueControls.forEach(function (control) {{
+        control.addEventListener('input', applyFilters);
+        control.addEventListener('change', applyFilters);
+      }});
+      searchControls.forEach(function (control) {{
+        control.addEventListener('input', applyFilters);
+      }});
       document.addEventListener('click', function (event) {{
         var row = event.target.closest('.finished-row');
         if (!row) return;
