@@ -16,6 +16,11 @@ WEAK_GRADES = {"C", "D"}
 DEFAULT_CHANGE_CFG = {"ev_change": 0.03, "odds_move": 0.05}
 PROB_CHANGE_THRESHOLD = 0.01
 EDGE_CHANGE_THRESHOLD = 0.01
+TREND_MARKET_KEYS = {
+    "1X2_90min": "1x2",
+    "OverUnder_90min": "ou_2_5",
+    "AsianHandicap_90min": "ah_main",
+}
 TEAM_LABELS_ZH = {
     "Algeria": "阿尔及利亚",
     "Argentina": "阿根廷",
@@ -404,6 +409,28 @@ def _match_identity(match: dict[str, Any]) -> str:
     return "|".join(str(part).strip().lower() for part in parts)
 
 
+def _finished_identity_set(snapshot: dict[str, Any]) -> set[tuple[str, str, str]]:
+    out: set[tuple[str, str, str]] = set()
+    for record in ((snapshot.get("finished") or {}).get("matches")) or []:
+        kickoff = str(record.get("kickoff_at_utc") or "")
+        out.add(
+            (
+                kickoff[:10],
+                str(record.get("home_canonical") or ""),
+                str(record.get("away_canonical") or ""),
+            )
+        )
+    return out
+
+
+def _match_finished_identity(match: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(match.get("kickoff_at_utc") or "")[:10],
+        str(match.get("home_canonical") or ""),
+        str(match.get("away_canonical") or ""),
+    )
+
+
 def _line_key(line: Any) -> str:
     if line is None:
         return ""
@@ -417,6 +444,17 @@ def _signal_identity(signal: dict[str, Any]) -> str:
     market_type = signal.get("market_type") or ""
     selection = _selection_key(signal.get("selection")) or ""
     return "|".join([str(market_type), selection, _line_key(_signal_line(signal))])
+
+
+def _signal_trend_points(match: dict[str, Any], signal: dict[str, Any]) -> list:
+    trend = match.get("odds_trend") or {}
+    market_key = TREND_MARKET_KEYS.get(str(signal.get("market_type") or ""))
+    if not market_key:
+        return []
+    selection = _selection_key(signal.get("selection")) or str(signal.get("selection") or "")
+    if market_key == "ah_main":
+        selection = selection.split("_", 1)[0]
+    return (trend.get(market_key) or {}).get(selection) or []
 
 
 def _signal_market_odds(match: dict[str, Any], signal: dict[str, Any]) -> float | None:
@@ -708,8 +746,11 @@ def project_signal_rows(
     previous_index = _snapshot_signal_index(previous_snapshot) if previous_snapshot else {}
     current_index = _snapshot_signal_index(snapshot) if previous_snapshot else {}
     change_cfg = _change_cfg(cfg) if previous_snapshot else {}
+    finished_ids = _finished_identity_set(snapshot)
     rows: list[dict[str, Any]] = []
     for match in snapshot.get("matches", []):
+        if _match_finished_identity(match) in finished_ids:
+            continue
         match_id = _match_identity(match)
         kickoff_at_utc = match.get("kickoff_at_utc", "")
         parsed_kickoff = _parse_datetime(kickoff_at_utc)
@@ -772,6 +813,7 @@ def project_signal_rows(
                 "explanation": explanation,
                 "prediction_result": prediction_result,
                 "recent_change": recent_change,
+                "odds_trend_points": _signal_trend_points(match, signal),
                 "detail_items": _build_signal_detail_items(
                     explanation=explanation,
                     market_label=market_label,
@@ -819,8 +861,14 @@ def build_summary_metrics(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]
     rows = project_signal_rows(snapshot)
     grade_counts = Counter(row.get("grade", "") for row in rows)
     quality = derive_quality_status(snapshot)
-    return {
-        "upcoming_matches": {"label": "即将比赛", "value": len(snapshot.get("matches") or [])},
+    finished_ids = _finished_identity_set(snapshot)
+    upcoming = [
+        match
+        for match in (snapshot.get("matches") or [])
+        if _match_finished_identity(match) not in finished_ids
+    ]
+    metrics = {
+        "upcoming_matches": {"label": "即将比赛", "value": len(upcoming)},
         "strong_signals": {
             "label": "强信号",
             "value": sum(grade_counts[grade] for grade in STRONG_GRADES),
@@ -845,3 +893,71 @@ def build_summary_metrics(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]
             "reasons": quality["reasons"],
         },
     }
+    finished = snapshot.get("finished") or {}
+    tally = finished.get("tally") or {}
+
+    def _record_value(grade: str) -> str:
+        entry = tally.get(grade) or {}
+        hit = entry.get("hit", 0)
+        miss = entry.get("miss", 0)
+        push = entry.get("push", 0)
+        decided = hit + miss
+        rate = f"{round(hit * 100 / decided)}%" if decided else EM_DASH
+        return f"命中 {hit} · 未中 {miss} · 走水 {push} · 命中率 {rate}"
+
+    if tally:
+        metrics["record_s"] = {"label": "S 级战绩", "value": _record_value("S")}
+        metrics["record_a"] = {"label": "A 级战绩", "value": _record_value("A")}
+    return metrics
+
+
+def build_finished_view(snapshot: dict[str, Any]) -> dict[str, Any]:
+    finished = snapshot.get("finished") or {}
+    records = finished.get("matches") or []
+    days: dict[str, dict[str, Any]] = {}
+    for record in records:
+        kickoff = _to_beijing_time(_parse_datetime(record.get("kickoff_at_utc")))
+        date_key = kickoff.date().isoformat() if kickoff else ""
+        date_label = _format_kickoff_date(kickoff)
+        day = days.setdefault(
+            date_key,
+            {"date_label": date_label, "matches": [], "_sort_key": date_key},
+        )
+        result = record.get("result") or {}
+        detail_signals = []
+        sa_badges = []
+        for signal in record.get("closing_signals") or []:
+            grade = str(signal.get("grade") or "")
+            prediction = signal.get("prediction") or {}
+            label = prediction.get("label") or ""
+            item = {
+                "grade": grade,
+                "market_label": format_market_label(
+                    signal.get("market_type"),
+                    signal.get("selection"),
+                    signal.get("line"),
+                ),
+                "odds": signal.get("odds"),
+                "outcome": label,
+                "detail": prediction.get("detail") or "",
+                "trend_points": _signal_trend_points(record, signal),
+            }
+            detail_signals.append(item)
+            if grade in ("S", "A") and label:
+                sa_badges.append(item)
+        home_score = result.get("home_score", EM_DASH)
+        away_score = result.get("away_score", EM_DASH)
+        day["matches"].append(
+            {
+                "matchup": format_matchup_label(record.get("home_team"), record.get("away_team")),
+                "score_label": f"{home_score} - {away_score}",
+                "stage_group": _format_stage_group(record.get("stage"), record.get("group")),
+                "kickoff_time": kickoff.strftime("%H:%M") if kickoff else "",
+                "sa_badges": sa_badges,
+                "detail_signals": detail_signals,
+            }
+        )
+    ordered_days = sorted(days.values(), key=lambda day: day["_sort_key"], reverse=True)
+    for day in ordered_days:
+        day.pop("_sort_key", None)
+    return {"days": ordered_days, "tally": finished.get("tally") or {}}

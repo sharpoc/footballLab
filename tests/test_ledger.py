@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 from worldcup.ledger import (
+    build_finished_view,
     build_snapshot_change_items,
     build_signal_explanation,
     build_summary_metrics,
@@ -453,3 +454,129 @@ def test_build_signal_explanation_matches_plan_strings_and_is_safe():
         assert text == expected
         assert "bet" not in text.lower()
         assert "stake" not in text.lower()
+
+
+def _snapshot_with_finished() -> dict:
+    return {
+        "snapshot_at": "2026-06-12T08:00:00+00:00",
+        "matches": [
+            {
+                "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "home_team": "Mexico",
+                "away_team": "South Africa",
+                "home_canonical": "mexico",
+                "away_canonical": "south_africa",
+                "signals": [
+                    {"market_type": "1X2_90min", "selection": "home", "grade": "S", "line": None}
+                ],
+                "odds_trend": {
+                    "1x2": {
+                        "home": [
+                            ["2026-06-10T00:00:00+00:00", 1.85],
+                            ["2026-06-11T18:00:00+00:00", 1.78],
+                        ]
+                    },
+                },
+            },
+            {
+                "kickoff_at_utc": "2026-06-13T19:00:00+00:00",
+                "home_team": "Canada",
+                "away_team": "Qatar",
+                "home_canonical": "canada",
+                "away_canonical": "qatar",
+                "signals": [
+                    {"market_type": "1X2_90min", "selection": "home", "grade": "A", "line": None}
+                ],
+                "odds_trend": {
+                    "1x2": {
+                        "home": [
+                            ["2026-06-12T00:00:00+00:00", 1.60],
+                            ["2026-06-12T06:00:00+00:00", 1.55],
+                        ]
+                    },
+                },
+            },
+        ],
+        "finished": {
+            "matches": [
+                {
+                    "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                    "home_team": "Mexico",
+                    "away_team": "South Africa",
+                    "home_canonical": "mexico",
+                    "away_canonical": "south_africa",
+                    "stage": "Matchday 1",
+                    "group": "Group A",
+                    "result": {"home_score": 2, "away_score": 0},
+                    "closing_snapshot_at": "2026-06-11T18:00:00+00:00",
+                    "closing_signals": [
+                        {
+                            "market_type": "1X2_90min",
+                            "selection": "home",
+                            "line": None,
+                            "grade": "S",
+                            "odds": 1.78,
+                            "prediction": {"label": "命中", "detail": "全场 2-0"},
+                        },
+                        {
+                            "market_type": "1X2_90min",
+                            "selection": "away",
+                            "line": None,
+                            "grade": "C",
+                            "odds": 4.8,
+                            "prediction": {"label": "未中", "detail": "全场 2-0"},
+                        },
+                    ],
+                    "odds_trend": {
+                        "1x2": {
+                            "home": [
+                                ["2026-06-10T00:00:00+00:00", 1.85],
+                                ["2026-06-11T18:00:00+00:00", 1.78],
+                            ]
+                        }
+                    },
+                }
+            ],
+            "tally": {
+                "S": {"hit": 1, "miss": 0, "push": 0},
+                "A": {"hit": 0, "miss": 0, "push": 0},
+            },
+            "skipped_no_closing": 0,
+        },
+    }
+
+
+def test_project_signal_rows_skips_matches_present_in_finished():
+    rows = project_signal_rows(_snapshot_with_finished())
+
+    assert all(row["kickoff_at_utc"] != "2026-06-11T19:00:00+00:00" for row in rows)
+    assert any(row.get("source_matchup") == "Canada vs Qatar" for row in rows)
+
+
+def test_signal_rows_carry_trend_points_for_their_selection():
+    rows = project_signal_rows(_snapshot_with_finished())
+
+    canada = next(row for row in rows if row.get("source_matchup") == "Canada vs Qatar")
+    assert [p[1] for p in canada["odds_trend_points"]] == [1.6, 1.55]
+
+
+def test_summary_metrics_include_sa_record_when_finished_present():
+    metrics = build_summary_metrics(_snapshot_with_finished())
+
+    assert metrics["record_s"]["value"] == "命中 1 · 未中 0 · 走水 0 · 命中率 100%"
+    assert metrics["record_a"]["value"] == "命中 0 · 未中 0 · 走水 0 · 命中率 —"
+    assert metrics["upcoming_matches"]["value"] == 1
+
+
+def test_build_finished_view_groups_by_beijing_day():
+    view = build_finished_view(_snapshot_with_finished())
+
+    assert len(view["days"]) == 1
+    day = view["days"][0]
+    assert day["date_label"].startswith("2026 年 6 月 12 日")
+    match = day["matches"][0]
+    assert match["score_label"] == "2 - 0"
+    assert match["sa_badges"][0]["grade"] == "S"
+    assert match["sa_badges"][0]["outcome"] == "命中"
+    assert all(badge["grade"] in ("S", "A") for badge in match["sa_badges"])
+    assert any(item["grade"] == "C" for item in match["detail_signals"])
