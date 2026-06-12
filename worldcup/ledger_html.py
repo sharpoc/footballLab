@@ -147,7 +147,7 @@ def _date_filter_options(rows: list[dict[str, Any]]) -> str:
 def _render_controls(rows: list[dict[str, Any]]) -> str:
     return """
     <section class="ledger-controls" aria-label="台账筛选">
-      <div class="ledger-filter-row">
+      <div class="ledger-filter-row utility-date-row">
         <div class="filter-group date-filter-group" role="group" aria-label="日期筛选">
           <span class="filter-label">日期</span>
           <button type="button" class="filter-button date-filter-button active" data-date-filter="all" aria-pressed="true">全部</button>
@@ -160,31 +160,32 @@ def _render_controls(rows: list[dict[str, Any]]) -> str:
             {date_options}
           </select>
         </div>
-        <label class="search-label">
-          <span>搜索</span>
-          <input type="search" id="ledger-search" placeholder="球队、盘口、等级" autocomplete="off">
-        </label>
       </div>
-      <div class="ledger-filter-row">
-        <label class="league-label">
-          <span>赛事</span>
-          <select id="league-filter" autocomplete="off">
-            <option value="all">全部赛事</option>
-            <option value="worldcup">世界杯</option>
-            <option value="premier-league">英超</option>
-            <option value="la-liga">西甲</option>
-            <option value="serie-a">意甲</option>
-            <option value="bundesliga">德甲</option>
-            <option value="ligue-1">法甲</option>
-            <option value="csl">中超</option>
-          </select>
-        </label>
+      <div class="ledger-filter-row workbench-filter-row">
         <div class="filter-group grade-filter-group" role="group" aria-label="等级筛选">
-          <span class="filter-label">等级</span>
           <button type="button" class="filter-button grade-filter-button active" data-filter="all" aria-pressed="true">全部</button>
           <button type="button" class="filter-button grade-filter-button" data-filter="strong" aria-pressed="false">强信号 (S/A)</button>
           <button type="button" class="filter-button grade-filter-button" data-filter="watch" aria-pressed="false">观察 (B)</button>
           <button type="button" class="filter-button grade-filter-button" data-filter="weak" aria-pressed="false">弱信号 (C/D)</button>
+        </div>
+        <div class="workbench-tools">
+          <label class="search-label">
+            <span>搜索</span>
+            <input type="search" id="ledger-search" placeholder="搜索球队、盘口、等级" autocomplete="off">
+          </label>
+          <label class="league-label">
+            <span>赛事筛选</span>
+            <select id="league-filter" autocomplete="off">
+              <option value="all">全部赛事</option>
+              <option value="worldcup">世界杯</option>
+              <option value="premier-league">英超</option>
+              <option value="la-liga">西甲</option>
+              <option value="serie-a">意甲</option>
+              <option value="bundesliga">德甲</option>
+              <option value="ligue-1">法甲</option>
+              <option value="csl">中超</option>
+            </select>
+          </label>
         </div>
       </div>
     </section>
@@ -472,6 +473,262 @@ def _render_market_chips(labels: list[str]) -> str:
     return "".join('<span class="market-chip">{}</span>'.format(_text(label)) for label in labels)
 
 
+def _date_strip_entries(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    dates: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        date_iso = str(group.get("kickoff_date_iso") or "")
+        date_label = str(group.get("kickoff_date") or "日期暂不可用")
+        if not date_iso:
+            continue
+        entry = dates.setdefault(
+            date_iso,
+            {
+                "label": date_label,
+                "match_count": 0,
+                "signal_count": 0,
+            },
+        )
+        entry["match_count"] += 1
+        entry["signal_count"] += len(group.get("rows") or [])
+    return [
+        {
+            "iso": date_iso,
+            "label": values["label"],
+            "match_count": values["match_count"],
+            "signal_count": values["signal_count"],
+        }
+        for date_iso, values in sorted(dates.items())
+    ]
+
+
+def _render_date_strip(groups: list[dict[str, Any]]) -> str:
+    entries = _date_strip_entries(groups)
+    total_matches = len(groups)
+    total_signals = sum(len(group.get("rows") or []) for group in groups)
+    cards = [
+        (
+            '<button class="date-card active" data-date-filter="all" type="button" '
+            'aria-pressed="true"><span>全部 日期</span><strong>{matches}场 · {signals}信号</strong></button>'
+        ).format(matches=_text(total_matches), signals=_text(total_signals))
+    ]
+    for entry in entries:
+        cards.append(
+            (
+                '<button class="date-card" data-date-filter="{date_iso}" type="button" '
+                'aria-pressed="false"><span>{label}</span><strong>{matches}场 · {signals}信号</strong></button>'
+            ).format(
+                date_iso=_text(entry["iso"]),
+                label=_text(_date_button_label(str(entry["label"]))),
+                matches=_text(entry["match_count"]),
+                signals=_text(entry["signal_count"]),
+            )
+        )
+    return '<section class="date-strip" aria-label="比赛日期">{}</section>'.format("".join(cards))
+
+
+def _matchup_with_vs(value: Any) -> str:
+    text = str(value or "").strip()
+    return text.replace(" 对 ", " vs ") if text else "待确认对阵"
+
+
+def _market_bucket(row: dict[str, Any]) -> str:
+    label = str(row.get("market_label") or "")
+    if label.startswith("胜平负"):
+        return "1x2"
+    if label.startswith("亚洲让球"):
+        return "handicap"
+    if label.startswith("大小球"):
+        return "total"
+    return "other"
+
+
+def _render_workbench_market_tabs(signals: list[dict[str, Any]]) -> str:
+    counts = {"1x2": 0, "handicap": 0, "total": 0, "other": 0}
+    for signal in signals:
+        counts[_market_bucket(signal)] += 1
+    tabs = [
+        ("all", "全部", len(signals)),
+        ("1x2", "胜平负", counts["1x2"]),
+        ("handicap", "让球", counts["handicap"]),
+        ("total", "大小球", counts["total"]),
+    ]
+    if counts["other"]:
+        tabs.append(("other", "其他", counts["other"]))
+    buttons = []
+    for index, (bucket, label, count) in enumerate(tabs):
+        active = index == 0
+        buttons.append(
+            (
+                '<button type="button" class="market-tab{active}" data-workbench-market-filter="{bucket}" '
+                'aria-pressed="{pressed}">{label}<span>{count}</span></button>'
+            ).format(
+                active=" active" if active else "",
+                bucket=_text(bucket),
+                pressed="true" if active else "false",
+                label=_text(label),
+                count=_text(count),
+            )
+        )
+    return '<div class="market-tabs" aria-label="盘口分类">{}</div>'.format("".join(buttons))
+
+
+def _render_workbench_signal_rows(signals: list[dict[str, Any]]) -> str:
+    rows = []
+    for signal in signals:
+        rows.append(
+            '<tr class="workbench-signal-row" data-workbench-market="{market_bucket}" '
+            'data-grade="{grade_bucket}" data-date="{date}" data-date-iso="{date_iso}" '
+            'data-league="worldcup" data-search="{search}">'
+            "<td>{market}</td>"
+            "<td>{prediction}</td>"
+            "<td>{model_prob}</td>"
+            "<td>{market_prob}</td>"
+            "<td><strong>{ev}</strong><span>{edge}</span></td>"
+            '<td><span class="grade-pill {grade_class}">{grade}</span></td>'
+            "<td>{freshness}</td>"
+            "<td>{why}</td>"
+            "</tr>".format(
+                market_bucket=_text(_market_bucket(signal)),
+                grade_bucket=_text(_grade_bucket(signal.get("grade"))),
+                date=_text(signal.get("kickoff_date")),
+                date_iso=_text(_row_date_iso(signal)),
+                search=_text(_row_search_text(signal)),
+                market=_text(signal.get("market_label")),
+                prediction=_render_prediction_cell(signal),
+                model_prob=_text(signal.get("model_prob")),
+                market_prob=_text(signal.get("market_prob")),
+                ev=_text(signal.get("ev")),
+                edge=_text(signal.get("edge")),
+                grade_class=_text(_grade_class(signal.get("grade"))),
+                grade=_text(signal.get("grade")),
+                freshness=_text(signal.get("freshness")),
+                why=_render_signal_reason(signal),
+            )
+        )
+    return "".join(rows)
+
+
+def _render_workbench_ledger(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return """
+        <section class="workbench-shell">
+          <section class="date-strip" aria-label="比赛日期">
+            <button class="date-card active" data-date-filter="all" type="button" aria-pressed="true">
+              <span>全部 日期</span><strong>0场 · 0信号</strong>
+            </button>
+          </section>
+          <section class="ledger-workbench">
+            <div class="empty-state">
+              <h2>暂无研究信号</h2>
+              <p>当前快照没有达到阈值的信号行。</p>
+            </div>
+          </section>
+        </section>
+        """
+
+    groups = _group_signal_rows_by_match(rows)
+    list_rows = []
+    detail_panels = []
+    for index, group in enumerate(groups):
+        signals = group["rows"]
+        top = group["top_signal"]
+        detail_id = f"workbench-match-{index}"
+        active_class = " active" if index == 0 else ""
+        grade = top.get("grade", "")
+        grade_class = _grade_class(grade)
+        signal_count = len(signals)
+        matchup = group.get("matchup")
+        title = _matchup_with_vs(matchup)
+        list_rows.append(
+            '<tr class="match-list-row{active}" role="button" tabindex="0" aria-expanded="{expanded}" '
+            'data-workbench-match-target="{detail_id}" data-signal-count="{signal_count}" '
+            'data-grade="{grade_bucket}" data-grade-buckets="{grade_buckets}" '
+            'data-date="{date}" data-date-iso="{date_iso}" data-league="worldcup" data-search="{search}">'
+            "<td>{kickoff}</td>"
+            "<td><strong>{matchup}</strong></td>"
+            "<td>{stage_group}</td>"
+            "<td><strong>{signal_count}条信号</strong></td>"
+            '<td><span class="grade-pill {grade_class}">{grade}</span></td>'
+            "<td><strong>{top_value}</strong><span>最高</span></td>"
+            "</tr>".format(
+                active=active_class,
+                expanded="true" if index == 0 else "false",
+                detail_id=_text(detail_id),
+                signal_count=_text(signal_count),
+                grade_bucket=_text(_grade_bucket(grade)),
+                grade_buckets=_text(" ".join(group["grade_buckets"])),
+                date=_text(group.get("kickoff_date")),
+                date_iso=_text(group.get("kickoff_date_iso")),
+                search=_text(group.get("search_text")),
+                kickoff=_text(group.get("kickoff_time")),
+                matchup=_text(matchup),
+                stage_group=_text(group.get("stage_group")),
+                grade_class=_text(grade_class),
+                grade=_text(grade),
+                top_value=_text(_signal_display_value(top)),
+            )
+        )
+        detail_panels.append(
+            '<section class="workbench-detail{active}" id="{detail_id}" data-workbench-detail="{detail_id}" {hidden}>'
+            '<div class="detail-title-row"><h2>{title} · 信号明细</h2></div>'
+            '<div class="detail-metrics">'
+            '<div><span>最强等级</span><strong><span class="grade-pill {grade_class}">{grade}</span></strong></div>'
+            '<div><span>最高 EDGE</span><strong>{top_edge}</strong></div>'
+            '<div><span>更新时间</span><strong>{updated}</strong></div>'
+            '<div><span>下一次更新</span><strong>{next_update}</strong></div>'
+            '</div>'
+            '{tabs}'
+            '<div class="workbench-table-wrap"><table class="workbench-signal-table">'
+            '<thead><tr><th>市场 / 盘口</th><th>预测</th><th>模型概率</th><th>市场概率</th>'
+            '<th>EV / EDGE</th><th>等级</th><th>新鲜度</th><th>信号原因</th></tr></thead>'
+            '<tbody>{signal_rows}</tbody></table></div>'
+            '<p class="workbench-market-empty" hidden>当前分类下没有信号。</p>'
+            '</section>'.format(
+                active=active_class,
+                detail_id=_text(detail_id),
+                hidden="" if index == 0 else "hidden",
+                title=_text(title),
+                grade_class=_text(grade_class),
+                grade=_text(grade),
+                top_edge=_text(top.get("edge") or _signal_display_value(top)),
+                updated=_text(group.get("updated_time")),
+                next_update=_text(group.get("next_update_time")),
+                tabs=_render_workbench_market_tabs(signals),
+                signal_rows=_render_workbench_signal_rows(signals),
+            )
+        )
+
+    return """
+    <section class="workbench-shell">
+      {date_strip}
+      <section class="ledger-workbench">
+        <aside class="match-list-panel">
+          <div class="panel-heading">
+            <h2>本日比赛 {match_count}场</h2>
+          </div>
+          <div class="match-list-scroll">
+            <table class="match-list-table">
+              <thead>
+                <tr><th>开赛时间</th><th>对阵</th><th>组别</th><th>信号数</th><th>最强等级</th><th>最高 EDGE</th></tr>
+              </thead>
+              <tbody>{list_rows}</tbody>
+            </table>
+          </div>
+          <p class="workbench-no-results" hidden>没有符合当前筛选的比赛。</p>
+        </aside>
+        <section class="signal-detail-panel">
+          {detail_panels}
+        </section>
+      </section>
+    </section>
+    """.format(
+        date_strip=_render_date_strip(groups),
+        match_count=_text(len(groups)),
+        list_rows="".join(list_rows),
+        detail_panels="".join(detail_panels),
+    )
+
+
 def _render_match_grouped_table(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return """
@@ -738,7 +995,7 @@ def _render_signal_table(rows: list[dict[str, Any]]) -> str:
 def _render_live_ledger(rows: list[dict[str, Any]]) -> str:
     return """
     <section class="live-ledger">
-      <div class="ledger-mode-bar">
+      <div class="ledger-mode-bar legacy-mode-bar" aria-hidden="true">
         <div>
           <h2>实时信号</h2>
           <p class="muted">默认按比赛聚合，展开后查看每场的盘口信号。</p>
@@ -748,10 +1005,14 @@ def _render_live_ledger(rows: list[dict[str, Any]]) -> str:
           <button type="button" class="mode-tab" data-mode-filter="signal" aria-pressed="false">按信号</button>
         </div>
       </div>
-      {match_table}
-      {signal_table}
+      {workbench}
+      <div class="legacy-ledger-views" hidden>
+        {match_table}
+        {signal_table}
+      </div>
     </section>
     """.format(
+        workbench=_render_workbench_ledger(rows),
         match_table=_render_match_grouped_table(rows),
         signal_table=_render_signal_table(rows),
     )
@@ -1084,11 +1345,13 @@ def build_research_ledger_html(
       --error: #b42318;
     }}
     * {{ box-sizing: border-box; }}
+    html {{ overflow-x: hidden; }}
     body {{
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       color: var(--text);
       background: var(--bg);
+      overflow-x: hidden;
     }}
     main {{
       max-width: 1440px;
@@ -1180,6 +1443,14 @@ def build_research_ledger_html(
       margin-bottom: 12px;
       min-width: 0;
     }}
+    .utility-date-row {{
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+    }}
     .ledger-filter-row {{
       display: flex;
       justify-content: space-between;
@@ -1188,6 +1459,12 @@ def build_research_ledger_html(
       flex-wrap: wrap;
       min-width: 0;
       width: 100%;
+    }}
+    .workbench-filter-row {{
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
     }}
     .filter-group {{ display: flex; flex-wrap: wrap; gap: 8px; }}
     .date-filter-group {{
@@ -1234,6 +1511,14 @@ def build_research_ledger_html(
       color: #115e59;
       font-weight: 700;
     }}
+    .workbench-tools {{
+      display: flex;
+      align-items: end;
+      gap: 10px;
+      flex: 1 1 420px;
+      justify-content: flex-end;
+      min-width: 0;
+    }}
     .league-label, .search-label {{
       display: grid;
       gap: 4px;
@@ -1253,6 +1538,237 @@ def build_research_ledger_html(
       background: #fff;
     }}
     .league-label select {{ font-weight: 700; }}
+    .legacy-mode-bar, .legacy-ledger-views {{ display: none; }}
+    .workbench-shell {{
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+    }}
+    .date-strip {{
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: minmax(178px, 1fr);
+      gap: 12px;
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      overflow-x: auto;
+      contain: inline-size layout paint;
+      padding: 2px 0 8px;
+      scrollbar-width: thin;
+    }}
+    .date-card {{
+      min-height: 70px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+      padding: 11px 14px;
+      text-align: center;
+      font: inherit;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+    }}
+    .date-card span {{
+      display: block;
+      color: var(--text);
+      font-weight: 800;
+      font-size: 15px;
+      line-height: 1.25;
+    }}
+    .date-card strong {{
+      display: block;
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.25;
+    }}
+    .date-card.active {{
+      border-color: #0f9f8f;
+      background: #079181;
+      color: #ffffff;
+      box-shadow: 0 12px 26px rgba(15, 118, 110, 0.24);
+    }}
+    .date-card.active span, .date-card.active strong {{ color: #ffffff; }}
+    .ledger-workbench {{
+      display: grid;
+      grid-template-columns: minmax(500px, 0.75fr) minmax(0, 1.25fr);
+      min-height: 620px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+    }}
+    .match-list-panel {{
+      min-width: 0;
+      border-right: 1px solid var(--line);
+      background: #ffffff;
+    }}
+    .signal-detail-panel {{
+      min-width: 0;
+      padding: 20px;
+      background: #fbfdfe;
+    }}
+    .panel-heading {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 20px 18px 14px;
+      border-bottom: 1px solid #edf1f5;
+    }}
+    .panel-heading h2 {{ margin: 0; font-size: 18px; }}
+    .match-list-scroll {{
+      overflow: auto;
+      max-height: 620px;
+    }}
+    .match-list-table {{
+      width: 100%;
+      min-width: 520px;
+      border-collapse: collapse;
+    }}
+    .match-list-table th {{
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #f7fafc;
+      color: #475569;
+      font-size: 12px;
+      text-transform: none;
+    }}
+    .match-list-table td {{
+      padding: 14px 12px;
+      font-size: 14px;
+    }}
+    .match-list-row {{
+      cursor: pointer;
+      background: #ffffff;
+    }}
+    .match-list-row td:first-child {{
+      border-left: 4px solid transparent;
+      font-weight: 800;
+      white-space: nowrap;
+    }}
+    .match-list-row strong {{ font-weight: 850; }}
+    .match-list-row span {{
+      display: block;
+      color: var(--muted);
+      margin-top: 4px;
+      font-size: 12px;
+    }}
+    .match-list-row.active td {{
+      background: #f0fbfa;
+      border-bottom-color: #cfe9e5;
+    }}
+    .match-list-row.active td:first-child {{ border-left-color: var(--accent); }}
+    .match-list-row:focus {{
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }}
+    .workbench-no-results, .workbench-market-empty {{
+      padding: 18px;
+      color: var(--muted);
+    }}
+    .workbench-detail {{ min-width: 0; }}
+    .workbench-detail[hidden] {{ display: none; }}
+    .detail-title-row {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }}
+    .detail-title-row h2 {{
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.35;
+    }}
+    .detail-metrics {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      margin-bottom: 18px;
+      overflow: hidden;
+    }}
+    .detail-metrics div {{
+      min-width: 0;
+      padding: 14px 16px;
+      border-right: 1px solid #edf1f5;
+      text-align: center;
+    }}
+    .detail-metrics div:last-child {{ border-right: 0; }}
+    .detail-metrics span {{
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      margin-bottom: 6px;
+    }}
+    .detail-metrics strong {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 32px;
+      color: #0f8f4e;
+      font-size: 18px;
+      line-height: 1.2;
+    }}
+    .market-tabs {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 0 0 18px;
+    }}
+    .market-tab {{
+      min-height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #ffffff;
+      color: #334155;
+      cursor: pointer;
+      padding: 0 18px;
+      font: inherit;
+      font-weight: 800;
+    }}
+    .market-tab span {{
+      margin-left: 10px;
+      color: var(--muted);
+    }}
+    .market-tab.active {{
+      border-color: #0f9f8f;
+      background: #079181;
+      color: #ffffff;
+    }}
+    .market-tab.active span {{ color: #ffffff; }}
+    .workbench-table-wrap {{
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+    }}
+    .workbench-signal-table {{
+      width: 100%;
+      min-width: 820px;
+      border-collapse: collapse;
+    }}
+    .workbench-signal-table th {{
+      position: static;
+      background: #f8fafc;
+      color: #334155;
+      font-size: 12px;
+      text-transform: none;
+    }}
+    .workbench-signal-table td {{
+      padding: 12px;
+      font-size: 14px;
+    }}
+    .workbench-signal-table td span {{
+      color: var(--muted);
+    }}
     .ledger-mode-bar {{
       display: flex;
       justify-content: space-between;
@@ -1658,6 +2174,16 @@ def build_research_ledger_html(
       .league-label, .search-label {{ min-width: 0; }}
       .date-filter-group {{ flex-basis: 100%; }}
       .date-picker {{ flex-basis: 210px; }}
+      .workbench-tools {{ width: 100%; flex-direction: column; align-items: stretch; }}
+      .date-strip {{ grid-auto-columns: minmax(150px, 74vw); }}
+      .ledger-workbench {{ grid-template-columns: minmax(0, 1fr); }}
+      .match-list-panel {{ border-right: 0; border-bottom: 1px solid var(--line); }}
+      .match-list-scroll {{ max-height: 360px; }}
+      .signal-detail-panel {{ padding: 14px; }}
+      .detail-title-row h2 {{ font-size: 18px; }}
+      .detail-metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .detail-metrics div:nth-child(2n) {{ border-right: 0; }}
+      .detail-metrics div:nth-child(-n+2) {{ border-bottom: 1px solid #edf1f5; }}
       .ledger-mode-bar {{ align-items: stretch; flex-direction: column; }}
       .mode-tabs {{ width: 100%; }}
       .mode-tab {{ flex: 1; }}
@@ -1678,7 +2204,6 @@ def build_research_ledger_html(
         <p class="meta">最后更新<br>{snapshot_at}</p>
       </div>
     </header>
-    {summary}
     <div class="content-grid">
       <div class="ledger-panel">
         {controls}
@@ -1689,6 +2214,7 @@ def build_research_ledger_html(
       </div>
       {right_rail}
     </div>
+    {summary}
   </main>
   <script>
     (function () {{
@@ -1710,15 +2236,22 @@ def build_research_ledger_html(
       var matchRows = Array.prototype.slice.call(document.querySelectorAll('.match-row'));
       var matchDateRows = Array.prototype.slice.call(document.querySelectorAll('.match-date-row'));
       var matchSignalRows = Array.prototype.slice.call(document.querySelectorAll('.match-signal-row'));
+      var workbenchRows = Array.prototype.slice.call(document.querySelectorAll('.match-list-row'));
+      var workbenchDetails = Array.prototype.slice.call(document.querySelectorAll('.workbench-detail'));
+      var workbenchMarketButtons = Array.prototype.slice.call(document.querySelectorAll('[data-workbench-market-filter]'));
       var finishedRows = Array.prototype.slice.call(document.querySelectorAll('.finished-row'));
       var finishedDateRows = Array.prototype.slice.call(document.querySelectorAll('.finished-day'));
       var noResults = document.querySelector('.no-results');
       var matchNoResults = document.querySelector('.match-no-results');
+      var workbenchNoResults = document.querySelector('.workbench-no-results');
       var historyNoResults = document.querySelector('.history-no-results');
+      var activeWorkbenchId = workbenchRows[0] ? (workbenchRows[0].dataset.workbenchMatchTarget || '') : '';
 
       function setActiveButton(buttons, activeButton) {{
+        var activeValue = activeButton.dataset.dateFilter || activeButton.dataset.filter || '';
         buttons.forEach(function (button) {{
-          var active = button === activeButton;
+          var value = button.dataset.dateFilter || button.dataset.filter || '';
+          var active = value === activeValue;
           button.classList.toggle('active', active);
           button.setAttribute('aria-pressed', active ? 'true' : 'false');
         }});
@@ -1818,6 +2351,9 @@ def build_research_ledger_html(
           var selected = datePicker ? datePicker.value : '';
           return !!selected && rowDate === selected;
         }}
+        if (/^\\d{{4}}-\\d{{2}}-\\d{{2}}$/.test(activeDate)) {{
+          return rowDate === activeDate;
+        }}
         return row.dataset.date === activeDate;
       }}
 
@@ -1832,8 +2368,76 @@ def build_research_ledger_html(
         return gradeMatch && dateMatch && leagueMatch && textMatch;
       }}
 
+      function setWorkbenchMarket(detail, market) {{
+        var visible = 0;
+        var buttons = Array.prototype.slice.call(detail.querySelectorAll('[data-workbench-market-filter]'));
+        var signalRows = Array.prototype.slice.call(detail.querySelectorAll('.workbench-signal-row'));
+        buttons.forEach(function (button) {{
+          var active = (button.dataset.workbenchMarketFilter || 'all') === market;
+          button.classList.toggle('active', active);
+          button.setAttribute('aria-pressed', active ? 'true' : 'false');
+        }});
+        signalRows.forEach(function (row) {{
+          var show = market === 'all' || row.dataset.workbenchMarket === market;
+          row.hidden = !show;
+          if (show) {{
+            visible += 1;
+          }}
+        }});
+        var empty = detail.querySelector('.workbench-market-empty');
+        if (empty) {{
+          empty.hidden = visible !== 0;
+        }}
+      }}
+
+      function setWorkbenchMatch(row) {{
+        activeWorkbenchId = row ? (row.dataset.workbenchMatchTarget || '') : '';
+        workbenchRows.forEach(function (candidate) {{
+          var active = !!activeWorkbenchId && candidate.dataset.workbenchMatchTarget === activeWorkbenchId && !candidate.hidden;
+          candidate.classList.toggle('active', active);
+          candidate.setAttribute('aria-expanded', active ? 'true' : 'false');
+        }});
+        workbenchDetails.forEach(function (detail) {{
+          var active = !!activeWorkbenchId && detail.dataset.workbenchDetail === activeWorkbenchId;
+          detail.classList.toggle('active', active);
+          detail.hidden = !active;
+          if (active) {{
+            setWorkbenchMarket(detail, 'all');
+          }}
+        }});
+      }}
+
+      function syncWorkbenchSelection() {{
+        var visibleRows = workbenchRows.filter(function (row) {{ return !row.hidden; }});
+        if (!visibleRows.length) {{
+          activeWorkbenchId = '';
+          workbenchDetails.forEach(function (detail) {{
+            detail.classList.remove('active');
+            detail.hidden = true;
+          }});
+          return;
+        }}
+        var activeRow = visibleRows.filter(function (row) {{
+          return row.dataset.workbenchMatchTarget === activeWorkbenchId;
+        }})[0] || visibleRows[0];
+        setWorkbenchMatch(activeRow);
+      }}
+
       function applyFilters() {{
         var term = search ? search.value.trim().toLowerCase() : '';
+        var workbenchVisible = 0;
+        workbenchRows.forEach(function (row) {{
+          var show = rowMatches(row, term);
+          row.hidden = !show;
+          if (show) {{
+            workbenchVisible += 1;
+          }}
+        }});
+        if (workbenchNoResults) {{
+          workbenchNoResults.hidden = workbenchVisible !== 0;
+        }}
+        syncWorkbenchSelection();
+
         var visible = 0;
         rows.forEach(function (row) {{
           var wasExpanded = row.getAttribute('aria-expanded') === 'true';
@@ -1913,6 +2517,26 @@ def build_research_ledger_html(
           historyNoResults.hidden = historyVisible !== 0;
         }}
       }}
+
+      workbenchRows.forEach(function (row) {{
+        row.addEventListener('click', function () {{
+          setWorkbenchMatch(row);
+        }});
+        row.addEventListener('keydown', function (event) {{
+          if (event.key === 'Enter' || event.key === ' ') {{
+            event.preventDefault();
+            setWorkbenchMatch(row);
+          }}
+        }});
+      }});
+
+      workbenchMarketButtons.forEach(function (button) {{
+        button.addEventListener('click', function () {{
+          var detail = button.closest('.workbench-detail');
+          if (!detail) return;
+          setWorkbenchMarket(detail, button.dataset.workbenchMarketFilter || 'all');
+        }});
+      }});
 
       rows.forEach(function (row) {{
         row.addEventListener('click', function () {{

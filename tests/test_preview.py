@@ -287,6 +287,26 @@ def test_build_preview_html_defaults_to_match_grouped_ledger():
     assert "United States 对 巴拉圭" in html
 
 
+def test_build_preview_html_uses_workbench_signal_layout():
+    html = build_preview_html(_snapshot_with_two_matches_many_signals())
+
+    assert 'class="date-strip"' in html
+    assert 'class="date-card active" data-date-filter="all"' in html
+    assert 'class="date-card" data-date-filter="2026-06-13"' in html
+    assert "全部 日期" in html
+    assert "2场 · 14信号" in html
+    assert 'class="ledger-workbench"' in html
+    assert 'class="match-list-panel"' in html
+    assert 'class="signal-detail-panel"' in html
+    assert 'class="match-list-row active"' in html
+    assert 'data-workbench-match-target="workbench-match-0"' in html
+    assert 'class="workbench-detail active" id="workbench-match-0"' in html
+    assert "加拿大 vs Bosnia and Herzegovina · 信号明细" in html
+    assert "最强等级" in html
+    assert "最高 EDGE" in html
+    assert "<th>市场 / 盘口</th>" in html
+
+
 def test_build_preview_html_includes_expandable_signal_detail_rows():
     html = build_preview_html(_snapshot())
 
