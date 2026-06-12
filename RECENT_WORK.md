@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-12 研究台账工作台布局上线
+
+- 已将本轮研究台账工作台布局推送并部署到 ECS；发布使用本地 git archive + scp/ssh 解包，重启 `worldcup.service`，未在服务器使用 git。
+- `worldcup.service` 与 `nginx` 部署后均保持 active；公网 `/healthz`、`/api/matches`、首页和 `/preview` 均返回 200，`/api/matches` 返回 70 场。
+- 线上页面已包含新版 `.ledger-workbench` 和 `.date-strip`；in-app Browser 验证左侧比赛切换右侧明细、`让球` 分类只显示 `handicap` 信号，console 日志为空。
+- 页面与 API 资金/下注禁词扫描未命中；`worldcup.service` 近 15 分钟 journal 中 error/secret-like 关键词命中 0。
+- 本次部署只切换页面渲染代码并重启服务，不触发 live refresh、不调用 The Odds API、不写入新 snapshot。
+
 ## 2026-06-12 研究台账工作台布局改版
 
 - 实时信号区改为参考图风格：顶部日期胶囊、筛选栏、左侧比赛列表、右侧选中比赛信号明细；默认仍按比赛聚合，按信号旧 DOM 作为兼容层保留。
