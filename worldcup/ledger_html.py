@@ -8,6 +8,7 @@ from typing import Any
 from worldcup.ledger import (
     BEIJING_TZ,
     WEEKDAY_LABELS,
+    build_finished_view,
     build_summary_metrics,
     derive_quality_status,
     project_signal_rows,
@@ -67,6 +68,8 @@ def _render_summary(snapshot: dict[str, Any]) -> str:
     metrics = build_summary_metrics(snapshot)
     preferred = [
         "upcoming_matches",
+        "record_s",
+        "record_a",
         "strong_signals",
         "watch_signals",
         "weak_signals",
@@ -171,9 +174,62 @@ def _render_signal_detail(row: dict[str, Any]) -> str:
         "<div class=\"signal-detail\">"
         "<h3>分析详情</h3>"
         "<dl class=\"detail-grid\">{items}</dl>"
+        "{trend}"
         "<p class=\"detail-note\">这些内容只解释研究信号来源，不构成投注建议。</p>"
         "</div>"
-    ).format(items="".join(items))
+    ).format(items="".join(items), trend=_render_odds_trend(row.get("odds_trend_points") or []))
+
+
+def _svg_sparkline(values: list[float]) -> str:
+    if len(values) < 2:
+        return ""
+    width, height, pad = 220, 44, 4
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1.0
+    points = []
+    for index, value in enumerate(values):
+        x = pad + index * (width - 2 * pad) / (len(values) - 1)
+        y = height - pad - (value - lo) * (height - 2 * pad) / span
+        points.append(f"{x:.1f},{y:.1f}")
+    if values[-1] < values[0]:
+        color = "var(--error)"
+    elif values[-1] > values[0]:
+        color = "var(--accent)"
+    else:
+        color = "var(--muted)"
+    return (
+        '<svg class="trend-spark" viewBox="0 0 {width} {height}" preserveAspectRatio="none" '
+        'role="img" aria-label="赔率走势">'
+        '<polyline fill="none" stroke="{color}" stroke-width="2" points="{points}"/>'
+        "</svg>"
+    ).format(width=width, height=height, color=color, points=" ".join(points))
+
+
+def _trend_text(points: list) -> str:
+    if len(points) < 2:
+        return ""
+
+    def _label(point: list) -> str:
+        return f"{_format_snapshot_time(point[0])} {point[1]}"
+
+    shown = points if len(points) <= 6 else [points[0]] + points[-5:]
+    first, last = points[0][1], points[-1][1]
+    delta = (last - first) / first * 100 if first else 0.0
+    arrow = "↓" if delta < 0 else ("↑" if delta > 0 else "→")
+    return " → ".join(_label(point) for point in shown) + f"（累计 {arrow}{abs(delta):.1f}%）"
+
+
+def _render_odds_trend(points: list) -> str:
+    if not points or len(points) < 2:
+        return ""
+    try:
+        values = [float(point[1]) for point in points]
+    except (TypeError, ValueError):
+        return ""
+    return (
+        '<div class="trend-block"><h3>赔率走势</h3>{spark}'
+        '<p class="muted trend-text">{text}</p></div>'
+    ).format(spark=_svg_sparkline(values), text=_text(_trend_text(points)))
 
 
 def _render_signal_change(row: dict[str, Any]) -> str:
@@ -528,6 +584,72 @@ def _render_right_rail(snapshot: dict[str, Any]) -> str:
     )
 
 
+def _outcome_class(value: Any) -> str:
+    return {"命中": "hit", "未中": "miss", "走水": "push"}.get(str(value or ""), "unknown")
+
+
+def _render_finished_section(snapshot: dict[str, Any]) -> str:
+    view = build_finished_view(snapshot)
+    if not view["days"]:
+        return ""
+    day_blocks = []
+    for day in view["days"]:
+        match_rows = []
+        for match in day["matches"]:
+            badges = "".join(
+                '<span class="grade-chip {grade_class}">{grade}</span>'
+                '<span class="outcome outcome-{slug}">{label}</span>'.format(
+                    grade_class=_text(_grade_class(item["grade"])),
+                    grade=_text(item["grade"]),
+                    slug=_text(_outcome_class(item["outcome"])),
+                    label=_text(item["outcome"]),
+                )
+                for item in match["sa_badges"]
+            ) or '<span class="muted">无 S/A 信号</span>'
+            details = "".join(
+                (
+                    '<li><span class="grade-chip {grade_class}">{grade}</span> '
+                    "{market} @ {odds} - {outcome}（{detail}）{trend}</li>"
+                ).format(
+                    grade_class=_text(_grade_class(item["grade"])),
+                    grade=_text(item["grade"]),
+                    market=_text(item["market_label"]),
+                    odds=_text(item["odds"] if item["odds"] is not None else "—"),
+                    outcome=_text(item["outcome"] or "—"),
+                    detail=_text(item["detail"]),
+                    trend=_render_odds_trend(item.get("trend_points") or []),
+                )
+                for item in match["detail_signals"]
+            ) or '<li class="muted">暂无 closing 信号</li>'
+            match_rows.append(
+                '<tr class="finished-row" role="button" tabindex="0" aria-expanded="false">'
+                "<td>{time}</td><td>{matchup}</td><td>{score}</td><td>{stage}</td><td>{badges}</td>"
+                "</tr>"
+                '<tr class="finished-detail-row" hidden><td colspan="5"><ul>{details}</ul></td></tr>'.format(
+                    time=_text(match["kickoff_time"]),
+                    matchup=_text(match["matchup"]),
+                    score=_text(match["score_label"]),
+                    stage=_text(match["stage_group"]),
+                    badges=badges,
+                    details=details,
+                )
+            )
+        day_blocks.append(
+            '<tr class="finished-day"><td colspan="5">{label}</td></tr>{rows}'.format(
+                label=_text(day["date_label"]),
+                rows="".join(match_rows),
+            )
+        )
+    return (
+        '<section class="panel finished-panel"><h2>已完赛战绩</h2>'
+        '<p class="muted">closing（开球前最后一轮）口径；仅用于研究分析，不构成投注建议。</p>'
+        '<div class="table-scroll"><table class="finished-table">'
+        "<thead><tr><th>开赛 (北京时间)</th><th>对阵</th><th>比分</th><th>阶段</th>"
+        "<th>S/A 信号与结果</th></tr></thead>"
+        "<tbody>{body}</tbody></table></div></section>"
+    ).format(body="".join(day_blocks))
+
+
 def build_research_ledger_html(
     snapshot: dict[str, Any],
     previous_snapshot: dict[str, Any] | None = None,
@@ -863,6 +985,69 @@ def build_research_ledger_html(
       background: #f8fafc;
       color: #64748b;
     }}
+    .trend-block {{
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid #edf1f5;
+    }}
+    svg[aria-label="赔率走势"] {{
+      width: 220px;
+      height: 44px;
+      display: block;
+      margin: 6px 0 2px;
+    }}
+    .trend-text {{ font-size: 12px; }}
+    .finished-panel {{
+      margin-top: 18px;
+      padding: 16px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      min-width: 0;
+    }}
+    .table-scroll {{ overflow-x: auto; }}
+    .finished-table {{
+      width: 100%;
+      min-width: 760px;
+      border-collapse: collapse;
+    }}
+    .finished-day td {{
+      background: #f8fafc;
+      color: #334155;
+      font-weight: 700;
+    }}
+    .finished-row {{ cursor: pointer; }}
+    .finished-row:focus {{
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }}
+    .finished-row[aria-expanded="true"] td {{
+      background: #fbfdfd;
+      border-bottom-color: #d6e7e4;
+    }}
+    .finished-detail-row td {{ background: #fbfdfd; }}
+    .finished-detail-row ul {{ margin: 0; padding-left: 18px; }}
+    .grade-chip {{
+      display: inline-flex;
+      min-width: 30px;
+      min-height: 24px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      font-weight: 800;
+      font-size: 12px;
+      margin-right: 4px;
+    }}
+    .outcome {{
+      display: inline-block;
+      margin: 0 8px 0 2px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }}
+    .outcome-hit {{ color: var(--accent); }}
+    .outcome-miss {{ color: var(--error); }}
+    .outcome-push {{ color: var(--muted); }}
     .signal-why {{ color: var(--muted); }}
     .policy-list {{ margin-bottom: 12px; }}
     .right-rail {{
@@ -893,6 +1078,7 @@ def build_research_ledger_html(
         {controls}
         {table}
       </div>
+      {finished_section}
       {right_rail}
     </div>
   </main>
@@ -977,6 +1163,22 @@ def build_research_ledger_html(
       if (search) {{
         search.addEventListener('input', applyFilters);
       }}
+      document.addEventListener('click', function (event) {{
+        var row = event.target.closest('.finished-row');
+        if (!row) return;
+        var detail = row.nextElementSibling;
+        var expanded = row.getAttribute('aria-expanded') === 'true';
+        row.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        if (detail && detail.classList.contains('finished-detail-row')) {{
+          detail.hidden = expanded;
+        }}
+      }});
+      document.addEventListener('keydown', function (event) {{
+        var row = event.target.closest('.finished-row');
+        if (!row || (event.key !== 'Enter' && event.key !== ' ')) return;
+        event.preventDefault();
+        row.click();
+      }});
     }}());
   </script>
 </body>
@@ -986,5 +1188,6 @@ def build_research_ledger_html(
         summary=_render_summary(snapshot),
         controls=_render_controls(),
         table=_render_signal_table(snapshot, previous_snapshot),
+        finished_section=_render_finished_section(snapshot),
         right_rail=_render_right_rail(snapshot),
     )

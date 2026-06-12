@@ -288,3 +288,76 @@ def test_build_preview_html_places_context_cards_below_full_width_ledger():
     assert "grid-template-columns: minmax(0, 1fr) 340px;" not in html
     assert "grid-template-columns: minmax(0, 1fr);" in html
     assert "grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));" in html
+
+
+def _snapshot_with_finished_for_preview() -> dict:
+    snapshot = deepcopy(_snapshot())
+    match = snapshot["matches"][0]
+    match["home_canonical"] = "mexico"
+    match["away_canonical"] = "south_africa"
+    match["odds_trend"] = {
+        "1x2": {
+            "home": [
+                ["2026-06-10T00:00:00+00:00", 1.85],
+                ["2026-06-11T18:00:00+00:00", 1.78],
+            ]
+        }
+    }
+    snapshot["finished"] = {
+        "matches": [
+            {
+                "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "home_team": "Mexico",
+                "away_team": "South Africa",
+                "home_canonical": "mexico",
+                "away_canonical": "south_africa",
+                "stage": "Matchday 1",
+                "group": "Group A",
+                "result": {"home_score": 2, "away_score": 0},
+                "closing_snapshot_at": "2026-06-11T18:00:00+00:00",
+                "closing_signals": [
+                    {
+                        "market_type": "1X2_90min",
+                        "selection": "home",
+                        "line": None,
+                        "grade": "S",
+                        "odds": 1.78,
+                        "prediction": {"label": "命中", "detail": "赛果：墨西哥 2-0 南非；方向：主胜"},
+                    }
+                ],
+                "odds_trend": match["odds_trend"],
+            }
+        ],
+        "tally": {
+            "S": {"hit": 1, "miss": 0, "push": 0},
+            "A": {"hit": 0, "miss": 0, "push": 0},
+        },
+        "skipped_no_closing": 0,
+    }
+    return snapshot
+
+
+def test_preview_renders_record_card_and_finished_section():
+    html = build_preview_html(_snapshot_with_finished_for_preview())
+
+    assert "S 级战绩" in html
+    assert "命中 1 · 未中 0 · 走水 0 · 命中率 100%" in html
+    assert "已完赛战绩" in html
+    assert "2 - 0" in html
+    assert "finished-row" in html
+
+
+def test_preview_renders_trend_sparkline_in_detail():
+    html = build_preview_html(_snapshot_with_finished_for_preview())
+
+    assert "trend-spark" in html
+    assert "<polyline" in html
+    assert "赔率走势" in html
+    assert "1.85" in html and "1.78" in html
+
+
+def test_preview_tolerates_missing_finished_and_trend():
+    html = build_preview_html(_snapshot())
+
+    assert "已完赛战绩" not in html
+    assert "trend-spark" not in html
