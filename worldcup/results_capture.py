@@ -26,7 +26,7 @@ COLUMNS = (
 
 
 def _key(row: dict) -> tuple:
-    return (row["kickoff_at_utc"], row["home_canonical"], row["away_canonical"])
+    return (row["kickoff_at_utc"][:10], row["home_canonical"], row["away_canonical"])
 
 
 def _to_row(result: MatchResult, captured_at: str) -> dict:
