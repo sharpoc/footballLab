@@ -2,6 +2,18 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-12 The Odds API 赛果源接入
+
+- 背景：openfootball 开赛后仍未及时录入比分，本地赛后链路自身行为正确但被上游结果源阻塞；The Odds API `/scores` 首验样例已保存到 `data/probe/theoddsapi_scores_sample.json`，确认 Mexico 2-0 South Africa `completed=true`，实测 `/scores` 带 `daysFrom=2` 消耗 2 credits。
+- 已新增 `worldcup.collectors.theoddsapi_scores` 纯离线解析、`worldcup.sources.theoddsapi_scores` 抓取/缓存/quota 槽位双写、`worldcup.scores_capture` CLI（默认 dry-run，`--live` 才联网），并把 results CSV upsert 主键迁移为 `(kickoff 日期, home, away)`，吸收跨源 kickoff 分钟差。
+- `worldcup.daily_eval --live-scores` 已在赛后链路前调用 scores capture；当 openfootball 仍滞后但 scores 新增/更新时，会继续驱动 `eval_data` / `backtest`，并在 digest 中保留 `scores` 明细。
+- LaunchAgent `xin.celab.football.daily-eval` 已从北京时间 12:30 改为 16:30，并加 `--live-scores`；原因是 scores feed 赛后约 1-4 小时结算，当日最晚场约 04:00 UTC 完赛，16:30 北京更能一次覆盖完整上一比赛日。
+- 真实 smoke：`python3 -m worldcup.daily_eval --live-scores --notify` 返回 `status=ok`，scores 捕获 `events=72`、`completed=1`、`added=1`、`slot=primary`，results 入库 Mexico 2-0 South Africa，eval `joined=1`，backtest `n_ah=1` 且 `sample_too_small=true`，WxPusher `notification.status=sent`；`data/local/backtest/wc2026_eval.csv` 的 `ah_line=-1.0`、AH 主/客赔率均有值。
+- Quota ledger 已同步：`theoddsapi` 与 `theoddsapi_primary` 均记录 `last=2`、`remaining=424`；未打印 key、secret 或 token。
+- 已知风险：淘汰赛阶段 scores 可能含加时/点球比分，与 1X2 的 90 分钟结算口径冲突；6-27 前必须回评，必要时淘汰赛停用 scores 自动入库或改人工核对。Elo 重放与页面赛果显示仍以 openfootball 为准，openfootball 滞后期间页面“预测结果”可能晚于日报。
+- 本地验证：按 TDD 逐任务看到预期红灯并转绿，最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `330/330 tests passed`。
+- 本次已本地 commit，不 push、不部署；live smoke 消耗约 2 credits，并发送了一条真实赛后日报。
+
 ## 2026-06-11 赛后链路每日自动化
 
 - 新增 `worldcup.daily_eval`：进程内复用 `results_capture` → `eval_data` → `backtest` 三个既有 CLI 契约，生成 digest（完赛数、评估样本、1X2/OU 模型 vs 市场指标、AH 样本数、S/A 级信号命中统计）。
