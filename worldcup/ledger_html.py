@@ -1264,7 +1264,6 @@ def build_research_ledger_html(
     (function () {{
       var activeView = 'live';
       var activeDate = 'all';
-      var activeLeague = 'all';
       var activeGrade = 'all';
       var viewButtons = Array.prototype.slice.call(document.querySelectorAll('[data-view-filter]'));
       var viewPanels = Array.prototype.slice.call(document.querySelectorAll('[data-view-panel]'));
@@ -1327,10 +1326,15 @@ def build_research_ledger_html(
         setFinishedDetail(row, !expanded);
       }}
 
+      function getSelectedLeague() {{
+        return league ? (league.value || 'all') : 'all';
+      }}
+
       function rowMatches(row, term) {{
+        var selectedLeague = getSelectedLeague();
         var gradeMatch = activeGrade === 'all' || row.dataset.grade === activeGrade;
         var dateMatch = activeDate === 'all' || row.dataset.date === activeDate;
-        var leagueMatch = activeLeague === 'all' || row.dataset.league === activeLeague;
+        var leagueMatch = selectedLeague === 'all' || row.dataset.league === selectedLeague;
         var searchText = row.dataset.search || '';
         var textMatch = !term || searchText.indexOf(term) !== -1;
         return gradeMatch && dateMatch && leagueMatch && textMatch;
@@ -1420,10 +1424,8 @@ def build_research_ledger_html(
         }});
       }});
       if (league) {{
-        league.addEventListener('change', function () {{
-          activeLeague = league.value || 'all';
-          applyFilters();
-        }});
+        league.addEventListener('input', applyFilters);
+        league.addEventListener('change', applyFilters);
       }}
       if (search) {{
         search.addEventListener('input', applyFilters);

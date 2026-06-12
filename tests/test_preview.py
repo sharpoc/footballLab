@@ -216,6 +216,8 @@ def test_build_preview_html_includes_filter_dom_accessibility_contract():
     assert '<option value="worldcup">世界杯</option>' in html
     assert '<option value="csl">中超</option>' in html
     assert 'data-league="worldcup"' in html
+    assert "function getSelectedLeague()" in html
+    assert "var selectedLeague = getSelectedLeague();" in html
     assert 'data-filter="strong"' in html
     assert ">强信号 (S/A)</button>" in html
     assert ">弱信号 (C/D)</button>" in html
