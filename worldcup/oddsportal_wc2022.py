@@ -232,6 +232,29 @@ def _fmt(value) -> str:
     return "" if value is None else str(value)
 
 
+def _history_base_record(match: NormalizedMatch, hit: dict, flipped: bool) -> dict:
+    if not flipped:
+        return {key: hit.get(key, "") for key in CSV_COLUMNS[:9]}
+
+    kickoff = hit.get("kickoff_at_utc", "")
+    match_date = kickoff[:10] if kickoff else match.date
+    return {
+        "match_id": f"{match_date}_{match.home_canonical}_{match.away_canonical}",
+        "kickoff_at_utc": kickoff,
+        "home_team": match.home_team,
+        "away_team": match.away_team,
+        "home_score": hit.get("away_score", ""),
+        "away_score": hit.get("home_score", ""),
+        "home_elo_before": hit.get("away_elo_before", ""),
+        "away_elo_before": hit.get("home_elo_before", ""),
+        "neutral": hit.get("neutral", ""),
+    }
+
+
+def _find_date_match(candidates: list[dict], match: NormalizedMatch) -> dict | None:
+    return next((row for row in candidates if _date_near(row["kickoff_at_utc"][:10], match.date)), None)
+
+
 def join_with_history(normalized: list[NormalizedMatch], intl_rows: list[dict]) -> tuple[list[dict], list[dict]]:
     """Use scraped WC2022 rows as the driver, matched to intl history by team/date."""
     index: dict[tuple[str, str], list[dict]] = {}
@@ -242,8 +265,11 @@ def join_with_history(normalized: list[NormalizedMatch], intl_rows: list[dict]) 
     joined: list[dict] = []
     unmatched: list[dict] = []
     for match in normalized:
-        candidates = index.get((match.home_canonical, match.away_canonical), [])
-        hit = next((row for row in candidates if _date_near(row["kickoff_at_utc"][:10], match.date)), None)
+        hit = _find_date_match(index.get((match.home_canonical, match.away_canonical), []), match)
+        flipped = False
+        if hit is None:
+            hit = _find_date_match(index.get((match.away_canonical, match.home_canonical), []), match)
+            flipped = hit is not None
         if hit is None:
             unmatched.append(
                 {
@@ -256,7 +282,7 @@ def join_with_history(normalized: list[NormalizedMatch], intl_rows: list[dict]) 
             )
             continue
 
-        rec = {key: hit.get(key, "") for key in CSV_COLUMNS[:9]}
+        rec = _history_base_record(match, hit, flipped)
         close_1x2, open_1x2 = match.close_1x2 or {}, match.open_1x2 or {}
         close_ou, open_ou = match.close_ou or {}, match.open_ou or {}
         close_ah, open_ah = match.close_ah or {}, match.open_ah or {}

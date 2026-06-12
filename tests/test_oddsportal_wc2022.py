@@ -203,6 +203,35 @@ def test_join_tolerates_one_day_offset():
     assert unmatched == []
 
 
+def test_join_flips_history_when_neutral_fixture_home_order_differs():
+    reversed_history = [
+        {
+            "match_id": "2022-12-13_croatia_argentina",
+            "kickoff_at_utc": "2022-12-13T12:00:00Z",
+            "home_team": "Croatia",
+            "away_team": "Argentina",
+            "home_score": "0",
+            "away_score": "3",
+            "home_elo_before": "1930.0",
+            "away_elo_before": "2140.0",
+            "neutral": "1",
+        }
+    ]
+
+    joined, unmatched = join_with_history([_normalized_argentina()], reversed_history)
+
+    assert len(joined) == 1
+    assert unmatched == []
+    rec = joined[0]
+    assert rec["match_id"] == "2022-12-13_argentina_croatia"
+    assert rec["home_team"] == "Argentina"
+    assert rec["away_team"] == "Croatia"
+    assert rec["home_score"] == "3"
+    assert rec["away_score"] == "0"
+    assert rec["home_elo_before"] == "2140.0"
+    assert rec["away_elo_before"] == "1930.0"
+
+
 def test_join_reports_unmatched():
     ghost = _normalized_argentina()
     ghost.away_canonical = "atlantis"
