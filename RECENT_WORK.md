@@ -2,6 +2,18 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-12 已完赛战绩区与赔率走势
+
+- 背景：The Odds API 完赛数小时后会下架赔率事件，完赛场会从最新 snapshot 整场消失，页面"预测结果"无法等到 result 与 signals 同框；本轮改为本地富化 snapshot，把完赛数据按 closing 口径定格后随站点展示。
+- 新增 `worldcup.odds_trend`：从 `data/local/history/snapshot_*.json` 提取每场 `odds_trend`，只保留首点、变化点和最新点，每 selection 上限 30 点；按文件名先过滤最近 10 天窗口，不打开窗口外归档。
+- 新增 `worldcup.finished_record`：读取本地 results CSV 与 kickoff 前 3 天 history 归档，复用 `eval_data.closing_match_entry` 和 `ledger._prediction_result` 定格 closing 信号、比分、赔率、走势；`data/local/finished_record_store.json` 为被忽略的增量 store，已定格比赛不重算。
+- `refresh_runner` 已在写 `analysis_snapshot.json` 与 history 归档前注入 `odds_trend` 和顶层 `finished` 块；富化失败只向 stderr 输出 warning，不阻断主刷新、发布件或归档件。
+- `ledger.py` / `ledger_html.py` 已新增 S/A 战绩指标、主台账完赛去重、每行走势点、按北京日分组的已完赛战绩区、SVG sparkline 与文本兜底；老 snapshot 缺少 `finished` / `odds_trend` 时页面不渲染新增区块并保持兼容。
+- 离线 smoke：生成 `data/local/backtest/p3_smoke_snapshot.json` 与 `data/cache/preview.html`，输出 `matches=71`、`with_trend=71`、`finished=1`、`skipped_no_closing=0`、`tally.S.hit=2`（揭幕战 closing 中有 2 条 S 级命中信号）。
+- 浏览器 QA：通过本地只读静态服务打开 `data/cache/preview.html`；桌面视口确认战绩卡、完赛区、展开明细、sparkline 和 console 无 error/warn；390px 视口确认页面级 `scrollWidth == clientWidth`，主台账与完赛表格横向滚动限制在各自容器内，完赛行可展开且 sparkline 可见。
+- 本地验证：按 TDD 逐任务看到预期红灯并转绿，最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `347/347 tests passed`。
+- 本次已按任务本地 commit，不 push、不部署、不触发 live refresh、不调用 The Odds API；ECS 部署与"更新规则"卡文案上线仍需用户单独确认。
+
 ## 2026-06-12 The Odds API 赛果源接入
 
 - 背景：openfootball 开赛后仍未及时录入比分，本地赛后链路自身行为正确但被上游结果源阻塞；The Odds API `/scores` 首验样例已保存到 `data/probe/theoddsapi_scores_sample.json`，确认 Mexico 2-0 South Africa `completed=true`，实测 `/scores` 带 `daysFrom=2` 消耗 2 credits。

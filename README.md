@@ -13,9 +13,9 @@
 
 - Git 仓库已初始化。
 - Plan 1 引擎核心已完成第一版。
-- 本地测试执行器通过：`240/240 tests passed`。
+- 本地测试执行器通过：`347/347 tests passed`。
 - Plan 0 核心数据源探测已完成第一轮：openfootball 赛程、eloratings Elo、The Odds API 赔率可用；API-Football Free plan 不能访问 2026 season。
-- Plan 2 已启动：当前完成纯离线解析层、单场价值信号、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、按每场比赛独立计算的刷新计划、run metadata、调度执行包装、显著变化手机通知、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照，本地 runner 生成的快照也包含 ingest 所需 run metadata。
+- Plan 2 已启动：当前完成纯离线解析层、单场价值信号、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、按每场比赛独立计算的刷新计划、run metadata、调度执行包装、显著变化手机通知、完赛战绩定格、赔率走势富化、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照，本地 runner 生成的快照也包含 ingest 所需 run metadata。
 - Plan 3A FastAPI 本地适配层已实现并完成测试。
 - Plan 3B PostgreSQL store 适配器已在 `SnapshotStore` 边界后实现；测试只使用 fake connection，未连接真实数据库。
 - Plan 3C store 选择接线已完成：本地 CLI 默认 SQLite，也可以通过 `WORLDCUP_STORE=postgres` 加 `DATABASE_URL` 显式选择 PostgreSQL；本轮未连接真实数据库。
@@ -44,7 +44,9 @@
 - 当前 FastAPI app 仍作为可选适配层；Gate B 服务器 smoke 采用无额外依赖的标准库 HTTP app
 - 当前 `/healthz` 不读 DB、不依赖 secret，只用于本地和后续云端健康检查契约
 - 当前静态导出默认写入已忽略的 `data/cache/site/`
-- 当前静态预览/导出页为研究台账 UI：只展示研究信号、每场下次更新时间、方法说明、脱敏数据质量状态和免责声明，不显示下注金额或资金相关字段
+- 当前 refresh runner 在写盘和 history 归档前做本地富化：每场 match 可附加 `odds_trend` 走势点，顶层可附加 `finished` 完赛定格块；富化失败只输出 warning，不阻断 snapshot 生成或发布
+- 当前 `odds_trend` 只读最近 10 天 history 归档并按文件名时间窗过滤；`finished` 使用被忽略的 `data/local/finished_record_store.json` 增量缓存，已定格比赛不随每 15 分钟刷新重算
+- 当前静态预览/导出页为研究台账 UI：只展示研究信号、每场下次更新时间、本届 S/A 信号战绩、已完赛战绩区、赔率走势、方法说明、脱敏数据质量状态和免责声明，不显示下注金额或资金相关字段；老 snapshot 缺少 `finished` 或 `odds_trend` 时页面会容忍缺键
 - 当前 readiness check 只读本地文件和变量名，会解析 snapshot/quota、检查预览免责声明，并确认 `.env.example` 只含空值模板，不联网、不打印 secret
 - 当前 HMAC secret helper 只打印 `INGEST_HMAC_SECRET=<value>`，不会写 `.env`
 - 当前公网 MVP 使用 HTTP app + SQLite + Nginx HTTPS；FastAPI、PostgreSQL/RDS、OSS/CDN 都是可选升级，不是单用户 MVP 首发必需项
@@ -74,6 +76,8 @@ worldcup/
   backtest.py                   # 离线回测、指标报告与参数扫描
   daily_eval.py                 # 赛后每日 results/eval/backtest 编排与日报
   scores_capture.py             # The Odds API scores → 本地 results CSV（默认 dry-run）
+  odds_trend.py                 # 从 history 归档提取每场赔率走势点
+  finished_record.py            # closing 信号 × 赛果定格，维护本地增量完赛 store
   differ.py                     # 两轮变化检测
   pipeline.py                   # collector 输出对齐 + 单场分析编排
   local_runner.py               # 本地样例/缓存 → 分析快照 JSON
@@ -202,6 +206,8 @@ python3 -m worldcup.elo_local --check
 `worldcup.scheduled_publish --live` 发布成功后会复用研究台账的“本轮变化”规则：比较刷新前后的本地 snapshot，只有等级、EV、Edge、模型概率、市场概率或赔率超过展示阈值时，才调用 `/Users/eagod/ai-dev/wxpusher-reminder/bin/wxpusher-remind` 发送手机通知。通知结果只记录发送状态、摘要和条数，不记录 WxPusher UID、URL、token 或原始响应；临时禁用可加 `--no-notify`。
 
 当 openfootball 缓存里已有完赛比分时，snapshot 会给对应比赛附加 `result`，研究信号台账会在“信号原因”栏显示赛后验证：胜平负 / 大小球显示“命中”或“未中”，亚洲让球显示“命中 / 未中 / 走水”。
+
+最新 refresh 富化后的 snapshot 还会包含顶层 `finished` 块：用开球前最后一轮 closing snapshot 的信号与本地赛果定格完赛场，`tally` 只统计 S/A 级信号；走水计入 `push`，但不进入命中率分母。页面会新增“本届信号战绩”卡和“已完赛战绩”区，完赛区按北京日期分组，展开明细展示 closing 盘口、赛果判定和 SVG 赔率走势。每场最新 match 也可带 `odds_trend` 字段，供主台账展开详情展示迷你折线和首末点文本。
 
 赛后链路已由 LaunchAgent `xin.celab.football.daily-eval` 每天北京时间 16:30 自动执行 `python3 -m worldcup.daily_eval --notify --live-scores`：先调用 The Odds API scores 端点补抓赛果（每天约 2 credits，同 key 槽位轮换），再依次 `results_capture` → `eval_data` → `backtest` 并推送研究日报（完赛数、评估样本、模型 vs 市场指标、S/A 级信号命中统计）；无新增赛果不推送。手动补跑同一命令即可，幂等。
 
