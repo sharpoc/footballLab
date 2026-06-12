@@ -305,15 +305,15 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description="Join scraped WC2022 odds with intl history into backtest CSV")
     parser.add_argument("--raw-1x2", required=True, help="OddsHarvester 1x2 JSON export")
-    parser.add_argument("--raw-ah", required=True, help="OddsHarvester Asian Handicap JSON export")
-    parser.add_argument("--raw-ou", required=True, help="OddsHarvester Over/Under JSON export")
+    parser.add_argument("--raw-ah", help="Optional OddsHarvester Asian Handicap JSON export")
+    parser.add_argument("--raw-ou", help="Optional OddsHarvester Over/Under JSON export")
     parser.add_argument("--history", default="data/local/backtest/intl_history.csv")
     parser.add_argument("--out", default="data/local/backtest/wc2022_history.csv")
     args = parser.parse_args(argv)
 
     rows_1x2 = [normalize_1x2(item) for item in _load_export(args.raw_1x2)]
-    rows_ah = [normalize_ah(item) for item in _load_export(args.raw_ah)]
-    rows_ou = [normalize_ou(item) for item in _load_export(args.raw_ou)]
+    rows_ah = [normalize_ah(item) for item in _load_export(args.raw_ah)] if args.raw_ah else []
+    rows_ou = [normalize_ou(item) for item in _load_export(args.raw_ou)] if args.raw_ou else []
     merged = merge_markets(rows_1x2, rows_ah, rows_ou)
 
     with open(args.history, newline="", encoding="utf-8") as fh:

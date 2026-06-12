@@ -1,8 +1,11 @@
+import csv
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from worldcup.oddsportal_wc2022 import (
     join_with_history,
+    main,
     merge_markets,
     normalize_1x2,
     normalize_ah,
@@ -224,3 +227,30 @@ def test_write_backtest_csv_is_loadable_by_backtest_module():
     assert match.ah_line == -0.5
     assert match.odds_ah == {"home": 2.085, "away": 1.91}
     assert match.odds_ou == {"over": 2.38, "under": 1.61}
+
+
+def test_cli_accepts_1x2_only_export_and_leaves_optional_markets_empty():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        raw_1x2 = root / "raw_1x2.json"
+        history = root / "intl_history.csv"
+        out = root / "wc2022_history.csv"
+
+        raw_1x2.write_text(json.dumps([RAW_1X2]), encoding="utf-8")
+        with open(history, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(_intl_rows()[0].keys()))
+            writer.writeheader()
+            writer.writerows(_intl_rows())
+
+        try:
+            rc = main(["--raw-1x2", str(raw_1x2), "--history", str(history), "--out", str(out)])
+        except SystemExit as exc:
+            raise AssertionError(f"main exited unexpectedly: {exc.code}") from exc
+
+        rows = list(csv.DictReader(open(out, newline="", encoding="utf-8")))
+
+    assert rc == 0
+    assert len(rows) == 1
+    assert rows[0]["odds_home"] == "2.03"
+    assert rows[0]["odds_over"] == ""
+    assert rows[0]["ah_line"] == ""
