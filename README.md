@@ -13,7 +13,7 @@
 
 - Git 仓库已初始化。
 - Plan 1 引擎核心已完成第一版。
-- 本地测试执行器通过：`347/347 tests passed`。
+- 本地测试执行器通过：`366/366 tests passed`。
 - Plan 0 核心数据源探测已完成第一轮：openfootball 赛程、eloratings Elo、The Odds API 赔率可用；API-Football Free plan 不能访问 2026 season。
 - Plan 2 已启动：当前完成纯离线解析层、单场价值信号、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、按每场比赛独立计算的刷新计划、run metadata、调度执行包装、显著变化手机通知、完赛战绩定格、赔率走势富化、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照，本地 runner 生成的快照也包含 ingest 所需 run metadata。
 - Plan 3A FastAPI 本地适配层已实现并完成测试。
@@ -74,6 +74,8 @@ worldcup/
   elo_replay.py                 # 国际比赛历史 Elo replay 与官方榜对照
   backtest_data.py              # 国际比赛历史结果转换为回测 CSV
   backtest.py                   # 离线回测、指标报告与参数扫描
+  oddsportal_wc2022.py          # 2022 世界杯 OddsPortal 抓取产物标准化与回测 CSV join
+  line_move_report.py           # 赔率/让球线移动分桶报告
   daily_eval.py                 # 赛后每日 results/eval/backtest 编排与日报
   scores_capture.py             # The Odds API scores → 本地 results CSV（默认 dry-run）
   odds_trend.py                 # 从 history 归档提取每场赔率走势点
@@ -176,6 +178,8 @@ python3 -m worldcup.backtest --csv data/local/backtest/history.csv --min-sample 
 - 报告中 `markets.*.model` 是全样本模型指标，`model_matched` 是与市场基线同样本（有收盘赔率的行）的模型指标；对比模型 vs 市场请用 `model_matched` vs `market`。
 - 可用 `--set section.key=value` 做单次参数实验（不改 `settings.yaml`），例如 `--set poisson.dc_rho=-0.1 --set poisson.mu_market_weight=0`。
 - CSV 中任何十进制赔率必须 > 1.0，否则按行号报错。
+- `worldcup.oddsportal_wc2022` 用于一次性把 2022 世界杯 OddsPortal / OddsHarvester 本地抓取产物 join 成回测 CSV；原始与 join 产物默认写入被忽略的 `data/local/backtest/`。
+- `worldcup.line_move_report` 用于读取 `wc2022_history.csv`，按 1x2 主胜赔率漂移与 AH 线移动分桶输出研究报告；报告默认写入被忽略的 `data/local/backtest/line_move_report.json`。
 
 另外：OU 大小球模型的逐场 `mu_total` 现在由「OU 市场去水概率反推的总进球」与配置先验 `poisson.mu_total` 按 `poisson.mu_market_weight` 混合得出；无 OU 市场时回退先验。snapshot 的 `model.mu_total` 字段记录实际使用值。
 

@@ -2,6 +2,18 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-12 2022 世界杯 OddsPortal 赔率移动粗检
+
+- 按修订后的漏斗式计划执行：不硬跑 AH 全盘口枚举；先用 OddsHarvester / OddsPortal 的 1x2 + OU 2.5 做 2022 世界杯粗检，AH 仅在粗检通过时再投入。
+- Task 4 数据结果：results 翻页得到 64 个 match link；1x2 与 OU 2.5 最终各抓到 63 场，唯一缺失 `2022-12-09 Brazil-Croatia`（多次重试仍因 H2H fragment 匹配失败）；`wc2022_history.csv` join 结果为 `scraped=63`、`joined=63`、`unmatched=[]`。
+- 数据 sanity：`rows=63`、`full_close=63`、`full_open=63`、`odds_home_moved_ge_2pct=56`。
+- 新增 `worldcup.oddsportal_wc2022` 的反向中立场 join 修正：当 `intl_history.csv` 主客顺序与 OddsPortal 相反时，按 OddsPortal 主客口径翻转比分与赛前 Elo；测试覆盖 Netherlands/Qatar 一类风险。
+- 新增 `worldcup.line_move_report`：输出 `by_1x2_move` 与 `by_abs_move` 两个维度；当前 AH 未抓，`by_abs_move=[]`。
+- Task 5 Step 6 检查点数字：`<2%` 桶 `n=7`、`hit_rate=0.1429`、`mean_return=-0.7386`、`model_brier_1x2=0.388`；`2-5%` 桶 `n=10`、`hit_rate=0.3`、`mean_return=0.225`、`model_brier_1x2=0.609`；`5-10%` 桶 `n=18`、`hit_rate=0.2353`、`mean_return=1.4494`、`model_brier_1x2=0.5927`；`>=10%` 桶 `n=28`、`hit_rate=0.2222`、`mean_return=0.0807`、`model_brier_1x2=0.689`。
+- 大移动桶合计 `n_matches=46`、`n_signals=44`、`hit_rate=0.2273`、`mean_return=0.6095`、`model_brier_1x2=0.6513`；相对 `<2%` 桶只有 Brier 更差，命中率与单位回报没有更差，因此不满足"至少两项方向性更差"，已跳过 Task 5.5，不继续 AH 限定抓取。
+- 研究文档已写入 `docs/research/2026-06-12-wc2022-line-move.md`；既有回测器样本为 `n_matches=63`、`n_1x2=63`、`n_ou=63`、`n_ah=0`，1x2 `model_matched.brier=0.6153520445339987`、`market.brier=0.5760549007391181`，OU 2.5 `model_matched.brier=0.48168658556084926`、`market.brier=0.4781110268749646`。
+- 本轮未付费、未调用 The Odds API、未 push、未部署；爬取原始产物和报告 JSON 均在被忽略的 `data/local/backtest/`。
+
 ## 2026-06-12 研究台账工作台布局上线
 
 - 已将本轮研究台账工作台布局推送并部署到 ECS；发布使用本地 git archive + scp/ssh 解包，重启 `worldcup.service`，未在服务器使用 git。
@@ -18,7 +30,6 @@
 - 页面继续保留研究免责声明，不新增下注金额或资金相关字段；本次不改模型、数据、采集、云端 ingest 或业务文字。
 - 本地验证：新增工作台布局 DOM 契约测试，最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `349/349 tests passed`。
 - Browser QA：临时 `127.0.0.1` 静态服务检查桌面和 390px 视口；工作台可见、点击比赛切换明细、盘口分类联动正常，console error/warn 为空；根级横向滚动隐藏，日期条和表格在各自容器内横向滚动。
-
 ## 2026-06-12 比赛分组台账与范围日期筛选
 
 - 台账日期筛选从逐日按钮改为固定范围：`全部 / 今日 / 明日 / 未来3天 / 未来7天 / 选择日期`；具体日期进入 `#date-picker`，选项显示 `日期 · 场次 · 信号数`。
