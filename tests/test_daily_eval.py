@@ -176,3 +176,92 @@ def test_daily_eval_no_notify_without_new_results():
 
         assert code == 0
         assert calls == []
+
+
+def test_daily_eval_live_scores_runs_capture_first():
+    from worldcup.daily_eval import main
+
+    with TemporaryDirectory() as tmp:
+        paths = _seed_project(Path(tmp), with_score=True)
+        capture_calls = []
+
+        def scores_capture_fn(**kwargs):
+            capture_calls.append(kwargs)
+            return {"status": "captured", "completed": 1, "added": 1, "updated": 0}
+
+        code = main(
+            [
+                "--cache-dir",
+                str(paths["cache_dir"]),
+                "--history",
+                str(paths["history_dir"]),
+                "--results-out",
+                str(paths["results_out"]),
+                "--eval-out",
+                str(paths["eval_out"]),
+                "--report-out",
+                str(paths["report_out"]),
+                "--min-sample",
+                "1",
+                "--live-scores",
+            ],
+            scores_capture_fn=scores_capture_fn,
+        )
+
+        assert code == 0
+        assert len(capture_calls) == 1
+        assert capture_calls[0]["live"] is True
+        assert str(capture_calls[0]["results_out"]) == str(paths["results_out"])
+
+
+def test_daily_eval_live_scores_fresh_results_drive_eval_when_openfootball_lags():
+    from datetime import datetime, timezone
+
+    from worldcup.collectors.models import MatchResult
+    from worldcup.daily_eval import main
+    from worldcup.results_capture import _load_rows, _write_rows, upsert_results
+
+    with TemporaryDirectory() as tmp:
+        paths = _seed_project(Path(tmp), with_score=False)
+
+        def scores_capture_fn(**kwargs):
+            out = Path(kwargs["results_out"])
+            result = MatchResult(
+                kickoff_at_utc=datetime(2026, 6, 11, 19, 0, tzinfo=timezone.utc),
+                home_team_name="Mexico",
+                away_team_name="South Africa",
+                home_canonical="mexico",
+                away_canonical="south_africa",
+                home_score=2,
+                away_score=0,
+            )
+            rows, added, updated = upsert_results(
+                [result],
+                _load_rows(out),
+                "2026-06-12T08:00:00+00:00",
+            )
+            _write_rows(rows, out)
+            return {"status": "captured", "completed": 1, "added": added, "updated": updated}
+
+        code = main(
+            [
+                "--cache-dir",
+                str(paths["cache_dir"]),
+                "--history",
+                str(paths["history_dir"]),
+                "--results-out",
+                str(paths["results_out"]),
+                "--eval-out",
+                str(paths["eval_out"]),
+                "--report-out",
+                str(paths["report_out"]),
+                "--min-sample",
+                "1",
+                "--live-scores",
+            ],
+            scores_capture_fn=scores_capture_fn,
+        )
+
+        assert code == 0
+        assert Path(paths["eval_out"]).exists()
+        assert Path(paths["report_out"]).exists()

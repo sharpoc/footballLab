@@ -1,6 +1,7 @@
 """Daily post-match chain: results capture -> eval csv -> backtest -> digest.
 
-只读 data/cache/，读写 data/local/；不联网、不消耗 The Odds API 额度、不写线上。
+默认只读 data/cache/，读写 data/local/；不联网、不消耗 The Odds API 额度、不写线上。
+传 --live-scores 时会先调用 The Odds API scores 端点（约 2 credits）。
 推送内容仅研究摘要，不含资金/下注字段。
 """
 from __future__ import annotations
@@ -68,6 +69,7 @@ def run_daily_eval(
     eval_out: str | Path = "data/local/backtest/wc2026_eval.csv",
     report_out: str | Path = "data/local/backtest/wc2026_report.json",
     min_sample: int = 30,
+    extra_fresh: int = 0,
 ) -> dict[str, Any]:
     cache = Path(cache_dir)
     results_stats = _run_json_cli(
@@ -81,7 +83,11 @@ def run_daily_eval(
         "backtest": None,
         "signal_tally": {grade: {} for grade in TRACKED_GRADES},
     }
-    fresh = (results_stats.get("added", 0) or 0) + (results_stats.get("updated", 0) or 0)
+    fresh = (
+        (results_stats.get("added", 0) or 0)
+        + (results_stats.get("updated", 0) or 0)
+        + max(extra_fresh, 0)
+    )
     if results_stats.get("total", 0) <= 0 or fresh <= 0:
         digest["status"] = "no_new_results"
         return digest
@@ -179,7 +185,26 @@ def build_digest_message(digest: dict) -> dict[str, str]:
     }
 
 
-def main(argv: list[str] | None = None, notify_fn: Callable[..., dict] | None = None) -> int:
+def _fresh_count(stats: dict | None) -> int:
+    if not stats:
+        return 0
+    return (stats.get("added", 0) or 0) + (stats.get("updated", 0) or 0)
+
+
+def _merge_scores_into_results(digest: dict, scores_stats: dict) -> None:
+    if scores_stats.get("status") != "captured":
+        return
+    results = dict(digest.get("results") or {})
+    results["added"] = (results.get("added", 0) or 0) + (scores_stats.get("added", 0) or 0)
+    results["updated"] = (results.get("updated", 0) or 0) + (scores_stats.get("updated", 0) or 0)
+    digest["results"] = results
+
+
+def main(
+    argv: list[str] | None = None,
+    notify_fn: Callable[..., dict] | None = None,
+    scores_capture_fn: Callable[..., dict] | None = None,
+) -> int:
     import argparse
 
     from worldcup.notifications import send_wxpusher_notification
@@ -192,7 +217,22 @@ def main(argv: list[str] | None = None, notify_fn: Callable[..., dict] | None = 
     parser.add_argument("--report-out", default="data/local/backtest/wc2026_report.json")
     parser.add_argument("--min-sample", type=int, default=30)
     parser.add_argument("--notify", action="store_true", help="Send WxPusher digest.")
+    parser.add_argument("--live-scores", action="store_true", help="Fetch The Odds API scores first.")
     args = parser.parse_args(argv)
+
+    scores_stats = None
+    if args.live_scores:
+        from worldcup.refresh_runner import _load_env
+        from worldcup.scores_capture import run_scores_capture
+
+        capture = scores_capture_fn or run_scores_capture
+        scores_stats = capture(
+            live=True,
+            env=_load_env(".env"),
+            cache_path=Path(args.cache_dir) / "theoddsapi_scores.json",
+            quota_path=Path(args.cache_dir) / "quota.json",
+            results_out=args.results_out,
+        )
 
     digest = run_daily_eval(
         cache_dir=args.cache_dir,
@@ -201,7 +241,11 @@ def main(argv: list[str] | None = None, notify_fn: Callable[..., dict] | None = 
         eval_out=args.eval_out,
         report_out=args.report_out,
         min_sample=args.min_sample,
+        extra_fresh=_fresh_count(scores_stats),
     )
+    if scores_stats is not None:
+        digest["scores"] = scores_stats
+        _merge_scores_into_results(digest, scores_stats)
     notification = None
     if args.notify and digest.get("status") == "ok":
         message = build_digest_message(digest)
