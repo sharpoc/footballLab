@@ -2,6 +2,16 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-14 复盘接口安全投影推送与部署
+
+- 已将本地 `main` 推送到 `origin/main`，包含 `13dcc81 feat: add safe finished review API`、`e23e983 docs: add review self-audit rules`、`c3b932d docs: add wc2022 line movement backtest plan`。
+- 部署 release `c3b932d` 到 ECS：`/opt/worldcup/current` 已从 `/opt/worldcup/releases/111d1d7` 切到 `/opt/worldcup/releases/c3b932d`；部署使用本地 `git archive` + SSH stdin 上传/解包，未在服务器使用 git。
+- `worldcup.service` 已重启并保持 active；`nginx` 保持 active。公网 `/healthz`、`/api/matches`、`/api/finished`、首页和 `/preview` 均返回 200；公网 `/api/snapshot/latest` 仍按规则返回 404。
+- 部署后发现 Nginx 仅白名单旧 `/api/matches`，已为 `/api/finished` 增加精确代理路由；`nginx -t` 通过后 reload，配置备份为 `/etc/nginx/sites-available/football.celab.xin.conf.bak.20260614T214815`。
+- 公网 `/api/finished` 返回 8 场 finished 投影，`sample_too_small=true`，禁泄漏扫描未命中 `run_id`、quota、provider 原名、raw error、资金/下注字段；页面保留免责声明和小样本观察提示。
+- 最近 10 分钟 `worldcup.service` journal 敏感词/error 命中 0，`football.celab.xin` 专属 Nginx access/error log 敏感词和 5xx/upstream 命中 0。
+- 本次部署只切换代码和 Nginx 路由并重启/reload 服务，未触发 live refresh、未调用 The Odds API、未写入新 snapshot。
+
 ## 2026-06-14 复盘接口第一阶段 review 收口
 
 - 补充 ASGI `/api/finished` 契约测试，确认标准库 ASGI 适配层透传安全复盘投影且不泄露 `run_id`、quota 或 provider 原名。
