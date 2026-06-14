@@ -42,6 +42,17 @@
 - readiness check 只读本地文件和变量名，不联网、不打印 secret；缺少真实 `INGEST_HMAC_SECRET` 时应报错，不要自动生成并写入 `.env`；`.env.example` 必须只含变量名和空值。
 - HMAC secret helper 只允许打印新 secret 给本地人工写入 `.env`，不得自动改 `.env` 或把 secret 写入文档。
 
+## 对抗性自审
+
+- 赛后复盘必须区分：数据事实、暂时观察、可确认结论、工程问题。
+- 当 `sample_too_small=true` 或样本数低于 `min_sample` 时，只能给观察结论，不能建议调参。
+- 赛后复盘必须检查：是否被小样本或单场极端结果拉偏、模型是否弱于市场基准、S/A 级信号样本是否不足、`daily_eval.signal_tally` 与 `finished.tally` 是否一致、是否存在 `skipped_no_closing`、closing snapshot 是否完整、是否混淆 90 分钟/加时/点球或比分来源、The Odds API scores 与 openfootball 是否可能不同步、东道主/准主场/中立场/Elo 口径是否可能影响判断。
+- 自审发现问题时，必须把结论降级为“观察”或“需修数据链路”，不得硬给模型结论。
+- 写实现计划、架构方案、调度/部署方案、数据链路方案或模型调整方案时，必须加入“对抗性自审”段落。
+- 项目计划自审重点检查：是否解决根因、是否范围膨胀、是否改变业务语义/接口契约/结算口径、是否触发联网/额度/密钥/线上写入/部署风险、是否可 dry-run、是否有验证和回滚方式。
+- 涉及 live refresh、The Odds API quota、HMAC secret、LaunchAgent、ECS、SQLite/PostgreSQL、`data/local/`、`data/cache/`、日报推送或公网展示时，必须显式写出风险和确认点。
+- 复盘和计划输出仍必须保留研究边界：不构成投注建议，不输出下注金额或执行建议。
+
 ## 文件与安全
 
 - 不要提交 `.env`、API key、token、Cookie、RDS 连接串、HMAC secret。
