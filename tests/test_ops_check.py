@@ -40,6 +40,34 @@ def _fake_fetcher(url: str, timeout: int) -> dict:
     bodies = {
         "/healthz": '{"status":"ok"}',
         "/api/matches": '{"matches":[{"home_team":"Mexico","away_team":"South Africa","signal_count":7,"top_grade":"S"}]}',
+        "/api/finished": json.dumps(
+            {
+                "finished": {
+                    "schema_version": 1,
+                    "summary": {
+                        "match_count": 1,
+                        "signal_count": 2,
+                        "skipped_no_closing": 0,
+                        "tally": {
+                            "S": {"hit": 1, "miss": 0, "push": 0},
+                            "A": {"hit": 0, "miss": 0, "push": 1},
+                        },
+                        "coverage": {
+                            "finished_result_count": 1,
+                            "closing_available_count": 1,
+                            "missing_closing_count": 0,
+                            "closing_coverage_rate": 1.0,
+                        },
+                        "sample": {
+                            "min_sample": 20,
+                            "decided_strong_signal_count": 1,
+                            "sample_too_small": True,
+                        },
+                    },
+                    "matches": [],
+                }
+            }
+        ),
         "/api/snapshot/latest": '{"error":"not_found"}',
         "/": "<html><p>仅用于研究分析，不构成投注建议。</p><p>最后更新<br>2026 年 6 月 10 日 星期三 18:07</p></html>",
         "/preview": "<html><p>仅用于研究分析，不构成投注建议。</p><p>最后更新<br>2026 年 6 月 10 日 星期三 18:07</p></html>",
@@ -59,6 +87,13 @@ def test_scan_text_counts_sensitive_terms_without_values():
     assert result["sensitive_hits"] == 2
     assert result["error_hits"] == 0
     assert "super-secret" not in str(result)
+
+
+def test_scan_text_does_not_count_safe_api_key_field_names_as_secret_leaks():
+    result = scan_text('{"provider":"theoddsapi","api_key":null,"status":"configured"}')
+
+    assert result["sensitive_hits"] == 0
+    assert result["sensitive_field_name_hits"] == 1
 
 
 def test_run_ops_check_summarizes_local_and_public_state_without_secrets():
@@ -101,11 +136,86 @@ def test_run_ops_check_summarizes_local_and_public_state_without_secrets():
     assert result["local"]["quota"]["providers"]["theoddsapi"]["remaining"] == 473
     assert result["public"]["healthz"]["http_status"] == 200
     assert result["public"]["matches"]["count"] == 1
+    assert result["public"]["finished"]["http_status"] == 200
+    assert result["public"]["finished"]["summary"]["sample"]["sample_too_small"] is True
     assert result["public"]["snapshot_latest"]["http_status"] == 404
     assert result["public"]["home"]["has_disclaimer"] is True
     assert result["public"]["home"]["last_update"] == "2026 年 6 月 10 日 星期三 18:07"
     assert result["remote"]["status"] == "skipped"
     assert "super-secret" not in str(result)
+
+
+def test_run_ops_check_reports_finished_tally_and_results_consistency():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot = {
+            "snapshot_at": "2026-06-10T10:07:25+00:00",
+            "counts": {"matches": 72},
+            "matches": [{"home_team": "Mexico", "away_team": "South Africa"}],
+            "run": {"run_id": "20260610T100725Z-live"},
+            "data_quality": {"source_errors": [], "stale_sources": []},
+            "finished": {
+                "matches": [
+                    {
+                        "kickoff_at_utc": "2026-06-10T00:00:00+00:00",
+                        "home_team": "Mexico",
+                        "away_team": "South Africa",
+                        "result": {"status": "finished", "home_score": 2, "away_score": 0},
+                        "closing_signals": [
+                            {
+                                "grade": "S",
+                                "prediction": {"status": "hit", "label": "命中"},
+                            },
+                            {
+                                "grade": "A",
+                                "prediction": {"status": "push", "label": "走水"},
+                            },
+                        ],
+                    }
+                ],
+                "tally": {
+                    "S": {"hit": 1, "miss": 0, "push": 0},
+                    "A": {"hit": 0, "miss": 0, "push": 1},
+                },
+                "skipped_no_closing": 0,
+            },
+        }
+        _write(root / "data/cache/analysis_snapshot.json", json.dumps(snapshot))
+        _write(root / "data/cache/quota.json", '{"providers":{}}')
+        _write(root / "data/local/history/snapshot_20260610T100725Z-live.json", json.dumps(snapshot))
+        _write(
+            root / "data/local/results/wc2026_results.csv",
+            "\n".join(
+                [
+                    "kickoff_at_utc,home_team,away_team,home_canonical,away_canonical,home_score,away_score,captured_at",
+                    "2026-06-10T00:00:00+00:00,Mexico,South Africa,Mexico,South Africa,2,0,2026-06-10T02:00:00+00:00",
+                ]
+            ),
+        )
+        logs_dir = root / "logs"
+        launch_agent = logs_dir / "xin.celab.football.scheduled-publish.plist"
+        _write_plist(launch_agent)
+        _write(logs_dir / "scheduled-publish.out.log", "")
+        _write(logs_dir / "scheduled-publish.err.log", "")
+
+        result = run_ops_check(
+            root=root,
+            public_base_url="https://football.celab.xin",
+            fetcher=_fake_fetcher,
+            remote_host=None,
+            launch_agent_path=launch_agent,
+            local_log_paths=[
+                logs_dir / "scheduled-publish.out.log",
+                logs_dir / "scheduled-publish.err.log",
+            ],
+        )
+
+    assert result["ok"] is True
+    assert result["local"]["finished"]["status"] == "ok"
+    assert result["local"]["finished"]["summary"]["match_count"] == 1
+    assert result["local"]["finished"]["tally_matches"] is True
+    assert result["local"]["finished"]["results"]["count"] == 1
+    assert result["local"]["finished"]["results"]["matches_finished_result_count"] is True
 
 
 def test_run_ops_check_summarizes_remote_metadata_without_payload_json():

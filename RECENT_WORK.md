@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-14 ops_check 复盘巡检增强
+
+- `worldcup.ops_check` 新增只读 `/api/finished` 公网检查，并在远端本机 HTTP smoke 中同步检查 `/api/finished`；失败会计入 errors。
+- 本地巡检新增 `finished` 一致性块：重算 S/A closing signal tally，与 snapshot `finished.tally` 对比；读取 `data/local/results/wc2026_results.csv` 行数，与 finished coverage 的 `finished_result_count` 对齐检查。
+- 日志敏感扫描区分 `api_key` 字段名和真实值泄露：安全字段名计入 `sensitive_field_name_hits`，不再把字段名误报为 `sensitive_hits`；真实 `api_key=value` 仍会按敏感命中处理。
+- 本地 TDD 验证：先看到新增测试红灯（安全 `api_key` 字段名误报、缺少 `local.finished`），实现后 `tests/test_ops_check.py` 通过 `5/5`；最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `378/378 tests passed`。
+- 真实只读巡检：新版 `run_ops_check()` 返回 `ok=true`、`errors=0`、`warnings=3`；本地 finished `match_count=8`、tally 匹配、results CSV `8/8` 对齐，公网与远端本机 `/api/finished` 均返回 200；样本仍为 `8 < min_sample 20`，只能作为观察。
+- 本轮未触发 live refresh、未调用 The Odds API、未部署、未推送。
+
 ## 2026-06-14 复盘接口安全投影推送与部署
 
 - 已将本地 `main` 推送到 `origin/main`，包含 `13dcc81 feat: add safe finished review API`、`e23e983 docs: add review self-audit rules`、`c3b932d docs: add wc2022 line movement backtest plan`。

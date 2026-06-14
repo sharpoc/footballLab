@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 import shlex
@@ -11,6 +12,7 @@ from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from worldcup.query import summarize_finished_block
 from worldcup.refresh_audit import DEFAULT_LAUNCH_AGENT, inspect_launch_agent, summarize_history
 
 DEFAULT_PUBLIC_BASE_URL = "https://football.celab.xin"
@@ -42,6 +44,21 @@ SENSITIVE_RE = re.compile(
     re.I,
 )
 ERROR_RE = re.compile(r"traceback|\berror\b|exception|failed|panic|critical", re.I)
+SAFE_SENSITIVE_VALUES = {
+    "",
+    "null",
+    "none",
+    "true",
+    "false",
+    "configured",
+    "present",
+    "set",
+    "unset",
+    "missing",
+    "redacted",
+    "<redacted>",
+    "masked",
+}
 REMOTE_DROP_KEYS = {
     "payload",
     "payload_json",
@@ -58,10 +75,47 @@ Fetcher = Callable[[str, int], FetchResult]
 RemoteRunner = Callable[[str, int], dict[str, Any]]
 
 
+def _field_value_after_match(text: str, end: int) -> tuple[bool, str | None]:
+    suffix = text[end : end + 120]
+    match = re.match(
+        r"""(?P<quote>["']?)\s*(?:(?P<sep>[:=])\s*(?P<value>"[^"]*"|'[^']*'|[^,\s}\]]+))?""",
+        suffix,
+    )
+    if not match:
+        return False, None
+    sep = match.group("sep")
+    if sep is None:
+        return True, None
+    raw_value = match.group("value")
+    return True, raw_value
+
+
+def _is_safe_sensitive_field_name(text: str, match: re.Match[str]) -> bool:
+    term = match.group(0).lower()
+    if "api" not in term or "key" not in term:
+        return False
+    has_field_shape, raw_value = _field_value_after_match(text, match.end())
+    if not has_field_shape:
+        return False
+    if raw_value is None:
+        return True
+    value = raw_value.strip().strip("\"'")
+    normalized = value.lower()
+    return normalized in SAFE_SENSITIVE_VALUES or set(value) <= {"*", "x", "X", "."}
+
+
 def scan_text(text: str) -> dict[str, int]:
+    sensitive_hits = 0
+    sensitive_field_name_hits = 0
+    for match in SENSITIVE_RE.finditer(text):
+        if _is_safe_sensitive_field_name(text, match):
+            sensitive_field_name_hits += 1
+            continue
+        sensitive_hits += 1
     return {
         "bytes_checked": len(text.encode("utf-8", errors="replace")),
-        "sensitive_hits": len(SENSITIVE_RE.findall(text)),
+        "sensitive_hits": sensitive_hits,
+        "sensitive_field_name_hits": sensitive_field_name_hits,
         "error_hits": len(ERROR_RE.findall(text)),
     }
 
@@ -97,6 +151,91 @@ def _snapshot_summary(path: Path) -> dict[str, Any]:
     }
 
 
+def _zero_tally() -> dict[str, int]:
+    return {"hit": 0, "miss": 0, "push": 0}
+
+
+def _normalize_tally(tally: dict[str, Any], grades: set[str]) -> dict[str, dict[str, int]]:
+    normalized: dict[str, dict[str, int]] = {}
+    for grade in sorted(grades):
+        entry = tally.get(grade) if isinstance(tally.get(grade), dict) else {}
+        normalized[grade] = {
+            "hit": _as_int(entry.get("hit")),
+            "miss": _as_int(entry.get("miss")),
+            "push": _as_int(entry.get("push")),
+        }
+    return normalized
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _recompute_finished_tally(records: list[Any]) -> dict[str, dict[str, int]]:
+    tally: dict[str, dict[str, int]] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        for signal in record.get("closing_signals") or []:
+            if not isinstance(signal, dict):
+                continue
+            grade = str(signal.get("grade") or "")
+            if grade not in {"S", "A"}:
+                continue
+            status = str((signal.get("prediction") or {}).get("status") or "")
+            if status not in {"hit", "miss", "push"}:
+                continue
+            tally.setdefault(grade, _zero_tally())[status] += 1
+    return tally
+
+
+def _csv_row_count(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"status": "missing", "path": str(path)}
+    try:
+        with open(path, newline="", encoding="utf-8") as fh:
+            rows = list(csv.DictReader(fh))
+    except OSError:
+        return {"status": "unreadable", "path": str(path)}
+    return {"status": "ok", "path": str(path), "count": len(rows)}
+
+
+def _finished_consistency(root: Path) -> dict[str, Any]:
+    snapshot = _read_json(root / "data/cache/analysis_snapshot.json")
+    if snapshot is None:
+        return {"status": "missing_snapshot"}
+
+    finished = snapshot.get("finished") or {}
+    records = finished.get("matches") if isinstance(finished.get("matches"), list) else []
+    summary = summarize_finished_block(snapshot)
+    if not finished:
+        return {"status": "missing", "summary": summary}
+
+    declared_raw = finished.get("tally") if isinstance(finished.get("tally"), dict) else {}
+    recomputed_raw = _recompute_finished_tally(records)
+    grades = set(declared_raw) | set(recomputed_raw) | {"S", "A"}
+    declared = _normalize_tally(declared_raw, grades)
+    recomputed = _normalize_tally(recomputed_raw, grades)
+
+    results = _csv_row_count(root / "data/local/results/wc2026_results.csv")
+    if results.get("status") == "ok":
+        expected = (summary.get("coverage") or {}).get("finished_result_count")
+        results["finished_result_count"] = expected
+        results["matches_finished_result_count"] = results.get("count") == expected
+
+    return {
+        "status": "ok",
+        "summary": summary,
+        "declared_tally": declared,
+        "recomputed_tally": recomputed,
+        "tally_matches": declared == recomputed,
+        "results": results,
+    }
+
+
 def _quota_summary(path: Path) -> dict[str, Any]:
     quota = _read_json(path)
     if quota is None:
@@ -124,6 +263,7 @@ def _local_checks(
     return {
         "snapshot": _snapshot_summary(root / "data/cache/analysis_snapshot.json"),
         "quota": _quota_summary(root / "data/cache/quota.json"),
+        "finished": _finished_consistency(root),
         "history": summarize_history(root / "data/local/history", limit=3),
         "launch_agent": inspect_launch_agent(launch_agent_path),
         "logs": [_scan_log_file(Path(path).expanduser()) for path in local_log_paths],
@@ -184,6 +324,13 @@ def _public_json_check(base_url: str, path: str, fetcher: Fetcher, timeout: int)
         matches = parsed.get("matches")
         result["count"] = len(matches) if isinstance(matches, list) else None
         result["forbidden_hits"] = _forbidden_hits(body)
+    if path == "/api/finished" and isinstance(parsed, dict):
+        finished = parsed.get("finished") if isinstance(parsed.get("finished"), dict) else {}
+        summary = finished.get("summary") if isinstance(finished.get("summary"), dict) else {}
+        result["summary"] = summary
+        result["match_count"] = summary.get("match_count")
+        result["sample_too_small"] = (summary.get("sample") or {}).get("sample_too_small")
+        result["forbidden_hits"] = _forbidden_hits(body)
     return result
 
 
@@ -204,6 +351,7 @@ def _public_checks(base_url: str, fetcher: Fetcher, timeout: int) -> dict[str, A
     return {
         "healthz": _public_json_check(base_url, "/healthz", fetcher, timeout),
         "matches": _public_json_check(base_url, "/api/matches", fetcher, timeout),
+        "finished": _public_json_check(base_url, "/api/finished", fetcher, timeout),
         "snapshot_latest": _public_json_check(base_url, "/api/snapshot/latest", fetcher, timeout),
         "home": _public_html_check(base_url, "/", fetcher, timeout),
         "preview": _public_html_check(base_url, "/preview", fetcher, timeout),
@@ -269,6 +417,7 @@ summary = {
     "local_http": {
         "/healthz": fetch("/healthz"),
         "/api/matches": fetch("/api/matches"),
+        "/api/finished": fetch("/api/finished"),
         "/api/snapshot/latest": fetch("/api/snapshot/latest"),
     },
     "logs": {
@@ -354,12 +503,18 @@ def _count_issues(result: dict[str, Any]) -> dict[str, int]:
     for log in local.get("logs") or []:
         errors += int(log.get("sensitive_hits", 0) > 0)
         warnings += int(log.get("error_hits", 0) > 0)
+    finished = local.get("finished") or {}
+    errors += int(finished.get("tally_matches") is False)
+    results = finished.get("results") if isinstance(finished.get("results"), dict) else {}
+    errors += int(results.get("matches_finished_result_count") is False)
 
     public = result.get("public") or {}
     if public.get("status") != "skipped":
         errors += int((public.get("healthz") or {}).get("http_status") != 200)
         errors += int((public.get("matches") or {}).get("http_status") != 200)
         errors += int(bool((public.get("matches") or {}).get("forbidden_hits")))
+        errors += int((public.get("finished") or {}).get("http_status") != 200)
+        errors += int(bool((public.get("finished") or {}).get("forbidden_hits")))
         for key in ("home", "preview"):
             item = public.get(key) or {}
             errors += int(item.get("http_status") != 200)
@@ -368,6 +523,10 @@ def _count_issues(result: dict[str, Any]) -> dict[str, int]:
 
     remote = result.get("remote") or {}
     errors += int(remote.get("status") == "error")
+    local_http = remote.get("local_http") or {}
+    for path in ("/healthz", "/api/matches", "/api/finished"):
+        if path in local_http:
+            errors += int((local_http.get(path) or {}).get("http_status") != 200)
     logs = remote.get("logs") or {}
     journal = logs.get("journal") or {}
     errors += int(journal.get("sensitive_hits", 0) > 0)
