@@ -9,7 +9,9 @@
 - 日志敏感扫描区分 `api_key` 字段名和真实值泄露：安全字段名计入 `sensitive_field_name_hits`，不再把字段名误报为 `sensitive_hits`；真实 `api_key=value` 仍会按敏感命中处理。
 - 本地 TDD 验证：先看到新增测试红灯（安全 `api_key` 字段名误报、缺少 `local.finished`），实现后 `tests/test_ops_check.py` 通过 `5/5`；最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `378/378 tests passed`。
 - 真实只读巡检：新版 `run_ops_check()` 返回 `ok=true`、`errors=0`、`warnings=3`；本地 finished `match_count=8`、tally 匹配、results CSV `8/8` 对齐，公网与远端本机 `/api/finished` 均返回 200；样本仍为 `8 < min_sample 20`，只能作为观察。
-- 本轮未触发 live refresh、未调用 The Odds API、未部署、未推送。
+- 已提交并推送 `f1e29e0 chore: enhance finished ops check` 到 `origin/main`，并部署到 ECS `/opt/worldcup/releases/f1e29e0`；`worldcup.service` 与 `nginx` 均为 active。
+- 部署后 smoke：公网 `/healthz`、`/api/matches`、`/api/finished`、首页和 `/preview` 均返回 200；`/api/finished` 返回 8 场、tally 为 `S 3/4/0`、`A 1/0/1`，禁词扫描为空。
+- 本轮部署只切换巡检代码并重启服务，未触发 live refresh、未调用 The Odds API、未写入新 snapshot。
 
 ## 2026-06-14 复盘接口安全投影推送与部署
 
