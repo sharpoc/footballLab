@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from worldcup.engine.handicap import ev_handicap
+from worldcup.query import summarize_finished_block
 
 EM_DASH = "\u2014"
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -275,7 +276,13 @@ def derive_quality_status(snapshot: dict[str, Any]) -> dict[str, Any]:
         reasons.append("source_errors")
         return {"label": "需关注", "tone": "error", "reasons": reasons}
 
-    for key in ("stale_sources", "missing_odds", "missing_elo", "time_mismatches"):
+    for key in (
+        "stale_sources",
+        "missing_odds",
+        "missing_elo",
+        "time_mismatches",
+        "enrichment_errors",
+    ):
         if _quality_values(snapshot, key):
             reasons.append(key)
     if reasons:
@@ -970,4 +977,8 @@ def build_finished_view(snapshot: dict[str, Any]) -> dict[str, Any]:
     ordered_days = sorted(days.values(), key=lambda day: day["_sort_key"], reverse=True)
     for day in ordered_days:
         day.pop("_sort_key", None)
-    return {"days": ordered_days, "tally": finished.get("tally") or {}}
+    return {
+        "days": ordered_days,
+        "tally": finished.get("tally") or {},
+        "summary": summarize_finished_block(snapshot),
+    }

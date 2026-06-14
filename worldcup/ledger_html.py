@@ -1388,12 +1388,20 @@ def _render_source_health(snapshot: dict[str, Any]) -> str:
     missing_odds = _quality_values(snapshot, "missing_odds")
     missing_elo = _quality_values(snapshot, "missing_elo")
     time_mismatches = _quality_values(snapshot, "time_mismatches")
+    enrichment_errors = _quality_values(snapshot, "enrichment_errors")
     counts = snapshot.get("counts") or {}
     matches = snapshot.get("matches") or []
     fixtures_available = bool(counts.get("fixtures") or matches)
     odds_attention = bool(source_errors or stale_sources or missing_odds)
     elo_attention = bool(missing_elo)
-    input_attention = bool(source_errors or stale_sources or missing_odds or missing_elo or time_mismatches)
+    input_attention = bool(
+        source_errors
+        or stale_sources
+        or missing_odds
+        or missing_elo
+        or time_mismatches
+        or enrichment_errors
+    )
 
     return """
     <section class="rail-card">
@@ -1409,6 +1417,7 @@ def _render_source_health(snapshot: dict[str, Any]) -> str:
         <li>缺失赔率：{missing_odds_count}</li>
         <li>缺失 Elo：{missing_elo_count}</li>
         <li>时间核对：{time_count}</li>
+        <li>富化异常：{enrichment_error_count}</li>
       </ul>
     </section>
     """.format(
@@ -1422,6 +1431,7 @@ def _render_source_health(snapshot: dict[str, Any]) -> str:
         missing_odds_count=_text(len(missing_odds)),
         missing_elo_count=_text(len(missing_elo)),
         time_count=_text(len(time_mismatches)),
+        enrichment_error_count=_text(len(enrichment_errors)),
     )
 
 
@@ -1585,7 +1595,35 @@ def _history_workbench_groups(view: dict[str, Any]) -> list[dict[str, Any]]:
     return groups
 
 
-def _render_history_workbench(groups: list[dict[str, Any]]) -> str:
+def _render_history_review_notes(summary: dict[str, Any] | None) -> str:
+    summary = summary or {}
+    match_count = int(summary.get("match_count") or 0)
+    skipped = int(summary.get("skipped_no_closing") or 0)
+    sample = summary.get("sample") or {}
+    notes = []
+    if match_count and sample.get("sample_too_small"):
+        notes.append(
+            "复盘样本仍偏小：当前仅 {count} 场 closing 复盘，"
+            "仅作为观察，不用于调参或执行建议。".format(count=_text(match_count))
+        )
+    if skipped:
+        notes.append(
+            "缺少 closing 记录：{count} 场；这些赛果未纳入 closing 口径复盘。".format(
+                count=_text(skipped)
+            )
+        )
+    if not notes:
+        return ""
+    return '<div class="history-review-notes">{}</div>'.format(
+        "".join("<p>{}</p>".format(_text(note)) for note in notes)
+    )
+
+
+def _render_history_workbench(
+    groups: list[dict[str, Any]],
+    summary: dict[str, Any] | None = None,
+) -> str:
+    review_notes = _render_history_review_notes(summary)
     if not groups:
         return (
             '<div data-view-panel="history" hidden>'
@@ -1593,14 +1631,15 @@ def _render_history_workbench(groups: list[dict[str, Any]]) -> str:
             '<section class="date-strip" aria-label="历史日期">'
             '<button class="date-card active" data-date-filter="all" type="button" aria-pressed="true">'
             "<span>全部 日期</span><strong>0场 · 0信号</strong></button></section>"
-            '{filters}<section class="ledger-workbench"><div class="empty-state">'
+            '{filters}{review_notes}<section class="ledger-workbench"><div class="empty-state">'
             "<h2>暂无历史回顾</h2><p>还没有可用于复盘的已完赛 closing 记录。</p>"
             "</div></section></section></div>"
         ).format(
             filters=_render_workbench_filter_row(
                 search_id="history-ledger-search",
                 league_id="history-league-filter",
-            )
+            ),
+            review_notes=review_notes,
         )
 
     list_rows = []
@@ -1697,9 +1736,10 @@ def _render_history_workbench(groups: list[dict[str, Any]]) -> str:
 
     return """
     <div data-view-panel="history" hidden>
-      <section class="workbench-shell history-workbench-shell premium-intelligence-workbench">
+        <section class="workbench-shell history-workbench-shell premium-intelligence-workbench">
         {date_strip}
         {filters}
+        {review_notes}
         <section class="ledger-workbench">
           <aside class="match-list-panel">
             <div class="panel-heading">
@@ -1727,6 +1767,7 @@ def _render_history_workbench(groups: list[dict[str, Any]]) -> str:
             search_id="history-ledger-search",
             league_id="history-league-filter",
         ),
+        review_notes=review_notes,
         match_count=_text(len(groups)),
         list_rows="".join(list_rows),
         detail_panels="".join(detail_panels),
@@ -1735,7 +1776,7 @@ def _render_history_workbench(groups: list[dict[str, Any]]) -> str:
 
 def _render_finished_section(snapshot: dict[str, Any]) -> str:
     view = build_finished_view(snapshot)
-    return _render_history_workbench(_history_workbench_groups(view))
+    return _render_history_workbench(_history_workbench_groups(view), view.get("summary"))
 
 
 def build_research_ledger_html(

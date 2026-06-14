@@ -2,6 +2,30 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-14 复盘接口第一阶段 review 收口
+
+- 补充 ASGI `/api/finished` 契约测试，确认标准库 ASGI 适配层透传安全复盘投影且不泄露 `run_id`、quota 或 provider 原名。
+- 将 `data_quality.enrichment_errors` 以脱敏计数形式暴露到静态 public snapshot 的 `data_quality.enrichment_error_count`，不输出 raw error。
+- 预览页“数据源健康”补充 `富化异常` 计数，并把 enrichment error 计入数据质量预警；页面仍只显示数量，不显示原始错误细节。
+- 本轮只改本地代码、测试和近期记录，未联网、未启动服务、未部署、未提交、未推送。
+- 本地验证：先看到新增测试红灯（public snapshot 缺 `enrichment_error_count`、预览页缺 `富化异常`），实现后 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `376/376 tests passed`。
+
+## 2026-06-13 复盘接口安全投影第一阶段
+
+- 新增公开安全复盘投影 `project_finished_rows(snapshot)`，输出 `schema_version`、`summary`、coverage、小样本标记、closing 场次与复盘信号；测试覆盖不泄露 `run_id`、quota、provider 原名、原始 source error、资金/下注字段。
+- 新增 `GET /api/finished`，标准库 HTTP 适配层与 FastAPI 包装层共用同一投影；静态导出新增 `api/finished.json`，`api/snapshot/latest.json` 也带脱敏 `finished` 投影，manifest 同步列出新文件。
+- 历史回顾 workbench 顶部新增复盘质量提示：样本偏小时只标记为“仅作为观察”，`skipped_no_closing` 非 0 时显示缺少 closing 记录数量。
+- `refresh_runner` 富化失败时继续不阻断刷新/发布，但会写入 `data_quality.enrichment_errors`，避免复盘富化异常只停留在 stderr。
+- 数据契约文档已补 `GET /api/finished` 与 `api/finished.json`；本轮只改本地代码、测试和文档，未启动服务、未联网、未触发 live refresh、未调用 The Odds API、未部署、未提交、未推送。
+- 本地验证：先看到新增契约测试红灯，再实现转绿；最终 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `374/374 tests passed`。
+
+## 2026-06-13 对抗性自审偏好同步
+
+- 已将通用对抗性自审方法论写入全局 `~/.codex/AGENTS.md` 和 `~/.claude/CLAUDE.md`：高不确定性数据分析、模型评估、复盘、策略判断、架构方案或实现计划默认检查小样本、口径不一致、基准不足、范围膨胀、线上状态、密钥/权限/成本与验证不足风险。
+- 已将足彩项目专用规则同步写入项目 `AGENTS.md` 和 `CLAUDE.md`：赛后复盘必须区分事实/观察/结论/工程问题；样本不足时不得建议调参；必须检查 S/A 信号、`daily_eval.signal_tally` vs `finished.tally`、`skipped_no_closing`、closing snapshot、90 分钟/加时/点球/比分源、The Odds API scores vs openfootball、东道主/准主场/中立场/Elo 口径风险。
+- 项目实现计划、架构方案、调度/部署方案、数据链路方案和模型调整方案以后必须包含“对抗性自审”段落，显式写出 live refresh、quota、HMAC secret、LaunchAgent、ECS、SQLite/PostgreSQL、`data/local/`、`data/cache/`、日报推送和公网展示等风险与确认点。
+- 本次只更新偏好/协作文档，不改代码、不触发服务、不联网、不消耗 The Odds API、不提交、不推送。
+
 ## 2026-06-12 历史回顾工作台交互
 
 - 将“历史回顾”从单独的 `finished-table` 表格改为与“实时信号”一致的 workbench：日期条、等级/搜索/赛事筛选、左侧历史比赛列表、右侧盘口分类 tabs 与信号明细。

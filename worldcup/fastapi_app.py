@@ -72,6 +72,10 @@ def create_fastapi_app(
     async def matches(request: Request) -> Response:
         return await _dispatch(request, "GET", "/api/matches", db_path, secret, store=store)
 
+    @app.get("/api/finished")
+    async def finished(request: Request) -> Response:
+        return await _dispatch(request, "GET", "/api/finished", db_path, secret, store=store)
+
     @app.get("/preview")
     async def preview(request: Request) -> Response:
         return await _dispatch(request, "GET", "/preview", db_path, secret, store=store)

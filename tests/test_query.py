@@ -1,7 +1,12 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from worldcup.query import load_latest_snapshot, load_recent_snapshots, project_match_rows
+from worldcup.query import (
+    load_latest_snapshot,
+    load_recent_snapshots,
+    project_finished_rows,
+    project_match_rows,
+)
 from worldcup.store import SQLiteSnapshotStore
 
 
@@ -77,6 +82,65 @@ def _snapshot():
             },
         ],
     }
+
+
+def _snapshot_with_finished():
+    snapshot = _snapshot()
+    snapshot["run"] = {
+        "run_id": "private-run-id",
+        "quota": {"private-provider": {"remaining": 777}},
+    }
+    snapshot["data_quality"]["source_errors"] = [
+        {"source": "private-provider", "error": "TimeoutError: raw upstream detail"}
+    ]
+    snapshot["finished"] = {
+        "matches": [
+            {
+                "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "home_team": "Mexico",
+                "away_team": "South Africa",
+                "home_canonical": "mexico",
+                "away_canonical": "south_africa",
+                "stage": "Matchday 1",
+                "group": "Group A",
+                "result": {"home_score": 2, "away_score": 0},
+                "closing_snapshot_at": "2026-06-11T18:45:00+00:00",
+                "closing_signals": [
+                    {
+                        "market_type": "1X2_90min",
+                        "selection": "home",
+                        "line": None,
+                        "grade": "S",
+                        "odds": 1.78,
+                        "prediction": {
+                            "status": "hit",
+                            "label": "命中",
+                            "detail": "赛果：墨西哥 2-0 南非；方向：主胜",
+                        },
+                    },
+                    {
+                        "market_type": "AsianHandicap_90min",
+                        "selection": "home_-1",
+                        "line": -1.0,
+                        "grade": "A",
+                        "odds": 1.74,
+                        "prediction": {
+                            "status": "push",
+                            "label": "走水",
+                            "detail": "赛果：墨西哥 2-0 南非；方向：主队 -1",
+                        },
+                    },
+                ],
+                "odds_trend": {"1x2": {"home": [["2026-06-11T18:45:00+00:00", 1.78]]}},
+            }
+        ],
+        "tally": {
+            "S": {"hit": 1, "miss": 0, "push": 0},
+            "A": {"hit": 0, "miss": 0, "push": 1},
+        },
+        "skipped_no_closing": 1,
+    }
+    return snapshot
 
 
 def test_load_latest_snapshot_reads_latest_from_sqlite_store():
@@ -175,3 +239,28 @@ def test_project_match_rows_returns_preview_safe_rows():
     assert rows[1]["signal_count"] == 0
     assert "stake" not in rows[0]
     assert "bet_amount" not in rows[0]
+
+
+def test_project_finished_rows_returns_public_safe_review_projection():
+    finished = project_finished_rows(_snapshot_with_finished())
+
+    assert finished["schema_version"] == 1
+    assert finished["summary"]["match_count"] == 1
+    assert finished["summary"]["signal_count"] == 2
+    assert finished["summary"]["skipped_no_closing"] == 1
+    assert finished["summary"]["coverage"]["missing_closing_count"] == 1
+    assert finished["summary"]["sample"]["sample_too_small"] is True
+    assert finished["summary"]["tally"]["S"] == {"hit": 1, "miss": 0, "push": 0}
+    assert finished["matches"][0]["match_label"] == "Mexico vs South Africa"
+    assert finished["matches"][0]["score_label"] == "2 - 0"
+    assert finished["matches"][0]["signals"][0]["outcome"] == "命中"
+    assert finished["matches"][0]["signals"][0]["prediction_status"] == "hit"
+
+    serialized = str(finished)
+    assert "run_id" not in serialized
+    assert "private-run-id" not in serialized
+    assert "quota" not in serialized
+    assert "private-provider" not in serialized
+    assert "raw upstream detail" not in serialized
+    assert "stake" not in serialized.lower()
+    assert "bet_amount" not in serialized.lower()

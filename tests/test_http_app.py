@@ -69,6 +69,42 @@ def _snapshot(run_id="20260608T000000Z-live"):
     }
 
 
+def _snapshot_with_finished(run_id="20260608T000000Z-live"):
+    snapshot = _snapshot(run_id)
+    snapshot["run"] = {
+        "run_id": run_id,
+        "quota": {"private-provider": {"remaining": 777}},
+    }
+    snapshot["finished"] = {
+        "matches": [
+            {
+                "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "home_team": "Mexico",
+                "away_team": "South Africa",
+                "home_canonical": "mexico",
+                "away_canonical": "south_africa",
+                "stage": "Matchday 1",
+                "group": "Group A",
+                "result": {"home_score": 2, "away_score": 0},
+                "closing_snapshot_at": "2026-06-11T18:45:00+00:00",
+                "closing_signals": [
+                    {
+                        "market_type": "1X2_90min",
+                        "selection": "home",
+                        "line": None,
+                        "grade": "S",
+                        "odds": 1.78,
+                        "prediction": {"status": "hit", "label": "命中", "detail": "全场 2-0"},
+                    }
+                ],
+            }
+        ],
+        "tally": {"S": {"hit": 1, "miss": 0, "push": 0}},
+        "skipped_no_closing": 0,
+    }
+    return snapshot
+
+
 def _store_snapshot(db_path: Path):
     store = SQLiteSnapshotStore(db_path)
     store.put_snapshot(
@@ -124,6 +160,30 @@ def test_http_get_matches_uses_injected_store():
     body = json.loads(response["body"])
     assert response["status"] == 200
     assert body["matches"][0]["match_label"] == "Mexico vs South Africa"
+
+
+def test_http_get_finished_returns_safe_projection():
+    store = MemorySnapshotStore(latest={"snapshot": _snapshot_with_finished("run-memory")})
+
+    response = handle_request(
+        method="GET",
+        path="/api/finished",
+        headers={},
+        body="",
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        store=store,
+    )
+
+    body = json.loads(response["body"])
+    assert response["status"] == 200
+    assert body["finished"]["summary"]["match_count"] == 1
+    assert body["finished"]["matches"][0]["score_label"] == "2 - 0"
+    serialized = response["body"]
+    assert "run-memory" not in serialized
+    assert "quota" not in serialized
+    assert "private-provider" not in serialized
+    assert "stake" not in serialized.lower()
 
 
 def test_http_healthz_returns_ok_without_snapshot():

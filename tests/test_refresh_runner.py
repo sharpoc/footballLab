@@ -473,3 +473,6 @@ def test_refresh_survives_enrichment_failure(monkeypatch=None):
         )
 
         assert result.snapshot["counts"]["matches"] == 1
+        enrichment_errors = result.snapshot["data_quality"]["enrichment_errors"]
+        assert enrichment_errors[0]["source"] == "site_enrichment"
+        assert "Is a directory" in enrichment_errors[0]["error"]

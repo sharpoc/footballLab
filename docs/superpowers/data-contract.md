@@ -665,6 +665,7 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 - 等级筛选、搜索输入和研究信号台账表格。
 - 方法说明、数据源健康、注意事项、最后更新时间。
 - 脱敏数据源健康计数，不展示 provider 原名、quota 明细或原始错误文本。
+- 富化异常只展示脱敏计数（`enrichment_error_count` / “富化异常”），不得展示 raw error。
 - 桌面为主表 + 右侧栏；移动端台账在右侧栏之前，表格横向滚动限制在表格容器内，页面本身不得横向溢出。
 - 不显示资金相关字段。
 
@@ -679,6 +680,7 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 | `POST` | `/api/ingest/snapshot` | 调用本地 ingest app，验签后写入 `SnapshotStore` |
 | `GET` | `/api/snapshot/latest` | 返回最新完整 snapshot |
 | `GET` | `/api/matches` | 返回 `project_match_rows(snapshot)` |
+| `GET` | `/api/finished` | 返回 `project_finished_rows(snapshot)` 的公开安全复盘投影 |
 | `GET` | `/preview` | 返回静态 HTML 预览页 |
 | `GET` | `/healthz` | 返回服务存活状态；不读 DB、不依赖 secret |
 
@@ -689,6 +691,7 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 当前覆盖：
 
 - `GET /api/matches`
+- `GET /api/finished`
 - `GET /preview`
 - `GET /healthz`
 
@@ -729,8 +732,9 @@ python3 -m worldcup.export --snapshot data/cache/analysis_snapshot.json --out-di
 | 文件 | 说明 |
 |---|---|
 | `index.html` | 研究台账静态研究页 |
-| `api/snapshot/latest.json` | 公开安全 snapshot 投影：summary counts、脱敏 data quality 计数、只读比赛行；不得包含完整内部 snapshot |
+| `api/snapshot/latest.json` | 公开安全 snapshot 投影：summary counts、脱敏 data quality 计数（含 `enrichment_error_count`）、只读比赛行与复盘投影；不得包含完整内部 snapshot |
 | `api/matches.json` | 只读比赛行投影 |
+| `api/finished.json` | 只读复盘投影：closing 场次、比分、复盘信号、S/A tally、coverage 与小样本标记 |
 | `manifest.json` | 导出元数据 |
 
 `manifest.json` 不得包含 `run_id`、quota、provider 原名、raw source error 或其它内部运行细节。`data/cache/site/` 必须保持 git ignore；该输出只代表本地静态包草案，不代表已部署。

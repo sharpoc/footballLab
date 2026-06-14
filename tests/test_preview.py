@@ -510,6 +510,8 @@ def test_preview_renders_record_card_and_finished_section():
     assert "已完赛战绩" in html
     assert "2 - 0" in html
     assert "history-match-0" in html
+    assert "复盘样本仍偏小" in html
+    assert "仅作为观察" in html
 
 
 def test_preview_renders_trend_sparkline_in_detail():
@@ -539,6 +541,27 @@ def test_preview_renders_history_with_workbench_interaction_contract():
     assert "closing（开球前最后一轮）口径" in html
     assert 'class="finished-table"' not in html
     assert 'class="finished-row"' not in html
+
+
+def test_preview_surfaces_missing_closing_review_count():
+    snapshot = _snapshot_with_finished_for_preview()
+    snapshot["finished"]["skipped_no_closing"] = 1
+
+    html = build_preview_html(snapshot)
+
+    assert "缺少 closing 记录：1 场" in html
+
+
+def test_preview_surfaces_enrichment_error_count_without_raw_details():
+    snapshot = _snapshot()
+    snapshot["data_quality"]["enrichment_errors"] = [
+        {"source": "site_enrichment", "error": "ValueError: private enrichment detail"}
+    ]
+
+    html = build_preview_html(snapshot)
+
+    assert "富化异常：1" in html
+    assert "private enrichment detail" not in html
 
 
 def test_preview_tolerates_missing_finished_and_trend():

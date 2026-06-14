@@ -572,6 +572,10 @@ def test_build_finished_view_groups_by_beijing_day():
     view = build_finished_view(_snapshot_with_finished())
 
     assert len(view["days"]) == 1
+    assert view["summary"]["match_count"] == 1
+    assert view["summary"]["signal_count"] == 2
+    assert view["summary"]["skipped_no_closing"] == 0
+    assert view["summary"]["sample"]["sample_too_small"] is True
     day = view["days"][0]
     assert day["date_label"].startswith("2026 年 6 月 12 日")
     match = day["matches"][0]

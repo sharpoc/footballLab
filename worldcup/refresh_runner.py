@@ -179,6 +179,9 @@ def refresh_cache_and_build_snapshot(
         attach_trends(snapshot, history_dir, now=observed)
         snapshot["finished"] = build_finished_block(history_dir, results_csv, finished_store)
     except Exception as exc:
+        snapshot.setdefault("data_quality", {}).setdefault("enrichment_errors", []).append(
+            {"source": "site_enrichment", "error": f"{type(exc).__name__}: {exc}"}
+        )
         print(f"warning: site enrichment failed: {exc}", file=sys.stderr)
     write_snapshot(snapshot, snapshot_output)
     archive_path: Path | None = None

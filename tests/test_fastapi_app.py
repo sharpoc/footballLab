@@ -61,6 +61,42 @@ def _snapshot():
     }
 
 
+def _snapshot_with_finished():
+    snapshot = _snapshot()
+    snapshot["run"] = {
+        "run_id": "run-secret",
+        "quota": {"private-provider": {"remaining": 777}},
+    }
+    snapshot["finished"] = {
+        "matches": [
+            {
+                "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "home_team": "Mexico",
+                "away_team": "South Africa",
+                "home_canonical": "mexico",
+                "away_canonical": "south_africa",
+                "stage": "Matchday 1",
+                "group": "Group A",
+                "result": {"home_score": 2, "away_score": 0},
+                "closing_snapshot_at": "2026-06-11T18:45:00+00:00",
+                "closing_signals": [
+                    {
+                        "market_type": "1X2_90min",
+                        "selection": "home",
+                        "line": None,
+                        "grade": "S",
+                        "odds": 1.78,
+                        "prediction": {"status": "hit", "label": "命中", "detail": "全场 2-0"},
+                    }
+                ],
+            }
+        ],
+        "tally": {"S": {"hit": 1, "miss": 0, "push": 0}},
+        "skipped_no_closing": 0,
+    }
+    return snapshot
+
+
 def _store_snapshot(db_path: Path):
     SQLiteSnapshotStore(db_path).put_snapshot(
         idempotency_key="run-1:snapshot-1",
@@ -149,6 +185,24 @@ def test_fastapi_get_matches_uses_injected_store():
     assert response.status_code == 200
     row = response.json()["matches"][0]
     assert row["match_label"] == "Mexico vs South Africa"
+
+
+def test_fastapi_get_finished_returns_safe_projection():
+    store = MemorySnapshotStore(latest={"snapshot": _snapshot_with_finished()})
+    app = create_fastapi_app(db_path="unused.db", secret="test-hmac-secret", store=store)
+    client = TestClient(app)
+
+    response = client.get("/api/finished")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["finished"]["summary"]["match_count"] == 1
+    assert body["finished"]["matches"][0]["match_label"] == "Mexico vs South Africa"
+    serialized = response.text
+    assert "run-secret" not in serialized
+    assert "quota" not in serialized
+    assert "private-provider" not in serialized
+    assert "stake" not in serialized.lower()
 
 
 def test_fastapi_get_preview_returns_disclaimer_html():
