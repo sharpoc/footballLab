@@ -15,6 +15,16 @@
 - 发布后验证：远端 latest snapshot 中 Spain vs Cape Verde 的 `model.ou_line` 与 `market.ou_2_5.line` 均为 `3.5`，OU 信号行也为 `3.5`；最新 60 场扫描 `mismatches=0`，非 `2.5` 主线共 6 场（Brazil vs Haiti、Ecuador vs Curaçao、Egypt vs Iran、Spain vs Cape Verde、Spain vs Saudi Arabia、France vs Iraq）。
 - `python3 -m worldcup.ops_check` 返回 `ok=true`、`errors=0`；公网 `/healthz`、`/api/matches`、`/api/finished`、`/preview` 均返回 200，公开页保留研究免责声明且未命中资金/下注禁词。
 
+## 2026-06-15 S/A 护栏缓存重算发布
+
+- 按已上线的新 S/A 置信度护栏，用本地 `data/cache` 离线重算当前 snapshot；未触发 live refresh、未调用 The Odds API、未消耗 quota。
+- 重算对比范围为 61 场、427 条信号：等级变化 17 条，其中 `S->B` 15 条、`A->B` 2 条；无 `B/C` 升级，`EV`、`Edge`、`status`、`line`、`selection` 均未变化。
+- 发布前生成富化快照 `data/local/guard_compare/recomputed_enriched_snapshot.json`，保留 8 场 finished 块和 61 场 odds trend；等级统计为 `S=21`、`A=7`、`B=82`、`C=317`。
+- 已通过 signed ingest 发布到线上，run_id 为 `20260615T031251Z-local`；远端 SQLite 最新 snapshot_id 为 `eed417b89de704ceedd2f6dfe655822cac662433a0f88066d7ada3ed5a0e231d`。
+- 本地 `data/cache/analysis_snapshot.json` 已同步为同一份快照，并归档到 `data/local/history/snapshot_20260615T031251Z-local.json`；原快照备份在 `data/local/guard_compare/pre_guard_publish_analysis_snapshot.json`。
+- 发布后验证：公网 `/healthz`、`/api/matches`、`/api/finished`、`/preview` 均返回 200；远端 latest snapshot 显示 `S=21/A=7/B=82/C=317`、`source_errors=[]`、`stale_sources=[]`；`python3 -m worldcup.ops_check` 返回 `ok=true`、`errors=0`。
+- 研究边界不变，不构成投注建议；finished 仍为 8 场小样本，`sample_too_small=true`。
+
 ## 2026-06-15 S/A 强信号置信度护栏
 
 - 新增只降级置信度护栏：`generate_value_signals()` 生成原始信号后统一检查，只有 `S/A` 会被封顶到 `B`，不改变模型概率、EV/Edge，不升级 `B/C`。
