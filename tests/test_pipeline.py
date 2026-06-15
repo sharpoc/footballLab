@@ -278,6 +278,267 @@ def test_generate_value_signals_passes_market_dispersion_to_ah():
     assert "model_disagreement" not in ah_home.reasons
 
 
+def test_generate_value_signals_caps_1x2_when_market_and_ah_disagree():
+    cfg = load_config()
+    analysis = analyze_match_input(
+        _priced_match_input(
+            home_team="USA",
+            away_team="Paraguay",
+            home_canonical="united_states",
+            away_canonical="paraguay",
+            venue_name="Los Angeles (Inglewood)",
+            home_elo=1726,
+            away_elo=1834,
+            home_advantage_elo=cfg["elo"]["home_adv"],
+            h2h_odds={"home": 2.0654166666666667, "draw": 3.2449999999999997, "away": 4.027916666666667},
+            ah_home_line=-0.5,
+            ah_odds={"home": 2.08, "away": 1.8083333333333333},
+        ),
+        cfg,
+    )
+
+    signals = generate_value_signals(analysis, cfg)
+    away_1x2 = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.X12 and signal.selection == "away"
+    )
+
+    assert away_1x2.grade == Grade.B
+    assert "reverse_market" in away_1x2.reasons
+    assert "ah_not_supporting_1x2" in away_1x2.reasons
+
+
+def test_generate_value_signals_caps_1x2_without_ah_favorite_support():
+    cfg = load_config()
+    analysis = analyze_match_input(
+        _priced_match_input(
+            home_team="Team A",
+            away_team="Team B",
+            home_canonical="team_a",
+            away_canonical="team_b",
+            venue_name="Neutral Venue",
+            home_elo=2050,
+            away_elo=1700,
+            home_advantage_elo=0.0,
+            h2h_odds={"home": 2.0, "draw": 3.5, "away": 3.8},
+            ah_home_line=0.5,
+            ah_odds={"home": 1.9, "away": 1.9},
+        ),
+        cfg,
+    )
+
+    signals = generate_value_signals(analysis, cfg)
+    home_1x2 = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.X12 and signal.selection == "home"
+    )
+
+    assert home_1x2.grade == Grade.B
+    assert "ah_not_supporting_1x2" in home_1x2.reasons
+
+
+def test_generate_value_signals_caps_host_1x2_when_market_confirmation_is_thin():
+    cfg = load_config()
+    analysis = analyze_match_input(
+        _priced_match_input(
+            home_team="Canada",
+            away_team="Bosnia & Herzegovina",
+            home_canonical="canada",
+            away_canonical="bosnia_herzegovina",
+            venue_name="Toronto",
+            home_elo=1788,
+            away_elo=1595,
+            home_advantage_elo=cfg["elo"]["home_adv"],
+            h2h_odds={"home": 1.8291666666666666, "draw": 3.5229166666666667, "away": 4.741666666666666},
+            ah_home_line=-0.5,
+            ah_odds={"home": 1.8379999999999999, "away": 2.054},
+        ),
+        cfg,
+    )
+
+    signals = generate_value_signals(analysis, cfg)
+    home_1x2 = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.X12 and signal.selection == "home"
+    )
+
+    assert home_1x2.grade == Grade.B
+    assert "host_market_confirmation" in home_1x2.reasons
+
+
+def test_generate_value_signals_caps_host_ah_when_handicap_confirmation_is_thin():
+    cfg = load_config()
+    analysis = analyze_match_input(
+        _priced_match_input(
+            home_team="Canada",
+            away_team="Bosnia & Herzegovina",
+            home_canonical="canada",
+            away_canonical="bosnia_herzegovina",
+            venue_name="Toronto",
+            home_elo=1788,
+            away_elo=1595,
+            home_advantage_elo=cfg["elo"]["home_adv"],
+            h2h_odds={"home": 1.8291666666666666, "draw": 3.5229166666666667, "away": 4.741666666666666},
+            ah_home_line=-0.5,
+            ah_odds={"home": 1.8379999999999999, "away": 2.054},
+        ),
+        cfg,
+    )
+
+    signals = generate_value_signals(analysis, cfg)
+    home_ah = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.AH and signal.selection == "home_-0.5"
+    )
+
+    assert home_ah.grade == Grade.B
+    assert "host_handicap_confirmation" in home_ah.reasons
+
+
+def test_generate_value_signals_keeps_host_signal_when_market_and_ah_confirm():
+    cfg = load_config()
+    analysis = analyze_match_input(
+        _priced_match_input(
+            home_team="Mexico",
+            away_team="South Africa",
+            home_canonical="mexico",
+            away_canonical="south_africa",
+            venue_name="Mexico City",
+            home_elo=1875,
+            away_elo=1517,
+            home_advantage_elo=cfg["elo"]["home_adv"],
+            h2h_odds={"home": 1.4395833333333332, "draw": 4.429583333333333, "away": 8.668750000000001},
+            ah_home_line=-1.0,
+            ah_odds={"home": 1.7433333333333334, "away": 2.1266666666666665},
+        ),
+        cfg,
+    )
+
+    signals = generate_value_signals(analysis, cfg)
+    home_1x2 = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.X12 and signal.selection == "home"
+    )
+    home_ah = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.AH and signal.selection == "home_-1"
+    )
+
+    assert home_1x2.grade == Grade.S
+    assert "host_market_confirmation" not in home_1x2.reasons
+    assert home_ah.grade == Grade.S
+    assert "host_handicap_confirmation" not in home_ah.reasons
+
+
+def test_generate_value_signals_caps_under_when_main_handicap_is_big():
+    cfg = load_config()
+    analysis = analyze_match_input(
+        _priced_match_input(
+            home_team="Germany",
+            away_team="Curacao",
+            home_canonical="germany",
+            away_canonical="curacao",
+            venue_name="Houston",
+            home_elo=1998,
+            away_elo=1600,
+            home_advantage_elo=0.0,
+            h2h_odds={"home": 1.03, "draw": 18.0, "away": 40.0},
+            ah_home_line=-3.5,
+            ah_odds={"home": 1.79, "away": 2.048},
+            ou_odds={"over": 2.6, "under": 1.7},
+        ),
+        cfg,
+    )
+    analysis = replace(
+        analysis,
+        ou_2_5={"over": 0.25, "under": 0.75},
+        market_ou_2_5={
+            "market_probs": {"over": 0.38, "under": 0.62},
+            "odds": {"over": 2.6, "under": 1.7},
+            "n_books_by_selection": {"over": 3, "under": 3},
+            "dispersion_by_selection": {"over": 1.0, "under": 1.0},
+        },
+    )
+
+    signals = generate_value_signals(analysis, cfg)
+    under = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.OU and signal.selection == "under"
+    )
+
+    assert under.grade == Grade.B
+    assert "under_vs_big_handicap" in under.reasons
+
+
+def test_generate_value_signals_caps_ah_dog_against_extreme_favorite():
+    cfg = load_config()
+    analysis = analyze_match_input(
+        _priced_match_input(
+            home_team="Germany",
+            away_team="Curacao",
+            home_canonical="germany",
+            away_canonical="curacao",
+            venue_name="Houston",
+            home_elo=1998,
+            away_elo=1600,
+            home_advantage_elo=0.0,
+            h2h_odds={"home": 1.03, "draw": 18.0, "away": 40.0},
+            ah_home_line=-3.5,
+            ah_odds={"home": 1.79, "away": 2.048},
+        ),
+        cfg,
+    )
+    analysis = replace(analysis, handicap_dist={3: 1.0})
+
+    signals = generate_value_signals(analysis, cfg)
+    away_ah = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.AH and signal.selection == "away_+3.5"
+    )
+
+    assert away_ah.grade == Grade.B
+    assert "extreme_favorite_handicap" in away_ah.reasons
+
+
+def test_generate_value_signals_caps_zero_handicap_strong_signal():
+    cfg = load_config()
+    analysis = analyze_match_input(
+        _priced_match_input(
+            home_team="Ivory Coast",
+            away_team="Ecuador",
+            home_canonical="ivory_coast",
+            away_canonical="ecuador",
+            venue_name="Philadelphia",
+            home_elo=1700,
+            away_elo=1850,
+            home_advantage_elo=0.0,
+            h2h_odds={"home": 3.3, "draw": 3.2, "away": 2.2},
+            ah_home_line=0.0,
+            ah_odds={"home": 2.29, "away": 1.66},
+        ),
+        cfg,
+    )
+    analysis = replace(analysis, handicap_dist={-1: 1.0})
+
+    signals = generate_value_signals(analysis, cfg)
+    away_ah = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.AH and signal.selection == "away_-0"
+    )
+
+    assert away_ah.grade == Grade.B
+    assert "ah_zero_line_confirmation" in away_ah.reasons
+
+
 def _sample_match_input_with_three_markets():
     fixtures = parse_openfootball_fixtures(
         {
@@ -336,6 +597,69 @@ def _sample_match_input_with_three_markets():
     ratings = parse_elo_ratings("1\t1\tMX\t1875\n2\t2\tZA\t1700\n")
     aliases = parse_elo_team_aliases("MX\tMexico\nZA\tSouth Africa\n")
     return build_match_inputs(fixtures, events, ratings, aliases).inputs[0]
+
+
+def _priced_match_input(
+    home_team: str,
+    away_team: str,
+    home_canonical: str,
+    away_canonical: str,
+    venue_name: str,
+    home_elo: int,
+    away_elo: int,
+    home_advantage_elo: float,
+    h2h_odds: dict[str, float],
+    ah_home_line: float,
+    ah_odds: dict[str, float],
+    ou_odds: dict[str, float] | None = None,
+) -> MatchAnalysisInput:
+    kickoff = datetime(2026, 6, 13, 1, 0, tzinfo=timezone.utc)
+    quotes: list[OddsQuote] = []
+    for book in ("book1", "book2", "book3"):
+        quotes.extend(
+            [
+                OddsQuote(book, MarketType.X12, "home", h2h_odds["home"]),
+                OddsQuote(book, MarketType.X12, "draw", h2h_odds["draw"]),
+                OddsQuote(book, MarketType.X12, "away", h2h_odds["away"]),
+                OddsQuote(book, MarketType.AH, "home", ah_odds["home"], line=ah_home_line),
+                OddsQuote(book, MarketType.AH, "away", ah_odds["away"], line=-ah_home_line),
+            ]
+        )
+        if ou_odds is not None:
+            quotes.extend(
+                [
+                    OddsQuote(book, MarketType.OU, "over", ou_odds["over"], line=2.5),
+                    OddsQuote(book, MarketType.OU, "under", ou_odds["under"], line=2.5),
+                ]
+            )
+    fixture = Fixture(
+        source_match_no=1,
+        kickoff_at_utc=kickoff,
+        kickoff_time_raw="01:00",
+        home_team_name=home_team,
+        away_team_name=away_team,
+        home_canonical=home_canonical,
+        away_canonical=away_canonical,
+        venue_name=venue_name,
+    )
+    event = ParsedOddsEvent(
+        source_event_id="event-priced",
+        sport_key="soccer_fifa_world_cup",
+        kickoff_at_utc=kickoff,
+        home_team_name=home_team,
+        away_team_name=away_team,
+        home_canonical=home_canonical,
+        away_canonical=away_canonical,
+        quotes=quotes,
+    )
+    return MatchAnalysisInput(
+        fixture=fixture,
+        odds_event=event,
+        home_elo=EloRating("HH", 1, home_elo),
+        away_elo=EloRating("AA", 2, away_elo),
+        quotes=quotes,
+        home_advantage_elo=home_advantage_elo,
+    )
 
 
 def _ou_match_input(

@@ -28,6 +28,12 @@ odds:
 quality:
   disagreement_prob_delta: 0.12
   odds_dispersion_ratio_max: 1.18
+  host_x12_market_prob_min_for_strong: 0.6
+  host_ah_abs_line_min_for_strong: 1.0
+  extreme_favorite_market_prob_min: 0.85
+  extreme_favorite_ah_abs_line_min: 2.5
+  big_handicap_under_line_max: 2.5
+  ah_zero_abs_line_max_for_strong: 0.25
 
 value:
   s_ev: 0.08

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from worldcup.collectors.models import EloRating, Fixture, ParsedOddsEvent
 from worldcup.collectors.team_aliases import canonicalize_team
 from worldcup.engine import elo, ensemble, handicap, odds, poisson, value
-from worldcup.models import MarketType, OddsQuote, Signal
+from worldcup.models import Grade, MarketType, OddsQuote, Signal
 
 _WORLD_CUP_2026_HOST_VENUES = {
     "atlanta": "united_states",
@@ -279,6 +279,159 @@ def _model_disagreement(analysis: MatchAnalysis, selection: str, cfg: dict) -> b
     return abs(elo_prob - poisson_prob) >= threshold
 
 
+def _host_side(match_input: MatchAnalysisInput) -> str | None:
+    if match_input.home_advantage_elo > 0:
+        return "home"
+    if match_input.home_advantage_elo < 0:
+        return "away"
+    return None
+
+
+def _quality_threshold(cfg: dict, key: str, default: float) -> float:
+    return float(cfg.get("quality", {}).get(key, default))
+
+
+def _ah_main_has_min_books(analysis: MatchAnalysis, cfg: dict) -> bool:
+    market = analysis.market_ah_main
+    if market is None:
+        return False
+    n_books = market.get("n_books_by_selection", {})
+    return min(n_books.get("home", 0), n_books.get("away", 0)) >= cfg["odds"]["min_books"]
+
+
+def _ah_main_line_home(analysis: MatchAnalysis) -> float | None:
+    line = (analysis.market_ah_main or {}).get("line_home")
+    return float(line) if line is not None else None
+
+
+def _ah_main_supports_x12(analysis: MatchAnalysis, selection: str, cfg: dict) -> bool:
+    if selection not in ("home", "away") or not _ah_main_has_min_books(analysis, cfg):
+        return False
+    line_home = _ah_main_line_home(analysis)
+    if line_home is None:
+        return False
+    if selection == "home":
+        return line_home < 0
+    return line_home > 0
+
+
+def _x12_confidence_guard_reasons(analysis: MatchAnalysis, signal: Signal, cfg: dict) -> list[str]:
+    if signal.market_type != MarketType.X12:
+        return []
+
+    reasons: list[str] = []
+    selection = signal.selection
+    if selection in ("home", "away"):
+        market_leader = _top_probability_key(analysis.market_1x2.get("market_probs", {}))
+        if market_leader is not None and market_leader != selection:
+            reasons.append("reverse_market")
+        if analysis.market_ah_main is None or not _ah_main_has_min_books(analysis, cfg):
+            reasons.append("ah_cross_check_missing")
+        elif not _ah_main_supports_x12(analysis, selection, cfg):
+            reasons.append("ah_not_supporting_1x2")
+
+    if selection == _host_side(analysis.match_input):
+        p_market = analysis.market_1x2.get("market_probs", {}).get(selection)
+        threshold = _quality_threshold(cfg, "host_x12_market_prob_min_for_strong", 0.60)
+        if p_market is not None and p_market < threshold:
+            reasons.append("host_market_confirmation")
+
+    return reasons
+
+
+def _big_handicap(analysis: MatchAnalysis, cfg: dict) -> bool:
+    line_home = _ah_main_line_home(analysis)
+    if line_home is None or not _ah_main_has_min_books(analysis, cfg):
+        return False
+    threshold = _quality_threshold(cfg, "extreme_favorite_ah_abs_line_min", 2.5)
+    return abs(line_home) >= threshold
+
+
+def _extreme_favorite_side(analysis: MatchAnalysis, cfg: dict) -> str | None:
+    market_probs = analysis.market_1x2.get("market_probs", {})
+    market_leader = _top_probability_key(market_probs)
+    market_threshold = _quality_threshold(cfg, "extreme_favorite_market_prob_min", 0.85)
+    if market_leader is not None and market_probs.get(market_leader, 0.0) >= market_threshold:
+        return market_leader
+    if _big_handicap(analysis, cfg):
+        line_home = _ah_main_line_home(analysis)
+        if line_home is not None:
+            if line_home < 0:
+                return "home"
+            if line_home > 0:
+                return "away"
+    return None
+
+
+def _ou_confidence_guard_reasons(analysis: MatchAnalysis, signal: Signal, cfg: dict) -> list[str]:
+    if signal.market_type != MarketType.OU or signal.selection != "under":
+        return []
+    max_under_line = _quality_threshold(cfg, "big_handicap_under_line_max", 2.5)
+    if signal.line is not None and signal.line <= max_under_line and _big_handicap(analysis, cfg):
+        return ["under_vs_big_handicap"]
+    return []
+
+
+def _ah_signal_side(selection: str) -> str | None:
+    if selection.startswith("home_"):
+        return "home"
+    if selection.startswith("away_"):
+        return "away"
+    return None
+
+
+def _ah_confidence_guard_reasons(analysis: MatchAnalysis, signal: Signal, cfg: dict) -> list[str]:
+    if signal.market_type != MarketType.AH:
+        return []
+    reasons: list[str] = []
+    signal_side = _ah_signal_side(signal.selection)
+    line_home = _ah_main_line_home(analysis)
+    if line_home is None:
+        return reasons
+    zero_threshold = _quality_threshold(cfg, "ah_zero_abs_line_max_for_strong", 0.25)
+    if signal.line is not None and abs(signal.line) <= zero_threshold:
+        reasons.append("ah_zero_line_confirmation")
+    favorite_side = _extreme_favorite_side(analysis, cfg)
+    if favorite_side is not None and signal_side is not None and signal_side != favorite_side:
+        reasons.append("extreme_favorite_handicap")
+    if signal_side == _host_side(analysis.match_input):
+        threshold = _quality_threshold(cfg, "host_ah_abs_line_min_for_strong", 1.0)
+        if abs(line_home) < threshold:
+            reasons.append("host_handicap_confirmation")
+    return reasons
+
+
+def _cap_signal_at_b(signal: Signal, reasons: list[str]) -> Signal:
+    if signal.grade not in (Grade.S, Grade.A) or not reasons:
+        return signal
+    merged_reasons = list(signal.reasons)
+    for reason in reasons:
+        if reason not in merged_reasons:
+            merged_reasons.append(reason)
+    return Signal(
+        signal.market_type,
+        signal.selection,
+        Grade.B,
+        signal.ev,
+        signal.edge,
+        signal.status,
+        merged_reasons,
+        signal.line,
+    )
+
+
+def _apply_confidence_guards(analysis: MatchAnalysis, cfg: dict, signals: list[Signal]) -> list[Signal]:
+    guarded: list[Signal] = []
+    for signal in signals:
+        reasons = [
+            *_x12_confidence_guard_reasons(analysis, signal, cfg),
+            *_ou_confidence_guard_reasons(analysis, signal, cfg),
+            *_ah_confidence_guard_reasons(analysis, signal, cfg),
+        ]
+        guarded.append(_cap_signal_at_b(signal, reasons))
+    return guarded
+
+
 def _normalize_observed_at(value: datetime | str | None) -> datetime | None:
     if value is None:
         return None
@@ -517,7 +670,7 @@ def generate_value_signals(
 ) -> list[Signal]:
     observed = _normalize_observed_at(observed_at)
     depends_on_backup = bool(stale_sources)
-    return [
+    signals = [
         *_integer_market_signals(
             analysis,
             cfg,
@@ -541,3 +694,4 @@ def generate_value_signals(
         ),
         *_ah_signals(analysis, cfg, observed_at=observed, depends_on_backup=depends_on_backup),
     ]
+    return _apply_confidence_guards(analysis, cfg, signals)

@@ -2,6 +2,18 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-15 S/A 强信号置信度护栏
+
+- 新增只降级置信度护栏：`generate_value_signals()` 生成原始信号后统一检查，只有 `S/A` 会被封顶到 `B`，不改变模型概率、EV/Edge，不升级 `B/C`。
+- `1X2` 主/客强信号新增三类风险 reason：`reverse_market`（逆 closing 市场主方向）、`ah_cross_check_missing`（主亚盘缺失或家数不足）、`ah_not_supporting_1x2`（主亚盘方向不支持该胜负方向）。
+- 主办国本土场地新增确认护栏：主办国 `1X2` 强信号若市场概率低于 `quality.host_x12_market_prob_min_for_strong=0.6`，追加 `host_market_confirmation` 并封顶；主办国 AH 强信号若主亚盘让步绝对值低于 `quality.host_ah_abs_line_min_for_strong=1.0`，追加 `host_handicap_confirmation` 并封顶。
+- 复盘 Germany vs Curaçao、Netherlands vs Japan、Ivory Coast vs Ecuador 后补充第二轮护栏：极强热门阈值 `quality.extreme_favorite_market_prob_min=0.85` 或主亚盘让步绝对值 `quality.extreme_favorite_ah_abs_line_min=2.5` 时，受让方 AH 强信号追加 `extreme_favorite_handicap` 并封顶；主亚盘大让步且 `Under 2.5` 强信号追加 `under_vs_big_handicap` 并封顶；AH 0 盘强信号追加 `ah_zero_line_confirmation` 并封顶。
+- 反事实检查显示：Ivory Coast vs Ecuador 的 `Ecuador 1X2 S` 与 `Ecuador 0 盘 AH S` 会降到 B；Netherlands vs Japan 的 `Japan 1X2 S` 会降到 B；Germany vs Curaçao 的 `Under 2.5 S` 与 `Curaçao +3.5 AH S` 会降到 B。Ivory Coast vs Ecuador 的 `Over 2.5 A` 暂不硬杀，需等待更多 OU 样本再决定。
+- TDD 红灯覆盖：USA vs Paraguay 型 `1X2 逆市场 + AH 不支持`、无 AH favorite 支持、Canada 型主办国市场确认不足、Canada 型主办国 AH 让步确认不足；同时覆盖 Mexico vs South Africa 型市场与亚盘均确认时不误杀。
+- TDD 红灯追加覆盖：德国大让步下 `Under 2.5 S` 封顶、极强热门下受让方 AH S 封顶、AH 0 盘 S 封顶。
+- 本地验证：单独 `tests/test_pipeline.py` 通过 `23/23`；除 `test_fastapi_app.py` 外的可执行测试通过 `374/374`。项目标准命令 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 当前在加载 `tests/test_fastapi_app.py` 时因本环境缺少可选依赖 `fastapi` 中断。
+- 本轮未联网、未触发 live refresh、未调用 The Odds API、未启动/停止服务、未部署、未提交、未推送；研究边界不变，不构成投注建议。
+
 ## 2026-06-14 ops_check 复盘巡检增强
 
 - `worldcup.ops_check` 新增只读 `/api/finished` 公网检查，并在远端本机 HTTP smoke 中同步检查 `/api/finished`；失败会计入 errors。
