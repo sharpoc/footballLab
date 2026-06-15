@@ -12,7 +12,11 @@
 - TDD 红灯覆盖：USA vs Paraguay 型 `1X2 逆市场 + AH 不支持`、无 AH favorite 支持、Canada 型主办国市场确认不足、Canada 型主办国 AH 让步确认不足；同时覆盖 Mexico vs South Africa 型市场与亚盘均确认时不误杀。
 - TDD 红灯追加覆盖：德国大让步下 `Under 2.5 S` 封顶、极强热门下受让方 AH S 封顶、AH 0 盘 S 封顶。
 - 本地验证：单独 `tests/test_pipeline.py` 通过 `23/23`；除 `test_fastapi_app.py` 外的可执行测试通过 `374/374`。项目标准命令 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 当前在加载 `tests/test_fastapi_app.py` 时因本环境缺少可选依赖 `fastapi` 中断。
-- 本轮未联网、未触发 live refresh、未调用 The Odds API、未启动/停止服务、未部署、未提交、未推送；研究边界不变，不构成投注建议。
+- 实现与本地验证阶段未联网、未触发 live refresh、未调用 The Odds API；研究边界不变，不构成投注建议。
+- 已提交并推送 `66703f9 feat: add strong signal confidence guards` 到 `origin/main`。
+- 已部署到 ECS `/opt/worldcup/releases/66703f9`，`/opt/worldcup/current` 已切换到该 release；`worldcup.service` 与 `nginx` 均为 active。
+- 部署后 smoke：公网 `/healthz` 返回 `status=ok`，`/api/matches`、`/api/finished`、首页和 `/preview` 均返回 200；服务日志只看到正常重启和请求记录。
+- 本次上线只切换护栏代码并重启服务，未触发 live refresh、未调用 The Odds API、未写入新 snapshot。
 
 ## 2026-06-14 ops_check 复盘巡检增强
 
