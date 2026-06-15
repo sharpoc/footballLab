@@ -8,8 +8,12 @@
 - snapshot 继续保留兼容字段 `ou_2_5`，但新增 `model.ou_line` 与 `market.ou_2_5.line` 记录真实盘口线；OU 信号 `line` 也改为真实主线。
 - 赔率走势点现在记录 OU line，预览页走势文字会显示对应盘口，避免不同大小球线的赔率混在一条曲线里看不出来。
 - 赛后 `eval_data` 导出新增 `ou_line`，`backtest` loader / replay / OU 赛果判定按每场 `ou_line` 计算；旧 CSV 或老 snapshot 缺 line 时兼容回退 `2.5`。
-- 用当前缓存只读重算验证：Spain vs Cape Verde 的 OU 主线从旧固定 `2.5` 改为 `3.5`，双边报价家数为 `11/11`；本轮未触发 live refresh、未调用 The Odds API、未发布线上 snapshot。
+- 上线前用当前缓存只读重算验证：Spain vs Cape Verde 的 OU 主线从旧固定 `2.5` 改为 `3.5`，双边报价家数为 `11/11`。
 - 本地验证：新增测试先红后绿；目标相关测试 `95/95` 通过；项目 3.12 runtime 下除 `test_fastapi_app.py` 外的测试 `381/381` 通过。标准 runtime 全量命令仍因当前环境缺少可选依赖 `fastapi` 在 FastAPI 测试导入处中断。
+- 已提交并推送 `46bfee8 fix: select dynamic over-under main line` 到 `origin/main`，并部署到 ECS `/opt/worldcup/releases/46bfee8`；`worldcup.service` 与 `nginx` 均为 active。
+- 已执行一次 live force refresh（`--no-notify`）：新 run 为 `20260615T100519Z-live`，本地刷新生成 60 场 snapshot，`source_errors=[]`、`stale_sources=[]`，The Odds API quota 剩余 `263`。首次 `scheduled_publish` 在 HTTPS publish 阶段遇到一次 `SSL UNEXPECTED_EOF`，随后只用 `worldcup.publish` 重发同一份 snapshot，未重复刷新数据源；ECS 返回 HTTP 200 / `ingest_status=stored`，snapshot_id 为 `10e802e805c4e2945ea79545c12b9a9377ef3fdd5220a321f9e167fae35a51a8`。
+- 发布后验证：远端 latest snapshot 中 Spain vs Cape Verde 的 `model.ou_line` 与 `market.ou_2_5.line` 均为 `3.5`，OU 信号行也为 `3.5`；最新 60 场扫描 `mismatches=0`，非 `2.5` 主线共 6 场（Brazil vs Haiti、Ecuador vs Curaçao、Egypt vs Iran、Spain vs Cape Verde、Spain vs Saudi Arabia、France vs Iraq）。
+- `python3 -m worldcup.ops_check` 返回 `ok=true`、`errors=0`；公网 `/healthz`、`/api/matches`、`/api/finished`、`/preview` 均返回 200，公开页保留研究免责声明且未命中资金/下注禁词。
 
 ## 2026-06-15 S/A 强信号置信度护栏
 
