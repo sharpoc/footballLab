@@ -69,10 +69,31 @@ def test_build_rows_joins_and_roundtrips_through_backtest_loader():
     assert len(loaded) == 1
     assert loaded[0].odds_1x2 == {"home": 1.8, "draw": 3.6, "away": 4.8}
     assert loaded[0].odds_ou == {"over": 1.9, "under": 2.0}
+    assert loaded[0].ou_line == 2.5
     assert loaded[0].ah_line == -0.5
     assert loaded[0].odds_ah == {"home": 1.96, "away": 1.88}
     assert loaded[0].home_elo_before == 1875.0
     assert loaded[0].home_score == 2
+
+
+def test_build_rows_preserves_dynamic_ou_line_for_backtest_loader():
+    from worldcup.backtest import load_matches
+    from worldcup.eval_data import write_csv
+
+    snap = _snapshot("2026-06-11T18:00:00+00:00", 1.8)
+    snap["matches"][0]["market"]["ou_2_5"]["line"] = 3.5
+    rows, skipped = build_rows([snap], [RESULT_ROW])
+
+    assert skipped == 0
+    assert rows[0]["ou_line"] == 3.5
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "eval.csv"
+        write_csv(rows, out)
+        loaded = load_matches(out)
+
+    assert loaded[0].ou_line == 3.5
+    assert loaded[0].odds_ou == {"over": 1.9, "under": 2.0}
 
 
 def test_build_rows_skips_result_without_pre_kickoff_snapshot():

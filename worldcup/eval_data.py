@@ -25,6 +25,7 @@ OUTPUT_COLUMNS = (
     "odds_home",
     "odds_draw",
     "odds_away",
+    "ou_line",
     "odds_over",
     "odds_under",
     "ah_line",
@@ -78,6 +79,18 @@ def _market_odds(entry: dict, market: str, selections: tuple[str, ...]) -> dict[
     return {}
 
 
+def _ou_fields(entry: dict) -> dict:
+    block = ((entry.get("market") or {}).get("ou_2_5")) or {}
+    odds = block.get("odds") or {}
+    if "over" not in odds or "under" not in odds:
+        return {"ou_line": "", "odds_over": "", "odds_under": ""}
+    return {
+        "ou_line": block.get("line", 2.5),
+        "odds_over": odds["over"],
+        "odds_under": odds["under"],
+    }
+
+
 def _ah_main_fields(entry: dict) -> dict:
     block = ((entry.get("market") or {}).get("ah_main")) or {}
     line = block.get("line_home")
@@ -105,7 +118,6 @@ def build_rows(snapshots: list[dict], results_rows: list[dict]) -> tuple[list[di
             skipped += 1
             continue
         odds_1x2 = _market_odds(entry, "1x2", ("home", "draw", "away"))
-        odds_ou = _market_odds(entry, "ou_2_5", ("over", "under"))
         rows.append(
             {
                 "match_id": (
@@ -123,8 +135,7 @@ def build_rows(snapshots: list[dict], results_rows: list[dict]) -> tuple[list[di
                 "odds_home": odds_1x2.get("home", ""),
                 "odds_draw": odds_1x2.get("draw", ""),
                 "odds_away": odds_1x2.get("away", ""),
-                "odds_over": odds_ou.get("over", ""),
-                "odds_under": odds_ou.get("under", ""),
+                **_ou_fields(entry),
                 **_ah_main_fields(entry),
             }
         )

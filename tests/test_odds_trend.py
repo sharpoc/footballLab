@@ -9,7 +9,7 @@ from worldcup.odds_trend import (
 )
 
 
-def _hist_snapshot(at: str, odds_home: float, ah_line: float = -1.0) -> dict:
+def _hist_snapshot(at: str, odds_home: float, ah_line: float = -1.0, ou_line: float = 2.5) -> dict:
     return {
         "snapshot_at": at,
         "matches": [
@@ -19,7 +19,7 @@ def _hist_snapshot(at: str, odds_home: float, ah_line: float = -1.0) -> dict:
                 "away_canonical": "south_africa",
                 "market": {
                     "1x2": {"odds": {"home": odds_home, "draw": 3.6, "away": 4.8}},
-                    "ou_2_5": {"odds": {"over": 1.9, "under": 2.0}},
+                    "ou_2_5": {"line": ou_line, "odds": {"over": 1.9, "under": 2.0}},
                     "ah_main": {
                         "line_home": ah_line,
                         "odds": {"home": 1.74, "away": 2.12},
@@ -59,6 +59,19 @@ def test_extract_trend_records_ah_line_per_point():
     ah_points = trend["ah_main"]["home"]
     assert ah_points[0][2] == -1.0
     assert ah_points[-1][2] == -1.25
+
+
+def test_extract_trend_records_ou_line_per_point():
+    snapshots = [
+        _hist_snapshot("2026-06-12T00:00:00+00:00", 1.85, ou_line=2.5),
+        _hist_snapshot("2026-06-12T12:00:00+00:00", 1.85, ou_line=3.5),
+    ]
+
+    trend = extract_match_trend(snapshots, "mexico", "south_africa")
+
+    ou_points = trend["ou_2_5"]["over"]
+    assert ou_points[0][2] == 2.5
+    assert ou_points[-1][2] == 3.5
 
 
 def test_extract_trend_caps_points_per_selection():

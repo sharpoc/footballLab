@@ -54,6 +54,7 @@ class MatchAnalysis:
     lambdas: tuple[float, float]
     poisson_tail: float
     mu_total_used: float
+    ou_line: float
     elo_1x2: dict[str, float]
     poisson_1x2: dict[str, float]
     combined_1x2: dict[str, float]
@@ -187,8 +188,8 @@ def _elo_home_advantage(match_input: MatchAnalysisInput, cfg: dict) -> float | N
 
 def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnalysis:
     dr = _adjusted_dr(match_input, cfg)
-    ou_line = cfg.get("ou_main_line", 2.5)
     ratio = cfg["odds"]["outlier_ratio"]
+    ou_line = _main_ou_line(match_input.quotes, fallback_line=cfg.get("ou_main_line", 2.5))
     market_ou_2_5 = odds.aggregate_market(
         match_input.quotes,
         market_type=MarketType.OU,
@@ -196,6 +197,7 @@ def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnal
         selections=["over", "under"],
         ratio=ratio,
     )
+    market_ou_2_5["line"] = ou_line
     p_over_market = market_ou_2_5["market_probs"].get("over")
     if p_over_market is not None:
         ou_books = market_ou_2_5["n_books_by_selection"]
@@ -230,6 +232,7 @@ def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnal
         lambdas=(lh, la),
         poisson_tail=tail,
         mu_total_used=mu_total_used,
+        ou_line=ou_line,
         elo_1x2=elo_1x2,
         poisson_1x2=poisson_1x2,
         combined_1x2=combined_1x2,
@@ -510,6 +513,36 @@ def _line_label(line: float) -> str:
     return f"{line:+g}" if line > 0 else f"{line:g}"
 
 
+def _half_goal_line(line: float) -> bool:
+    doubled = round(line * 2)
+    return abs(line * 2 - doubled) < 1e-9 and doubled % 2 != 0
+
+
+def _main_ou_line(quotes: list[OddsQuote], fallback_line: float = 2.5) -> float:
+    over_counts: dict[float, int] = {}
+    under_counts: dict[float, int] = {}
+    for quote in quotes:
+        if quote.market_type != MarketType.OU or quote.line is None:
+            continue
+        if not _half_goal_line(quote.line):
+            continue
+        if quote.selection == "over":
+            over_counts[quote.line] = over_counts.get(quote.line, 0) + 1
+        elif quote.selection == "under":
+            under_counts[quote.line] = under_counts.get(quote.line, 0) + 1
+    paired_counts = {
+        line: min(over_counts.get(line, 0), under_counts.get(line, 0))
+        for line in set(over_counts) | set(under_counts)
+    }
+    paired_counts = {line: count for line, count in paired_counts.items() if count > 0}
+    if not paired_counts:
+        return float(fallback_line)
+    return sorted(
+        paired_counts,
+        key=lambda line: (-paired_counts[line], abs(line - fallback_line), line),
+    )[0]
+
+
 def _main_home_ah_line(quotes: list[OddsQuote]) -> float | None:
     counts: dict[float, int] = {}
     for quote in quotes:
@@ -688,7 +721,7 @@ def generate_value_signals(
             ["over", "under"],
             analysis.ou_2_5,
             analysis.market_ou_2_5,
-            line=cfg.get("ou_main_line", 2.5),
+            line=analysis.ou_line,
             observed_at=observed,
             depends_on_backup=depends_on_backup,
         ),

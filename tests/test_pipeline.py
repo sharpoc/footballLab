@@ -182,6 +182,38 @@ def test_analyze_match_input_generates_model_and_market_outputs():
     assert set(analysis.market_ou_2_5["market_probs"]) == {"over", "under"}
 
 
+def test_analyze_match_input_uses_most_quoted_half_goal_ou_line():
+    match_input = _ou_multi_line_match_input(
+        {
+            2.5: ("book1", "book2", "book3"),
+            3.5: ("book4", "book5", "book6", "book7", "book8"),
+        }
+    )
+
+    analysis = analyze_match_input(match_input, load_config())
+    signals = generate_value_signals(analysis, load_config())
+    ou_lines = {signal.line for signal in signals if signal.market_type == MarketType.OU}
+
+    assert analysis.ou_line == 3.5
+    assert analysis.market_ou_2_5["line"] == 3.5
+    assert analysis.market_ou_2_5["n_books_by_selection"] == {"over": 5, "under": 5}
+    assert ou_lines == {3.5}
+
+
+def test_analyze_match_input_does_not_special_case_three_and_half():
+    match_input = _ou_multi_line_match_input(
+        {
+            1.5: ("book1", "book2", "book3", "book4"),
+            2.5: ("book5",),
+        }
+    )
+
+    analysis = analyze_match_input(match_input, load_config())
+
+    assert analysis.ou_line == 1.5
+    assert analysis.market_ou_2_5["line"] == 1.5
+
+
 def test_generate_value_signals_outputs_1x2_ou_and_ah():
     cfg = load_config()
     analysis = analyze_match_input(_sample_match_input_with_three_markets(), cfg)
@@ -704,6 +736,16 @@ def _ou_match_input(
         away_elo=EloRating("BB", 2, 1800),
         quotes=quotes,
     )
+
+
+def _ou_multi_line_match_input(line_books: dict[float, tuple[str, ...]]) -> MatchAnalysisInput:
+    base = _ou_match_input(1.4, 3.0, with_ou=False)
+    quotes = list(base.quotes)
+    for line, books in line_books.items():
+        for book in books:
+            quotes.append(OddsQuote(book, MarketType.OU, "over", 1.92, line=line))
+            quotes.append(OddsQuote(book, MarketType.OU, "under", 1.88, line=line))
+    return replace(base, quotes=quotes, odds_event=replace(base.odds_event, quotes=quotes))
 
 
 def test_ou_probability_varies_with_market_total():

@@ -57,6 +57,8 @@ def _point(at: str, market: str, block: dict, selection: str) -> list | None:
         return None
     if market == "ah_main":
         return [at, odds, block.get("line_home")]
+    if market == "ou_2_5" and block.get("line") is not None:
+        return [at, odds, block.get("line")]
     return [at, odds]
 
 

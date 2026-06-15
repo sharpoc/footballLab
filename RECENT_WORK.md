@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-15 OU 主盘口动态选择
+
+- 修复大小球固定 `2.5` 的问题：`worldcup.pipeline` 现在按每场 over/under 双边报价家数选择当前主流 half-goal OU 盘口线，`ou_main_line` 只作为无可用主线时的 fallback / tie-break。
+- snapshot 继续保留兼容字段 `ou_2_5`，但新增 `model.ou_line` 与 `market.ou_2_5.line` 记录真实盘口线；OU 信号 `line` 也改为真实主线。
+- 赔率走势点现在记录 OU line，预览页走势文字会显示对应盘口，避免不同大小球线的赔率混在一条曲线里看不出来。
+- 赛后 `eval_data` 导出新增 `ou_line`，`backtest` loader / replay / OU 赛果判定按每场 `ou_line` 计算；旧 CSV 或老 snapshot 缺 line 时兼容回退 `2.5`。
+- 用当前缓存只读重算验证：Spain vs Cape Verde 的 OU 主线从旧固定 `2.5` 改为 `3.5`，双边报价家数为 `11/11`；本轮未触发 live refresh、未调用 The Odds API、未发布线上 snapshot。
+- 本地验证：新增测试先红后绿；目标相关测试 `95/95` 通过；项目 3.12 runtime 下除 `test_fastapi_app.py` 外的测试 `381/381` 通过。标准 runtime 全量命令仍因当前环境缺少可选依赖 `fastapi` 在 FastAPI 测试导入处中断。
+
 ## 2026-06-15 S/A 强信号置信度护栏
 
 - 新增只降级置信度护栏：`generate_value_signals()` 生成原始信号后统一检查，只有 `S/A` 会被封顶到 `B`，不改变模型概率、EV/Edge，不升级 `B/C`。

@@ -76,6 +76,29 @@ def _write_probe_files(root: Path) -> None:
     (root / "elo_teams.tsv").write_text("MX\tMexico\nZA\tSouth Africa\n")
 
 
+def _append_totals_books(root: Path, line: float, books: tuple[str, ...]) -> None:
+    odds_path = root / "theoddsapi_wc_odds.json"
+    data = json.loads(odds_path.read_text())
+    for book in books:
+        data[0]["bookmakers"].append(
+            {
+                "key": book,
+                "last_update": "2026-06-08T05:00:00Z",
+                "markets": [
+                    {
+                        "key": "totals",
+                        "last_update": "2026-06-08T05:00:00Z",
+                        "outcomes": [
+                            {"name": "Over", "price": 1.92, "point": line},
+                            {"name": "Under", "price": 1.88, "point": line},
+                        ],
+                    }
+                ],
+            }
+        )
+    odds_path.write_text(json.dumps(data))
+
+
 def test_build_snapshot_from_probe_serializes_match_analysis():
     with TemporaryDirectory() as tmp:
         probe_dir = Path(tmp) / "probe"
@@ -95,6 +118,25 @@ def test_build_snapshot_from_probe_serializes_match_analysis():
         assert snapshot["matches"][0]["market"]["ou_2_5"]["last_update_at"] == "2026-06-08T03:00:00+00:00"
         assert snapshot["matches"][0]["model"]["combined_1x2"]["home"] > 0
         assert snapshot["matches"][0]["signals"]
+
+
+def test_build_snapshot_from_probe_serializes_dynamic_ou_line():
+    with TemporaryDirectory() as tmp:
+        probe_dir = Path(tmp) / "probe"
+        _write_probe_files(probe_dir)
+        _append_totals_books(probe_dir, 1.5, ("bk2", "bk3", "bk4", "bk5"))
+
+        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T00:00:00+00:00")
+        match = snapshot["matches"][0]
+        ou_signal_lines = {
+            signal["line"]
+            for signal in match["signals"]
+            if signal["market_type"] == "OverUnder_90min"
+        }
+
+        assert match["market"]["ou_2_5"]["line"] == 1.5
+        assert match["model"]["ou_line"] == 1.5
+        assert ou_signal_lines == {1.5}
 
 
 def test_build_snapshot_from_probe_attaches_finished_result_when_available():

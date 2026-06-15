@@ -100,6 +100,7 @@ def _analysis_to_dict(
             },
             "poisson_tail": analysis.poisson_tail,
             "mu_total": analysis.mu_total_used,
+            "ou_line": analysis.ou_line,
             "elo_1x2": analysis.elo_1x2,
             "poisson_1x2": analysis.poisson_1x2,
             "combined_1x2": analysis.combined_1x2,

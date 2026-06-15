@@ -181,7 +181,7 @@ python3 -m worldcup.backtest --csv data/local/backtest/history.csv --min-sample 
 - `worldcup.oddsportal_wc2022` 用于一次性把 2022 世界杯 OddsPortal / OddsHarvester 本地抓取产物 join 成回测 CSV；原始与 join 产物默认写入被忽略的 `data/local/backtest/`。
 - `worldcup.line_move_report` 用于读取 `wc2022_history.csv`，按 1x2 主胜赔率漂移与 AH 线移动分桶输出研究报告；报告默认写入被忽略的 `data/local/backtest/line_move_report.json`。
 
-另外：OU 大小球模型的逐场 `mu_total` 现在由「OU 市场去水概率反推的总进球」与配置先验 `poisson.mu_total` 按 `poisson.mu_market_weight` 混合得出；无 OU 市场时回退先验。snapshot 的 `model.mu_total` 字段记录实际使用值。
+另外：OU 大小球模型会按每场 over/under 双边报价家数选择当前主流 half-goal 盘口线，再由该线的市场去水概率反推总进球，并与配置先验 `poisson.mu_total` 按 `poisson.mu_market_weight` 混合；无可用 OU 主线时回退 `ou_main_line` 配置。snapshot 的 `model.mu_total` 记录实际使用的总进球，`model.ou_line` 与 `market.ou_2_5.line` 记录实际大小球盘口线；`ou_2_5` key 暂时保留作兼容字段名，不代表永远固定 2.5。
 
 模型还内置 Dixon-Coles 低比分修正开关 `poisson.dc_rho`（默认 `0.0` 即关闭，行为与历史版本一致）；rho 的取值必须由真实历史数据回测确定后再启用。mu 市场锚定仅在 OU 盘口 over/under 双边报价家数均达到 `odds.min_books` 时生效，否则回退先验 `poisson.mu_total`。注意：`dc_rho != 0` 时比分矩阵的大小球概率与 mu 锚定的纯 Poisson 反推存在微小近似偏差，rho 为小负数时可忽略。
 
@@ -287,4 +287,4 @@ DATABASE_URL=
 - readiness check 只报告变量名、文件状态和内容完整性，不能输出密钥值；`.env.example` 必须只含变量名和空值。
 - 所有公开输出都必须保留免责声明。
 - 当前 EV/Edge 阈值未经历史赔率回测验证，公开页只能显示研究价值信号。
-- S/A 强信号有只降级置信度护栏，不改模型概率、不升级 B/C：`1X2` 主/客方向若逆 closing 市场主方向、缺少主亚盘同向支持，或主办国本土场地市场确认不足，会封顶到 B；主办国 AH 强信号若主亚盘让步确认不足，也会封顶到 B；极强热门/大让步场景下，受让方 AH 强信号和 `Under 2.5` 强信号会封顶到 B；AH 0 盘强信号也会封顶到 B。阈值见 `config/settings.yaml` 的 `quality.*` 护栏配置。
+- S/A 强信号有只降级置信度护栏，不改模型概率、不升级 B/C：`1X2` 主/客方向若逆 closing 市场主方向、缺少主亚盘同向支持，或主办国本土场地市场确认不足，会封顶到 B；主办国 AH 强信号若主亚盘让步确认不足，也会封顶到 B；极强热门/大让步场景下，受让方 AH 强信号和低大小球线 Under 强信号会封顶到 B；AH 0 盘强信号也会封顶到 B。阈值见 `config/settings.yaml` 的 `quality.*` 护栏配置。

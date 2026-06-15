@@ -42,6 +42,7 @@ class BacktestMatch:
     home_elo_before: float
     away_elo_before: float
     neutral: bool = True
+    ou_line: float = OU_LINE
     odds_1x2: dict[str, float] | None = None
     odds_ou: dict[str, float] | None = None
     ah_line: float | None = None
@@ -77,6 +78,7 @@ def load_matches(path: str | Path) -> list[BacktestMatch]:
                 row, {"home": "odds_home", "draw": "odds_draw", "away": "odds_away"}
             )
             odds_ou = _market_dict(row, {"over": "odds_over", "under": "odds_under"})
+            ou_line = _opt_float(row, "ou_line")
             for market in (odds_1x2, odds_ou, odds_ah):
                 if market and any(value <= 1.0 for value in market.values()):
                     raise ValueError(f"row {line_no}: decimal odds must be > 1.0")
@@ -91,6 +93,7 @@ def load_matches(path: str | Path) -> list[BacktestMatch]:
                     home_elo_before=float(row["home_elo_before"]),
                     away_elo_before=float(row["away_elo_before"]),
                     neutral=(row.get("neutral") or "1").strip() != "0",
+                    ou_line=ou_line if ou_line is not None else OU_LINE,
                     odds_1x2=odds_1x2,
                     odds_ou=odds_ou,
                     ah_line=ah_line if odds_ah is not None else None,
@@ -150,8 +153,9 @@ def replay_match(match: BacktestMatch, cfg: dict) -> dict:
         dr += cfg["elo"]["home_adv"]
     market_1x2 = devig(match.odds_1x2) if match.odds_1x2 else None
     market_ou = devig(match.odds_ou) if match.odds_ou else None
+    ou_line = match.ou_line
     mu_used = poisson.blended_mu(
-        market_ou["over"] if market_ou else None, OU_LINE, cfg["poisson"], dr=dr
+        market_ou["over"] if market_ou else None, ou_line, cfg["poisson"], dr=dr
     )
     lh, la = poisson.lambdas(dr, cfg["poisson"], mu_total=mu_used)
     matrix, _ = poisson.score_matrix(lh, la, cfg["poisson"])
@@ -165,9 +169,10 @@ def replay_match(match: BacktestMatch, cfg: dict) -> dict:
     combined_1x2 = ensemble.combine_1x2(
         elo_1x2, poisson_1x2, cfg["ensemble"]["w_elo"], cfg["ensemble"]["w_poisson"]
     )
-    p_over = poisson.prob_over(matrix, OU_LINE)
+    p_over = poisson.prob_over(matrix, ou_line)
     return {
         "dr": dr,
+        "ou_line": ou_line,
         "mu_used": mu_used,
         "model_1x2": combined_1x2,
         "market_1x2": market_1x2,
@@ -222,7 +227,7 @@ def run_backtest(matches: list[BacktestMatch], cfg: dict, min_sample: int = 200)
         replay = replay_match(match, cfg)
         result = outcome_1x2(match.home_score, match.away_score)
         total_goals = match.home_score + match.away_score
-        ou_result = "over" if total_goals > OU_LINE else "under"
+        ou_result = "over" if total_goals > replay["ou_line"] else "under"
 
         model_1x2_rows.append((replay["model_1x2"], result))
         uniform_1x2_rows.append((uniform_1x2, result))

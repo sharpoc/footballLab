@@ -177,6 +177,35 @@ def test_replay_match_home_advantage_applied_when_not_neutral():
     assert math.isclose(result["dr"], base_dr + cfg["elo"]["home_adv"])
 
 
+def test_replay_match_uses_match_ou_line_for_model_probabilities():
+    from worldcup.backtest import BacktestMatch, replay_match
+    from worldcup.config import load_config
+    from worldcup.engine.poisson import prob_total_over
+
+    cfg = load_config()
+    match = BacktestMatch(
+        match_id="m-ou-line",
+        kickoff_at_utc="2024-01-01T12:00:00Z",
+        home_team="Alpha",
+        away_team="Beta",
+        home_score=2,
+        away_score=0,
+        home_elo_before=1800.0,
+        away_elo_before=1800.0,
+        odds_ou={"over": 1.9, "under": 1.9},
+        ou_line=1.5,
+    )
+
+    result = replay_match(match, cfg)
+
+    assert result["ou_line"] == 1.5
+    assert math.isclose(
+        result["model_ou"]["over"],
+        prob_total_over(result["mu_used"], 1.5),
+        abs_tol=1e-3,
+    )
+
+
 def test_run_backtest_report_structure_and_small_sample_flag():
     from worldcup.backtest import load_matches, run_backtest
     from worldcup.config import load_config

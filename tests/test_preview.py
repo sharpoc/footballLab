@@ -2,6 +2,7 @@ from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from worldcup.ledger_html import _trend_text
 from worldcup.preview import build_preview_html, write_preview
 
 
@@ -521,6 +522,18 @@ def test_preview_renders_trend_sparkline_in_detail():
     assert "<polyline" in html
     assert "赔率走势" in html
     assert "1.85" in html and "1.78" in html
+
+
+def test_preview_trend_text_includes_market_line_when_present():
+    text = _trend_text(
+        [
+            ["2026-06-10T00:00:00+00:00", 1.85, 2.5],
+            ["2026-06-11T18:00:00+00:00", 1.78, 3.5],
+        ]
+    )
+
+    assert "2.5" in text
+    assert "3.5" in text
 
 
 def test_preview_renders_history_with_workbench_interaction_contract():

@@ -462,7 +462,13 @@ def _trend_text(points: list) -> str:
         return ""
 
     def _label(point: list) -> str:
-        return f"{_format_snapshot_time(point[0])} {point[1]}"
+        line = ""
+        if len(point) > 2 and point[2] is not None:
+            try:
+                line = f" 盘口 {float(point[2]):g}"
+            except (TypeError, ValueError):
+                line = f" 盘口 {point[2]}"
+        return f"{_format_snapshot_time(point[0])} {point[1]}{line}"
 
     shown = points if len(points) <= 6 else [points[0]] + points[-5:]
     first, last = points[0][1], points[-1][1]
