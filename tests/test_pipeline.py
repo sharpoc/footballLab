@@ -242,6 +242,101 @@ def test_generate_value_signals_outputs_1x2_ou_and_ah():
     assert ah_home.line == -0.5
 
 
+def test_generate_value_signals_caps_market_informed_ou_to_c():
+    cfg = load_config()
+    analysis = analyze_match_input(_ou_match_input(1.55, 2.45), cfg)
+    analysis = replace(
+        analysis,
+        ou_2_5={"over": 0.60, "under": 0.40},
+        market_ou_2_5={
+            "line": 2.5,
+            "market_probs": {"over": 0.45, "under": 0.55},
+            "odds": {"over": 1.85, "under": 1.85},
+            "n_books_by_selection": {"over": 3, "under": 3},
+            "dispersion_by_selection": {"over": 1.0, "under": 1.0},
+        },
+    )
+
+    signals = generate_value_signals(analysis, cfg)
+    over = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.OU and signal.selection == "over"
+    )
+
+    assert analysis.same_market_total_anchor is True
+    assert analysis.total_mu_source == "market_informed"
+    assert over.grade == Grade.C
+    assert over.raw_grade == Grade.S
+    assert over.same_market_total_anchor is True
+    assert over.total_mu_source == "market_informed"
+    assert "market_informed_total" in over.reasons
+    assert over.ev is not None
+    assert over.edge is not None
+
+
+def test_generate_value_signals_does_not_cap_prior_ou_for_market_reason():
+    cfg = load_config()
+    analysis = analyze_match_input(_ou_match_input(0.0, 0.0, with_ou=False), cfg)
+    analysis = replace(
+        analysis,
+        ou_2_5={"over": 0.60, "under": 0.40},
+        market_ou_2_5={
+            "line": 2.5,
+            "market_probs": {"over": 0.45, "under": 0.55},
+            "odds": {"over": 1.85, "under": 1.85},
+            "n_books_by_selection": {"over": 3, "under": 3},
+            "dispersion_by_selection": {"over": 1.0, "under": 1.0},
+        },
+    )
+
+    signals = generate_value_signals(analysis, cfg)
+    over = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.OU and signal.selection == "over"
+    )
+
+    assert analysis.same_market_total_anchor is False
+    assert analysis.total_mu_source == "prior"
+    assert over.grade == Grade.S
+    assert over.raw_grade == Grade.S
+    assert over.same_market_total_anchor is False
+    assert over.total_mu_source == "prior"
+    assert "market_informed_total" not in over.reasons
+
+
+def test_ou_market_weight_zero_uses_prior_source_even_with_quotes():
+    from worldcup.backtest import apply_overrides
+
+    cfg = apply_overrides(load_config(), ["poisson.mu_market_weight=0"])
+    analysis = analyze_match_input(_ou_match_input(1.55, 2.45), cfg)
+
+    assert analysis.total_mu_source == "prior"
+    assert analysis.mu_market_used is None
+    assert analysis.same_market_total_anchor is False
+
+
+def test_generate_value_signals_caps_unvalidated_ah_to_b():
+    cfg = load_config()
+    analysis = analyze_match_input(_sample_match_input_with_three_markets(), cfg)
+    analysis = replace(analysis, handicap_dist={1: 1.0})
+
+    signals = generate_value_signals(analysis, cfg)
+    ah_home = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.AH and signal.selection == "home_-0.5"
+    )
+
+    assert ah_home.grade == Grade.B
+    assert ah_home.raw_grade == Grade.S
+    assert ah_home.ah_market_validated is False
+    assert "ah_market_edge_missing" in ah_home.reasons
+    assert ah_home.ev is not None
+    assert ah_home.edge is None
+
+
 def test_generate_value_signals_caps_1x2_when_models_disagree():
     cfg = load_config()
     analysis = analyze_match_input(_sample_match_input_with_three_markets(), cfg)
@@ -464,7 +559,9 @@ def test_generate_value_signals_keeps_host_signal_when_market_and_ah_confirm():
 
     assert home_1x2.grade == Grade.S
     assert "host_market_confirmation" not in home_1x2.reasons
-    assert home_ah.grade == Grade.S
+    assert home_ah.grade == Grade.B
+    assert home_ah.raw_grade == Grade.S
+    assert "ah_market_edge_missing" in home_ah.reasons
     assert "host_handicap_confirmation" not in home_ah.reasons
 
 
@@ -505,8 +602,10 @@ def test_generate_value_signals_caps_under_when_main_handicap_is_big():
         if signal.market_type == MarketType.OU and signal.selection == "under"
     )
 
-    assert under.grade == Grade.B
+    assert under.grade == Grade.C
+    assert under.raw_grade == Grade.S
     assert "under_vs_big_handicap" in under.reasons
+    assert "market_informed_total" in under.reasons
 
 
 def test_generate_value_signals_caps_ah_dog_against_extreme_favorite():

@@ -60,6 +60,11 @@ class MatchAnalysis:
     combined_1x2: dict[str, float]
     ou_2_5: dict[str, float]
     handicap_dist: dict[int, float]
+    mu_prior_used: float
+    mu_market_used: float | None
+    mu_market_weight: float
+    total_mu_source: str
+    same_market_total_anchor: bool
     market_1x2: dict
     market_ou_2_5: dict
     market_ah_main: dict | None
@@ -198,11 +203,27 @@ def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnal
         ratio=ratio,
     )
     market_ou_2_5["line"] = ou_line
-    p_over_market = market_ou_2_5["market_probs"].get("over")
+    p_over_available = market_ou_2_5["market_probs"].get("over")
+    p_over_market = p_over_available
     if p_over_market is not None:
         ou_books = market_ou_2_5["n_books_by_selection"]
         if min(ou_books.get("over", 0), ou_books.get("under", 0)) < cfg["odds"]["min_books"]:
             p_over_market = None
+    mu_prior_used = poisson.prior_mu(dr, cfg["poisson"])
+    mu_market_weight = cfg["poisson"].get("mu_market_weight", 0.0)
+    market_total_enabled = mu_market_weight > 0
+    mu_market_used = (
+        poisson.implied_total_mu(p_over_market, ou_line)
+        if p_over_market is not None and market_total_enabled
+        else None
+    )
+    same_market_total_anchor = mu_market_used is not None
+    if same_market_total_anchor:
+        total_mu_source = "market_informed"
+    elif p_over_available is not None and market_total_enabled:
+        total_mu_source = "fallback"
+    else:
+        total_mu_source = "prior"
     mu_total_used = poisson.blended_mu(
         p_over_market,
         ou_line,
@@ -238,6 +259,11 @@ def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnal
         combined_1x2=combined_1x2,
         ou_2_5={"over": p_over, "under": 1.0 - p_over},
         handicap_dist=handicap_dist,
+        mu_prior_used=mu_prior_used,
+        mu_market_used=mu_market_used,
+        mu_market_weight=mu_market_weight,
+        total_mu_source=total_mu_source,
+        same_market_total_anchor=same_market_total_anchor,
         market_1x2=odds.aggregate_market(
             match_input.quotes,
             market_type=MarketType.X12,
@@ -405,21 +431,26 @@ def _ah_confidence_guard_reasons(analysis: MatchAnalysis, signal: Signal, cfg: d
 
 
 def _cap_signal_at_b(signal: Signal, reasons: list[str]) -> Signal:
-    if signal.grade not in (Grade.S, Grade.A) or not reasons:
+    if not reasons:
         return signal
     merged_reasons = list(signal.reasons)
     for reason in reasons:
         if reason not in merged_reasons:
             merged_reasons.append(reason)
+    grade = Grade.B if signal.grade in (Grade.S, Grade.A) else signal.grade
     return Signal(
         signal.market_type,
         signal.selection,
-        Grade.B,
+        grade,
         signal.ev,
         signal.edge,
         signal.status,
         merged_reasons,
         signal.line,
+        signal.raw_grade,
+        signal.total_mu_source,
+        signal.same_market_total_anchor,
+        signal.ah_market_validated,
     )
 
 
@@ -486,6 +517,9 @@ def _signal_ctx(
     depends_on_backup: bool,
     model_disagreement: bool = False,
     odds_dispersion_ratio: float | None = None,
+    total_mu_source: str | None = None,
+    same_market_total_anchor: bool | None = None,
+    ah_market_validated: bool | None = None,
 ) -> dict:
     ctx = {
         "status": "OK",
@@ -506,6 +540,12 @@ def _signal_ctx(
         ctx["model_disagreement"] = True
     if odds_dispersion_ratio is not None:
         ctx["odds_dispersion_ratio"] = odds_dispersion_ratio
+    if total_mu_source is not None:
+        ctx["total_mu_source"] = total_mu_source
+    if same_market_total_anchor is not None:
+        ctx["same_market_total_anchor"] = same_market_total_anchor
+    if ah_market_validated is not None:
+        ctx["ah_market_validated"] = ah_market_validated
     return ctx
 
 
@@ -580,6 +620,8 @@ def _integer_market_signals(
     line: float | None = None,
     observed_at: datetime | None = None,
     depends_on_backup: bool = False,
+    total_mu_source: str | None = None,
+    same_market_total_anchor: bool | None = None,
 ) -> list[Signal]:
     value_cfg = _value_cfg(cfg)
     out: list[Signal] = []
@@ -607,6 +649,8 @@ def _integer_market_signals(
                         market_type == MarketType.X12 and _model_disagreement(analysis, selection, cfg)
                     ),
                     odds_dispersion_ratio=dispersion_by_selection.get(selection),
+                    total_mu_source=total_mu_source,
+                    same_market_total_anchor=same_market_total_anchor,
                 ),
                 value_cfg,
                 line=line,
@@ -653,6 +697,7 @@ def _ah_signals(
                     observed_at,
                     depends_on_backup,
                     odds_dispersion_ratio=home_agg["dispersion_ratio"],
+                    ah_market_validated=False,
                 ),
                 value_cfg,
                 ah_ev=ah_ev,
@@ -686,6 +731,7 @@ def _ah_signals(
                     observed_at,
                     depends_on_backup,
                     odds_dispersion_ratio=away_agg["dispersion_ratio"],
+                    ah_market_validated=False,
                 ),
                 value_cfg,
                 ah_ev=away_ev,
@@ -724,6 +770,8 @@ def generate_value_signals(
             line=analysis.ou_line,
             observed_at=observed,
             depends_on_backup=depends_on_backup,
+            total_mu_source=analysis.total_mu_source,
+            same_market_total_anchor=analysis.same_market_total_anchor,
         ),
         *_ah_signals(analysis, cfg, observed_at=observed, depends_on_backup=depends_on_backup),
     ]

@@ -2,6 +2,18 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-16 信号等级 fail-safe 口径修复
+
+- 按外部审查结论完成第一阶段口径修复：本次是 fail-safe 补丁，不改模型参数、赔率源、刷新逻辑、发布逻辑或展示主框架。
+- OU 信号新增同场市场 total 锚定标记：当本场 OU 市场参与反推 `mu_total` 时，OU 最终等级封顶为 `C`，追加 `market_informed_total`；保留 `raw_grade`、`EV`、`Edge`、`total_mu_source` 和 `same_market_total_anchor` 供审计。
+- AH 信号新增临时市场验证标记：当前 AH 尚无 market edge / fair-line delta / line consensus 闭环，`ah_market_validated=false` 时 S/A 封顶为 `B`，追加 `ah_market_edge_missing`；保留 settlement EV 和 `raw_grade`，B/C 不被压成 C。
+- `MatchAnalysis` 和 snapshot model 块新增 `mu_prior`、`mu_market`、`mu_market_weight`、`total_mu_source`、`same_market_total_anchor`，便于后续拆分 `model_raw` / `model_market_total` / `market_only`。
+- 既有置信度护栏调整为即使信号已被 fail-safe 降级，也继续追加交叉验证 reason，避免审计信息被覆盖。
+- TDD 覆盖：OU market-informed total S/A 封顶、prior total 不误杀、AH 缺市场验证封顶、已有 reason 保留，以及 pipeline 级信号元数据透传。
+- 验证：标准命令 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 在加载 `tests/test_fastapi_app.py` 时因当前 runtime 缺少 `fastapi` 中断；排除该可选依赖文件后 `390/390` 通过。
+- 只读 sanity check 用当前 `data/cache` 内存重算 57 场：`same_market_total_anchor=true` 的 OU S/A 为 `0`，`ah_market_validated=false` 的 AH S/A 为 `0`；最终等级分布为 `S=3`、`A=4`、`B=95`、`C=297`，强信号只剩 1X2。
+- 本轮未联网、未触发 live refresh、未调用 The Odds API、未写入 snapshot、未提交、未推送、未部署；研究边界不变，不构成投注建议。
+
 ## 2026-06-15 OU 主盘口动态选择
 
 - 修复大小球固定 `2.5` 的问题：`worldcup.pipeline` 现在按每场 over/under 双边报价家数选择当前主流 half-goal OU 盘口线，`ou_main_line` 只作为无可用主线时的 fallback / tie-break。

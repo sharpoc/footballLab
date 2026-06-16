@@ -52,3 +52,7 @@ class Signal:
     status: str
     reasons: list[str] = field(default_factory=list)
     line: float | None = None
+    raw_grade: Grade | None = None
+    total_mu_source: str | None = None
+    same_market_total_anchor: bool | None = None
+    ah_market_validated: bool | None = None

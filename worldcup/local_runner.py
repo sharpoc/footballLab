@@ -25,16 +25,25 @@ def _now_utc_iso() -> str:
 
 
 def _signal_to_dict(signal: Signal) -> dict[str, Any]:
-    return {
+    raw_grade = signal.raw_grade or signal.grade
+    out = {
         "market_type": signal.market_type.value,
         "selection": signal.selection,
         "grade": signal.grade.value,
+        "raw_grade": raw_grade.value,
         "ev": signal.ev,
         "edge": signal.edge,
         "status": signal.status,
         "reasons": signal.reasons,
         "line": signal.line,
     }
+    if signal.total_mu_source is not None:
+        out["total_mu_source"] = signal.total_mu_source
+    if signal.same_market_total_anchor is not None:
+        out["same_market_total_anchor"] = signal.same_market_total_anchor
+    if signal.ah_market_validated is not None:
+        out["ah_market_validated"] = signal.ah_market_validated
+    return out
 
 
 def _latest_quote_update_iso(analysis) -> str | None:
@@ -100,6 +109,11 @@ def _analysis_to_dict(
             },
             "poisson_tail": analysis.poisson_tail,
             "mu_total": analysis.mu_total_used,
+            "mu_prior": analysis.mu_prior_used,
+            "mu_market": analysis.mu_market_used,
+            "mu_market_weight": analysis.mu_market_weight,
+            "total_mu_source": analysis.total_mu_source,
+            "same_market_total_anchor": analysis.same_market_total_anchor,
             "ou_line": analysis.ou_line,
             "elo_1x2": analysis.elo_1x2,
             "poisson_1x2": analysis.poisson_1x2,

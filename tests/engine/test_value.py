@@ -44,7 +44,7 @@ def test_1x2_high_ev_but_low_edge_not_s():
     assert signal.grade in (Grade.B, Grade.C)
 
 
-def test_ah_uses_ev_only():
+def test_ah_keeps_ev_raw_grade_but_caps_without_market_validation():
     signal = grade_signal(
         MarketType.AH,
         "home_-0.5",
@@ -55,8 +55,10 @@ def test_ah_uses_ev_only():
         CFG,
         ah_ev=0.09,
     )
-    assert signal.grade == Grade.S
+    assert signal.grade == Grade.B
+    assert signal.raw_grade == Grade.S
     assert signal.edge is None
+    assert "ah_market_edge_missing" in signal.reasons
 
 
 def test_ah_requires_precomputed_settlement_ev():
@@ -116,7 +118,7 @@ def test_model_disagreement_caps_a_grade_to_b():
     assert "model_disagreement" in signal.reasons
 
 
-def test_model_disagreement_does_not_apply_to_ah():
+def test_model_disagreement_reason_does_not_apply_to_ah():
     signal = grade_signal(
         MarketType.AH,
         "home_-0.5",
@@ -128,8 +130,10 @@ def test_model_disagreement_does_not_apply_to_ah():
         ah_ev=0.09,
     )
 
-    assert signal.grade == Grade.S
+    assert signal.grade == Grade.B
+    assert signal.raw_grade == Grade.S
     assert "model_disagreement" not in signal.reasons
+    assert "ah_market_edge_missing" in signal.reasons
 
 
 def test_market_dispersion_caps_at_b():
@@ -160,6 +164,60 @@ def test_market_dispersion_caps_ou_at_b():
 
     assert signal.grade == Grade.B
     assert "market_dispersion" in signal.reasons
+
+
+def test_ou_market_informed_total_caps_s_to_c():
+    signal = grade_signal(
+        MarketType.OU,
+        "over",
+        0.60,
+        0.45,
+        1.85,
+        ok_ctx(same_market_total_anchor=True, total_mu_source="market_informed"),
+        CFG,
+    )
+
+    assert signal.grade == Grade.C
+    assert signal.raw_grade == Grade.S
+    assert "market_informed_total" in signal.reasons
+    assert signal.ev is not None
+    assert signal.edge is not None
+    assert signal.same_market_total_anchor is True
+    assert signal.total_mu_source == "market_informed"
+
+
+def test_ou_market_informed_total_caps_a_to_c():
+    signal = grade_signal(
+        MarketType.OU,
+        "under",
+        0.55,
+        0.52,
+        1.92,
+        ok_ctx(same_market_total_anchor=True, total_mu_source="market_informed"),
+        CFG,
+    )
+
+    assert signal.grade == Grade.C
+    assert signal.raw_grade == Grade.A
+    assert "market_informed_total" in signal.reasons
+
+
+def test_ou_prior_total_not_capped_by_market_reason():
+    signal = grade_signal(
+        MarketType.OU,
+        "over",
+        0.60,
+        0.45,
+        1.85,
+        ok_ctx(same_market_total_anchor=False, total_mu_source="prior"),
+        CFG,
+    )
+
+    assert signal.grade == Grade.S
+    assert signal.raw_grade == Grade.S
+    assert "market_informed_total" not in signal.reasons
+    assert signal.same_market_total_anchor is False
+    assert signal.total_mu_source == "prior"
 
 
 def test_market_dispersion_caps_a_grade_to_b():
@@ -207,6 +265,59 @@ def test_market_dispersion_caps_ah_at_b():
 
     assert signal.grade == Grade.B
     assert "market_dispersion" in signal.reasons
+
+
+def test_ah_missing_market_edge_caps_s_and_a_to_b():
+    strong = grade_signal(
+        MarketType.AH,
+        "home_-0.5",
+        0.0,
+        None,
+        1.85,
+        ok_ctx(ah_market_validated=False),
+        CFG,
+        ah_ev=0.09,
+    )
+    medium = grade_signal(
+        MarketType.AH,
+        "away_+0.5",
+        0.0,
+        None,
+        1.85,
+        ok_ctx(ah_market_validated=False),
+        CFG,
+        ah_ev=0.055,
+    )
+
+    assert strong.grade == Grade.B
+    assert strong.raw_grade == Grade.S
+    assert "ah_market_edge_missing" in strong.reasons
+    assert strong.ah_market_validated is False
+    assert medium.grade == Grade.B
+    assert medium.raw_grade == Grade.A
+    assert "ah_market_edge_missing" in medium.reasons
+    assert medium.ah_market_validated is False
+
+
+def test_existing_reasons_are_preserved_when_capped():
+    signal = grade_signal(
+        MarketType.OU,
+        "over",
+        0.60,
+        0.45,
+        1.85,
+        ok_ctx(
+            odds_dispersion_ratio=1.25,
+            same_market_total_anchor=True,
+            total_mu_source="market_informed",
+        ),
+        CFG,
+    )
+
+    assert signal.grade == Grade.C
+    assert signal.raw_grade == Grade.S
+    assert "market_dispersion" in signal.reasons
+    assert "market_informed_total" in signal.reasons
 
 
 def test_market_dispersion_threshold_is_not_triggered_at_limit():
