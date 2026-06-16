@@ -2,6 +2,16 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-16 P0.5 fail-safe baseline 与测试 runtime 修复
+
+- 已将 P0 signal fail-safe 上线后口径标记为 `signal-failsafe-v1`，记录到 `docs/research/2026-06-16-signal-failsafe-baseline.md`；后续信号分布、日报、回测和复盘应明确区分 `pre-failsafe` / `post-failsafe`。
+- baseline 固定引用：code commit `71c4d68`、deployment doc commit `893110e`、publish run `20260616T025759Z-local`、snapshot_id `7f095fb7017c0acf588c017d11406f81ddabaccb2c81f509fd1e75f4090e0098`。
+- 只读复查 `python3 -m worldcup.ops_check` 返回 `ok=true`、`errors=0`、`warnings=3`；warning 分类为：本地 `scheduled-publish.err.log` 历史 traceback 属于 `data_quality_warning`，远端 nginx access/error 5xx/upstream 计数属于公网扫描导致的 `expected_warning`。
+- 本地 `scheduled-publish.err.log` 历史 traceback 早于本次 P0 部署，包含一次 HTTPS publish TLS EOF 和多次 `decimal odds must be > 1.0`；当前不阻塞 baseline，但应作为后续 P0.5 小修复候选，避免脏赔率让自动构建中断。
+- 已按 `pyproject.toml` 声明依赖修复当前测试 runtime parity：执行 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pip install -e .`，安装 `fastapi`、`httpx`、`uvicorn` 及其依赖到当前 bundled Python runtime。
+- 完整标准测试入口已恢复可信 gate：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 通过 `402/402 tests passed`，包含 `tests/test_fastapi_app.py`；运行中出现 Starlette/FastAPI TestClient deprecation warning，暂不影响结果。
+- 本轮未改模型参数、赔率源、刷新策略、发布策略、quota、ECS 部署或线上数据；未触发 live refresh，未调用 The Odds API。
+
 ## 2026-06-16 信号等级 fail-safe 口径修复
 
 - 按外部审查结论完成第一阶段口径修复：本次是 fail-safe 补丁，不改模型参数、赔率源、刷新逻辑、发布逻辑或展示主框架。
