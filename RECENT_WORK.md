@@ -2,6 +2,13 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-16 Phase 2 概率族 schema 方案
+
+- 已按 GPT 5.5 Pro 的第二阶段建议写成工程计划文档：`docs/superpowers/plans/2026-06-16-probability-families-schema.md`。
+- 方案目标是 shadow 输出三套概率族：`model_raw`、`model_market_total`、`market_only`，并加入 provenance metadata、snapshot 兼容策略、API/前端策略、回测口径和测试清单。
+- 计划明确 Phase 2A 只做 schema / shadow 输出，不切换最终信号生成口径；不启用 `mu_total=2.2`、`mu_dr_slope=0.0015`、`dc_rho=-0.15`，不改阈值、赔率源、refresh、publish、quota 或 ECS。
+- 本轮只写方案文档和近期记录，未改模型代码，未触发 refresh，未部署。
+
 ## 2026-06-16 P0.5 脏赔率隔离与诊断
 
 - 只读观察下一次 scheduled publish：当前 UTC `2026-06-16T03:25:05Z` 尚未到 `next_due_at=2026-06-16T07:00:00+00:00`；最新 history 仍为 `20260616T025759Z-local`，`ops_check` 仍为 `ok=true`、`errors=0`、`warnings=3`，公网和 ECS 本机 `/healthz`、`/api/matches`、`/api/finished` 均正常。
