@@ -12,7 +12,11 @@
 - TDD 覆盖：OU market-informed total S/A 封顶、prior total 不误杀、AH 缺市场验证封顶、已有 reason 保留，以及 pipeline 级信号元数据透传。
 - 验证：标准命令 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 在加载 `tests/test_fastapi_app.py` 时因当前 runtime 缺少 `fastapi` 中断；排除该可选依赖文件后 `390/390` 通过。
 - 只读 sanity check 用当前 `data/cache` 内存重算 57 场：`same_market_total_anchor=true` 的 OU S/A 为 `0`，`ah_market_validated=false` 的 AH S/A 为 `0`；最终等级分布为 `S=3`、`A=4`、`B=95`、`C=297`，强信号只剩 1X2。
-- 本轮未联网、未触发 live refresh、未调用 The Odds API、未写入 snapshot、未提交、未推送、未部署；研究边界不变，不构成投注建议。
+- 实现阶段未联网、未触发 live refresh、未调用 The Odds API、未写入 snapshot；研究边界不变，不构成投注建议。
+- 已提交并推送 `71c4d68 fix: cap market-leaked signal grades` 到 `origin/main`，并部署到 ECS `/opt/worldcup/releases/71c4d68`；`worldcup.service` 与 `nginx` 均为 active。
+- 已执行一次受控本地缓存重算发布：新 run 为 `20260616T025759Z-local`，本地生成并归档 57 场 snapshot，`source_errors=[]`、`stale_sources=[]`；未触发 live refresh、未调用 The Odds API、未消耗 quota。ECS ingest 返回 HTTP 200 / `ingest_status=stored`，snapshot_id 为 `7f095fb7017c0acf588c017d11406f81ddabaccb2c81f509fd1e75f4090e0098`。
+- 发布后验证：远端 latest snapshot 中 `same_market_total_anchor=true` 的 OU S/A 为 `0`，`ah_market_validated=false` 的 AH S/A 为 `0`；fail-safe reason 计数为 `market_informed_total=114`、`ah_market_edge_missing=114`；等级分布为 `S=3`、`A=4`、`B=95`、`C=297`。
+- `python3 -m worldcup.ops_check` 返回 `ok=true`、`errors=0`；公网 `/healthz`、`/api/matches`、`/api/finished`、首页和 `/preview` 均返回 200，公开页保留研究免责声明且未命中资金/下注禁词。
 
 ## 2026-06-15 OU 主盘口动态选择
 
