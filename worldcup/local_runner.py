@@ -119,6 +119,7 @@ def _analysis_to_dict(
             "poisson_1x2": analysis.poisson_1x2,
             "combined_1x2": analysis.combined_1x2,
             "ou_2_5": analysis.ou_2_5,
+            "probability_families": analysis.probability_families,
         },
         "market": market,
         "signals": [_signal_to_dict(signal) for signal in signals],

@@ -65,6 +65,7 @@ class MatchAnalysis:
     mu_market_weight: float
     total_mu_source: str
     same_market_total_anchor: bool
+    probability_families: dict
     market_1x2: dict
     market_ou_2_5: dict
     market_ah_main: dict | None
@@ -191,6 +192,143 @@ def _elo_home_advantage(match_input: MatchAnalysisInput, cfg: dict) -> float | N
     return None
 
 
+def _model_probability_block(
+    *,
+    dr: float,
+    cfg: dict,
+    mu_total: float,
+    ou_line: float,
+    elo_1x2: dict[str, float],
+    role: str,
+    provenance: dict,
+    mu_source: str,
+    mu_prior: float | None = None,
+    mu_market: float | None = None,
+    mu_market_weight: float | None = None,
+    same_market_total_anchor: bool | None = None,
+) -> dict:
+    lh, la = poisson.lambdas(dr, cfg["poisson"], mu_total=mu_total)
+    matrix, tail = poisson.score_matrix(lh, la, cfg["poisson"])
+    poisson_1x2 = poisson.probs_1x2(matrix)
+    combined_1x2 = ensemble.combine_1x2(
+        elo_1x2,
+        poisson_1x2,
+        cfg["ensemble"]["w_elo"],
+        cfg["ensemble"]["w_poisson"],
+    )
+    p_over = poisson.prob_over(matrix, ou_line)
+    block = {
+        "provenance": {"role": role, **provenance},
+        "mu_total": mu_total,
+        "mu_source": mu_source,
+        "ou_line": ou_line,
+        "lambdas": {"home": lh, "away": la},
+        "poisson_tail": tail,
+        "elo_1x2": elo_1x2,
+        "poisson_1x2": poisson_1x2,
+        "combined_1x2": combined_1x2,
+        "ou": {"line": ou_line, "probs": {"over": p_over, "under": 1.0 - p_over}},
+    }
+    if mu_prior is not None:
+        block["mu_prior"] = mu_prior
+    if mu_market is not None:
+        block["mu_market"] = mu_market
+    if mu_market_weight is not None:
+        block["mu_market_weight"] = mu_market_weight
+    if same_market_total_anchor is not None:
+        block["same_market_total_anchor"] = same_market_total_anchor
+    return block
+
+
+def _market_only_probability_block(market_1x2: dict, market_ou: dict, market_ah: dict | None) -> dict:
+    return {
+        "provenance": {
+            "family": "market_only",
+            "role": "baseline_diagnostic",
+            "uses_same_match_market_probability": True,
+            "uses_market_total_anchor": False,
+            "uses_market_line": True,
+            "allowed_for_value_signal": False,
+        },
+        "1x2": dict(market_1x2.get("market_probs") or {}),
+        "ou": {
+            "line": market_ou.get("line"),
+            "probs": dict(market_ou.get("market_probs") or {}),
+        },
+        "ah": {
+            "line_home": (market_ah or {}).get("line_home"),
+            "status": "diagnostic_only",
+            "probs": {},
+        },
+    }
+
+
+def _probability_families(
+    *,
+    dr: float,
+    cfg: dict,
+    mu_prior: float,
+    mu_market: float | None,
+    mu_market_weight: float,
+    total_mu_source: str,
+    same_market_total_anchor: bool,
+    mu_total: float,
+    ou_line: float,
+    elo_1x2: dict[str, float],
+    market_1x2: dict,
+    market_ou: dict,
+    market_ah: dict | None,
+) -> dict:
+    raw_family = _model_probability_block(
+        dr=dr,
+        cfg=cfg,
+        mu_total=mu_prior,
+        ou_line=ou_line,
+        elo_1x2=elo_1x2,
+        role="value_candidate",
+        provenance={
+            "family": "model_raw",
+            "uses_same_match_market_probability": False,
+            "uses_market_total_anchor": False,
+            "uses_market_line": True,
+            "allowed_for_value_signal": True,
+            "activation": "shadow_only",
+        },
+        mu_source="prior",
+    )
+    market_total_family = _model_probability_block(
+        dr=dr,
+        cfg=cfg,
+        mu_total=mu_total,
+        ou_line=ou_line,
+        elo_1x2=elo_1x2,
+        role="legacy_active_model",
+        provenance={
+            "family": "model_market_total",
+            "uses_same_match_market_probability": same_market_total_anchor,
+            "uses_market_total_anchor": same_market_total_anchor,
+            "uses_market_line": True,
+            "allowed_for_value_signal": True,
+            "same_market_value_restrictions": ["no_strong_ou_when_market_total_anchor"],
+        },
+        mu_source=total_mu_source,
+        mu_prior=mu_prior,
+        mu_market=mu_market,
+        mu_market_weight=mu_market_weight,
+        same_market_total_anchor=same_market_total_anchor,
+    )
+    return {
+        "schema_version": 1,
+        "active_signal_family": "model_market_total",
+        "recommended_future_signal_family": "model_raw",
+        "families": {
+            "model_raw": raw_family,
+            "model_market_total": market_total_family,
+            "market_only": _market_only_probability_block(market_1x2, market_ou, market_ah),
+        },
+    }
+
+
 def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnalysis:
     dr = _adjusted_dr(match_input, cfg)
     ratio = cfg["odds"]["outlier_ratio"]
@@ -248,6 +386,29 @@ def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnal
         cfg["ensemble"]["w_poisson"],
     )
     p_over = poisson.prob_over(matrix, ou_line)
+    market_1x2 = odds.aggregate_market(
+        match_input.quotes,
+        market_type=MarketType.X12,
+        line=None,
+        selections=["home", "draw", "away"],
+        ratio=ratio,
+    )
+    market_ah_main = _aggregate_ah_main(match_input.quotes, ratio)
+    probability_families = _probability_families(
+        dr=dr,
+        cfg=cfg,
+        mu_prior=mu_prior_used,
+        mu_market=mu_market_used,
+        mu_market_weight=mu_market_weight,
+        total_mu_source=total_mu_source,
+        same_market_total_anchor=same_market_total_anchor,
+        mu_total=mu_total_used,
+        ou_line=ou_line,
+        elo_1x2=elo_1x2,
+        market_1x2=market_1x2,
+        market_ou=market_ou_2_5,
+        market_ah=market_ah_main,
+    )
     return MatchAnalysis(
         match_input=match_input,
         lambdas=(lh, la),
@@ -264,15 +425,10 @@ def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnal
         mu_market_weight=mu_market_weight,
         total_mu_source=total_mu_source,
         same_market_total_anchor=same_market_total_anchor,
-        market_1x2=odds.aggregate_market(
-            match_input.quotes,
-            market_type=MarketType.X12,
-            line=None,
-            selections=["home", "draw", "away"],
-            ratio=ratio,
-        ),
+        probability_families=probability_families,
+        market_1x2=market_1x2,
         market_ou_2_5=market_ou_2_5,
-        market_ah_main=_aggregate_ah_main(match_input.quotes, ratio),
+        market_ah_main=market_ah_main,
     )
 
 

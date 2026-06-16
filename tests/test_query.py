@@ -241,6 +241,53 @@ def test_project_match_rows_returns_preview_safe_rows():
     assert "bet_amount" not in rows[0]
 
 
+def test_project_match_rows_ignores_probability_families_for_public_summary():
+    snapshot = {
+        "snapshot_at": "2026-06-08T00:00:00+00:00",
+        "data_quality": {"stale_sources": [], "source_errors": []},
+        "matches": [
+            {
+                "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "stage": "Matchday 1",
+                "group": "Group A",
+                "home_team": "Mexico",
+                "away_team": "South Africa",
+                "refresh_plan": {"next_update_at": "2026-06-09T00:00:00+00:00", "label": "常规"},
+                "model": {
+                    "probability_families": {
+                        "schema_version": 1,
+                        "families": {
+                            "model_raw": {"combined_1x2": {"home": 0.5}},
+                            "model_market_total": {"combined_1x2": {"home": 0.51}},
+                            "market_only": {"1x2": {"home": 0.49}},
+                        },
+                    }
+                },
+                "signals": [{"grade": "A"}],
+            }
+        ],
+    }
+
+    rows = project_match_rows(snapshot)
+
+    assert rows == [
+        {
+            "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+            "stage": "Matchday 1",
+            "group": "Group A",
+            "home_team": "Mexico",
+            "away_team": "South Africa",
+            "match_label": "Mexico vs South Africa",
+            "signal_count": 1,
+            "top_grade": "A",
+            "next_update_at": "2026-06-09T00:00:00+00:00",
+            "next_update_label": "常规",
+            "next_update_description": None,
+            "stale": False,
+        }
+    ]
+
+
 def test_project_finished_rows_returns_public_safe_review_projection():
     finished = project_finished_rows(_snapshot_with_finished())
 

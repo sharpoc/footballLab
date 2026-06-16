@@ -317,6 +317,84 @@ def test_ou_market_weight_zero_uses_prior_source_even_with_quotes():
     assert analysis.same_market_total_anchor is False
 
 
+def test_analyze_match_input_outputs_raw_and_market_total_probability_families():
+    match_input = _priced_match_input(
+        home_team="Team A",
+        away_team="Team B",
+        home_canonical="team_a",
+        away_canonical="team_b",
+        venue_name="Neutral Venue",
+        home_elo=1900,
+        away_elo=1780,
+        home_advantage_elo=0.0,
+        h2h_odds={"home": 2.0, "draw": 3.5, "away": 3.8},
+        ah_home_line=-0.5,
+        ah_odds={"home": 1.9, "away": 1.9},
+        ou_odds={"over": 1.55, "under": 2.6},
+    )
+    base_cfg = load_config()
+    cfg = {
+        **base_cfg,
+        "odds": {**base_cfg["odds"], "min_books": 1},
+        "poisson": {**base_cfg["poisson"], "mu_market_weight": 1.0},
+    }
+
+    analysis = analyze_match_input(match_input, cfg)
+    families = analysis.probability_families["families"]
+
+    assert set(families) == {"model_raw", "model_market_total", "market_only"}
+    assert analysis.probability_families["schema_version"] == 1
+    assert analysis.probability_families["active_signal_family"] == "model_market_total"
+    assert analysis.probability_families["recommended_future_signal_family"] == "model_raw"
+
+    raw = families["model_raw"]
+    market_total = families["model_market_total"]
+    assert raw["provenance"]["uses_same_match_market_probability"] is False
+    assert raw["provenance"]["uses_market_total_anchor"] is False
+    assert raw["mu_source"] == "prior"
+    assert market_total["provenance"]["uses_same_match_market_probability"] is True
+    assert market_total["provenance"]["uses_market_total_anchor"] is True
+    assert market_total["same_market_total_anchor"] is True
+    assert raw["mu_total"] == analysis.mu_prior_used
+    assert market_total["mu_total"] == analysis.mu_total_used
+    assert raw["ou"]["line"] == analysis.ou_line
+    assert market_total["ou"]["line"] == analysis.ou_line
+    assert raw["combined_1x2"] != market_total["combined_1x2"]
+
+
+def test_probability_families_do_not_change_current_signal_grades_in_shadow_mode():
+    match_input = _priced_match_input(
+        home_team="Team A",
+        away_team="Team B",
+        home_canonical="team_a",
+        away_canonical="team_b",
+        venue_name="Neutral Venue",
+        home_elo=1900,
+        away_elo=1780,
+        home_advantage_elo=0.0,
+        h2h_odds={"home": 2.0, "draw": 3.5, "away": 3.8},
+        ah_home_line=-0.5,
+        ah_odds={"home": 1.9, "away": 1.9},
+        ou_odds={"over": 1.55, "under": 2.6},
+    )
+    base_cfg = load_config()
+    cfg = {
+        **base_cfg,
+        "odds": {**base_cfg["odds"], "min_books": 1},
+        "poisson": {**base_cfg["poisson"], "mu_market_weight": 1.0},
+    }
+
+    analysis = analyze_match_input(match_input, cfg)
+    signals = generate_value_signals(analysis, cfg, observed_at="2026-06-08T00:00:00+00:00")
+    ou_signals = [signal for signal in signals if signal.market_type == MarketType.OU]
+
+    assert analysis.probability_families["active_signal_family"] == "model_market_total"
+    assert ou_signals
+    assert all(signal.same_market_total_anchor is True for signal in ou_signals)
+    assert all(signal.grade not in (Grade.S, Grade.A) for signal in ou_signals)
+    assert all("market_informed_total" in signal.reasons for signal in ou_signals)
+
+
 def test_generate_value_signals_caps_unvalidated_ah_to_b():
     cfg = load_config()
     analysis = analyze_match_input(_sample_match_input_with_three_markets(), cfg)

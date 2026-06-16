@@ -120,6 +120,26 @@ def test_build_snapshot_from_probe_serializes_match_analysis():
         assert snapshot["matches"][0]["signals"]
 
 
+def test_build_snapshot_serializes_probability_families_without_removing_legacy_model_fields():
+    with TemporaryDirectory() as tmp:
+        probe_dir = Path(tmp) / "probe"
+        _write_probe_files(probe_dir)
+
+        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T00:00:00+00:00")
+
+        model = snapshot["matches"][0]["model"]
+        assert "combined_1x2" in model
+        assert "ou_2_5" in model
+        assert "mu_total" in model
+        families = model["probability_families"]
+        assert families["schema_version"] == 1
+        assert families["active_signal_family"] == "model_market_total"
+        assert families["recommended_future_signal_family"] == "model_raw"
+        assert set(families["families"]) == {"model_raw", "model_market_total", "market_only"}
+        assert families["families"]["model_raw"]["provenance"]["activation"] == "shadow_only"
+        assert families["families"]["market_only"]["provenance"]["allowed_for_value_signal"] is False
+
+
 def test_build_snapshot_from_probe_serializes_dynamic_ou_line():
     with TemporaryDirectory() as tmp:
         probe_dir = Path(tmp) / "probe"

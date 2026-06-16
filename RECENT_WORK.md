@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-16 Phase 2A 概率族 shadow schema 实现
+
+- 已按已确认方案在 `worldcup.pipeline` 输出 `model_raw`、`model_market_total`、`market_only` 三套 probability family，并为每套概率写入 provenance metadata。
+- `model_raw` 使用当前 Elo + Poisson + ensemble 与 `mu_prior`，不使用同场市场概率反推总进球；`model_market_total` 保持当前 legacy active 行为，并显式记录 `same_market_total_anchor` 与同市场 OU 强信号限制；`market_only` 只作为 baseline / diagnostic，不允许生成 model value signal。
+- snapshot `model.probability_families` 已序列化；旧有 `model.mu_total`、`model.combined_1x2`、`model.ou_2_5`、`market.*` 和 `signals` 保持兼容，公开 `/api/matches` 投影不新增大块诊断字段。
+- TDD 覆盖：pipeline 概率族/provenance、shadow 输出不改变现有信号等级、snapshot 兼容序列化、公开比赛投影忽略 `probability_families`。
+- 完整标准测试入口通过：新增相关断言随标准入口运行返回 `410/410 tests passed`。
+- 本轮不切换最终信号生成口径，不改 `mu_total`、`mu_market_weight`、`mu_dr_slope`、`dc_rho`、Elo K、host advantage、ensemble 权重、S/A 阈值、赔率源、refresh、publish、quota 或 ECS；未触发 live refresh，未部署。
+
 ## 2026-06-16 Phase 2 概率族 schema 方案
 
 - 已按 GPT 5.5 Pro 的第二阶段建议写成工程计划文档：`docs/superpowers/plans/2026-06-16-probability-families-schema.md`。
