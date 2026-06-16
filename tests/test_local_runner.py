@@ -220,6 +220,67 @@ def test_build_snapshot_caps_signals_when_odds_quotes_are_stale():
         assert "stale_odds" in home_signal["reasons"]
 
 
+def test_invalid_odds_do_not_enter_market_aggregation_and_are_reported():
+    with TemporaryDirectory() as tmp:
+        probe_dir = Path(tmp) / "probe"
+        _write_probe_files(probe_dir)
+        odds_path = probe_dir / "theoddsapi_wc_odds.json"
+        events = json.loads(odds_path.read_text())
+        events[0]["bookmakers"].append(
+            {
+                "key": "badbook",
+                "last_update": "2026-06-08T05:00:00Z",
+                "markets": [
+                    {
+                        "key": "h2h",
+                        "last_update": "2026-06-08T05:01:00Z",
+                        "outcomes": [
+                            {"name": "Mexico", "price": 1.0},
+                            {"name": "South Africa", "price": 4.7},
+                            {"name": "Draw", "price": 3.5},
+                        ],
+                    },
+                    {
+                        "key": "totals",
+                        "last_update": "2026-06-08T05:02:00Z",
+                        "outcomes": [
+                            {"name": "Over", "price": 1.91, "point": 2.5},
+                            {"name": "Under", "price": 0.99, "point": 2.5},
+                        ],
+                    },
+                ],
+            }
+        )
+        odds_path.write_text(json.dumps(events))
+
+        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T00:00:00+00:00")
+
+        data_quality = snapshot["data_quality"]
+        assert data_quality["invalid_odds_count"] == 2
+        assert len(data_quality["invalid_odds_examples"]) == 2
+        first = data_quality["invalid_odds_examples"][0]
+        assert first["reason"] == "odds_decimal_lte_one"
+        assert first["odds"] == 1.0
+        assert first["bookmaker"] == "badbook"
+        assert first["market"] == "h2h"
+        assert first["api_market_key"] == "h2h"
+        assert first["selection"] == "home"
+        assert first["outcome"] == "Mexico"
+        assert first["match_id"] == "event-1"
+        assert first["home_team"] == "Mexico"
+        assert first["away_team"] == "South Africa"
+        assert first["commence_time"] == "2026-06-11T19:00:00Z"
+        assert first["last_update"] == "2026-06-08T05:01:00Z"
+        assert first["raw_payload_path"] == str(odds_path)
+
+        market_1x2 = snapshot["matches"][0]["market"]["1x2"]
+        assert market_1x2["n_books_by_selection"]["home"] == 1
+        assert market_1x2["n_books_by_selection"]["draw"] == 2
+        assert market_1x2["n_books_by_selection"]["away"] == 2
+        assert market_1x2["odds"]["home"] == 1.8
+        assert market_1x2["market_probs"]
+
+
 def test_build_snapshot_from_probe_includes_main_ah_market():
     with TemporaryDirectory() as tmp:
         probe_dir = Path(tmp) / "probe"

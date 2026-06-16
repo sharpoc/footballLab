@@ -180,6 +180,7 @@ python3 -m worldcup.backtest --csv data/local/backtest/history.csv --min-sample 
 - CSV 中任何十进制赔率必须 > 1.0，否则按行号报错。
 - `worldcup.oddsportal_wc2022` 用于一次性把 2022 世界杯 OddsPortal / OddsHarvester 本地抓取产物 join 成回测 CSV；原始与 join 产物默认写入被忽略的 `data/local/backtest/`。
 - `worldcup.line_move_report` 用于读取 `wc2022_history.csv`，按 1x2 主胜赔率漂移与 AH 线移动分桶输出研究报告；报告默认写入被忽略的 `data/local/backtest/line_move_report.json`。
+- The Odds API live payload 中任何 decimal odds `<= 1.0` 的 quote 会在解析层隔离，不进入聚合、去水、EV 或信号生成；snapshot `data_quality.invalid_odds_count` 记录全量计数，`invalid_odds_examples` 最多保留 10 条可审计上下文。
 
 另外：OU 大小球模型会按每场 over/under 双边报价家数选择当前主流 half-goal 盘口线，再由该线的市场去水概率反推总进球，并与配置先验 `poisson.mu_total` 按 `poisson.mu_market_weight` 混合；无可用 OU 主线时回退 `ou_main_line` 配置。snapshot 的 `model.mu_total` 记录实际使用的总进球，`model.ou_line` 与 `market.ou_2_5.line` 记录实际大小球盘口线；`ou_2_5` key 暂时保留作兼容字段名，不代表永远固定 2.5。
 

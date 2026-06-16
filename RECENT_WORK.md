@@ -2,6 +2,17 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-16 P0.5 脏赔率隔离与诊断
+
+- 只读观察下一次 scheduled publish：当前 UTC `2026-06-16T03:25:05Z` 尚未到 `next_due_at=2026-06-16T07:00:00+00:00`；最新 history 仍为 `20260616T025759Z-local`，`ops_check` 仍为 `ok=true`、`errors=0`、`warnings=3`，公网和 ECS 本机 `/healthz`、`/api/matches`、`/api/finished` 均正常。
+- 根因定位：历史 raw odds archive 中存在 The Odds API `price=1.0` 脏 quote，例如 `odds_raw_20260615T010915Z-live.json.gz` 内 Ivory Coast vs Ecuador 的 `betsson` / `nordicbet` / `betclic_fr`，会在 `aggregate_market()` 调用 `devig()` 时触发 `decimal odds must be > 1.0`。
+- 新增 `InvalidOddsQuote` 诊断模型；`parse_theoddsapi_events()` 现在会在解析层隔离 decimal odds `<= 1.0` 的 quote，不让其进入 aggregation、devig、EV 或 signal generation，同时保留 bookmaker、market、selection/outcome、line、match id、球队、commence_time 和 last_update。
+- snapshot `data_quality` 新增 `invalid_odds_count` 和最多 10 条 `invalid_odds_examples`，并在本地 snapshot 构建时补充 `raw_payload_path`；正常 odds `> 1.0` 行为不变。
+- TDD 覆盖：`odds == 1.0`、`odds < 1.0`、valid odds 不变、脏 quote 不进入 market aggregation、warning/context 不丢。
+- 历史事故临时复现验证：用 `odds_raw_20260615T010915Z-live.json.gz` 替换临时 cache odds 后可正常构建 snapshot，输出 `invalid_odds_count=5`；当前真实 `data/cache` 内存构建 `invalid_odds_count=0`。
+- 完整标准测试入口通过：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `406/406 tests passed`；仍只有 Starlette/FastAPI TestClient deprecation warning，不影响本次 gate。
+- 本轮不改模型参数、信号阈值、赔率源配置、刷新策略、发布策略、quota 或 ECS；未触发 live refresh，未调用 The Odds API，未部署。
+
 ## 2026-06-16 P0.5 fail-safe baseline 与测试 runtime 修复
 
 - 已将 P0 signal fail-safe 上线后口径标记为 `signal-failsafe-v1`，记录到 `docs/research/2026-06-16-signal-failsafe-baseline.md`；后续信号分布、日报、回测和复盘应明确区分 `pre-failsafe` / `post-failsafe`。

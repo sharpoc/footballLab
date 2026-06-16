@@ -205,6 +205,19 @@ def _local_run_metadata(
     )
 
 
+def _invalid_odds_quality(odds_events, raw_payload_path: Path, max_examples: int = 10) -> dict[str, Any]:
+    invalid = []
+    for event in odds_events:
+        for quote in event.invalid_odds:
+            item = quote.to_dict()
+            item["raw_payload_path"] = str(raw_payload_path)
+            invalid.append(item)
+    return {
+        "invalid_odds_count": len(invalid),
+        "invalid_odds_examples": invalid[:max_examples],
+    }
+
+
 def build_snapshot_from_probe(
     probe_dir: str | Path,
     snapshot_at: str | None = None,
@@ -221,7 +234,8 @@ def build_snapshot_from_probe(
         _result_key(result.kickoff_at_utc, result.home_canonical, result.away_canonical): result
         for result in parse_openfootball_results(openfootball_raw)
     }
-    odds_events = parse_theoddsapi_events(_read_json(probe_path / "theoddsapi_wc_odds.json"))
+    odds_payload_path = probe_path / "theoddsapi_wc_odds.json"
+    odds_events = parse_theoddsapi_events(_read_json(odds_payload_path))
     elo_ratings = parse_elo_ratings((probe_path / "elo_world.tsv").read_text(encoding="utf-8"))
     elo_aliases = parse_elo_team_aliases((probe_path / "elo_teams.tsv").read_text(encoding="utf-8"))
     build_result = build_match_inputs(fixtures, odds_events, elo_ratings, elo_aliases)
@@ -241,6 +255,7 @@ def build_snapshot_from_probe(
         "missing_odds": build_result.missing_odds,
         "missing_elo": build_result.missing_elo,
         "time_mismatches": build_result.time_mismatches,
+        **_invalid_odds_quality(odds_events, odds_payload_path),
     }
     if stale_source_list:
         data_quality["stale_sources"] = stale_source_list
