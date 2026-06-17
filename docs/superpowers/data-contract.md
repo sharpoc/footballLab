@@ -669,6 +669,15 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 - 桌面为主表 + 右侧栏；移动端台账在右侧栏之前，表格横向滚动限制在表格容器内，页面本身不得横向溢出。
 - 不显示资金相关字段。
 
+### Finished review diagnostics
+
+内部 snapshot 顶层 `finished` 块由 `worldcup.finished_record` 在本地富化阶段生成，完整数据只用于本地复盘、公开安全投影和静态导出输入。
+
+- `finished.matches[].closing_signals[]` 保留原有 `market_type`、`selection`、`line`、`grade`、`odds`、`prediction` 字段，老 snapshot 缺少新增诊断字段仍有效。
+- 新定格信号写入 `diagnostic_schema_version=2`，并冻结 `raw_grade`、`ev`、`edge`、`reasons`、`probability_family_probs`、`probability_family_deltas`、`odds_movement_quality` 和 `diagnostic_flags`。
+- 这些字段只用于本地 `worldcup.postmatch_diagnostics` 和后续复盘诊断，不改变模型概率、EV、信号等级或历史结算口径。
+- `GET /api/finished` 与 `api/finished.json` 仍通过 `project_finished_rows(snapshot)` 输出公开安全复盘投影，不得暴露完整内部 snapshot、run_id、quota、provider 原名或 raw source error。
+
 ### Local HTTP route contract
 
 `worldcup.http_app` 是标准库 HTTP 适配层，用于本地预览和路由契约测试；不是最终 ECS/FastAPI 部署形态。

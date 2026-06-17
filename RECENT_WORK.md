@@ -2,6 +2,26 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-17 finished 定格 schema v2 诊断字段
+
+- 已增强 `worldcup.finished_record`：新定格的 `closing_signals` 在保留旧字段的基础上写入 `diagnostic_schema_version=2`，并冻结 `raw_grade`、`ev`、`edge`、`reasons`、`probability_family_probs`、`probability_family_deltas`、`odds_movement_quality` 和 `diagnostic_flags`。
+- `worldcup.postmatch_diagnostics` 已改为优先读取 frozen v2 字段；即使后续 history 不可用或不再包含完整 match 诊断，也能从 finished store 直接统计 reason、概率族和盘口移动覆盖率。
+- 旧 finished 记录继续兼容，不做后验回填；当前已有 22 条强信号仍会保持旧记录覆盖状态，后续新增完赛记录才会自然获得 v2 诊断上下文。
+- TDD 覆盖：finished block 定格 v2 字段、概率族差异、盘口移动 flags；postmatch diagnostics 可在没有 history 的情况下使用 frozen v2 字段生成 source coverage。
+- 本轮不改模型参数、不改信号等级、不改 refresh/publish/quota 逻辑、不联网、不部署。
+- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `416/416 tests passed`。
+
+## 2026-06-17 完赛 S/A 信号本地诊断报告
+
+- 新增 `worldcup.postmatch_diagnostics`：只读本地 `analysis_snapshot.json`、`data/local/history/` 和 finished block，输出 `data/local/diagnostics/postmatch_diagnostics.json`。
+- 报告按 S/A closing 信号生成逐条诊断行，并汇总 outcome、grade、market、reason、source coverage；逐条保留 closing snapshot、结果、EV/Edge、probability family 概率差异、odds movement quality 和 diagnostic flags。
+- 诊断工具只解释已完赛信号，不改模型参数、不改信号等级、不触发 refresh/publish、不联网、不消耗 The Odds API quota、不部署。
+- TDD 覆盖：finished 简版信号可从 closing history 补齐完整 signal reason、概率族差异和 odds movement；CLI 可写出 JSON 报告并保留研究免责声明。
+- 真实本地报告已生成：`match_count=16`、`strong_signal_count=22`、`decided_strong_signal_count=21`、`sample_too_small=false`、`skipped_no_closing=0`。
+- 当前真实报告分桶：`hit=7`、`miss=14`、`push=1`；`S=5/12/0`、`A=2/2/1`；市场分布为 `1X2_90min=1/6/0`、`AsianHandicap_90min=5/6/1`、`OverUnder_90min=1/2/0`。
+- 当前历史归档限制已显式暴露：22 条强信号均可匹配 closing entry/full signal，但 `reason=0`、`probability_family=0`、`odds_movement=0`，说明较早 closing snapshot 缺少这些后续诊断字段；因此现阶段不能按 reason/概率族/盘口移动对早期 miss 下结论。
+- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `414/414 tests passed`；`python3 -m worldcup.postmatch_diagnostics` 返回 `status=ok`。
+
 ## 2026-06-17 Phase 2B 赔率/盘口移动 diagnostic schema
 
 - 新增 `odds_movement` diagnostic：从既有 `odds_trend` 历史点派生 1X2、AH 主盘、OU 主线的首末赔率、绝对/相对移动、盘口线移动和 quality 标记。

@@ -18,18 +18,52 @@ def _closing_snapshot(at: str) -> dict:
                 "away_canonical": "south_africa",
                 "stage": "Matchday 1",
                 "group": "Group A",
+                "model": {
+                    "probability_families": {
+                        "schema_version": 1,
+                        "active_signal_family": "model_market_total",
+                        "families": {
+                            "model_raw": {
+                                "combined_1x2": {"home": 0.58, "draw": 0.25, "away": 0.17},
+                            },
+                            "model_market_total": {
+                                "combined_1x2": {"home": 0.64, "draw": 0.22, "away": 0.14},
+                            },
+                            "market_only": {
+                                "1x2": {"home": 0.52, "draw": 0.28, "away": 0.20},
+                            },
+                        },
+                    }
+                },
                 "market": {
                     "1x2": {"odds": {"home": 1.78, "draw": 3.6, "away": 4.8}},
                     "ou_2_5": {"odds": {"over": 1.9, "under": 2.0}},
                     "ah_main": {"line_home": -1.0, "odds": {"home": 1.74, "away": 2.12}},
                 },
+                "odds_movement": {
+                    "schema_version": 1,
+                    "quality": {"enough_points": True, "line_changed": True, "sparse": False},
+                },
                 "signals": [
-                    {"market_type": "1X2_90min", "selection": "home", "grade": "S", "line": None},
+                    {
+                        "market_type": "1X2_90min",
+                        "selection": "home",
+                        "grade": "S",
+                        "raw_grade": "S",
+                        "line": None,
+                        "ev": 0.12,
+                        "edge": 0.10,
+                        "reasons": ["reverse_market", "market_dispersion"],
+                    },
                     {
                         "market_type": "AsianHandicap_90min",
                         "selection": "home_-2.0",
                         "grade": "A",
+                        "raw_grade": "S",
                         "line": -2.0,
+                        "ev": 0.05,
+                        "edge": 0.04,
+                        "reasons": ["ah_market_edge_missing"],
                     },
                     {"market_type": "1X2_90min", "selection": "away", "grade": "C", "line": None},
                 ],
@@ -95,6 +129,51 @@ def test_build_finished_block_freezes_closing_and_tallies_sa():
         assert any(s["grade"] == "C" for s in record["closing_signals"])
         # closing 赔率从 market 块解析
         assert by_grade["S"]["odds"] == 1.78
+
+
+def test_build_finished_block_freezes_v2_diagnostic_fields():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        history = root / "history"
+        history.mkdir()
+        (history / "snapshot_20260611T180000Z-live.json").write_text(
+            json.dumps(_closing_snapshot("2026-06-11T18:00:00+00:00"))
+        )
+        results = root / "results.csv"
+        _write_results(results, [MEXICO_ROW])
+
+        block = build_finished_block(history, results, root / "store.json")
+
+        signal = next(
+            item
+            for item in block["matches"][0]["closing_signals"]
+            if item["grade"] == "S" and item["market_type"] == "1X2_90min"
+        )
+        assert signal["diagnostic_schema_version"] == 2
+        assert signal["raw_grade"] == "S"
+        assert signal["ev"] == 0.12
+        assert signal["edge"] == 0.10
+        assert signal["reasons"] == ["reverse_market", "market_dispersion"]
+        assert signal["probability_family_probs"] == {
+            "model_raw": 0.58,
+            "model_market_total": 0.64,
+            "market_only": 0.52,
+        }
+        assert signal["probability_family_deltas"] == {
+            "active_family": "model_market_total",
+            "model_raw_minus_active": -0.06,
+            "active_minus_market": 0.12,
+        }
+        assert signal["odds_movement_quality"] == {
+            "enough_points": True,
+            "line_changed": True,
+            "sparse": False,
+        }
+        assert signal["diagnostic_flags"] == [
+            "hit",
+            "line_changed",
+            "raw_active_gap_ge_5pp",
+        ]
 
 
 def test_build_finished_block_is_incremental_via_store():

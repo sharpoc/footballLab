@@ -13,9 +13,12 @@ from worldcup.odds_trend import extract_match_trend, list_history_files
 
 TRACKED_GRADES = ("S", "A")
 CLOSING_WINDOW_DAYS = 3
+DIAGNOSTIC_SCHEMA_VERSION = 2
+RAW_ACTIVE_GAP_THRESHOLD = 0.05
 
 _LABEL_TO_KEY = {"命中": "hit", "未中": "miss", "走水": "push"}
 _HISTORY_NAME_RE = re.compile(r"^snapshot_(\d{8}T\d{6})Z.*\.json$")
+_OUTCOME_KEYS = {"命中": "hit", "未中": "miss", "走水": "push"}
 
 
 def _parse_at(value: str) -> datetime:
@@ -59,22 +62,117 @@ def _closing_odds(entry: dict, signal: dict) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
 
+def _selection_key(selection: Any) -> str | None:
+    if selection is None:
+        return None
+    normalized = str(selection).lower()
+    if normalized.startswith("home_"):
+        return "home"
+    if normalized.startswith("away_"):
+        return "away"
+    return normalized
+
+
+def _family_probability(
+    family: dict[str, Any],
+    family_name: str,
+    market_type: str | None,
+    selection: str | None,
+) -> float | None:
+    if selection is None:
+        return None
+    if market_type == "1X2_90min":
+        key = "1x2" if family_name == "market_only" else "combined_1x2"
+        value = (family.get(key) or {}).get(selection)
+    elif market_type == "OverUnder_90min":
+        value = ((family.get("ou") or {}).get("probs") or {}).get(selection)
+    else:
+        value = None
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _round(value: float | None, digits: int = 6) -> float | None:
+    return round(value, digits) if value is not None else None
+
+
+def _probability_diagnostics(entry: dict, signal: dict) -> tuple[dict[str, float | None], dict[str, Any]]:
+    families_block = ((entry.get("model") or {}).get("probability_families") or {})
+    families = families_block.get("families") or {}
+    active = families_block.get("active_signal_family") or "model_market_total"
+    market_type = signal.get("market_type")
+    selection = _selection_key(signal.get("selection"))
+    probs = {
+        name: _family_probability(families.get(name) or {}, name, market_type, selection)
+        for name in ("model_raw", "model_market_total", "market_only")
+    }
+    active_prob = _family_probability(families.get(active) or {}, active, market_type, selection)
+    raw = probs.get("model_raw")
+    market = probs.get("market_only")
+    return probs, {
+        "active_family": active,
+        "model_raw_minus_active": _round(raw - active_prob)
+        if raw is not None and active_prob is not None
+        else None,
+        "active_minus_market": _round(active_prob - market)
+        if active_prob is not None and market is not None
+        else None,
+    }
+
+
+def _movement_quality(entry: dict) -> dict[str, bool]:
+    quality = ((entry.get("odds_movement") or {}).get("quality") or {})
+    return {
+        "enough_points": bool(quality.get("enough_points")),
+        "line_changed": bool(quality.get("line_changed")),
+        "sparse": bool(quality.get("sparse")),
+    }
+
+
+def _diagnostic_flags(prediction: dict, movement: dict, deltas: dict) -> list[str]:
+    flags: list[str] = []
+    label = prediction.get("label")
+    outcome = _OUTCOME_KEYS.get(str(label)) if label is not None else None
+    if outcome:
+        flags.append(outcome)
+    if movement.get("line_changed"):
+        flags.append("line_changed")
+    if movement.get("sparse"):
+        flags.append("sparse_history")
+    gap = deltas.get("model_raw_minus_active")
+    if isinstance(gap, (int, float)) and abs(gap) >= RAW_ACTIVE_GAP_THRESHOLD:
+        flags.append("raw_active_gap_ge_5pp")
+    return flags
+
+
+def _freeze_signal(entry: dict, signal: dict, prediction: dict) -> dict[str, Any]:
+    probs, deltas = _probability_diagnostics(entry, signal)
+    movement = _movement_quality(entry)
+    return {
+        "diagnostic_schema_version": DIAGNOSTIC_SCHEMA_VERSION,
+        "market_type": signal.get("market_type"),
+        "selection": signal.get("selection"),
+        "line": signal.get("line"),
+        "grade": signal.get("grade"),
+        "raw_grade": signal.get("raw_grade") or signal.get("grade"),
+        "odds": _closing_odds(entry, signal),
+        "ev": signal.get("ev"),
+        "edge": signal.get("edge"),
+        "reasons": list(signal.get("reasons") or []),
+        "prediction": prediction,
+        "probability_family_probs": probs,
+        "probability_family_deltas": deltas,
+        "odds_movement_quality": movement,
+        "diagnostic_flags": _diagnostic_flags(prediction, movement, deltas),
+    }
+
+
 def _freeze_record(entry: dict, row: dict, history: list[dict]) -> dict:
     result = {"home_score": int(row["home_score"]), "away_score": int(row["away_score"])}
     settled_match = {**entry, "result": {"status": "finished", **result}}
     closing_signals = []
     for signal in entry.get("signals") or []:
         prediction = _prediction_result(settled_match, signal)
-        closing_signals.append(
-            {
-                "market_type": signal.get("market_type"),
-                "selection": signal.get("selection"),
-                "line": signal.get("line"),
-                "grade": signal.get("grade"),
-                "odds": _closing_odds(entry, signal),
-                "prediction": prediction,
-            }
-        )
+        closing_signals.append(_freeze_signal(entry, signal, prediction))
     return {
         "kickoff_at_utc": row["kickoff_at_utc"],
         "home_team": row["home_team"],

@@ -77,6 +77,7 @@ worldcup/
   oddsportal_wc2022.py          # 2022 世界杯 OddsPortal 抓取产物标准化与回测 CSV join
   line_move_report.py           # 赔率/让球线移动分桶报告
   daily_eval.py                 # 赛后每日 results/eval/backtest 编排与日报
+  postmatch_diagnostics.py      # 完赛 S/A 信号本地诊断报告
   scores_capture.py             # The Odds API scores → 本地 results CSV（默认 dry-run）
   odds_trend.py                 # 从 history 归档提取每场赔率走势点
   finished_record.py            # closing 信号 × 赛果定格，维护本地增量完赛 store
@@ -213,7 +214,7 @@ python3 -m worldcup.elo_local --check
 
 当 openfootball 缓存里已有完赛比分时，snapshot 会给对应比赛附加 `result`，研究信号台账会在“信号原因”栏显示赛后验证：胜平负 / 大小球显示“命中”或“未中”，亚洲让球显示“命中 / 未中 / 走水”。
 
-最新 refresh 富化后的 snapshot 还会包含顶层 `finished` 块：用开球前最后一轮 closing snapshot 的信号与本地赛果定格完赛场，`tally` 只统计 S/A 级信号；走水计入 `push`，但不进入命中率分母。页面会新增“本届信号战绩”卡和“已完赛战绩”区，完赛区按北京日期分组，展开明细展示 closing 盘口、赛果判定和 SVG 赔率走势。每场最新 match 也可带 `odds_trend` 字段，供主台账展开详情展示迷你折线和首末点文本；同时可带 `odds_movement`，记录 1X2、AH 主盘、OU 主线的首末赔率、相对移动、盘口线移动和质量标记，暂只供研究诊断。
+最新 refresh 富化后的 snapshot 还会包含顶层 `finished` 块：用开球前最后一轮 closing snapshot 的信号与本地赛果定格完赛场，`tally` 只统计 S/A 级信号；走水计入 `push`，但不进入命中率分母。新定格记录的 `closing_signals` 会以 `diagnostic_schema_version=2` 冻结 reason、raw grade、EV/Edge、概率族差异、盘口移动质量和 diagnostic flags，供后续本地复盘诊断使用；旧记录缺少这些字段时继续兼容。页面会新增“本届信号战绩”卡和“已完赛战绩”区，完赛区按北京日期分组，展开明细展示 closing 盘口、赛果判定和 SVG 赔率走势。每场最新 match 也可带 `odds_trend` 字段，供主台账展开详情展示迷你折线和首末点文本；同时可带 `odds_movement`，记录 1X2、AH 主盘、OU 主线的首末赔率、相对移动、盘口线移动和质量标记，暂只供研究诊断。
 
 赛后链路已由 LaunchAgent `xin.celab.football.daily-eval` 每天北京时间 16:30 自动执行 `python3 -m worldcup.daily_eval --notify --live-scores`：先调用 The Odds API scores 端点补抓赛果（每天约 2 credits，同 key 槽位轮换），再依次 `results_capture` → `eval_data` → `backtest` 并推送研究日报（完赛数、评估样本、模型 vs 市场指标、S/A 级信号命中统计）；无新增赛果不推送。手动补跑同一命令即可，幂等。
 
@@ -231,9 +232,13 @@ python3 -m worldcup.eval_data
 
 # 3) 用现有回测评估真实表现（EV 分层、model_matched vs market 此时有意义）
 python3 -m worldcup.backtest --csv data/local/backtest/wc2026_eval.csv --min-sample 30 --out data/local/backtest/wc2026_report.json
+
+# 4) 生成本地完赛 S/A 信号诊断报告（只读，不调参、不联网）
+python3 -m worldcup.postmatch_diagnostics
 ```
 
 - 每次 live refresh 成功获取新赔率后，原始逐家报价会 gzip 归档到 `data/local/history/odds_raw_<run_id>.json.gz`（兜底缓存轮不归档），用于赛后赔率异动研究；该目录不进 git。
+- `worldcup.postmatch_diagnostics` 只读本地 snapshot/history/finished 数据，输出 `data/local/diagnostics/postmatch_diagnostics.json`，用于按市场、等级、原因、盘口移动和概率族差异解释 S/A 信号命中/未中；样本不足时只能作为观察，不能据此调参。
 
 已知局限：评估 CSV 的 `neutral` 一律为 1（不含东道主修正）；AH 采用 closing snapshot 的主盘线与均价（本改动合入前的老归档快照无 `ah_main`，对应 AH 列为空）；样本量小时报告会标 `sample_too_small`，小组赛阶段结论只做方向参考。Elo 重放与页面赛果显示仍以 openfootball 为准，openfootball 录入滞后期间页面“预测结果”可能晚于日报。淘汰赛（6-28 起）scores 可能含加时/点球比分，与 1X2 的 90 分钟结算口径冲突，6-27 前必须回评是否暂停 scores 自动入库或改人工核对。
 
