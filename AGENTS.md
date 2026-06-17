@@ -27,6 +27,7 @@
 
 - 优先最小可行实现，不提前上 ML。
 - 本届 MVP 只做 Elo + Poisson + 赔率去水 + EV/Edge + 等级状态。
+- 当前实现以 2026 世界杯为首个 competition adapter，但新增通用数据结构、snapshot 字段、概率族、赔率/盘口移动诊断和回测接口时，应尽量使用可迁移到联赛的命名与边界，避免继续把新能力写死为世界杯专用语义；已有 `stage` / `group` 等世界杯字段保持兼容，不为未来联赛提前大重构。
 - 引擎层必须保持纯函数，不联网、不连数据库、不依赖云。
 - 采集层使用保存的样例响应做离线解析测试。
 - source refresh 失败但本地缓存存在时，可以继续用上一轮缓存生成快照；必须在 `data_quality.source_errors` 和 `data_quality.stale_sources` 标记，不能静默当作新鲜数据。

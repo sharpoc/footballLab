@@ -2,6 +2,21 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-17 Phase 2B 赔率/盘口移动 diagnostic schema
+
+- 新增 `odds_movement` diagnostic：从既有 `odds_trend` 历史点派生 1X2、AH 主盘、OU 主线的首末赔率、绝对/相对移动、盘口线移动和 quality 标记。
+- `odds_movement` 随 `attach_trends()` 写入每场 match 顶层；schema 当前为 `schema_version=1`、`window=captured_history`，包含 `1x2`、`ah_main`、`ou`、`quality` 四块。
+- 该字段只作为研究诊断，不参与模型概率、EV、S/A 阈值、信号等级或 fail-safe 裁决；公开 `/api/matches` 仍使用既有安全投影。
+- TDD 覆盖：movement 摘要生成、`attach_trends()` 写入 diagnostic、refresh 富化路径保留字段。
+- 当前缓存只读重算 sanity：所有重算比赛均可生成 `odds_movement`，OU 同市场锚定 S/A 和 AH 未验证 S/A 仍为 0。
+- 本轮不改模型参数、信号阈值、赔率源、refresh/publish/quota 逻辑或 ECS；未触发 live refresh，未部署。
+
+## 2026-06-17 联赛可迁移架构偏好
+
+- 已将项目级长期偏好同步写入 `AGENTS.md` 和 `CLAUDE.md`：当前实现以 2026 世界杯为首个 competition adapter，但新增通用数据结构、snapshot 字段、概率族、赔率/盘口移动诊断和回测接口时，应尽量使用可迁移到联赛的命名与边界。
+- 规则同时明确：已有 `stage` / `group` 等世界杯字段保持兼容，不为未来联赛提前大重构。
+- 本轮只更新项目协作偏好和近期记录，不改代码、不触发 refresh、不部署、不提交、不推送。
+
 ## 2026-06-16 Phase 2A 概率族 shadow schema 实现
 
 - 已按已确认方案在 `worldcup.pipeline` 输出 `model_raw`、`model_market_total`、`market_only` 三套 probability family，并为每套概率写入 provenance metadata。

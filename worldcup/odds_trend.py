@@ -78,6 +78,140 @@ def _compress(raw: list[list], max_points: int) -> list[list]:
     return compressed
 
 
+def _first_latest(series: list[list]) -> tuple[list, list] | tuple[None, None]:
+    if not series:
+        return None, None
+    return series[0], series[-1]
+
+
+def _round(value: float | None, digits: int = 6) -> float | None:
+    return round(value, digits) if value is not None else None
+
+
+def _selection_movement(series: list[list]) -> dict:
+    first, latest = _first_latest(series)
+    if first is None or latest is None:
+        return {
+            "points": 0,
+            "first_odds": None,
+            "latest_odds": None,
+            "absolute_move": None,
+            "relative_move": None,
+            "direction": "insufficient_history",
+        }
+    first_odds = float(first[1])
+    latest_odds = float(latest[1])
+    absolute_move = latest_odds - first_odds
+    relative_move = absolute_move / first_odds if first_odds else None
+    if absolute_move < 0:
+        direction = "shortened"
+    elif absolute_move > 0:
+        direction = "drifted"
+    else:
+        direction = "unchanged"
+    return {
+        "points": len(series),
+        "first_at": first[0],
+        "latest_at": latest[0],
+        "first_odds": first_odds,
+        "latest_odds": latest_odds,
+        "absolute_move": _round(absolute_move),
+        "relative_move": _round(relative_move),
+        "direction": direction,
+    }
+
+
+def _line_from_point(point: list | None) -> float | None:
+    if point is None or len(point) < 3 or point[2] is None:
+        return None
+    return float(point[2])
+
+
+def _ah_movement(trend: dict[str, dict[str, list]]) -> dict:
+    market = trend.get("ah_main") or {}
+    home = market.get("home") or []
+    away = market.get("away") or []
+    first, latest = _first_latest(home)
+    first_line = _line_from_point(first)
+    latest_line = _line_from_point(latest)
+    line_move = latest_line - first_line if first_line is not None and latest_line is not None else None
+    if line_move is None or line_move == 0:
+        favorite_direction = "unchanged" if line_move == 0 else "unknown"
+    elif latest_line < first_line:
+        favorite_direction = "home_strengthened"
+    else:
+        favorite_direction = "away_strengthened"
+    return {
+        "home": _selection_movement(home),
+        "away": _selection_movement(away),
+        "first_line_home": first_line,
+        "latest_line_home": latest_line,
+        "line_move": _round(line_move),
+        "line_move_abs": _round(abs(line_move)) if line_move is not None else None,
+        "favorite_line_direction": favorite_direction,
+    }
+
+
+def _ou_movement(trend: dict[str, dict[str, list]]) -> dict:
+    market = trend.get("ou_2_5") or {}
+    over = market.get("over") or []
+    under = market.get("under") or []
+    first, latest = _first_latest(over)
+    first_line = _line_from_point(first)
+    latest_line = _line_from_point(latest)
+    line_move = latest_line - first_line if first_line is not None and latest_line is not None else None
+    return {
+        "over": _selection_movement(over),
+        "under": _selection_movement(under),
+        "first_line": first_line,
+        "latest_line": latest_line,
+        "total_line_move": _round(line_move),
+        "line_move_abs": _round(abs(line_move)) if line_move is not None else None,
+    }
+
+
+def _quality(movement: dict) -> dict:
+    point_counts = []
+    for market in ("1x2",):
+        for block in movement.get(market, {}).values():
+            point_counts.append(block.get("points", 0))
+    for market in ("ah_main", "ou"):
+        for selection in ("home", "away", "over", "under"):
+            block = (movement.get(market) or {}).get(selection)
+            if isinstance(block, dict):
+                point_counts.append(block.get("points", 0))
+    line_changed = any(
+        (movement.get(market) or {}).get(key) not in (None, 0)
+        for market, key in (("ah_main", "line_move"), ("ou", "total_line_move"))
+    )
+    enough_points = bool(point_counts) and max(point_counts) >= 2
+    sparse = not enough_points
+    return {
+        "enough_points": enough_points,
+        "min_points": min(point_counts) if point_counts else 0,
+        "max_points": max(point_counts) if point_counts else 0,
+        "line_changed": line_changed,
+        "stale": False,
+        "sparse": sparse,
+        "noisy_or_sparse": sparse,
+    }
+
+
+def build_odds_movement(trend: dict[str, dict[str, list]]) -> dict:
+    movement = {
+        "schema_version": 1,
+        "window": "captured_history",
+        "1x2": {
+            selection: _selection_movement((trend.get("1x2") or {}).get(selection) or [])
+            for selection in ("home", "draw", "away")
+        },
+        "ah_main": _ah_movement(trend),
+        "ou": _ou_movement(trend),
+    }
+    movement["quality"] = _quality(movement)
+    return movement
+
+
 def extract_match_trend(
     snapshots: list[dict],
     home_canonical: str,
@@ -134,4 +268,6 @@ def attach_trends(
         away = match.get("away_canonical")
         if not home or not away:
             continue
-        match["odds_trend"] = extract_match_trend(history, home, away)
+        trend = extract_match_trend(history, home, away)
+        match["odds_trend"] = trend
+        match["odds_movement"] = build_odds_movement(trend)

@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 
 from worldcup.odds_trend import (
     attach_trends,
+    build_odds_movement,
     extract_match_trend,
     list_history_files,
 )
@@ -120,3 +121,79 @@ def test_attach_trends_writes_into_snapshot_matches():
 
         points = snapshot["matches"][0]["odds_trend"]["1x2"]["home"]
         assert [p[1] for p in points] == [1.85, 1.8]
+
+
+def test_build_odds_movement_summarizes_1x2_ah_and_ou_diagnostics():
+    trend = {
+        "1x2": {
+            "home": [
+                ["2026-06-12T00:00:00+00:00", 2.0],
+                ["2026-06-12T11:00:00+00:00", 1.9],
+            ],
+            "draw": [["2026-06-12T00:00:00+00:00", 3.4]],
+            "away": [["2026-06-12T00:00:00+00:00", 4.5]],
+        },
+        "ah_main": {
+            "home": [
+                ["2026-06-12T00:00:00+00:00", 1.9, -0.5],
+                ["2026-06-12T11:00:00+00:00", 1.85, -0.75],
+            ],
+            "away": [
+                ["2026-06-12T00:00:00+00:00", 1.95, 0.5],
+                ["2026-06-12T11:00:00+00:00", 1.98, 0.75],
+            ],
+        },
+        "ou_2_5": {
+            "over": [
+                ["2026-06-12T00:00:00+00:00", 2.1, 2.5],
+                ["2026-06-12T11:00:00+00:00", 1.8, 3.0],
+            ],
+            "under": [
+                ["2026-06-12T00:00:00+00:00", 1.75, 2.5],
+                ["2026-06-12T11:00:00+00:00", 2.05, 3.0],
+            ],
+        },
+    }
+
+    movement = build_odds_movement(trend)
+
+    assert movement["schema_version"] == 1
+    assert movement["window"] == "captured_history"
+    assert movement["1x2"]["home"]["first_odds"] == 2.0
+    assert movement["1x2"]["home"]["latest_odds"] == 1.9
+    assert movement["1x2"]["home"]["relative_move"] == -0.05
+    assert movement["1x2"]["home"]["direction"] == "shortened"
+    assert movement["ah_main"]["first_line_home"] == -0.5
+    assert movement["ah_main"]["latest_line_home"] == -0.75
+    assert movement["ah_main"]["line_move_abs"] == 0.25
+    assert movement["ah_main"]["favorite_line_direction"] == "home_strengthened"
+    assert movement["ou"]["first_line"] == 2.5
+    assert movement["ou"]["latest_line"] == 3.0
+    assert movement["ou"]["total_line_move"] == 0.5
+    assert movement["quality"]["enough_points"] is True
+    assert movement["quality"]["line_changed"] is True
+    assert movement["quality"]["stale"] is False
+    assert movement["quality"]["noisy_or_sparse"] is False
+
+
+def test_attach_trends_writes_odds_movement_diagnostic():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshots = [
+            ("20260612T000000Z", 2.0, -0.5, 2.5),
+            ("20260612T110000Z", 1.9, -0.75, 3.0),
+        ]
+        for at, odds, ah_line, ou_line in snapshots:
+            iso = f"{at[:4]}-{at[4:6]}-{at[6:8]}T{at[9:11]}:{at[11:13]}:00+00:00"
+            (root / f"snapshot_{at}-live.json").write_text(
+                json.dumps(_hist_snapshot(iso, odds, ah_line=ah_line, ou_line=ou_line))
+            )
+        snapshot = _hist_snapshot("2026-06-12T12:00:00+00:00", 1.88, ah_line=-0.75, ou_line=3.0)
+
+        attach_trends(snapshot, root, now="2026-06-12T12:00:00+00:00")
+
+        movement = snapshot["matches"][0]["odds_movement"]
+        assert movement["schema_version"] == 1
+        assert movement["1x2"]["home"]["relative_move"] == -0.05
+        assert movement["ah_main"]["line_move_abs"] == 0.25
+        assert movement["ou"]["total_line_move"] == 0.5

@@ -432,6 +432,9 @@ def test_refresh_attaches_trend_and_finished_block():
         match = result.snapshot["matches"][0]
         assert "odds_trend" in match
         assert match["odds_trend"]["1x2"]["home"], "trend points should exist from first archive"
+        assert match["odds_movement"]["schema_version"] == 1
+        assert match["odds_movement"]["window"] == "captured_history"
+        assert match["odds_movement"]["1x2"]["home"]["first_odds"] == 1.8
         assert "finished" in result.snapshot
         assert result.snapshot["finished"]["tally"]["S"] == {"hit": 0, "miss": 0, "push": 0}
 

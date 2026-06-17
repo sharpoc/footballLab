@@ -45,7 +45,7 @@
 - 当前 `/healthz` 不读 DB、不依赖 secret，只用于本地和后续云端健康检查契约
 - 当前静态导出默认写入已忽略的 `data/cache/site/`
 - 当前 refresh runner 在写盘和 history 归档前做本地富化：每场 match 可附加 `odds_trend` 走势点，顶层可附加 `finished` 完赛定格块；富化失败只输出 warning，不阻断 snapshot 生成或发布
-- 当前 `odds_trend` 只读最近 10 天 history 归档并按文件名时间窗过滤；`finished` 使用被忽略的 `data/local/finished_record_store.json` 增量缓存，已定格比赛不随每 15 分钟刷新重算
+- 当前 `odds_trend` / `odds_movement` 只读最近 10 天 history 归档并按文件名时间窗过滤；`odds_movement` 仅作为赔率/盘口移动 diagnostic，不参与模型、EV 或信号等级裁决；`finished` 使用被忽略的 `data/local/finished_record_store.json` 增量缓存，已定格比赛不随每 15 分钟刷新重算
 - 当前静态预览/导出页为研究台账 UI：只展示研究信号、每场下次更新时间、本届 S/A 信号战绩、已完赛战绩区、赔率走势、方法说明、脱敏数据质量状态和免责声明，不显示下注金额或资金相关字段；老 snapshot 缺少 `finished` 或 `odds_trend` 时页面会容忍缺键
 - 当前 readiness check 只读本地文件和变量名，会解析 snapshot/quota、检查预览免责声明，并确认 `.env.example` 只含空值模板，不联网、不打印 secret
 - 当前 HMAC secret helper 只打印 `INGEST_HMAC_SECRET=<value>`，不会写 `.env`
@@ -213,7 +213,7 @@ python3 -m worldcup.elo_local --check
 
 当 openfootball 缓存里已有完赛比分时，snapshot 会给对应比赛附加 `result`，研究信号台账会在“信号原因”栏显示赛后验证：胜平负 / 大小球显示“命中”或“未中”，亚洲让球显示“命中 / 未中 / 走水”。
 
-最新 refresh 富化后的 snapshot 还会包含顶层 `finished` 块：用开球前最后一轮 closing snapshot 的信号与本地赛果定格完赛场，`tally` 只统计 S/A 级信号；走水计入 `push`，但不进入命中率分母。页面会新增“本届信号战绩”卡和“已完赛战绩”区，完赛区按北京日期分组，展开明细展示 closing 盘口、赛果判定和 SVG 赔率走势。每场最新 match 也可带 `odds_trend` 字段，供主台账展开详情展示迷你折线和首末点文本。
+最新 refresh 富化后的 snapshot 还会包含顶层 `finished` 块：用开球前最后一轮 closing snapshot 的信号与本地赛果定格完赛场，`tally` 只统计 S/A 级信号；走水计入 `push`，但不进入命中率分母。页面会新增“本届信号战绩”卡和“已完赛战绩”区，完赛区按北京日期分组，展开明细展示 closing 盘口、赛果判定和 SVG 赔率走势。每场最新 match 也可带 `odds_trend` 字段，供主台账展开详情展示迷你折线和首末点文本；同时可带 `odds_movement`，记录 1X2、AH 主盘、OU 主线的首末赔率、相对移动、盘口线移动和质量标记，暂只供研究诊断。
 
 赛后链路已由 LaunchAgent `xin.celab.football.daily-eval` 每天北京时间 16:30 自动执行 `python3 -m worldcup.daily_eval --notify --live-scores`：先调用 The Odds API scores 端点补抓赛果（每天约 2 credits，同 key 槽位轮换），再依次 `results_capture` → `eval_data` → `backtest` 并推送研究日报（完赛数、评估样本、模型 vs 市场指标、S/A 级信号命中统计）；无新增赛果不推送。手动补跑同一命令即可，幂等。
 
