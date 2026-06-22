@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+import math
+from typing import Any
 
-from worldcup.collectors.models import EloRating, Fixture, ParsedOddsEvent
+from worldcup.collectors.models import EloRating, Fixture, ParsedLineupContext, ParsedOddsEvent
 from worldcup.collectors.team_aliases import canonicalize_team
 from worldcup.engine import elo, ensemble, handicap, odds, poisson, value
 from worldcup.models import Grade, MarketType, OddsQuote, Signal
@@ -38,6 +40,7 @@ class MatchAnalysisInput:
     quotes: list[OddsQuote] = field(default_factory=list)
     neutral: bool = True
     home_advantage_elo: float = 0.0
+    lineup_context: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,8 @@ class MatchAnalysis:
     total_mu_source: str
     same_market_total_anchor: bool
     probability_families: dict
+    lineup_shadow: dict | None
+    ou_total_shadow: dict | None
     market_1x2: dict
     market_ou_2_5: dict
     market_ah_main: dict | None
@@ -81,6 +86,23 @@ def _event_key(kickoff_at_utc: datetime, home_canonical: str | None, away_canoni
 
 def _pair_key(home_canonical: str | None, away_canonical: str | None) -> tuple:
     return (home_canonical, away_canonical)
+
+
+def _lineup_event_key(
+    kickoff_at_utc: datetime | None,
+    home_canonical: str | None,
+    away_canonical: str | None,
+) -> tuple:
+    return (kickoff_at_utc, home_canonical, away_canonical)
+
+
+def _lineup_matches_fixture(fixture: Fixture, context: ParsedLineupContext) -> bool:
+    return (
+        context.kickoff_at_utc is not None
+        and context.kickoff_at_utc == fixture.kickoff_at_utc
+        and context.home_canonical == fixture.home_canonical
+        and context.away_canonical == fixture.away_canonical
+    )
 
 
 def _canonical_to_elo_code(elo_aliases: dict[str, str]) -> dict[str, str]:
@@ -115,6 +137,7 @@ def build_match_inputs(
     elo_ratings: dict[str, EloRating],
     elo_aliases: dict[str, str],
     host_advantage_elo: float = 100.0,
+    lineup_contexts: list[ParsedLineupContext] | None = None,
 ) -> BuildMatchInputsResult:
     event_by_key = {
         _event_key(event.kickoff_at_utc, event.home_canonical, event.away_canonical): event
@@ -123,6 +146,16 @@ def build_match_inputs(
     events_by_pair: dict[tuple, list[ParsedOddsEvent]] = {}
     for event in odds_events:
         events_by_pair.setdefault(_pair_key(event.home_canonical, event.away_canonical), []).append(event)
+    lineup_by_key = {
+        _lineup_event_key(context.kickoff_at_utc, context.home_canonical, context.away_canonical): context
+        for context in lineup_contexts or []
+        if context.kickoff_at_utc is not None
+    }
+    lineup_by_match_no = {
+        context.source_match_no: context
+        for context in lineup_contexts or []
+        if context.source_match_no is not None
+    }
     elo_code_by_canonical = _canonical_to_elo_code(elo_aliases)
 
     inputs: list[MatchAnalysisInput] = []
@@ -156,6 +189,16 @@ def build_match_inputs(
         if event is None or home_elo is None or away_elo is None:
             continue
 
+        lineup = None
+        if fixture.source_match_no is not None:
+            match_no_candidate = lineup_by_match_no.get(fixture.source_match_no)
+            if match_no_candidate is not None and _lineup_matches_fixture(fixture, match_no_candidate):
+                lineup = match_no_candidate
+        if lineup is None:
+            lineup = lineup_by_key.get(
+                _lineup_event_key(fixture.kickoff_at_utc, fixture.home_canonical, fixture.away_canonical)
+            )
+
         inputs.append(
             MatchAnalysisInput(
                 fixture=fixture,
@@ -164,6 +207,7 @@ def build_match_inputs(
                 away_elo=away_elo,
                 quotes=event.quotes,
                 home_advantage_elo=_fixture_home_advantage_elo(fixture, host_advantage_elo),
+                lineup_context=lineup.to_pipeline_context() if lineup is not None else None,
             )
         )
 
@@ -329,6 +373,212 @@ def _probability_families(
     }
 
 
+def _parse_lineup_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _latest_quote_observed_at(quotes: list[OddsQuote]) -> datetime | None:
+    observed = [
+        quote.fetched_at.astimezone(timezone.utc)
+        for quote in quotes
+        if quote.fetched_at is not None
+    ]
+    return max(observed) if observed else None
+
+
+def _lineup_float(context: dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        return float(context.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _clamp(value: float, max_abs: float) -> float:
+    return max(-max_abs, min(max_abs, value))
+
+
+def _rounded_probs(probs: dict[str, float]) -> dict[str, float]:
+    return {key: round(value, 6) for key, value in probs.items()}
+
+
+def _edge_shadow(model_probs: dict[str, float], market: dict) -> dict[str, float | None]:
+    market_probs = market.get("market_probs") or {}
+    out: dict[str, float | None] = {}
+    for key, model_prob in model_probs.items():
+        market_prob = market_probs.get(key)
+        out[key] = round(model_prob - market_prob, 6) if market_prob is not None else None
+    return out
+
+
+def _edge_delta(
+    independent: dict[str, float | None],
+    active: dict[str, float | None],
+) -> dict[str, float | None]:
+    out: dict[str, float | None] = {}
+    for key, independent_value in independent.items():
+        active_value = active.get(key)
+        out[key] = (
+            round(independent_value - active_value, 6)
+            if independent_value is not None and active_value is not None
+            else None
+        )
+    return out
+
+
+def _ou_total_shadow_block(
+    *,
+    probability_families: dict,
+    active_ou_probs: dict[str, float],
+    market_ou: dict,
+    ou_line: float,
+    mu_active: float,
+    mu_independent: float,
+    mu_market: float | None,
+    mu_market_weight: float,
+    same_market_total_anchor: bool,
+) -> dict:
+    families = probability_families.get("families") or {}
+    raw_ou = (families.get("model_raw") or {}).get("ou") or {}
+    independent_probs = dict(raw_ou.get("probs") or {})
+    if not independent_probs:
+        independent_probs = dict(active_ou_probs)
+    active_edge = _edge_shadow(active_ou_probs, market_ou)
+    independent_edge = _edge_shadow(independent_probs, market_ou)
+    return {
+        "schema_version": 1,
+        "activation": "shadow_only",
+        "active_family": probability_families.get("active_signal_family"),
+        "shadow_family": "model_raw",
+        "same_market_total_anchor": same_market_total_anchor,
+        "line": ou_line,
+        "mu_active": mu_active,
+        "mu_independent": mu_independent,
+        "mu_market": mu_market,
+        "mu_market_weight": mu_market_weight,
+        "probability_active": {"line": ou_line, "probs": dict(active_ou_probs)},
+        "probability_independent": {"line": ou_line, "probs": independent_probs},
+        "market_probability": {
+            "line": market_ou.get("line"),
+            "probs": dict(market_ou.get("market_probs") or {}),
+        },
+        "edge_active": active_edge,
+        "edge_independent": independent_edge,
+        "edge_delta_independent_minus_active": _edge_delta(independent_edge, active_edge),
+    }
+
+
+def _lineup_shadow_block(
+    *,
+    match_input: MatchAnalysisInput,
+    cfg: dict,
+    lambdas: tuple[float, float],
+    elo_1x2: dict[str, float],
+    combined_1x2: dict[str, float],
+    ou_probs: dict[str, float],
+    ou_line: float,
+    market_1x2: dict,
+    market_ou: dict,
+) -> dict | None:
+    context = match_input.lineup_context or {}
+    if not context:
+        return None
+
+    max_abs = abs(float(cfg.get("quality", {}).get("lineup_log_lambda_delta_abs_max", 0.35)))
+    home_log_delta = _clamp(
+        _lineup_float(context, "home_attack_delta")
+        - _lineup_float(context, "away_defense_delta")
+        + _lineup_float(context, "away_goalkeeper_delta"),
+        max_abs,
+    )
+    away_log_delta = _clamp(
+        _lineup_float(context, "away_attack_delta")
+        - _lineup_float(context, "home_defense_delta")
+        + _lineup_float(context, "home_goalkeeper_delta"),
+        max_abs,
+    )
+
+    adjusted_home = lambdas[0] * math.exp(home_log_delta)
+    adjusted_away = lambdas[1] * math.exp(away_log_delta)
+    matrix, tail = poisson.score_matrix(adjusted_home, adjusted_away, cfg["poisson"])
+    adjusted_poisson_1x2 = poisson.probs_1x2(matrix)
+    adjusted_combined_1x2 = ensemble.combine_1x2(
+        elo_1x2,
+        adjusted_poisson_1x2,
+        cfg["ensemble"]["w_elo"],
+        cfg["ensemble"]["w_poisson"],
+    )
+    adjusted_over = poisson.prob_over(matrix, ou_line)
+    adjusted_ou = {"over": adjusted_over, "under": 1.0 - adjusted_over}
+
+    lineup_confirmed_at = _parse_lineup_datetime(context.get("lineup_confirmed_at"))
+    odds_observed_at = _latest_quote_observed_at(match_input.quotes)
+    post_information_odds_available = (
+        lineup_confirmed_at is not None
+        and odds_observed_at is not None
+        and odds_observed_at >= lineup_confirmed_at
+    )
+    confidence = context.get("lineup_confidence")
+    lineup_confidence = None
+    if confidence is not None:
+        lineup_confidence = _clamp(_lineup_float(context, "lineup_confidence"), 1.0)
+        if lineup_confidence < 0:
+            lineup_confidence = 0.0
+
+    return {
+        "schema_version": 1,
+        "activation": "shadow_only",
+        "provider": context.get("provider"),
+        "source": context.get("source"),
+        "source_match_no": context.get("source_match_no"),
+        "confirmed_starting_xi": bool(context.get("confirmed_starting_xi", False)),
+        "lineup_confirmed_at": lineup_confirmed_at.isoformat() if lineup_confirmed_at else None,
+        "odds_observed_at": odds_observed_at.isoformat() if odds_observed_at else None,
+        "post_information_odds_available": post_information_odds_available,
+        "lineup_confidence": lineup_confidence,
+        "lineups": context.get("lineups"),
+        "deltas": {
+            "home_attack_delta": _round_metric(_lineup_float(context, "home_attack_delta")),
+            "home_defense_delta": _round_metric(_lineup_float(context, "home_defense_delta")),
+            "home_goalkeeper_delta": _round_metric(_lineup_float(context, "home_goalkeeper_delta")),
+            "away_attack_delta": _round_metric(_lineup_float(context, "away_attack_delta")),
+            "away_defense_delta": _round_metric(_lineup_float(context, "away_defense_delta")),
+            "away_goalkeeper_delta": _round_metric(_lineup_float(context, "away_goalkeeper_delta")),
+            "home_log_lambda_delta": _round_metric(home_log_delta),
+            "away_log_lambda_delta": _round_metric(away_log_delta),
+        },
+        "lambda_base": {"home": _round_metric(lambdas[0]), "away": _round_metric(lambdas[1])},
+        "lambda_adjusted": {"home": _round_metric(adjusted_home), "away": _round_metric(adjusted_away)},
+        "poisson_tail": _round_metric(tail),
+        "probability_before": {
+            "1x2": _rounded_probs(combined_1x2),
+            "ou": {"line": ou_line, "probs": _rounded_probs(ou_probs)},
+        },
+        "probability_after": {
+            "1x2": _rounded_probs(adjusted_combined_1x2),
+            "ou": {"line": ou_line, "probs": _rounded_probs(adjusted_ou)},
+        },
+        "edge_before": {
+            "1x2": _edge_shadow(combined_1x2, market_1x2),
+            "ou": _edge_shadow(ou_probs, market_ou),
+        },
+        "edge_after": {
+            "1x2": _edge_shadow(adjusted_combined_1x2, market_1x2),
+            "ou": _edge_shadow(adjusted_ou, market_ou),
+        },
+    }
+
+
 def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnalysis:
     dr = _adjusted_dr(match_input, cfg)
     ratio = cfg["odds"]["outlier_ratio"]
@@ -409,6 +659,28 @@ def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnal
         market_ou=market_ou_2_5,
         market_ah=market_ah_main,
     )
+    ou_total_shadow = _ou_total_shadow_block(
+        probability_families=probability_families,
+        active_ou_probs={"over": p_over, "under": 1.0 - p_over},
+        market_ou=market_ou_2_5,
+        ou_line=ou_line,
+        mu_active=mu_total_used,
+        mu_independent=mu_prior_used,
+        mu_market=mu_market_used,
+        mu_market_weight=mu_market_weight,
+        same_market_total_anchor=same_market_total_anchor,
+    )
+    lineup_shadow = _lineup_shadow_block(
+        match_input=match_input,
+        cfg=cfg,
+        lambdas=(lh, la),
+        elo_1x2=elo_1x2,
+        combined_1x2=combined_1x2,
+        ou_probs={"over": p_over, "under": 1.0 - p_over},
+        ou_line=ou_line,
+        market_1x2=market_1x2,
+        market_ou=market_ou_2_5,
+    )
     return MatchAnalysis(
         match_input=match_input,
         lambdas=(lh, la),
@@ -426,6 +698,8 @@ def analyze_match_input(match_input: MatchAnalysisInput, cfg: dict) -> MatchAnal
         total_mu_source=total_mu_source,
         same_market_total_anchor=same_market_total_anchor,
         probability_families=probability_families,
+        lineup_shadow=lineup_shadow,
+        ou_total_shadow=ou_total_shadow,
         market_1x2=market_1x2,
         market_ou_2_5=market_ou_2_5,
         market_ah_main=market_ah_main,
@@ -487,6 +761,57 @@ def _ah_main_has_min_books(analysis: MatchAnalysis, cfg: dict) -> bool:
 def _ah_main_line_home(analysis: MatchAnalysis) -> float | None:
     line = (analysis.market_ah_main or {}).get("line_home")
     return float(line) if line is not None else None
+
+
+def _round_metric(value: float | None, digits: int = 6) -> float | None:
+    return round(value, digits) if value is not None else None
+
+
+def _quarter_lines(min_line: float = -6.0, max_line: float = 6.0) -> list[float]:
+    start = int(round(min_line * 4))
+    end = int(round(max_line * 4))
+    return [step / 4 for step in range(start, end + 1)]
+
+
+def _model_fair_ah_line(dist: dict[int, float]) -> float | None:
+    viable = [
+        line
+        for line in _quarter_lines()
+        if handicap.ev_handicap(dist, line, 2.0) >= -1e-9
+    ]
+    return min(viable) if viable else None
+
+
+def _ah_validation_shadow(
+    analysis: MatchAnalysis,
+    side: str,
+    market_line: float,
+    side_dist: dict[int, float],
+    dispersion_ratio: float | None,
+    cfg: dict,
+) -> dict:
+    model_fair_line = _model_fair_ah_line(side_dist)
+    fair_line_delta = market_line - model_fair_line if model_fair_line is not None else None
+    threshold = cfg.get("quality", {}).get("odds_dispersion_ratio_max")
+    line_consensus = _ah_main_has_min_books(analysis, cfg)
+    dispersion_ok = threshold is None or dispersion_ratio is None or dispersion_ratio <= threshold
+    candidate_validated = (
+        line_consensus
+        and dispersion_ok
+        and fair_line_delta is not None
+        and fair_line_delta >= 0.25
+    )
+    return {
+        "schema_version": 1,
+        "side": side,
+        "market_line": _round_metric(market_line),
+        "model_fair_line": _round_metric(model_fair_line),
+        "fair_line_delta": _round_metric(fair_line_delta),
+        "line_consensus": line_consensus,
+        "dispersion_ok": dispersion_ok,
+        "candidate_validated": candidate_validated,
+        "activation": "shadow_only",
+    }
 
 
 def _ah_main_supports_x12(analysis: MatchAnalysis, selection: str, cfg: dict) -> bool:
@@ -594,20 +919,55 @@ def _cap_signal_at_b(signal: Signal, reasons: list[str]) -> Signal:
         if reason not in merged_reasons:
             merged_reasons.append(reason)
     grade = Grade.B if signal.grade in (Grade.S, Grade.A) else signal.grade
-    return Signal(
-        signal.market_type,
-        signal.selection,
-        grade,
-        signal.ev,
-        signal.edge,
-        signal.status,
-        merged_reasons,
-        signal.line,
-        signal.raw_grade,
-        signal.total_mu_source,
-        signal.same_market_total_anchor,
-        signal.ah_market_validated,
+    return replace(signal, grade=grade, reasons=merged_reasons)
+
+
+_CANDIDATE_HARD_VETO_REASONS = {
+    "stale_odds",
+    "few_books",
+    "market_dispersion",
+    "longshot_uncertainty",
+    "unconfirmed_backup",
+    "line_changed_unknown",
+    "model_disagreement",
+}
+
+
+def _candidate_metadata(signal: Signal) -> tuple[str | None, list[str]]:
+    raw_grade = signal.raw_grade or signal.grade
+    if raw_grade not in (Grade.S, Grade.A) or signal.grade in (Grade.S, Grade.A):
+        return None, []
+    if any(reason in _CANDIDATE_HARD_VETO_REASONS for reason in signal.reasons):
+        return None, []
+    if signal.market_type != MarketType.AH or "ah_market_edge_missing" not in signal.reasons:
+        return None, []
+    shadow = signal.ah_validation_shadow or {}
+    if shadow.get("candidate_validated") is not True:
+        return None, []
+    return (
+        f"{raw_grade.value}-candidate",
+        [
+            "official_grade_capped_by_ah_market_edge_missing",
+            "ah_validation_shadow_candidate_validated",
+        ],
     )
+
+
+def _apply_candidate_grades(signals: list[Signal]) -> list[Signal]:
+    out: list[Signal] = []
+    for signal in signals:
+        candidate_grade, candidate_reasons = _candidate_metadata(signal)
+        if candidate_grade is None:
+            out.append(signal)
+        else:
+            out.append(
+                replace(
+                    signal,
+                    candidate_grade=candidate_grade,
+                    candidate_reasons=candidate_reasons,
+                )
+            )
+    return out
 
 
 def _apply_confidence_guards(analysis: MatchAnalysis, cfg: dict, signals: list[Signal]) -> list[Signal]:
@@ -619,7 +979,7 @@ def _apply_confidence_guards(analysis: MatchAnalysis, cfg: dict, signals: list[S
             *_ah_confidence_guard_reasons(analysis, signal, cfg),
         ]
         guarded.append(_cap_signal_at_b(signal, reasons))
-    return guarded
+    return _apply_candidate_grades(guarded)
 
 
 def _normalize_observed_at(value: datetime | str | None) -> datetime | None:
@@ -676,6 +1036,7 @@ def _signal_ctx(
     total_mu_source: str | None = None,
     same_market_total_anchor: bool | None = None,
     ah_market_validated: bool | None = None,
+    ah_validation_shadow: dict | None = None,
 ) -> dict:
     ctx = {
         "status": "OK",
@@ -702,6 +1063,8 @@ def _signal_ctx(
         ctx["same_market_total_anchor"] = same_market_total_anchor
     if ah_market_validated is not None:
         ctx["ah_market_validated"] = ah_market_validated
+    if ah_validation_shadow is not None:
+        ctx["ah_validation_shadow"] = ah_validation_shadow
     return ctx
 
 
@@ -837,6 +1200,14 @@ def _ah_signals(
     )
     if home_agg["odds"] is not None:
         ah_ev = handicap.ev_handicap(analysis.handicap_dist, home_line, home_agg["odds"])
+        validation = _ah_validation_shadow(
+            analysis,
+            "home",
+            home_line,
+            analysis.handicap_dist,
+            home_agg["dispersion_ratio"],
+            cfg,
+        )
         out.append(
             value.grade_signal(
                 MarketType.AH,
@@ -854,6 +1225,7 @@ def _ah_signals(
                     depends_on_backup,
                     odds_dispersion_ratio=home_agg["dispersion_ratio"],
                     ah_market_validated=False,
+                    ah_validation_shadow=validation,
                 ),
                 value_cfg,
                 ah_ev=ah_ev,
@@ -870,7 +1242,16 @@ def _ah_signals(
         ratio=ratio,
     )
     if away_agg["odds"] is not None:
-        away_ev = handicap.ev_handicap(_invert_dist(analysis.handicap_dist), away_line, away_agg["odds"])
+        away_dist = _invert_dist(analysis.handicap_dist)
+        away_ev = handicap.ev_handicap(away_dist, away_line, away_agg["odds"])
+        validation = _ah_validation_shadow(
+            analysis,
+            "away",
+            away_line,
+            away_dist,
+            away_agg["dispersion_ratio"],
+            cfg,
+        )
         out.append(
             value.grade_signal(
                 MarketType.AH,
@@ -888,6 +1269,7 @@ def _ah_signals(
                     depends_on_backup,
                     odds_dispersion_ratio=away_agg["dispersion_ratio"],
                     ah_market_validated=False,
+                    ah_validation_shadow=validation,
                 ),
                 value_cfg,
                 ah_ev=away_ev,

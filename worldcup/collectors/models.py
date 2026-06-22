@@ -46,6 +46,95 @@ class MatchResult:
 
 
 @dataclass(frozen=True)
+class PlayerLineupEntry:
+    name: str
+    position: str | None = None
+    player_id: str | None = None
+    reason: str | None = None
+
+    def to_dict(self) -> dict:
+        out = {"name": self.name}
+        if self.position is not None:
+            out["position"] = self.position
+        if self.player_id is not None:
+            out["player_id"] = self.player_id
+        if self.reason is not None:
+            out["reason"] = self.reason
+        return out
+
+
+@dataclass(frozen=True)
+class ParsedLineupContext:
+    provider: str
+    source: str | None
+    source_match_no: int | None
+    kickoff_at_utc: datetime | None
+    home_team_name: str
+    away_team_name: str
+    home_canonical: str
+    away_canonical: str
+    confirmed_starting_xi: bool
+    lineup_confirmed_at: datetime | None
+    lineup_confidence: float | None = None
+    home_starting: list[PlayerLineupEntry] = field(default_factory=list)
+    home_bench: list[PlayerLineupEntry] = field(default_factory=list)
+    home_absent: list[PlayerLineupEntry] = field(default_factory=list)
+    away_starting: list[PlayerLineupEntry] = field(default_factory=list)
+    away_bench: list[PlayerLineupEntry] = field(default_factory=list)
+    away_absent: list[PlayerLineupEntry] = field(default_factory=list)
+    home_formation: str | None = None
+    away_formation: str | None = None
+    home_attack_delta: float = 0.0
+    home_defense_delta: float = 0.0
+    home_goalkeeper_delta: float = 0.0
+    away_attack_delta: float = 0.0
+    away_defense_delta: float = 0.0
+    away_goalkeeper_delta: float = 0.0
+
+    def to_pipeline_context(self) -> dict:
+        return {
+            "provider": self.provider,
+            "source": self.source,
+            "source_match_no": self.source_match_no,
+            "confirmed_starting_xi": self.confirmed_starting_xi,
+            "lineup_confirmed_at": self.lineup_confirmed_at.isoformat()
+            if self.lineup_confirmed_at
+            else None,
+            "lineup_confidence": self.lineup_confidence,
+            "home_attack_delta": self.home_attack_delta,
+            "home_defense_delta": self.home_defense_delta,
+            "home_goalkeeper_delta": self.home_goalkeeper_delta,
+            "away_attack_delta": self.away_attack_delta,
+            "away_defense_delta": self.away_defense_delta,
+            "away_goalkeeper_delta": self.away_goalkeeper_delta,
+            "lineups": {
+                "home": {
+                    "team": self.home_team_name,
+                    "canonical": self.home_canonical,
+                    "formation": self.home_formation,
+                    "starting_count": len(self.home_starting),
+                    "bench_count": len(self.home_bench),
+                    "absent_count": len(self.home_absent),
+                    "starting": [player.to_dict() for player in self.home_starting],
+                    "bench": [player.to_dict() for player in self.home_bench],
+                    "absent": [player.to_dict() for player in self.home_absent],
+                },
+                "away": {
+                    "team": self.away_team_name,
+                    "canonical": self.away_canonical,
+                    "formation": self.away_formation,
+                    "starting_count": len(self.away_starting),
+                    "bench_count": len(self.away_bench),
+                    "absent_count": len(self.away_absent),
+                    "starting": [player.to_dict() for player in self.away_starting],
+                    "bench": [player.to_dict() for player in self.away_bench],
+                    "absent": [player.to_dict() for player in self.away_absent],
+                },
+            },
+        }
+
+
+@dataclass(frozen=True)
 class EloRating:
     code: str
     rank: int

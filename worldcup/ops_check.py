@@ -21,6 +21,14 @@ DEFAULT_LOCAL_LOGS = (
     Path.home() / "Library" / "Logs" / "worldcup" / "scheduled-publish.out.log",
     Path.home() / "Library" / "Logs" / "worldcup" / "scheduled-publish.err.log",
 )
+DEFAULT_PRE_MATCH_LAUNCH_AGENT = (
+    Path.home() / "Library" / "LaunchAgents" / "xin.celab.football.pre-match.plist"
+)
+DEFAULT_PRE_MATCH_LOGS = (
+    Path.home() / "Library" / "Logs" / "worldcup" / "pre-match.out.log",
+    Path.home() / "Library" / "Logs" / "worldcup" / "pre-match.err.log",
+)
+DEFAULT_LINEUP_AUDIT_PATH = Path("data/local/diagnostics/lineup_audit.json")
 DISCLAIMER = "仅用于研究分析，不构成投注建议"
 FORBIDDEN_PUBLIC_TERMS = [
     "stake",
@@ -255,10 +263,60 @@ def _scan_log_file(path: Path, max_bytes: int = 200_000) -> dict[str, Any]:
     return {"status": "ok", "path": str(path), **scan_text(text)}
 
 
+def _launch_agent_wiring(launch_agent: dict[str, Any]) -> dict[str, bool]:
+    args = launch_agent.get("program_arguments")
+    values = set(str(arg) for arg in args) if isinstance(args, list) else set()
+    return {
+        "has_live_lineups": "--live-lineups" in values,
+        "has_write_lineups": "--write-lineups" in values,
+        "has_notify_missing": "--notify-missing" in values,
+        "has_notify_audit": "--notify-audit" in values,
+        "has_refresh_guard": "--refresh-guard" in values,
+        "has_refresh_after_lineups": "--refresh-after-lineups" in values,
+        "has_live_refresh": "--live-refresh" in values,
+    }
+
+
+def _lineup_audit_summary(path: Path) -> dict[str, Any]:
+    payload = _read_json(path)
+    if payload is None:
+        return {"status": "missing", "path": str(path)}
+    return {
+        "status": "ok",
+        "path": str(path),
+        "generated_at": payload.get("generated_at"),
+        "summary": payload.get("summary") if isinstance(payload.get("summary"), dict) else {},
+        "notifications": payload.get("notifications")
+        if isinstance(payload.get("notifications"), dict)
+        else {},
+    }
+
+
+def _pre_match_checks(
+    root: Path,
+    launch_agent_path: str | Path | None,
+    log_paths: list[str | Path],
+    lineup_audit_path: str | Path,
+) -> dict[str, Any]:
+    if launch_agent_path is None:
+        return {"status": "skipped"}
+    launch_agent = inspect_launch_agent(launch_agent_path)
+    return {
+        "status": "ok",
+        "launch_agent": launch_agent,
+        "wiring": _launch_agent_wiring(launch_agent),
+        "logs": [_scan_log_file(Path(path).expanduser()) for path in log_paths],
+        "lineup_audit": _lineup_audit_summary(root / Path(lineup_audit_path)),
+    }
+
+
 def _local_checks(
     root: Path,
     launch_agent_path: str | Path,
     local_log_paths: list[str | Path],
+    pre_match_launch_agent_path: str | Path | None,
+    pre_match_log_paths: list[str | Path],
+    lineup_audit_path: str | Path,
 ) -> dict[str, Any]:
     return {
         "snapshot": _snapshot_summary(root / "data/cache/analysis_snapshot.json"),
@@ -267,6 +325,12 @@ def _local_checks(
         "history": summarize_history(root / "data/local/history", limit=3),
         "launch_agent": inspect_launch_agent(launch_agent_path),
         "logs": [_scan_log_file(Path(path).expanduser()) for path in local_log_paths],
+        "pre_match": _pre_match_checks(
+            root,
+            launch_agent_path=pre_match_launch_agent_path,
+            log_paths=pre_match_log_paths,
+            lineup_audit_path=lineup_audit_path,
+        ),
     }
 
 
@@ -503,6 +567,15 @@ def _count_issues(result: dict[str, Any]) -> dict[str, int]:
     for log in local.get("logs") or []:
         errors += int(log.get("sensitive_hits", 0) > 0)
         warnings += int(log.get("error_hits", 0) > 0)
+    pre_match = local.get("pre_match") or {}
+    pre_match_wiring = pre_match.get("wiring") if isinstance(pre_match.get("wiring"), dict) else {}
+    errors += int(
+        pre_match_wiring.get("has_live_refresh") is True
+        and pre_match_wiring.get("has_refresh_guard") is not True
+    )
+    for log in pre_match.get("logs") or []:
+        errors += int(log.get("sensitive_hits", 0) > 0)
+        warnings += int(log.get("error_hits", 0) > 0)
     finished = local.get("finished") or {}
     errors += int(finished.get("tally_matches") is False)
     results = finished.get("results") if isinstance(finished.get("results"), dict) else {}
@@ -554,6 +627,9 @@ def run_ops_check(
     remote_runner: RemoteRunner = _default_remote_runner,
     launch_agent_path: str | Path = DEFAULT_LAUNCH_AGENT,
     local_log_paths: list[str | Path] | None = None,
+    pre_match_launch_agent_path: str | Path | None = DEFAULT_PRE_MATCH_LAUNCH_AGENT,
+    pre_match_log_paths: list[str | Path] | None = None,
+    lineup_audit_path: str | Path = DEFAULT_LINEUP_AUDIT_PATH,
     timeout: int = 20,
 ) -> dict[str, Any]:
     project_root = Path(root)
@@ -563,6 +639,9 @@ def run_ops_check(
             project_root,
             launch_agent_path=launch_agent_path,
             local_log_paths=list(local_log_paths or DEFAULT_LOCAL_LOGS),
+            pre_match_launch_agent_path=pre_match_launch_agent_path,
+            pre_match_log_paths=list(pre_match_log_paths or DEFAULT_PRE_MATCH_LOGS),
+            lineup_audit_path=lineup_audit_path,
         ),
         "public": {"status": "skipped"}
         if public_base_url is None
@@ -586,6 +665,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-remote", action="store_true")
     parser.add_argument("--launch-agent", default=str(DEFAULT_LAUNCH_AGENT))
     parser.add_argument("--local-log", action="append", dest="local_logs")
+    parser.add_argument("--pre-match-launch-agent", default=str(DEFAULT_PRE_MATCH_LAUNCH_AGENT))
+    parser.add_argument("--pre-match-log", action="append", dest="pre_match_logs")
+    parser.add_argument("--lineup-audit", default=str(DEFAULT_LINEUP_AUDIT_PATH))
     parser.add_argument("--timeout", type=int, default=20)
     args = parser.parse_args(argv)
 
@@ -595,6 +677,9 @@ def main(argv: list[str] | None = None) -> int:
         remote_host=None if args.no_remote else args.remote_host,
         launch_agent_path=args.launch_agent,
         local_log_paths=args.local_logs,
+        pre_match_launch_agent_path=args.pre_match_launch_agent,
+        pre_match_log_paths=args.pre_match_logs,
+        lineup_audit_path=args.lineup_audit,
         timeout=args.timeout,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))

@@ -10,16 +10,23 @@ from typing import Any
 from worldcup.quota import load_quota_ledger
 from worldcup.theoddsapi_keys import quota_remaining_for_scheduler
 
-POLICY_VERSION = "free-tier-v2"
+POLICY_VERSION = "free-tier-v3"
 DEFAULT_INTERVAL_SECONDS = 86400
 QUOTA_LOW_REMAINING = 30
 QUOTA_LOW_INTERVAL_SECONDS = 86400
-CRITICAL_LOW_QUOTA_ANCHORS = {"pre_90m_lineup_warmup", "pre_55m_lineup_main", "pre_25m_final_check"}
+POST_INFORMATION_ODDS_REASON = "post_information_odds_required"
+CRITICAL_LOW_QUOTA_ANCHORS = {
+    "pre_90m_lineup_warmup",
+    "pre_55m_lineup_main",
+    "pre_35m_lineup_confirm",
+    "pre_25m_final_check",
+}
 MATCH_ANCHORS = (
     (12 * 3600, "pre_12h_checkpoint", "T-12小时", "赛日早间检查"),
     (6 * 3600, "pre_6h_checkpoint", "T-6小时", "赛前状态检查"),
     (90 * 60, "pre_90m_lineup_warmup", "T-1小时30分", "阵容/伤停预热"),
     (55 * 60, "pre_55m_lineup_main", "T-55分钟", "首发主抓点"),
+    (35 * 60, "pre_35m_lineup_confirm", "T-35分钟", "首发确认主检查"),
     (25 * 60, "pre_25m_final_check", "T-25分钟", "临场最终确认"),
 )
 
@@ -89,6 +96,38 @@ def _cadence_label(policy_reason: str, interval_seconds: int) -> tuple[str, str]
     interval_text = f"{hours} 小时" if hours else f"{interval_seconds} 秒"
     label = labels.get(policy_reason, "按规则")
     return label, f"按{interval_text}间隔刷新"
+
+
+def _parse_optional_utc(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return _parse_utc(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _post_information_odds_payload(match: dict[str, Any], now: datetime) -> dict[str, Any] | None:
+    model = match.get("model") or {}
+    if not isinstance(model, dict):
+        return None
+    shadow = model.get("lineup_shadow") or {}
+    if not isinstance(shadow, dict):
+        return None
+    if shadow.get("confirmed_starting_xi") is not True:
+        return None
+    if shadow.get("post_information_odds_available") is not False:
+        return None
+
+    lineup_confirmed_at = _parse_optional_utc(shadow.get("lineup_confirmed_at"))
+    if lineup_confirmed_at is None or lineup_confirmed_at > now:
+        return None
+    odds_observed_at = _parse_optional_utc(shadow.get("odds_observed_at"))
+    return {
+        "lineup_confirmed_at": _iso_utc(lineup_confirmed_at),
+        "odds_observed_at": _iso_utc(odds_observed_at) if odds_observed_at else None,
+        "post_information_odds_available": False,
+    }
 
 
 def _align_cadence_due_to_kickoff_clock(
@@ -162,6 +201,19 @@ def build_match_refresh_plan(
             "description": "等待额度恢复或人工刷新",
             "interval_seconds": 0,
             "should_refresh": False,
+        }
+
+    post_information_odds = _post_information_odds_payload(match, now_dt)
+    if post_information_odds is not None:
+        return {
+            **base,
+            "next_update_at": _iso_utc(now_dt),
+            "policy_reason": POST_INFORMATION_ODDS_REASON,
+            "label": "首发后赔率刷新",
+            "description": "首发已确认但当前赔率早于首发信息",
+            "interval_seconds": interval_seconds,
+            "should_refresh": True,
+            "post_information_odds": post_information_odds,
         }
 
     if last_dt is None:

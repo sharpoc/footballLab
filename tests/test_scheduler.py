@@ -20,6 +20,25 @@ def _match(
     }
 
 
+def _match_with_lineup_shadow(
+    kickoff_at_utc: str,
+    *,
+    post_information_odds_available: bool,
+) -> dict:
+    match = _match(kickoff_at_utc)
+    match["model"] = {
+        "lineup_shadow": {
+            "schema_version": 1,
+            "activation": "shadow_only",
+            "confirmed_starting_xi": True,
+            "lineup_confirmed_at": "2026-06-11T17:55:00+00:00",
+            "odds_observed_at": "2026-06-11T17:35:00+00:00",
+            "post_information_odds_available": post_information_odds_available,
+        }
+    }
+    return match
+
+
 def test_scheduler_refreshes_when_no_previous_run():
     decision = build_refresh_decision(
         now="2026-06-08T00:00:00+00:00",
@@ -122,6 +141,21 @@ def test_match_plan_low_quota_keeps_critical_lineup_anchor():
     assert plan["should_refresh"] is False
 
 
+def test_match_plan_uses_pre_35_lineup_confirmation_anchor():
+    plan = scheduler.build_match_refresh_plan(
+        now="2026-06-11T18:18:00+00:00",
+        last_refresh_at="2026-06-11T18:10:00+00:00",
+        match=_match("2026-06-11T19:00:00+00:00"),
+        quota_remaining=494,
+    )
+
+    assert plan["next_update_at"] == "2026-06-11T18:25:00+00:00"
+    assert plan["policy_reason"] == "pre_35m_lineup_confirm"
+    assert plan["label"] == "T-35分钟"
+    assert plan["description"] == "首发确认主检查"
+    assert plan["should_refresh"] is False
+
+
 def test_match_plan_blocks_when_quota_is_exhausted():
     plan = scheduler.build_match_refresh_plan(
         now="2026-06-11T17:50:00+00:00",
@@ -133,6 +167,45 @@ def test_match_plan_blocks_when_quota_is_exhausted():
     assert plan["next_update_at"] is None
     assert plan["policy_reason"] == "quota_exhausted"
     assert plan["label"] == "额度耗尽"
+    assert plan["should_refresh"] is False
+
+
+def test_match_plan_refreshes_when_lineup_confirmed_after_latest_odds():
+    plan = scheduler.build_match_refresh_plan(
+        now="2026-06-11T18:00:00+00:00",
+        last_refresh_at="2026-06-11T17:40:00+00:00",
+        match=_match_with_lineup_shadow(
+            "2026-06-11T19:00:00+00:00",
+            post_information_odds_available=False,
+        ),
+        quota_remaining=24,
+    )
+
+    assert plan["next_update_at"] == "2026-06-11T18:00:00+00:00"
+    assert plan["policy_reason"] == "post_information_odds_required"
+    assert plan["label"] == "首发后赔率刷新"
+    assert plan["description"] == "首发已确认但当前赔率早于首发信息"
+    assert plan["should_refresh"] is True
+    assert plan["post_information_odds"] == {
+        "lineup_confirmed_at": "2026-06-11T17:55:00+00:00",
+        "odds_observed_at": "2026-06-11T17:35:00+00:00",
+        "post_information_odds_available": False,
+    }
+
+
+def test_match_plan_does_not_refresh_for_lineup_shadow_when_post_information_odds_exist():
+    plan = scheduler.build_match_refresh_plan(
+        now="2026-06-11T18:00:00+00:00",
+        last_refresh_at="2026-06-11T17:40:00+00:00",
+        match=_match_with_lineup_shadow(
+            "2026-06-11T19:00:00+00:00",
+            post_information_odds_available=True,
+        ),
+        quota_remaining=24,
+    )
+
+    assert plan["policy_reason"] == "pre_55m_lineup_main"
+    assert "post_information_odds" not in plan
     assert plan["should_refresh"] is False
 
 

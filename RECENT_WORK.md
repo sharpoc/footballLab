@@ -2,6 +2,13 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-22 Lineups baseline repair
+
+- 将主工作区已验证但未提交的首发链路纳入隔离分支：`worldcup.collectors.lineups`、`worldcup.collectors.fifa_lineups`、`worldcup.lineups_refresh`、`worldcup.pre_match_runner`、`worldcup.pre_match_launch_agent`、`worldcup.lineup_audit`、`worldcup.shadow_backfill_diagnostics` 与对应 tests。
+- 补齐已跟踪代码依赖的 lineup / post-information odds / shadow backfill 类型与逻辑，解决 clean checkout 下 `worldcup.collectors.lineups` 缺失导致标准测试无法启动的问题。
+- 本轮只整理本地代码与测试基线，未执行 live lineups、未执行 live refresh、未消耗 The Odds API quota、未发通知、未改已安装 LaunchAgent、未部署、未推送。
+- 验证：标准入口 `PYTHONDONTWRITEBYTECODE=1 /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `498/498 tests passed`。
+
 ## 2026-06-22 P9.3 中超历史赛果来源与清洗实现计划
 
 - 新增 implementation plan：`docs/superpowers/plans/2026-06-22-csl-results-source-cleaning.md`。

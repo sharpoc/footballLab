@@ -34,6 +34,30 @@ def _write_plist(path: Path) -> None:
         )
 
 
+def _write_pre_match_plist(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as fh:
+        plistlib.dump(
+            {
+                "Label": "xin.celab.football.pre-match",
+                "ProgramArguments": [
+                    "/opt/python/bin/python3",
+                    "-m",
+                    "worldcup.pre_match_runner",
+                    "--live-lineups",
+                    "--write-lineups",
+                    "--notify-missing",
+                    "--notify-audit",
+                ],
+                "WorkingDirectory": "/Users/eagod/ai-dev/足彩",
+                "StandardOutPath": str(path.parent / "pre-match.out.log"),
+                "StandardErrorPath": str(path.parent / "pre-match.err.log"),
+                "StartInterval": 300,
+            },
+            fh,
+        )
+
+
 def _fake_fetcher(url: str, timeout: int) -> dict:
     assert timeout == 20
     path = url.split("football.celab.xin", 1)[1]
@@ -115,8 +139,32 @@ def test_run_ops_check_summarizes_local_and_public_state_without_secrets():
         logs_dir = root / "logs"
         launch_agent = logs_dir / "xin.celab.football.scheduled-publish.plist"
         _write_plist(launch_agent)
+        pre_match_launch_agent = logs_dir / "xin.celab.football.pre-match.plist"
+        _write_pre_match_plist(pre_match_launch_agent)
         _write(logs_dir / "scheduled-publish.out.log", '{"status":"skipped"}\n')
         _write(logs_dir / "scheduled-publish.err.log", "")
+        _write(
+            logs_dir / "pre-match.out.log",
+            '{"lineup_audit":{"notification":{"status":"skipped"}}}\n',
+        )
+        _write(logs_dir / "pre-match.err.log", "")
+        _write(
+            root / "data/local/diagnostics/lineup_audit.json",
+            json.dumps(
+                {
+                    "generated_at": "2026-06-22T01:41:00+00:00",
+                    "summary": {
+                        "confirmed_lineups": 10,
+                        "captured_before_kickoff": 0,
+                        "entered_snapshot": 5,
+                        "post_information_odds_available": 5,
+                        "captured_without_snapshot_input": 5,
+                        "captured_without_post_information_odds": 5,
+                    },
+                    "notifications": {"sent_count": 3},
+                }
+            ),
+        )
 
         result = run_ops_check(
             root=root,
@@ -127,6 +175,11 @@ def test_run_ops_check_summarizes_local_and_public_state_without_secrets():
             local_log_paths=[
                 logs_dir / "scheduled-publish.out.log",
                 logs_dir / "scheduled-publish.err.log",
+            ],
+            pre_match_launch_agent_path=pre_match_launch_agent,
+            pre_match_log_paths=[
+                logs_dir / "pre-match.out.log",
+                logs_dir / "pre-match.err.log",
             ],
         )
 
@@ -142,7 +195,90 @@ def test_run_ops_check_summarizes_local_and_public_state_without_secrets():
     assert result["public"]["home"]["has_disclaimer"] is True
     assert result["public"]["home"]["last_update"] == "2026 年 6 月 10 日 星期三 18:07"
     assert result["remote"]["status"] == "skipped"
+    pre_match = result["local"]["pre_match"]
+    assert pre_match["launch_agent"]["label"] == "xin.celab.football.pre-match"
+    assert pre_match["wiring"] == {
+        "has_live_lineups": True,
+        "has_write_lineups": True,
+        "has_notify_missing": True,
+        "has_notify_audit": True,
+        "has_refresh_guard": False,
+        "has_refresh_after_lineups": False,
+        "has_live_refresh": False,
+    }
+    assert pre_match["lineup_audit"]["summary"]["confirmed_lineups"] == 10
+    assert pre_match["lineup_audit"]["summary"]["captured_before_kickoff"] == 0
+    assert pre_match["lineup_audit"]["notifications"]["sent_count"] == 3
     assert "super-secret" not in str(result)
+
+
+def test_run_ops_check_flags_pre_match_live_refresh_without_guard_as_error():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs_dir = root / "logs"
+        launch_agent = logs_dir / "xin.celab.football.scheduled-publish.plist"
+        pre_match_launch_agent = logs_dir / "xin.celab.football.pre-match.plist"
+        _write_plist(launch_agent)
+        _write_pre_match_plist(pre_match_launch_agent)
+        with open(pre_match_launch_agent, "rb") as fh:
+            plist = plistlib.load(fh)
+        plist["ProgramArguments"].append("--live-refresh")
+        with open(pre_match_launch_agent, "wb") as fh:
+            plistlib.dump(plist, fh)
+        _write(root / "data/cache/analysis_snapshot.json", json.dumps({"matches": [], "data_quality": {}}))
+        _write(root / "data/cache/quota.json", '{"providers":{}}')
+
+        result = run_ops_check(
+            root=root,
+            public_base_url=None,
+            remote_host=None,
+            launch_agent_path=launch_agent,
+            local_log_paths=[],
+            pre_match_launch_agent_path=pre_match_launch_agent,
+            pre_match_log_paths=[],
+        )
+
+    assert result["ok"] is False
+    assert result["summary"]["errors"] == 1
+    assert result["local"]["pre_match"]["wiring"]["has_refresh_guard"] is False
+    assert result["local"]["pre_match"]["wiring"]["has_live_refresh"] is True
+
+
+def test_run_ops_check_allows_pre_match_live_refresh_with_guard():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs_dir = root / "logs"
+        launch_agent = logs_dir / "xin.celab.football.scheduled-publish.plist"
+        pre_match_launch_agent = logs_dir / "xin.celab.football.pre-match.plist"
+        _write_plist(launch_agent)
+        _write_pre_match_plist(pre_match_launch_agent)
+        with open(pre_match_launch_agent, "rb") as fh:
+            plist = plistlib.load(fh)
+        plist["ProgramArguments"] += [
+            "--refresh-guard",
+            "--refresh-after-lineups",
+            "--live-refresh",
+        ]
+        with open(pre_match_launch_agent, "wb") as fh:
+            plistlib.dump(plist, fh)
+        _write(root / "data/cache/analysis_snapshot.json", json.dumps({"matches": [], "data_quality": {}}))
+        _write(root / "data/cache/quota.json", '{"providers":{}}')
+
+        result = run_ops_check(
+            root=root,
+            public_base_url=None,
+            remote_host=None,
+            launch_agent_path=launch_agent,
+            local_log_paths=[],
+            pre_match_launch_agent_path=pre_match_launch_agent,
+            pre_match_log_paths=[],
+        )
+
+    assert result["ok"] is True
+    assert result["summary"]["errors"] == 0
+    wiring = result["local"]["pre_match"]["wiring"]
+    assert wiring["has_refresh_guard"] is True
+    assert wiring["has_live_refresh"] is True
 
 
 def test_run_ops_check_reports_finished_tally_and_results_consistency():
