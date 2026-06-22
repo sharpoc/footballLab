@@ -2,6 +2,12 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-22 P9.3 中超历史赛果来源与清洗实现计划
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-22-csl-results-source-cleaning.md`。
+- 计划分为严格 alias gate、CSL 赛果解析、双源校验与质量门槛、本地 dry-run probe CLI、文档与全量验证。
+- P9.3 实现范围保持本地只读/本地写 ignored 诊断，不接 `league_runner`，不解除 `club_rating_pending`，不联网执行、不使用密钥、不部署。
+
 ## 2026-06-22 P9.3 中超历史赛果来源与清洗设计
 
 - 新增设计文档：`docs/superpowers/specs/2026-06-22-csl-results-source-cleaning-design.md`。
