@@ -7,7 +7,7 @@
 - 新增 `worldcup.club_rating`：只读本地 `data/cache/club_results_<competition_id>.csv`，按 competition 独立解析、canonicalize 俱乐部名称并重放 Elo-style rating。
 - `worldcup.league_runner` 现在会尝试加载 club rating；缺文件、样本不足、CSV 无效或 fixture 球队缺 rating 时回退到 1500 占位，并在 `data_quality.club_rating` / `data_quality.warnings` 标记。
 - P9.2 不接真实中超历史数据源、不联网、不消耗 The Odds API quota、不部署、不更新 LaunchAgent、不改 `csl_2026.rating_policy`，强信号仍按 `club_rating_pending` 降级。
-- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 在 Task 2 后返回 `497/497 tests passed`；最终全量验证由 Task 4 继续执行。
+- 验证：最终标准入口 `PYTHONDONTWRITEBYTECODE=1 /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `497/497 tests passed`；`git diff --check` 通过；空 cache runner 按预期因缺少本地 odds cache 失败且未联网；临时 odds + club results cache smoke 输出 `club_rating.mode=sample_replay`、Elo home 1516 / away 1484。
 
 ## 2026-06-22 P9.1 俱乐部联赛本地 MVP 工作流
 
