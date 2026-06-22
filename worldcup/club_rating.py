@@ -31,6 +31,7 @@ class ClubResult:
 class ClubRating:
     code: str
     rating: int
+    matches: int
 
 
 @dataclass(frozen=True)
@@ -39,10 +40,14 @@ class ClubRatingPool:
     ratings: dict[str, ClubRating]
     matches_replayed: int
 
-    def rating_for(self, code: str) -> ClubRating | None:
+    def rating_for(self, code: str | None) -> ClubRating | None:
+        if code is None:
+            return None
         return self.ratings.get(code)
 
-    def to_elo_rating(self, code: str) -> EloRating | None:
+    def to_elo_rating(self, code: str | None) -> EloRating | None:
+        if code is None:
+            return None
         rating = self.ratings.get(code)
         if rating is None:
             return None
@@ -112,6 +117,7 @@ def replay_club_ratings(
     home_adv: float = DEFAULT_HOME_ADV,
 ) -> ClubRatingPool:
     ratings: dict[str, float] = {}
+    match_counts: dict[str, int] = {}
     matches_replayed = 0
     for result in sorted(results, key=lambda item: item.date):
         home_rating = ratings.get(result.home_canonical, initial)
@@ -127,10 +133,20 @@ def replay_club_ratings(
         )
         ratings[result.home_canonical] = new_home
         ratings[result.away_canonical] = new_away
+        match_counts[result.home_canonical] = (
+            match_counts.get(result.home_canonical, 0) + 1
+        )
+        match_counts[result.away_canonical] = (
+            match_counts.get(result.away_canonical, 0) + 1
+        )
         matches_replayed += 1
 
     pool_ratings = {
-        code: ClubRating(code=code, rating=int(round(value)))
+        code: ClubRating(
+            code=code,
+            rating=int(round(value)),
+            matches=match_counts.get(code, 0),
+        )
         for code, value in ratings.items()
     }
     return ClubRatingPool(
@@ -162,7 +178,7 @@ def load_club_rating_pool(
 
     try:
         results, skipped_rows = _load_club_results_csv_with_skipped(path, competition_id)
-    except OSError as exc:
+    except (OSError, csv.Error) as exc:
         return ClubRatingLoadResult(
             pool=None,
             quality=ClubRatingQuality(

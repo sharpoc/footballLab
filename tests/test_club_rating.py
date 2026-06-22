@@ -2,6 +2,7 @@ import csv
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import worldcup.club_rating as club_rating
 from worldcup.club_rating import (
     load_club_rating_pool,
     load_club_results_csv,
@@ -101,9 +102,13 @@ def test_replay_club_ratings_moves_winner_up_and_returns_pipeline_elo():
         assert shandong is not None
         assert shanghai.rating > 1500
         assert shandong.rating < 1500
+        assert shanghai.matches == 1
+        assert shandong.matches == 2
         assert pool.matches_replayed == 2
+        assert pool.rating_for(None) is None
         assert pool.to_elo_rating("shanghai_port").code == "shanghai_port"
         assert pool.to_elo_rating("shanghai_port").rating == shanghai.rating
+        assert pool.to_elo_rating(None) is None
         assert pool.to_elo_rating("unknown_club") is None
 
 
@@ -141,6 +146,28 @@ def test_load_club_rating_pool_reports_sample_too_small_and_invalid_rows():
         assert result.quality.teams_rated == 2
         assert result.quality.skipped_rows == 1
         assert result.quality.sample_too_small is True
+
+
+def test_load_club_rating_pool_reports_csv_parse_error_as_invalid():
+    with TemporaryDirectory() as tmp:
+        cache_dir = Path(tmp)
+        path = cache_dir / "club_results_csl_2026.csv"
+        _write_results(path, [_row("Shanghai Port", "Shandong Taishan", "2", "0")])
+
+        original_loader = club_rating._load_club_results_csv_with_skipped
+
+        def raise_csv_error(path: Path, competition_id: str):
+            raise csv.Error("malformed csv")
+
+        club_rating._load_club_results_csv_with_skipped = raise_csv_error
+        try:
+            result = load_club_rating_pool(cache_dir, "csl_2026")
+        finally:
+            club_rating._load_club_results_csv_with_skipped = original_loader
+
+        assert result.pool is None
+        assert result.quality.mode == "invalid"
+        assert result.quality.errors == ("malformed csv",)
 
 
 def test_load_club_rating_pool_replays_when_sample_threshold_is_met():
