@@ -5,6 +5,9 @@ from worldcup.ledger import (
     build_snapshot_change_items,
     build_signal_explanation,
     build_summary_metrics,
+    competition_id_for_match,
+    competition_label_for_match,
+    competition_options,
     derive_quality_status,
     format_market_label,
     format_percent,
@@ -157,6 +160,8 @@ def test_project_signal_rows_expands_signals_without_money_fields():
 
     assert len(rows) == 1
     assert rows[0]["matchup"] == "墨西哥 对 南非"
+    assert rows[0]["competition_id"] == "fifa_world_cup_2026"
+    assert rows[0]["competition_label"] == "2026 世界杯"
     assert rows[0]["kickoff_date"] == "2026 年 6 月 12 日 星期五"
     assert rows[0]["kickoff_time"] == "03:00"
     assert rows[0]["updated_time"] == "15:30"
@@ -180,6 +185,51 @@ def test_project_signal_rows_expands_signals_without_money_fields():
         assert "unit" not in row
 
 
+def test_competition_helpers_use_snapshot_block_and_keep_legacy_default():
+    snapshot = _snapshot()
+    match = snapshot["matches"][0]
+
+    assert competition_id_for_match(match) == "fifa_world_cup_2026"
+    assert competition_label_for_match(match) == "2026 世界杯"
+    assert competition_options(snapshot) == [
+        {"id": "fifa_world_cup_2026", "label": "2026 世界杯"}
+    ]
+
+    match["competition"] = {
+        "id": "csl_2026",
+        "name": "中超 2026",
+        "rating_policy": "club_rating_pending",
+    }
+
+    rows = project_signal_rows(snapshot)
+
+    assert competition_id_for_match(match) == "csl_2026"
+    assert competition_label_for_match(match) == "中超 2026"
+    assert competition_options(snapshot) == [
+        {"id": "csl_2026", "label": "中超 2026"},
+        {"id": "fifa_world_cup_2026", "label": "2026 世界杯"},
+    ]
+    assert rows[0]["competition_id"] == "csl_2026"
+    assert rows[0]["competition_label"] == "中超 2026"
+
+
+def test_competition_options_include_finished_match_competitions():
+    snapshot = {
+        "matches": [],
+        "finished": {
+            "matches": [
+                {
+                    "competition": {"id": "csl_2026", "name": "中超 2026"},
+                    "home_team": "Shanghai Port",
+                    "away_team": "Beijing Guoan",
+                }
+            ]
+        },
+    }
+
+    assert competition_options(snapshot) == [{"id": "csl_2026", "label": "中超 2026"}]
+
+
 def test_project_signal_rows_includes_detail_items_for_expandable_analysis():
     snapshot = _snapshot()
     snapshot["run"]["stale_sources"] = []
@@ -195,6 +245,43 @@ def test_project_signal_rows_includes_detail_items_for_expandable_analysis():
     assert details["更新时间"] == "赔率源更新：2026 年 6 月 9 日 星期二 15:30"
     assert details["下次更新"] == "T-1小时30分 阵容/伤停预热：2026 年 6 月 12 日 星期五 01:30"
     assert details["风险提示"] == "当前数据新鲜，未触发额外降级原因。"
+
+
+def test_project_signal_rows_surfaces_candidate_grade_without_counting_as_strong():
+    snapshot = _snapshot()
+    snapshot["run"]["stale_sources"] = []
+    signal = snapshot["matches"][0]["signals"][0]
+    signal.update(
+        {
+            "market_type": "AsianHandicap_90min",
+            "selection": "home_-1",
+            "line": -1.0,
+            "grade": "B",
+            "raw_grade": "S",
+            "edge": None,
+            "reasons": ["ah_market_edge_missing"],
+            "candidate_grade": "S-candidate",
+            "candidate_reasons": [
+                "official_grade_capped_by_ah_market_edge_missing",
+                "ah_validation_shadow_candidate_validated",
+            ],
+        }
+    )
+
+    rows = project_signal_rows(snapshot)
+    details = {item["label"]: item["value"] for item in rows[0]["detail_items"]}
+    metrics = build_summary_metrics(snapshot)
+
+    assert rows[0]["grade"] == "B"
+    assert rows[0]["candidate_grade"] == "S-candidate"
+    assert rows[0]["candidate_reasons"] == [
+        "official_grade_capped_by_ah_market_edge_missing",
+        "ah_validation_shadow_candidate_validated",
+    ]
+    assert details["候选等级"] == "S-candidate（研究候选，不计入正式 S/A）"
+    assert "AH shadow 验证通过" in details["候选依据"]
+    assert metrics["strong_signals"]["value"] == 0
+    assert metrics["watch_signals"]["value"] == 1
 
 
 def test_project_signal_rows_marks_finished_1x2_prediction_hit():

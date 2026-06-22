@@ -100,8 +100,8 @@ def test_build_preview_html_renders_research_ledger_surface():
     assert "更新规则" in html
     assert "按每场比赛独立调度" in html
     assert "常规：每天 1 次" in html
-    assert "临赛锚点：T-12小时 / T-6小时 / T-90分钟 / T-55分钟 / T-25分钟" in html
-    assert "低额度：每天 1 次，并保留 T-90 / T-55 / T-25" in html
+    assert "临赛锚点：T-12小时 / T-6小时 / T-90分钟 / T-55分钟 / T-35分钟 / T-25分钟" in html
+    assert "低额度：每天 1 次，并保留 T-90 / T-55 / T-35 / T-25" in html
     assert "赛前 7 天内" not in html
     assert "当前规则：常规" in html
     assert "下次计划：2026 年 6 月 8 日 星期一 20:00" in html
@@ -228,9 +228,9 @@ def test_build_preview_html_includes_filter_dom_accessibility_contract():
     assert 'data-date="2026 年 6 月 12 日 星期五"' in html
     assert 'data-date-iso="2026-06-12"' in html
     assert 'id="league-filter"' in html
-    assert '<option value="worldcup">世界杯</option>' in html
-    assert '<option value="csl">中超</option>' in html
-    assert 'data-league="worldcup"' in html
+    assert '<option value="all">全部赛事</option>' in html
+    assert '<option value="fifa_world_cup_2026">2026 世界杯</option>' in html
+    assert 'data-league="fifa_world_cup_2026"' in html
     assert "function getSelectedLeague()" in html
     assert "var selectedLeague = getSelectedLeague();" in html
     assert 'data-filter="strong"' in html
@@ -241,6 +241,28 @@ def test_build_preview_html_includes_filter_dom_accessibility_contract():
     assert 'aria-pressed="false"' in html
     assert "<caption>研究信号台账</caption>" in html
     assert '<th scope="col">对阵</th>' in html
+
+
+def test_build_preview_html_uses_snapshot_competition_labels_and_filter_values():
+    snapshot = _snapshot()
+    snapshot["matches"][0]["competition"] = {
+        "id": "csl_2026",
+        "name": "中超 2026",
+        "kind": "domestic_league",
+        "country": "CN",
+        "season": "2026",
+        "source": "theoddsapi",
+        "fixture_source": "odds_event_only",
+        "rating_policy": "club_rating_pending",
+    }
+
+    html = build_preview_html(snapshot)
+
+    assert "中超 2026" in html
+    assert 'data-league="csl_2026"' in html
+    assert '<option value="csl_2026">中超 2026</option>' in html
+    assert "club_rating_pending" not in html
+    assert "下注金额" not in html
 
 
 def _snapshot_with_two_matches_many_signals() -> dict:

@@ -1,10 +1,22 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from worldcup.collectors.eloratings import parse_elo_ratings, parse_elo_team_aliases
+from worldcup.collectors.openfootball import parse_openfootball_fixtures
+from worldcup.collectors.theoddsapi import parse_theoddsapi_events
 from worldcup.config import load_config
 from worldcup.ingest import build_ingest_payload
-from worldcup.local_runner import build_snapshot_from_cache, build_snapshot_from_probe, write_snapshot
+from worldcup.local_runner import (
+    _analysis_to_dict,
+    _signal_to_dict,
+    build_snapshot_from_cache,
+    build_snapshot_from_probe,
+    write_snapshot,
+)
+from worldcup.models import Grade, MarketType, Signal
+from worldcup.pipeline import analyze_match_input, build_match_inputs
 
 
 def _write_probe_files(root: Path) -> None:
@@ -118,6 +130,13 @@ def test_build_snapshot_from_probe_serializes_match_analysis():
         assert snapshot["matches"][0]["market"]["ou_2_5"]["last_update_at"] == "2026-06-08T03:00:00+00:00"
         assert snapshot["matches"][0]["model"]["combined_1x2"]["home"] > 0
         assert snapshot["matches"][0]["signals"]
+        ah_signal = next(
+            signal
+            for signal in snapshot["matches"][0]["signals"]
+            if signal["market_type"] == "AsianHandicap_90min" and signal["selection"].startswith("home_")
+        )
+        assert ah_signal["ah_validation_shadow"]["activation"] == "shadow_only"
+        assert "candidate_validated" in ah_signal["ah_validation_shadow"]
 
 
 def test_build_snapshot_serializes_probability_families_without_removing_legacy_model_fields():
@@ -138,6 +157,106 @@ def test_build_snapshot_serializes_probability_families_without_removing_legacy_
         assert set(families["families"]) == {"model_raw", "model_market_total", "market_only"}
         assert families["families"]["model_raw"]["provenance"]["activation"] == "shadow_only"
         assert families["families"]["market_only"]["provenance"]["allowed_for_value_signal"] is False
+
+
+def test_analysis_to_dict_serializes_ou_total_shadow_when_present():
+    with TemporaryDirectory() as tmp:
+        probe_dir = Path(tmp) / "probe"
+        _write_probe_files(probe_dir)
+        fixtures = parse_openfootball_fixtures(json.loads((probe_dir / "openfootball_2026.json").read_text()))
+        odds_events = parse_theoddsapi_events(json.loads((probe_dir / "theoddsapi_wc_odds.json").read_text()))
+        ratings = parse_elo_ratings((probe_dir / "elo_world.tsv").read_text())
+        aliases = parse_elo_team_aliases((probe_dir / "elo_teams.tsv").read_text())
+        match_input = build_match_inputs(fixtures, odds_events, ratings, aliases).inputs[0]
+
+        analysis = analyze_match_input(match_input, load_config())
+        match = _analysis_to_dict(analysis, [])
+
+        shadow = match["model"]["ou_total_shadow"]
+        assert shadow["schema_version"] == 1
+        assert shadow["activation"] == "shadow_only"
+        assert shadow["shadow_family"] == "model_raw"
+        assert shadow["same_market_total_anchor"] == analysis.same_market_total_anchor
+
+
+def test_analysis_to_dict_serializes_lineup_shadow_when_present():
+    with TemporaryDirectory() as tmp:
+        probe_dir = Path(tmp) / "probe"
+        _write_probe_files(probe_dir)
+        fixtures = parse_openfootball_fixtures(json.loads((probe_dir / "openfootball_2026.json").read_text()))
+        odds_events = parse_theoddsapi_events(json.loads((probe_dir / "theoddsapi_wc_odds.json").read_text()))
+        ratings = parse_elo_ratings((probe_dir / "elo_world.tsv").read_text())
+        aliases = parse_elo_team_aliases((probe_dir / "elo_teams.tsv").read_text())
+        match_input = build_match_inputs(fixtures, odds_events, ratings, aliases).inputs[0]
+        match_input = replace(
+            match_input,
+            lineup_context={
+                "confirmed_starting_xi": True,
+                "lineup_confirmed_at": "2026-06-08T03:30:00+00:00",
+                "lineup_confidence": 0.8,
+                "home_attack_delta": 0.08,
+            },
+        )
+
+        analysis = analyze_match_input(match_input, load_config())
+        match = _analysis_to_dict(analysis, [])
+
+        shadow = match["model"]["lineup_shadow"]
+        assert shadow["schema_version"] == 1
+        assert shadow["activation"] == "shadow_only"
+        assert shadow["lineup_confirmed_at"] == "2026-06-08T03:30:00+00:00"
+        assert shadow["post_information_odds_available"] is True
+
+
+def test_build_snapshot_from_cache_reads_manual_lineups_and_requests_post_information_odds():
+    with TemporaryDirectory() as tmp:
+        cache_dir = Path(tmp) / "cache"
+        _write_probe_files(cache_dir)
+        (cache_dir / "lineups_wc2026.json").write_text(
+            json.dumps(
+                {
+                    "provider": "manual_json",
+                    "matches": [
+                        {
+                            "source_match_no": 1,
+                            "kickoff_at_utc": "2026-06-11T19:00:00Z",
+                            "home_team": "Mexico",
+                            "away_team": "South Africa",
+                            "source": "fifa_match_centre",
+                            "confirmed_starting_xi": True,
+                            "lineup_confirmed_at": "2026-06-08T04:30:00Z",
+                            "lineup_confidence": 1.0,
+                            "home": {
+                                "starting": [{"name": "Mexico GK"}],
+                                "impact": {"attack_delta": 0.05},
+                            },
+                            "away": {
+                                "starting": [{"name": "South Africa GK"}],
+                                "impact": {"goalkeeper_delta": -0.03},
+                            },
+                        }
+                    ],
+                }
+            )
+        )
+
+        snapshot = build_snapshot_from_cache(
+            cache_dir,
+            snapshot_at="2026-06-08T05:00:00+00:00",
+        )
+
+        match = snapshot["matches"][0]
+        shadow = match["model"]["lineup_shadow"]
+        assert shadow["confirmed_starting_xi"] is True
+        assert shadow["lineup_confirmed_at"] == "2026-06-08T04:30:00+00:00"
+        assert shadow["odds_observed_at"] == "2026-06-08T04:00:00+00:00"
+        assert shadow["post_information_odds_available"] is False
+        assert shadow["lineups"]["home"]["starting_count"] == 1
+        assert shadow["lineups"]["away"]["starting"][0]["name"] == "South Africa GK"
+        assert match["refresh_plan"]["policy_reason"] == "post_information_odds_required"
+        assert match["refresh_plan"]["next_update_at"] == "2026-06-08T05:00:00+00:00"
+        assert snapshot["data_quality"]["lineups"]["provider"] == "manual_json"
+        assert snapshot["data_quality"]["lineups"]["confirmed"] == 1
 
 
 def test_build_snapshot_from_probe_serializes_dynamic_ou_line():
@@ -272,7 +391,6 @@ def test_invalid_odds_do_not_enter_market_aggregation_and_are_reported():
             }
         )
         odds_path.write_text(json.dumps(events))
-
         snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T00:00:00+00:00")
 
         data_quality = snapshot["data_quality"]
@@ -301,6 +419,44 @@ def test_invalid_odds_do_not_enter_market_aggregation_and_are_reported():
         assert market_1x2["market_probs"]
 
 
+def test_signal_to_dict_serializes_candidate_grade_when_present():
+    signal = Signal(
+        MarketType.AH,
+        "home_-1",
+        Grade.B,
+        0.09,
+        None,
+        "OK",
+        ["ah_market_edge_missing"],
+        -1.0,
+        Grade.S,
+        candidate_grade="S-candidate",
+        candidate_reasons=[
+            "official_grade_capped_by_ah_market_edge_missing",
+            "ah_validation_shadow_candidate_validated",
+        ],
+    )
+
+    out = _signal_to_dict(signal)
+
+    assert out["grade"] == "B"
+    assert out["raw_grade"] == "S"
+    assert out["candidate_grade"] == "S-candidate"
+    assert out["candidate_reasons"] == [
+        "official_grade_capped_by_ah_market_edge_missing",
+        "ah_validation_shadow_candidate_validated",
+    ]
+
+
+def test_signal_to_dict_omits_candidate_fields_when_absent():
+    signal = Signal(MarketType.X12, "home", Grade.S, 0.1, 0.05, "OK")
+
+    out = _signal_to_dict(signal)
+
+    assert "candidate_grade" not in out
+    assert "candidate_reasons" not in out
+
+
 def test_build_snapshot_from_probe_includes_main_ah_market():
     with TemporaryDirectory() as tmp:
         probe_dir = Path(tmp) / "probe"
@@ -327,3 +483,20 @@ def test_build_snapshot_from_probe_omits_ah_market_without_spreads():
         snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T00:00:00+00:00")
 
         assert "ah_main" not in snapshot["matches"][0]["market"]
+
+
+def test_worldcup_snapshot_matches_include_competition_block():
+    with TemporaryDirectory() as tmp:
+        probe_dir = Path(tmp) / "probe"
+        _write_probe_files(probe_dir)
+
+        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T00:00:00+00:00")
+
+        competition = snapshot["matches"][0]["competition"]
+        assert competition["id"] == "fifa_world_cup_2026"
+        assert competition["name"] == "2026 世界杯"
+        assert competition["kind"] == "tournament"
+        assert competition["fixture_source"] == "openfootball"
+        assert competition["rating_policy"] == "national_team_elo"
+        assert snapshot["matches"][0]["stage"] == "Matchday 1"
+        assert "signals" in snapshot["matches"][0]

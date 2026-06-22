@@ -10,6 +10,7 @@ from worldcup.ledger import (
     WEEKDAY_LABELS,
     build_finished_view,
     build_summary_metrics,
+    competition_options,
     derive_quality_status,
     project_signal_rows,
 )
@@ -269,6 +270,24 @@ def _date_filter_options(rows: list[dict[str, Any]]) -> str:
     return "".join(options)
 
 
+def _competition_filter_options(options: list[dict[str, Any]] | None) -> str:
+    rendered = ['<option value="all">全部赛事</option>']
+    seen: set[str] = set()
+    for option in options or []:
+        competition_id = str(option.get("id") or "").strip()
+        if not competition_id or competition_id in seen:
+            continue
+        seen.add(competition_id)
+        label = str(option.get("label") or competition_id).strip() or competition_id
+        rendered.append(
+            '<option value="{value}">{label}</option>'.format(
+                value=_text(competition_id),
+                label=_text(label),
+            )
+        )
+    return "".join(rendered)
+
+
 def _render_controls(rows: list[dict[str, Any]]) -> str:
     return """
     <section class="ledger-controls" aria-label="台账筛选">
@@ -293,6 +312,7 @@ def _render_controls(rows: list[dict[str, Any]]) -> str:
 def _render_workbench_filter_row(
     search_id: str = "ledger-search",
     league_id: str = "league-filter",
+    competitions: list[dict[str, Any]] | None = None,
 ) -> str:
     return """
       <div class="ledger-filter-row workbench-filter-row">
@@ -310,19 +330,16 @@ def _render_workbench_filter_row(
           <label class="league-label">
             <span>赛事筛选</span>
             <select id="{league_id}" data-league-filter-control autocomplete="off">
-              <option value="all">全部赛事</option>
-              <option value="worldcup">世界杯</option>
-              <option value="premier-league">英超</option>
-              <option value="la-liga">西甲</option>
-              <option value="serie-a">意甲</option>
-              <option value="bundesliga">德甲</option>
-              <option value="ligue-1">法甲</option>
-              <option value="csl">中超</option>
+              {competition_options}
             </select>
           </label>
         </div>
       </div>
-    """.format(search_id=_text(search_id), league_id=_text(league_id))
+    """.format(
+        search_id=_text(search_id),
+        league_id=_text(league_id),
+        competition_options=_competition_filter_options(competitions),
+    )
 
 
 def _render_view_tabs() -> str:
@@ -391,6 +408,7 @@ def _row_search_text(row: dict[str, Any]) -> str:
         row.get("source_matchup", ""),
         row.get("source_home_team", ""),
         row.get("source_away_team", ""),
+        row.get("competition_label", ""),
         row.get("kickoff_at_utc", ""),
         row.get("kickoff_date", ""),
         row.get("kickoff_time", ""),
@@ -600,6 +618,8 @@ def _group_signal_rows_by_match(rows: list[dict[str, Any]]) -> list[dict[str, An
                 "away_team": row.get("away_team"),
                 "source_home_team": row.get("source_home_team"),
                 "source_away_team": row.get("source_away_team"),
+                "competition_id": row.get("competition_id"),
+                "competition_label": row.get("competition_label"),
                 "stage_group": row.get("stage_group"),
                 "kickoff_at_utc": row.get("kickoff_at_utc"),
                 "kickoff_date": row.get("kickoff_date"),
@@ -799,7 +819,7 @@ def _render_workbench_signal_rows(
             'aria-expanded="false" aria-controls="{detail_id}" data-workbench-signal-detail="{detail_id}" '
             'data-workbench-market="{market_bucket}" '
             'data-grade="{grade_bucket}" data-date="{date}" data-date-iso="{date_iso}" '
-            'data-league="worldcup" data-search="{search}">'
+            'data-league="{competition_id}" data-search="{search}">'
             "<td>{market}</td>"
             '<td><span class="grade-pill {grade_class}">{grade}</span></td>'
             "<td>{prediction}</td>"
@@ -818,6 +838,7 @@ def _render_workbench_signal_rows(
                 grade_bucket=_text(_grade_bucket(signal.get("grade"))),
                 date=_text(signal.get("kickoff_date")),
                 date_iso=_text(_row_date_iso(signal)),
+                competition_id=_text(signal.get("competition_id")),
                 search=_text(_row_search_text(signal)),
                 market=_text(signal.get("market_label")),
                 prediction=_render_prediction_cell(signal),
@@ -846,7 +867,10 @@ def _render_workbench_warning(signals: list[dict[str, Any]]) -> str:
     )
 
 
-def _render_workbench_ledger(rows: list[dict[str, Any]]) -> str:
+def _render_workbench_ledger(
+    rows: list[dict[str, Any]],
+    competitions: list[dict[str, Any]] | None = None,
+) -> str:
     if not rows:
         return """
         <section class="workbench-shell premium-intelligence-workbench">
@@ -863,7 +887,7 @@ def _render_workbench_ledger(rows: list[dict[str, Any]]) -> str:
             </div>
           </section>
         </section>
-        """.format(workbench_filters=_render_workbench_filter_row())
+        """.format(workbench_filters=_render_workbench_filter_row(competitions=competitions))
 
     groups = _group_signal_rows_by_match(rows)
     list_rows = []
@@ -898,7 +922,7 @@ def _render_workbench_ledger(rows: list[dict[str, Any]]) -> str:
             '<tr class="match-list-row{active}" role="button" tabindex="0" aria-expanded="{expanded}" '
             'data-workbench-match-target="{detail_id}" data-signal-count="{signal_count}" '
             'data-grade="{grade_bucket}" data-grade-buckets="{grade_buckets}" '
-            'data-date="{date}" data-date-iso="{date_iso}" data-league="worldcup" data-search="{search}">'
+            'data-date="{date}" data-date-iso="{date_iso}" data-league="{competition_id}" data-search="{search}">'
             "<td>{kickoff}</td>"
             "<td><strong>{matchup}</strong></td>"
             '<td><span class="grade-pill {grade_class}">{grade}</span></td>'
@@ -914,10 +938,17 @@ def _render_workbench_ledger(rows: list[dict[str, Any]]) -> str:
                 grade_buckets=_text(" ".join(group["grade_buckets"])),
                 date=_text(group.get("kickoff_date")),
                 date_iso=_text(group.get("kickoff_date_iso")),
+                competition_id=_text(group.get("competition_id")),
                 search=_text(group.get("search_text")),
                 kickoff=_text(group.get("kickoff_time")),
                 matchup=matchup_html,
-                stage_group=_text(group.get("stage_group")),
+                stage_group=_text(
+                    " · ".join(
+                        str(part)
+                        for part in (group.get("competition_label"), group.get("stage_group"))
+                        if part
+                    )
+                ),
                 grade_class=_text(grade_class),
                 grade=_text(grade),
                 top_value=_text(_signal_display_value(top)),
@@ -981,7 +1012,7 @@ def _render_workbench_ledger(rows: list[dict[str, Any]]) -> str:
     </section>
     """.format(
         date_strip=_render_date_strip(groups),
-        workbench_filters=_render_workbench_filter_row(),
+        workbench_filters=_render_workbench_filter_row(competitions=competitions),
         match_count=_text(len(groups)),
         list_rows="".join(list_rows),
         detail_panels="".join(detail_panels),
@@ -1026,7 +1057,7 @@ def _render_match_grouped_table(rows: list[dict[str, Any]]) -> str:
             for signal in signals:
                 child_rows.append(
                     '<tr class="match-signal-row" data-grade="{grade_bucket}" '
-                    'data-date="{date}" data-date-iso="{date_iso}" data-league="worldcup" '
+                    'data-date="{date}" data-date-iso="{date_iso}" data-league="{competition_id}" '
                     'data-search="{search}">'
                     "<td>{market}</td><td>{prediction}</td><td>{model_prob}</td>"
                     "<td>{market_prob}</td><td><strong>{ev}</strong><span>{edge}</span></td>"
@@ -1036,6 +1067,7 @@ def _render_match_grouped_table(rows: list[dict[str, Any]]) -> str:
                         grade_bucket=_text(_grade_bucket(signal.get("grade"))),
                         date=_text(group.get("kickoff_date")),
                         date_iso=_text(group.get("kickoff_date_iso")),
+                        competition_id=_text(signal.get("competition_id")),
                         search=_text(_row_search_text(signal)),
                         market=_text(signal.get("market_label")),
                         prediction=_render_prediction_cell(signal),
@@ -1054,7 +1086,7 @@ def _render_match_grouped_table(rows: list[dict[str, Any]]) -> str:
                 'aria-controls="{detail_id}" data-match-detail-target="{detail_id}" '
                 'data-signal-count="{signal_count}" data-grade="{grade_bucket}" '
                 'data-grade-buckets="{grade_buckets}" data-date="{date}" data-date-iso="{date_iso}" '
-                'data-league="worldcup" data-search="{search}">'
+                'data-league="{competition_id}" data-search="{search}">'
                 "<td><strong>{matchup}</strong><span>{stage_group}</span></td>"
                 "<td>{kickoff}</td>"
                 "<td><strong>{updated}</strong><span>{updated_label}</span></td>"
@@ -1071,9 +1103,16 @@ def _render_match_grouped_table(rows: list[dict[str, Any]]) -> str:
                     grade_buckets=_text(" ".join(group["grade_buckets"])),
                     date=_text(group.get("kickoff_date")),
                     date_iso=_text(group.get("kickoff_date_iso")),
+                    competition_id=_text(group.get("competition_id")),
                     search=_text(group.get("search_text")),
                     matchup=_text(group.get("matchup")),
-                    stage_group=_text(group.get("stage_group")),
+                    stage_group=_text(
+                        " · ".join(
+                            str(part)
+                            for part in (group.get("competition_label"), group.get("stage_group"))
+                            if part
+                        )
+                    ),
                     kickoff=_text(group.get("kickoff_time")),
                     updated=_text(group.get("updated_time")),
                     updated_label=_text(group.get("updated_label")),
@@ -1174,7 +1213,7 @@ def _render_signal_table(rows: list[dict[str, Any]]) -> str:
                 "<tr class=\"signal-row\" role=\"button\" tabindex=\"0\" "
                 "aria-expanded=\"false\" aria-controls=\"{detail_id}\" "
                 "data-detail-target=\"{detail_id}\" data-grade=\"{grade_bucket}\" "
-                "data-date=\"{date}\" data-date-iso=\"{date_iso}\" data-league=\"worldcup\" data-search=\"{search}\">"
+                "data-date=\"{date}\" data-date-iso=\"{date_iso}\" data-league=\"{competition_id}\" data-search=\"{search}\">"
                 "<td><strong>{matchup}</strong><span>{stage_group}</span></td>"
                 "<td>{kickoff}</td>"
                 "<td><strong>{updated}</strong><span>{updated_label}</span></td>"
@@ -1192,9 +1231,16 @@ def _render_signal_table(rows: list[dict[str, Any]]) -> str:
                     grade_bucket=_text(grade_bucket),
                     date=_text(kickoff_date),
                     date_iso=_text(_row_date_iso(row)),
+                    competition_id=_text(row.get("competition_id")),
                     search=_text(search_text),
                     matchup=_text(row.get("matchup")),
-                    stage_group=_text(row.get("stage_group")),
+                    stage_group=_text(
+                        " · ".join(
+                            str(part)
+                            for part in (row.get("competition_label"), row.get("stage_group"))
+                            if part
+                        )
+                    ),
                     kickoff=_text(row.get("kickoff_time") or row.get("kickoff_at_utc")),
                     updated=_text(row.get("updated_time")),
                     updated_label=_text(row.get("updated_label")),
@@ -1251,7 +1297,10 @@ def _render_signal_table(rows: list[dict[str, Any]]) -> str:
     """.format(rows="\n".join(table_rows))
 
 
-def _render_live_ledger(rows: list[dict[str, Any]]) -> str:
+def _render_live_ledger(
+    rows: list[dict[str, Any]],
+    competitions: list[dict[str, Any]] | None = None,
+) -> str:
     return """
     <section class="live-ledger">
       <div class="ledger-mode-bar legacy-mode-bar" aria-hidden="true">
@@ -1271,7 +1320,7 @@ def _render_live_ledger(rows: list[dict[str, Any]]) -> str:
       </div>
     </section>
     """.format(
-        workbench=_render_workbench_ledger(rows),
+        workbench=_render_workbench_ledger(rows, competitions=competitions),
         match_table=_render_match_grouped_table(rows),
         signal_table=_render_signal_table(rows),
     )
@@ -1297,6 +1346,7 @@ def _policy_reason_label(reason: Any) -> str:
         "pre_6h_checkpoint": "T-6小时",
         "pre_90m_lineup_warmup": "T-1小时30分",
         "pre_55m_lineup_main": "T-55分钟",
+        "pre_35m_lineup_confirm": "T-35分钟",
         "pre_25m_final_check": "T-25分钟",
     }
     return labels.get(str(reason or ""), "按当前调度策略")
@@ -1369,8 +1419,8 @@ def _render_update_policy(snapshot: dict[str, Any]) -> str:
       <h2>更新规则</h2>
       <ul class="policy-list">
         <li>常规：每天 1 次</li>
-        <li>临赛锚点：T-12小时 / T-6小时 / T-90分钟 / T-55分钟 / T-25分钟</li>
-        <li>低额度：每天 1 次，并保留 T-90 / T-55 / T-25</li>
+        <li>临赛锚点：T-12小时 / T-6小时 / T-90分钟 / T-55分钟 / T-35分钟 / T-25分钟</li>
+        <li>低额度：每天 1 次，并保留 T-90 / T-55 / T-35 / T-25</li>
         <li>额度耗尽：暂停自动刷新</li>
       </ul>
       <p><strong>当前模式：按每场比赛独立调度</strong></p>
@@ -1492,6 +1542,7 @@ def _finished_search_text(match: dict[str, Any]) -> str:
     parts = [
         match.get("matchup", ""),
         match.get("score_label", ""),
+        match.get("competition_label", ""),
         match.get("stage_group", ""),
     ]
     for item in match.get("detail_signals") or []:
@@ -1542,6 +1593,8 @@ def _history_signal_row(
         "source_matchup": match.get("matchup"),
         "source_home_team": match.get("source_home_team"),
         "source_away_team": match.get("source_away_team"),
+        "competition_id": match.get("competition_id"),
+        "competition_label": match.get("competition_label"),
         "stage_group": match.get("stage_group"),
         "market_label": item.get("market_label"),
         "prediction_result": prediction_result,
@@ -1587,6 +1640,8 @@ def _history_workbench_groups(view: dict[str, Any]) -> list[dict[str, Any]]:
                     "away_team": match.get("away_team"),
                     "source_home_team": match.get("source_home_team"),
                     "source_away_team": match.get("source_away_team"),
+                    "competition_id": match.get("competition_id"),
+                    "competition_label": match.get("competition_label"),
                     "stage_group": match.get("stage_group"),
                     "kickoff_at_utc": match.get("kickoff_at_utc"),
                     "kickoff_date": day.get("date_label"),
@@ -1628,6 +1683,7 @@ def _render_history_review_notes(summary: dict[str, Any] | None) -> str:
 def _render_history_workbench(
     groups: list[dict[str, Any]],
     summary: dict[str, Any] | None = None,
+    competitions: list[dict[str, Any]] | None = None,
 ) -> str:
     review_notes = _render_history_review_notes(summary)
     if not groups:
@@ -1644,6 +1700,7 @@ def _render_history_workbench(
             filters=_render_workbench_filter_row(
                 search_id="history-ledger-search",
                 league_id="history-league-filter",
+                competitions=competitions,
             ),
             review_notes=review_notes,
         )
@@ -1680,7 +1737,7 @@ def _render_history_workbench(
             'aria-expanded="{expanded}" data-workbench-match-target="{detail_id}" '
             'data-signal-count="{signal_count}" data-grade="{grade_bucket}" '
             'data-grade-buckets="{grade_buckets}" data-date="{date}" data-date-iso="{date_iso}" '
-            'data-league="worldcup" data-search="{search}">'
+            'data-league="{competition_id}" data-search="{search}">'
             "<td>{kickoff}</td><td><strong>{matchup}</strong></td>"
             '<td><span class="grade-pill {grade_class}">{grade}</span></td>'
             "<td>{stage_group}</td><td><strong>{signal_count}条信号</strong></td>"
@@ -1693,10 +1750,17 @@ def _render_history_workbench(
                 grade_buckets=_text(" ".join(group["grade_buckets"])),
                 date=_text(group.get("kickoff_date")),
                 date_iso=_text(group.get("kickoff_date_iso")),
+                competition_id=_text(group.get("competition_id")),
                 search=_text(group.get("search_text")),
                 kickoff=_text(group.get("kickoff_time")),
                 matchup=matchup_html,
-                stage_group=_text(group.get("stage_group")),
+                stage_group=_text(
+                    " · ".join(
+                        str(part)
+                        for part in (group.get("competition_label"), group.get("stage_group"))
+                        if part
+                    )
+                ),
                 grade_class=_text(grade_class),
                 grade=_text(grade or "—"),
                 score=_text(group.get("score_label")),
@@ -1772,6 +1836,7 @@ def _render_history_workbench(
         filters=_render_workbench_filter_row(
             search_id="history-ledger-search",
             league_id="history-league-filter",
+            competitions=competitions,
         ),
         review_notes=review_notes,
         match_count=_text(len(groups)),
@@ -1780,9 +1845,16 @@ def _render_history_workbench(
     )
 
 
-def _render_finished_section(snapshot: dict[str, Any]) -> str:
+def _render_finished_section(
+    snapshot: dict[str, Any],
+    competitions: list[dict[str, Any]] | None = None,
+) -> str:
     view = build_finished_view(snapshot)
-    return _render_history_workbench(_history_workbench_groups(view), view.get("summary"))
+    return _render_history_workbench(
+        _history_workbench_groups(view),
+        view.get("summary"),
+        competitions=competitions,
+    )
 
 
 def build_research_ledger_html(
@@ -1791,6 +1863,7 @@ def build_research_ledger_html(
 ) -> str:
     snapshot_at = _format_snapshot_time(snapshot.get("snapshot_at"))
     signal_rows = project_signal_rows(snapshot, previous_snapshot=previous_snapshot)
+    competitions = competition_options(snapshot)
     return """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -3549,7 +3622,7 @@ def build_research_ledger_html(
     view_tabs=_render_view_tabs(),
         summary=_render_summary(snapshot),
         controls=_render_controls(signal_rows),
-        table=_render_live_ledger(signal_rows),
-        finished_section=_render_finished_section(snapshot),
+        table=_render_live_ledger(signal_rows, competitions=competitions),
+        finished_section=_render_finished_section(snapshot, competitions=competitions),
         right_rail=_render_right_rail(snapshot),
     )

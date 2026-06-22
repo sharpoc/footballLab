@@ -17,6 +17,8 @@ WEAK_GRADES = {"C", "D"}
 DEFAULT_CHANGE_CFG = {"ev_change": 0.03, "odds_move": 0.05}
 PROB_CHANGE_THRESHOLD = 0.01
 EDGE_CHANGE_THRESHOLD = 0.01
+DEFAULT_COMPETITION_ID = "fifa_world_cup_2026"
+DEFAULT_COMPETITION_LABEL = "2026 世界杯"
 TREND_MARKET_KEYS = {
     "1X2_90min": "1x2",
     "OverUnder_90min": "ou_2_5",
@@ -270,6 +272,47 @@ def _format_stage_group(stage: Any, group: Any) -> str:
     return " | ".join(part for part in [_format_stage(stage), _format_group(group)] if part)
 
 
+def _competition_block(match: dict[str, Any]) -> dict[str, Any]:
+    competition = match.get("competition")
+    return competition if isinstance(competition, dict) else {}
+
+
+def competition_id_for_match(match: dict[str, Any]) -> str:
+    competition_id = str(_competition_block(match).get("id") or "").strip()
+    return competition_id or DEFAULT_COMPETITION_ID
+
+
+def competition_label_for_match(match: dict[str, Any]) -> str:
+    competition = _competition_block(match)
+    label = str(competition.get("name") or competition.get("label") or "").strip()
+    return label or DEFAULT_COMPETITION_LABEL
+
+
+def competition_options(snapshot: dict[str, Any]) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add_match(match: dict[str, Any]) -> None:
+        competition_id = competition_id_for_match(match)
+        if competition_id in seen:
+            return
+        seen.add(competition_id)
+        options.append(
+            {
+                "id": competition_id,
+                "label": competition_label_for_match(match),
+            }
+        )
+
+    for match in snapshot.get("matches") or []:
+        add_match(match)
+    for match in ((snapshot.get("finished") or {}).get("matches")) or []:
+        add_match(match)
+    if not options:
+        options.append({"id": DEFAULT_COMPETITION_ID, "label": DEFAULT_COMPETITION_LABEL})
+    return options
+
+
 def derive_quality_status(snapshot: dict[str, Any]) -> dict[str, Any]:
     reasons: list[str] = []
     if _quality_values(snapshot, "source_errors"):
@@ -323,6 +366,15 @@ def _signal_risk_note(signal: dict[str, Any], stale: bool) -> str:
     if not notes:
         return "当前数据新鲜，未触发额外降级原因。"
     return "；".join(_dedupe_stable(notes)) + "。"
+
+
+def _candidate_reason_labels(reasons: Any) -> str:
+    labels = {
+        "official_grade_capped_by_ah_market_edge_missing": "正式等级仍受 AH market edge 缺口限制",
+        "ah_validation_shadow_candidate_validated": "AH shadow 验证通过",
+    }
+    rendered = [labels.get(str(reason), str(reason)) for reason in _as_list(reasons)]
+    return "；".join(_dedupe_stable(rendered)) if rendered else EM_DASH
 
 
 def _build_signal_detail_items(
@@ -771,6 +823,8 @@ def project_signal_rows(
         refresh_plan = _format_refresh_plan(match.get("refresh_plan"))
         home_team = match.get("home_team", "")
         away_team = match.get("away_team", "")
+        competition_id = competition_id_for_match(match)
+        competition_label = competition_label_for_match(match)
         for signal in match.get("signals") or []:
             signal_key = _signal_identity(signal)
             market_type = signal.get("market_type")
@@ -799,6 +853,8 @@ def project_signal_rows(
                 "away_team": format_team_label(away_team),
                 "source_home_team": home_team,
                 "source_away_team": away_team,
+                "competition_id": competition_id,
+                "competition_label": competition_label,
                 "kickoff_at_utc": kickoff_at_utc,
                 "kickoff_date": _format_kickoff_date(display_kickoff),
                 "kickoff_time": display_kickoff.strftime("%H:%M") if display_kickoff else EM_DASH,
@@ -816,6 +872,8 @@ def project_signal_rows(
                 "edge": edge,
                 "ev": ev,
                 "grade": grade,
+                "candidate_grade": signal.get("candidate_grade"),
+                "candidate_reasons": list(signal.get("candidate_reasons") or []),
                 "status": status,
                 "freshness": freshness,
                 "stale": stale,
@@ -842,6 +900,19 @@ def project_signal_rows(
             row["detail_items"].append(
                 {"label": "下次更新", "value": row["next_update_detail"]}
             )
+            if row.get("candidate_grade"):
+                row["detail_items"].append(
+                    {
+                        "label": "候选等级",
+                        "value": f"{row['candidate_grade']}（研究候选，不计入正式 S/A）",
+                    }
+                )
+                row["detail_items"].append(
+                    {
+                        "label": "候选依据",
+                        "value": _candidate_reason_labels(row.get("candidate_reasons")),
+                    }
+                )
             if prediction_result:
                 row["detail_items"].append(
                     {
@@ -965,6 +1036,8 @@ def build_finished_view(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "away_team": format_team_label(record.get("away_team")),
                 "source_home_team": record.get("home_team"),
                 "source_away_team": record.get("away_team"),
+                "competition_id": competition_id_for_match(record),
+                "competition_label": competition_label_for_match(record),
                 "matchup": format_matchup_label(record.get("home_team"), record.get("away_team")),
                 "score_label": f"{home_score} - {away_score}",
                 "stage_group": _format_stage_group(record.get("stage"), record.get("group")),

@@ -2,22 +2,40 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from worldcup.collectors.eloratings import parse_elo_ratings, parse_elo_team_aliases
+from worldcup.collectors.lineups import parse_lineup_contexts
 from worldcup.collectors.models import MatchResult
 from worldcup.collectors.openfootball import parse_openfootball_fixtures, parse_openfootball_results
 from worldcup.collectors.theoddsapi import parse_theoddsapi_events
+from worldcup.competitions import competition_block
 from worldcup.config import load_config
-from worldcup.models import Signal
+from worldcup.models import Grade, Signal
 from worldcup.pipeline import analyze_match_input, build_match_inputs, generate_value_signals
 from worldcup.scheduler import build_match_refresh_decision, build_run_metadata, make_run_id
 
 
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_lineup_contexts(input_dir: Path) -> tuple[list, dict[str, Any] | None]:
+    path = input_dir / "lineups_wc2026.json"
+    if not path.exists():
+        return [], None
+    raw = _read_json(path)
+    contexts = parse_lineup_contexts(raw)
+    providers = sorted({context.provider for context in contexts})
+    return contexts, {
+        "provider": providers[0] if len(providers) == 1 else "mixed",
+        "path": str(path),
+        "contexts": len(contexts),
+        "confirmed": sum(1 for context in contexts if context.confirmed_starting_xi),
+    }
 
 
 def _now_utc_iso() -> str:
@@ -43,7 +61,26 @@ def _signal_to_dict(signal: Signal) -> dict[str, Any]:
         out["same_market_total_anchor"] = signal.same_market_total_anchor
     if signal.ah_market_validated is not None:
         out["ah_market_validated"] = signal.ah_market_validated
+    if signal.ah_validation_shadow is not None:
+        out["ah_validation_shadow"] = signal.ah_validation_shadow
+    if signal.candidate_grade is not None:
+        out["candidate_grade"] = signal.candidate_grade
+    if signal.candidate_reasons:
+        out["candidate_reasons"] = signal.candidate_reasons
     return out
+
+
+def cap_signals_for_pending_club_rating(signals: list[Signal]) -> list[Signal]:
+    capped: list[Signal] = []
+    for signal in signals:
+        if signal.grade in (Grade.S, Grade.A):
+            reasons = list(signal.reasons)
+            if "club_rating_pending" not in reasons:
+                reasons.append("club_rating_pending")
+            capped.append(replace(signal, grade=Grade.B, reasons=reasons))
+        else:
+            capped.append(signal)
+    return capped
 
 
 def _latest_quote_update_iso(analysis) -> str | None:
@@ -77,6 +114,7 @@ def _analysis_to_dict(
     analysis,
     signals: list[Signal],
     result_index: dict[tuple[str, str | None, str | None], MatchResult] | None = None,
+    competition_id: str = "fifa_world_cup_2026",
 ) -> dict[str, Any]:
     match_input = analysis.match_input
     fixture = match_input.fixture
@@ -89,6 +127,7 @@ def _analysis_to_dict(
     match = {
         "source_event_id": match_input.odds_event.source_event_id,
         "source_match_no": fixture.source_match_no,
+        "competition": competition_block(competition_id),
         "kickoff_at_utc": fixture.kickoff_at_utc.isoformat(),
         "stage": fixture.stage,
         "group": fixture.group,
@@ -124,6 +163,10 @@ def _analysis_to_dict(
         "market": market,
         "signals": [_signal_to_dict(signal) for signal in signals],
     }
+    if analysis.ou_total_shadow is not None:
+        match["model"]["ou_total_shadow"] = analysis.ou_total_shadow
+    if analysis.lineup_shadow is not None:
+        match["model"]["lineup_shadow"] = analysis.lineup_shadow
     result = (result_index or {}).get(
         _result_key(fixture.kickoff_at_utc, fixture.home_canonical, fixture.away_canonical)
     )
@@ -237,9 +280,16 @@ def build_snapshot_from_probe(
     }
     odds_payload_path = probe_path / "theoddsapi_wc_odds.json"
     odds_events = parse_theoddsapi_events(_read_json(odds_payload_path))
+    lineup_contexts, lineup_quality = _load_lineup_contexts(probe_path)
     elo_ratings = parse_elo_ratings((probe_path / "elo_world.tsv").read_text(encoding="utf-8"))
     elo_aliases = parse_elo_team_aliases((probe_path / "elo_teams.tsv").read_text(encoding="utf-8"))
-    build_result = build_match_inputs(fixtures, odds_events, elo_ratings, elo_aliases)
+    build_result = build_match_inputs(
+        fixtures,
+        odds_events,
+        elo_ratings,
+        elo_aliases,
+        lineup_contexts=lineup_contexts,
+    )
 
     matches = []
     for match_input in build_result.inputs:
@@ -258,6 +308,8 @@ def build_snapshot_from_probe(
         "time_mismatches": build_result.time_mismatches,
         **_invalid_odds_quality(odds_events, odds_payload_path),
     }
+    if lineup_quality is not None:
+        data_quality["lineups"] = lineup_quality
     if stale_source_list:
         data_quality["stale_sources"] = stale_source_list
     return {
@@ -266,6 +318,7 @@ def build_snapshot_from_probe(
         "counts": {
             "fixtures": len(fixtures),
             "odds_events": len(odds_events),
+            "lineup_contexts": len(lineup_contexts),
             "match_inputs": len(build_result.inputs),
             "matches": len(matches),
         },

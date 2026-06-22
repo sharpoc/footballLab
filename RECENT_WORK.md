@@ -2,6 +2,211 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-22 P9.1 俱乐部联赛本地 MVP 工作流
+
+- 新增俱乐部联赛 implementation plan：`docs/superpowers/plans/2026-06-22-domestic-league-adapters.md`。
+- 已实现 Phase 0/1/2 本地基础：competition registry、sports catalog probe、club aliases、league odds adapter、World Cup competition block、CSL local league runner、ledger competition labels/filter。
+- final review 后补齐 CSL league snapshot 的 `invalid_odds_count` / `invalid_odds_examples` 审计，避免脏赔率只被隔离但不进入 `data_quality`；`worldcup.league_runner` CLI 同时支持 `--competition` 与 `--competition-id`。
+- 当前未联网、未消耗 The Odds API quota、未上线、未部署、未提交/推送；任何 live odds 探测、scheduled publish、ECS ingest 或 LaunchAgent 更新都需要单独确认。
+- 验证：最终标准入口 `PYTHONDONTWRITEBYTECODE=1 /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `485/485 tests passed`；`git diff --check` 通过；空缓存 `python3 -m worldcup.league_runner --competition csl_2026` 按预期因缺少 `theoddsapi_csl_2026_odds.json` 本地失败，未联网。
+
+## 2026-06-22 P9 俱乐部联赛多联赛接入设计
+
+- 新增 `docs/superpowers/specs/2026-06-22-domestic-league-adapters-design.md`，明确中超作为首个俱乐部联赛 adapter，英超作为第二个 adapter 验证，西甲/德甲/意甲/法甲作为后续平滑扩展约束。
+- 用户已确认该设计；新增 implementation plan：`docs/superpowers/plans/2026-06-22-domestic-league-adapters.md`，覆盖 Phase 0 sports key 只读探测、Phase 1 多联赛底座、Phase 2 中超本地 MVP。
+- 设计建议先做 competition registry、snapshot `competition` block、The Odds API sports key 只读探测、俱乐部 alias 和中超未来 7-14 天本地 snapshot。
+- 设计明确俱乐部联赛不能复用国家队 Elo；中超初期若缺少 `club_rating`，强信号必须降级或仅作为观察/候选，后续再用历史赛果重放 Elo 建立 `club_rating`。
+- 本轮只写设计文档和近期记录；未改代码、未联网探测、未执行 live refresh、未消耗 The Odds API quota、未改 LaunchAgent、未发布线上 snapshot、未部署、未提交/推送。
+
+## 2026-06-22 P8.14 ops_check 增加 refresh guard 巡检
+
+- `worldcup.ops_check` 的 `local.pre_match.wiring` 新增 `has_refresh_guard`，用于显示 pre-match LaunchAgent 是否带 `--refresh-guard`。
+- error 规则改为只拦截裸 `--live-refresh`：如果 `has_live_refresh=true` 且 `has_refresh_guard!=true`，巡检计入 error；带 guard 的未来 live-refresh 配置不因该项误报。
+- 本轮只改本地巡检代码、测试和文档，未改已安装 LaunchAgent，未 reload/kickstart launchd，未执行 live refresh，未消耗 The Odds API quota，未发通知，未发布线上 snapshot。
+- TDD 覆盖：先新增裸 live-refresh 报错、带 guard live-refresh 通过、wiring 输出 `has_refresh_guard` 的红灯测试，实施后标准 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `464/464 tests passed`。
+
+## 2026-06-22 P8.13 增加 post-lineup refresh guard
+
+- `worldcup.pre_match_runner` 新增 `--refresh-guard` 与 `--min-refresh-quota`：只有出现 `newly_confirmed > 0` 时，才会调用 scheduled refresh 的 dry-run 决策，返回 `guard.status`、quota、policy reason 和 `next_due_at`。
+- guard 默认不刷新 odds、不消耗 The Odds API quota；如果同时启用 `--refresh-after-lineups --live-refresh`，且 quota 未知或低于 `--min-refresh-quota`，runner 返回 `post_information_refresh_blocked`，不会调用 live refresh。
+- `worldcup.pre_match_launch_agent --allow-live-refresh` 生成的 plist 草案现在会自动带 `--refresh-guard`；本轮未改已安装的 `~/Library/LaunchAgents/xin.celab.football.pre-match.plist`，未 reload/kickstart launchd。
+- dry-run smoke：`python3 -m worldcup.pre_match_launch_agent --allow-live-refresh` 输出 ProgramArguments 包含 `--refresh-guard --refresh-after-lineups --live-refresh`，`status=dry_run`、`loaded=false`；`python3 -m worldcup.pre_match_runner --refresh-guard` 在无新 confirmed lineup 时返回 `post_information_refresh.status=skipped`。
+- 本轮未执行 live refresh、未消耗 The Odds API quota、未发送通知、未发布线上 snapshot、未部署、未提交/推送。
+- TDD 覆盖：先新增 refresh guard dry-run、quota 耗尽阻断 live refresh、live-refresh plist 生成带 guard 的红灯测试，实施后标准 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `463/463 tests passed`。
+
+## 2026-06-22 P8.12 ops_check 增加 pre-match / lineup audit 巡检
+
+- `worldcup.ops_check` 新增 `local.pre_match`：读取 `xin.celab.football.pre-match` LaunchAgent、扫描 `pre-match.out.log` / `pre-match.err.log`、读取 `data/local/diagnostics/lineup_audit.json` 摘要。
+- `local.pre_match.wiring` 显示 `--live-lineups`、`--write-lineups`、`--notify-missing`、`--notify-audit`、`--refresh-after-lineups`、`--live-refresh` 是否存在；若 pre-match plist 误带 `--live-refresh`，巡检会计入 error。
+- CLI 新增 `--pre-match-launch-agent`、`--pre-match-log`、`--lineup-audit` 参数；默认仍只读本机文件，不触发 FIFA 抓取、不发通知、不刷新 odds、不消耗 The Odds API quota。
+- 本机只读 smoke：`python3 -m worldcup.ops_check --no-public --no-remote` 返回 `ok=true`、`errors=0`、`warnings=3`；`local.pre_match.wiring.has_notify_audit=true`、`has_live_refresh=false`，lineup audit 摘要为 `confirmed_lineups=10`、`captured_before_kickoff=0`、`entered_snapshot=5`、`post_information_odds_available=5`。
+- TDD 覆盖：先新增 pre-match 巡检输出和误带 `--live-refresh` 报错测试，确认失败后实现；标准 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `461/461 tests passed`。
+
+## 2026-06-22 P8.11 更新 pre-match LaunchAgent 启用审计通知
+
+- 经用户确认，已重写并重新加载 `~/Library/LaunchAgents/xin.celab.football.pre-match.plist`。
+- 当前 launchd 实际参数为 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.pre_match_runner --live-lineups --write-lineups --notify-missing --notify-audit`。
+- 当前 plist 与 launchd 均不包含 `--refresh-after-lineups` / `--live-refresh`，所以不会自动触发 The Odds API odds refresh，不会消耗 odds quota。
+- 重新加载步骤：`launchctl bootout gui/501 ...` 成功，`launchctl bootstrap gui/501 ...` 成功；reload 后 `launchctl print` 显示 `run interval = 300 seconds`、`runs = 0`。
+- 未手动 `kickstart`，避免在当前时刻额外触发真实通知；新版任务会在下一次 300 秒轮询自然生效。
+- 本地非联网 dry-run 验证：`python3 -m worldcup.pre_match_runner --notify-audit` 输出 `lineup_audit.notification.status=skipped`、`reason=no_actionable_lineup_audit_issues`，审计摘要为 `confirmed_lineups=10`、`captured_before_kickoff=0`、`entered_snapshot=5`、`post_information_odds_available=5`。
+- 本轮未执行 live refresh、未消耗 The Odds API quota、未发布线上 snapshot、未部署、未提交/推送。
+
+## 2026-06-22 P8.10 官方首发链路审计通知
+
+- `worldcup.lineup_audit` 新增 `send_lineup_audit_notification()` 与 CLI `--notify`：只对开赛前仍存在的 `captured_without_snapshot_input` / `captured_without_post_information_odds` 发一次性 WxPusher 通知。
+- 通知去重复用 `data/local/lineups_missing_notifications.json`，新增 `audit_sent` 命名空间；不会覆盖既有缺首发通知的 `sent` 状态。
+- `worldcup.pre_match_runner` 新增显式 `--notify-audit`：可在首发轮询后跑本地审计通知，但不触发 The Odds API refresh，不消耗 quota。
+- `worldcup.pre_match_launch_agent` 生成的新 plist 默认包含 `--notify-audit`；本轮未重写、未 reload、未 kickstart 当前已安装的 `~/Library/LaunchAgents/xin.celab.football.pre-match.plist`。
+- 最新非通知审计：`confirmed_lineups=10`、`captured_before_kickoff=0`、`entered_snapshot=5`、`post_information_odds_available=5`；新增首发仍是开赛后抓到，不能当作赛前增强信号样本。
+- 本轮未发送真实通知、未执行 live refresh、未消耗 The Odds API quota、未发布线上 snapshot、未部署、未提交/推送。
+- 验证：新增通知 RED 测试先因缺少 `send_lineup_audit_notification` 失败；实施后标准 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `460/460 tests passed`。
+
+## 2026-06-21 P8.9 官方首发链路只读审计
+
+- 新增 `worldcup.lineup_audit`：只读本地 `data/cache/lineups_wc2026.json`、最新 `analysis_snapshot.json`、`data/local/history/snapshot_*.json` 和 `data/local/lineups_missing_notifications.json`。
+- 报告逐场输出：官方首发是否确认、确认时间距离开赛分钟数、是否开赛前抓到、是否进入 snapshot、是否已有 post-information odds、强信号数量和问题 flags。
+- 汇总输出：confirmed lineups、开赛前抓到数、进入 snapshot 数、post-information odds 数、抓到但未进 snapshot 数、抓到但未有 post-information odds 数。
+- CLI 默认输出 `data/local/diagnostics/lineup_audit.json`；本工具不联网、不刷新 odds、不消耗 The Odds API quota、不改 LaunchAgent、不发布线上 snapshot。
+- 当时本地审计结果：`confirmed_lineups=6`、`captured_before_kickoff=0`、`entered_snapshot=3`、`post_information_odds_available=3`；说明当时首发缓存均为开赛后抓到，不能当作赛前增强信号样本。
+- 验证：新增审计测试先因缺少 `worldcup.lineup_audit` 红灯，实施后标准 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `457/457 tests passed`；`python3 -m worldcup.lineup_audit` 输出 `status=ok`。
+
+## 2026-06-21 P8.8 增加 T-35 首发确认锚点
+
+- 根据赛前首发通常在开赛前约 60 分钟公布、T-30 更稳的判断，`worldcup.scheduler` 的 `policy_version` 升为 `free-tier-v3`。
+- 临赛赔率刷新锚点从 T-12h / T-6h / T-90 / T-55 / T-25 扩展为 T-12h / T-6h / T-90 / T-55 / T-35 / T-25；T-35 的 `policy_reason=pre_35m_lineup_confirm`，用于首发确认主检查。
+- 低额度（≤30）保留关键锚点时同步保留 T-35：T-90 / T-55 / T-35 / T-25。
+- `worldcup.lineups_refresh` 默认缺首发通知窗口从 90 分钟缩短为 35 分钟；lineups-only LaunchAgent 仍每 300 秒轮询，但只有开赛前 35 分钟内仍未抓到官方首发时才发缺失通知。
+- 页面更新规则说明同步显示 T-35；本轮只改本地调度/通知默认值、测试和文档，未执行 live refresh，未消耗 The Odds API quota，未改 LaunchAgent，未发布线上 snapshot，未部署，未提交/推送。
+- 验证：新增调度 RED 测试和缺首发通知窗口 RED 测试均先失败后通过；标准 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `455/455 tests passed`。
+
+## 2026-06-20 P8.7 修正首发上下文跨源编号匹配
+
+- 发现 FIFA public API 的 `source_match_no` 与当前 openfootball / snapshot 的 `source_match_no` 不是同一套编号：本地 confirmed cache 中 `29` 是 Brazil vs Haiti，而当前 snapshot 中 `29` 是 Curaçao vs Ivory Coast。
+- 修正 `worldcup.pipeline.build_match_inputs()` 的首发绑定规则：`source_match_no` 只作为候选；只有同时匹配双方 canonical team 和 UTC kickoff 时才可使用，否则回退到 team + kickoff key，仍不匹配则不挂 `lineup_context`。
+- 新增回归测试覆盖“编号相同但球队/时间不同不能挂首发；编号不同但球队/时间相同可以挂首发”的场景。
+- 当前缓存内存重建验证：`lineup_contexts=2`、`matches=40`、`lineup_matches=0`，`source_match_no=29` 的 Curaçao vs Ivory Coast 没有被错挂 Brazil vs Haiti 首发。
+- 验证：经用户确认后执行 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pip install -e .` 恢复 bundled Python 测试依赖；标准 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `453/453 tests passed`，`git diff --check` 通过。
+- 本轮只改本地匹配逻辑、测试和文档；未联网、未刷新 odds、未改 LaunchAgent、未发布线上 snapshot，未部署，未提交/推送。
+
+## 2026-06-20 P8.6 安装 lineups-only 赛前首发 LaunchAgent
+
+- 经用户明确“确认安装”，已写入并加载本机 LaunchAgent：`~/Library/LaunchAgents/xin.celab.football.pre-match.plist`。
+- LaunchAgent 每 300 秒运行 `/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.pre_match_runner --live-lineups --write-lineups --notify-missing`，工作目录为 `/Users/eagod/ai-dev/足彩`。
+- 当前 plist 不包含 `--refresh-after-lineups` / `--live-refresh`，因此不会自动触发 The Odds API odds refresh，不会发布线上 snapshot。
+- 日志路径：`~/Library/Logs/worldcup/pre-match.out.log` 和 `~/Library/Logs/worldcup/pre-match.err.log`。
+- `launchctl bootstrap gui/501 ...` 成功；`launchctl print gui/501/xin.celab.football.pre-match` 显示 `run interval = 300 seconds`、`runs = 1`、`last exit code = 0`。
+- 手动 `launchctl kickstart` smoke 成功：FIFA public API 检查 `matches_checked=5`、`confirmed=2`、`newly_confirmed=2`、`missing=3`、`missing_alerts=0`、`source_errors=[]`，写入 `data/cache/lineups_wc2026.json`；输出 `post_information_refresh_required`，未自动刷新 odds。
+- 本轮新增 confirmed cache 摘要：Brazil vs Haiti（match 29）和 Türkiye vs Paraguay（match 31）写入 confirmed starting XI。
+- plist 与 pre-match stdout/stderr 敏感词扫描对 `api_key|secret|token|signature|cookie|private` 返回 0。
+- 本轮只安装本机 lineups-only LaunchAgent 和更新文档；未启用自动 live-refresh，未调用 The Odds API odds refresh，未发布线上 snapshot，未部署，未提交/推送。
+
+## 2026-06-20 P8.5 赛前首发轮询 LaunchAgent 配置生成
+
+- 新增 `worldcup.pre_match_launch_agent`：可生成 `xin.celab.football.pre-match` 的 LaunchAgent plist；默认每 300 秒运行 `worldcup.pre_match_runner --live-lineups --write-lineups --notify-missing`。
+- 默认 plist 不包含 `--refresh-after-lineups` / `--live-refresh`，因此只做 FIFA 官方首发抓取、cache 写入和缺失通知，不触发 The Odds API odds refresh。
+- 只有显式传 `--allow-live-refresh` 时，生成的 plist 才会加入首发后强制 odds refresh 参数；该模式会消耗 The Odds API quota，真实启用前必须单独确认。
+- CLI 默认只输出 JSON 预览；传 `--out` 只写指定 plist 文件，不执行 `launchctl`、不加载、不 kickstart。
+- 本轮只做本地生成器、测试和 README/RECENT_WORK 文档；未写入 `~/Library/LaunchAgents`，未启用新 LaunchAgent，未执行 live odds refresh，未发布线上 snapshot，未部署，未提交/推送。
+- TDD 覆盖：默认 lineups-only 参数、显式 opt-in 才加入 post-lineup refresh 参数、写出的 plist 可被既有 `refresh_audit.inspect_launch_agent()` 正确识别。
+- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `452/452 tests passed`。
+
+## 2026-06-20 P8 赛前首发轮询编排 runner
+
+- 新增 `worldcup.pre_match_runner`：默认 dry-run，不联网、不写盘、不发通知、不刷新 odds；可显式编排 `lineups_refresh`，并在出现 `newly_confirmed > 0` 时标记或触发首发后 odds refresh。
+- `lineups_refresh` 现在会读取既有 confirmed cache，返回 `newly_confirmed`，避免同一场已确认首发在后续轮询中反复触发 post-information refresh。
+- 缺失首发路径保持轻量：抓不到官方首发时仍只走 `lineups_refresh --notify` 的 WxPusher 缺失提醒，不触发 The Odds API。
+- 新 confirmed lineup 路径支持两阶段：不传 `--refresh-after-lineups` 时只返回 `post_information_refresh_required`；同时传 `--refresh-after-lineups --live-refresh` 时才会强制调用 `scheduled_refresh(force=True)`，这一步会消耗 The Odds API quota。
+- 本轮只做本地 runner、测试和 README/RECENT_WORK 文档；未启用 LaunchAgent，未执行 live odds refresh，未发布线上 snapshot，未部署，未提交/推送。
+- TDD 覆盖：默认 dry-run 不刷新 odds、缺失首发只通知不耗 quota、新 confirmed lineup 只标记 required、显式打开后才 force scheduled refresh、同一 confirmed cache 不重复计入 newly confirmed。
+- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `449/449 tests passed`。
+
+## 2026-06-18 P7 FIFA public API 官方首发抓取与缺失通知
+
+- 新增 `worldcup.sources.fifa_lineups`：封装 FIFA public API 的 `calendar/matches` 和 `live/football/{competition}/{season}/{stage}/{match}` 请求，支持可注入 transport 和可选 JSON cache。
+- 新增 `worldcup.collectors.fifa_lineups`：把 FIFA live football JSON 解析为 `ParsedLineupContext`；`Status=1` 作为首发、`Status=2` 作为替补，保留 FIFA player id、球员名、位置粗分类和阵型 `Tactics`。
+- 新增 `worldcup.lineups_refresh` CLI：默认 dry-run；`--live` 只读请求 FIFA 公网；`--write` 写入 `data/cache/lineups_wc2026.json`；写入时只保存 confirmed lineup，并合并保留旧 confirmed cache，避免未公布轮询清空已有首发。
+- 缺失通知已接入：临赛窗口内 FIFA 仍未返回两队各 11 人首发时，`--notify` 会通过 WxPusher 发“官方首发未抓到”通知；去重状态写入 `data/local/lineups_missing_notifications.json`，同一场只提醒一次。
+- `lineups_wc2026.json` 继续被现有 `local_runner` 自动读取；首发确认后若 odds 早于 `lineup_confirmed_at`，既有 scheduler 会触发 `post_information_odds_required`，AH candidate 仍必须等 confirmed lineup + post-information odds 才能升级正式 S/A。
+- 只读公网 smoke：`python3 -m worldcup.lineups_refresh --live --now 2026-06-18T08:55:00+00:00` 返回 `matches_checked=4`、`confirmed=1`、`missing=3`、`source_errors=[]`，未写文件、未发通知。
+- 本轮未接入付费 API、未调用 The Odds API、未触发 live refresh/publish/quota、未部署、未提交/推送。
+- TDD 覆盖：FIFA source URL/cache、confirmed/unconfirmed live JSON 解析、CLI 写 confirmed cache、临赛缺失只通知一次、dry-run 不联网不写、未公布轮询不覆盖旧 confirmed cache。
+- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `445/445 tests passed`。
+
+## 2026-06-18 P6 manual_json 首发/球员本地入口与严格 S/A gate
+
+- 新增 `worldcup.collectors.lineups` 与 collector model：可解析本地 `lineups_wc2026.json`，把已确认首发、替补、缺阵、球员影响 delta 标准化成 pipeline 可用的 `lineup_context`。
+- `build_match_inputs()` 现在可按 `source_match_no` 或 `kickoff_at_utc + canonical home/away` 匹配首发上下文，并在 snapshot 的 `model.lineup_shadow` 中输出 provider、source、source_match_no、lineups 和首发后 odds 判定。
+- `local_runner` 会自动读取输入目录下的 `lineups_wc2026.json`；文件存在时，snapshot `data_quality.lineups` 和 `counts.lineup_contexts` 会记录已解析/已确认数量。该入口默认适合放在被忽略的 `data/cache/` 或 `data/local/`，不提交真实人工数据。
+- 若首发已确认但最新 odds 早于 `lineup_confirmed_at`，既有 scheduler 会给出 `post_information_odds_required`，用于赛前自动补一轮首发后赔率。
+- AH candidate 正式激活门槛收紧：必须同时满足 AH shadow、movement shadow、无硬质量 veto、`confirmed_starting_xi=true` 和 `post_information_odds_available=true`；否则继续停留在候选池，不计入正式 S/A。OU 仍保持 shadow-only。
+- 本轮只做本地自动化框架、测试和文档记录；未接入付费/实时首发 API，未触发 live refresh/publish/quota，不联网，不部署，不提交/推送。
+- TDD 覆盖：manual_json 解析、缺少可用队名跳过、pipeline 首发匹配、local_runner 读取首发文件并触发 post-information odds 需求、AH candidate 无已确认首发时不升级。
+- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `437/437 tests passed`。
+
+## 2026-06-18 P5 AH candidate 正式激活规则
+
+- `attach_trends()` 在附加 `movement_shadow` 后，会对 AH `candidate_grade` 做正式激活判断：仅当 raw grade 为 S/A、当前 grade 尚非 S/A、`ah_validation_shadow.candidate_validated=true`、`movement_shadow.supports_signal=true`、没有硬质量 veto，且首发已确认时 post-information odds 已可用，才会升级为正式 `grade=raw_grade`。
+- 激活后的信号会写入 `promotion` 审计块，记录 `method=ah_candidate_v1`、原 grade、目标 grade、原 candidate grade、验证来源和候选依据；同时移除 `candidate_grade` / `candidate_reasons`，移除 `ah_market_edge_missing`，追加 `ah_candidate_promoted`，并标记 `ah_market_validated=true`。
+- OU 仍保持 shadow-only：即使存在 `candidate_grade` 或 `ou_total_shadow`，也不会被本轮逻辑提升为正式 S/A。
+- 本轮只做本地规则、测试和文档记录；不触发 live refresh/publish/quota，不联网，不部署，不提交/推送。
+- TDD 覆盖：符合 AH shadow + movement shadow 门槛时 candidate 会升级为正式 S；OU candidate 不升级；首发已确认但 odds 尚未 post-information 时 AH candidate 不升级。
+- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `432/432 tests passed`。
+
+## 2026-06-18 P4 独立 OU total shadow schema
+
+- 新增 `MatchAnalysis.ou_total_shadow`：对比 active `model_market_total` OU 概率与 independent/raw `model_raw` OU total 概率，并输出两套 edge 与 edge delta。
+- `ou_total_shadow.activation=shadow_only`：不改变 active `mu_total`、OU 概率、EV/Edge、正式 `grade`、`candidate_grade`、finished tally 或日报 S/A 战绩。
+- snapshot `model.ou_total_shadow` 会记录 `mu_active`、`mu_independent`、`mu_market`、`mu_market_weight`、`same_market_total_anchor`、active/independent/market probability 和 edge 对比。
+- 本轮只接 schema / shadow 计算和本地 snapshot 序列化；不解除 `market_informed_total` 降级、不接真实新数据源、不联网、不触发 refresh/publish/quota、不部署、不提交/推送。
+- TDD 覆盖：independent OU total shadow 不改变 active OU 信号等级，snapshot 可序列化 `model.ou_total_shadow`。
+- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `430/430 tests passed`。
+
+## 2026-06-18 P3 post-information odds 调度判定
+
+- `worldcup.scheduler` 新增 `post_information_odds_required` 单场调度原因：当 `model.lineup_shadow` 显示首发已确认、最新 odds 早于首发信息且比赛未开赛时，单场 `next_update_at` 会提前到当前 dry-run 时刻。
+- 调度输出会附带 `post_information_odds` 摘要，包含 `lineup_confirmed_at`、`odds_observed_at` 和 `post_information_odds_available=false`，用于审计为什么需要首发后赔率刷新。
+- 额度耗尽、比赛已开赛、没有首发确认或 odds 已经是 post-information 时，不会触发该原因；正式 live refresh 仍必须由 `--live` 和调度 due 控制。
+- 本轮只做本地调度/schema 层，不接真实首发数据源、不主动调用 The Odds API、不触发 refresh/publish/quota、不部署、不提交/推送。
+- TDD 覆盖：首发后赔率缺失会立即 due，已有 post-information odds 不会额外刷新。
+- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `428/428 tests passed`。
+
+## 2026-06-18 P2 首发/球员影响 lineup_shadow schema
+
+- 新增 `MatchAnalysisInput.lineup_context` 与 `MatchAnalysis.lineup_shadow`：输入结构化首发/球员影响 delta 后，输出调整前后 lambda、1X2/OU 概率和 edge 对比。
+- `lineup_shadow.activation=shadow_only`：不改变 active `lambdas`、`combined_1x2`、EV/Edge、正式 `grade`、`candidate_grade`、finished tally 或日报 S/A 战绩。
+- `lineup_shadow` 会记录 `lineup_confirmed_at`、最新 odds `fetched_at` 和 `post_information_odds_available`，用于区分赔率是否已经吸收首发信息。
+- 本轮只接 schema / shadow 计算和本地 snapshot 序列化；不接真实首发数据源、不联网、不触发 refresh/publish/quota、不部署、不提交/推送。
+- TDD 覆盖：首发 shadow 不改变 active 概率、post-information odds 判定、snapshot `model.lineup_shadow` 序列化。
+- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `426/426 tests passed`。
+
+## 2026-06-18 P1 候选池 candidate_grade
+
+- 新增 `candidate_grade` / `candidate_reasons` 信号字段：当前只给 AH raw S/A 被 `ah_market_edge_missing` 压到 B、且 `ah_validation_shadow.candidate_validated=true`、没有硬质量 veto 的信号打研究候选标记。
+- `candidate_grade` 不改变正式 `grade`，不改变 EV/Edge/模型概率，不计入 finished tally、日报 S/A 战绩或强信号统计；研究台账只在展开详情中显示“候选等级 / 候选依据”。
+- 当前 OU 因 `same_market_total_anchor=true` 被压到 C 的 raw S/A 不进入 candidate；需等后续独立 OU total shadow 后再讨论。
+- TDD 覆盖：AH shadow 验证通过时输出 `S-candidate`，OU 市场锚定 raw S/A 不输出 candidate，snapshot 序列化候选字段，台账展示候选但不计入正式强信号。
+- 本轮不联网、不触发 refresh/publish/quota、不部署、不提交/推送。
+- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `423/423 tests passed`。
+
+## 2026-06-18 历史完赛 shadow 回填诊断
+
+- 新增 `worldcup.shadow_backfill_diagnostics`：只读本地 `analysis_snapshot.json` / `finished_record_store.json` 与 `data/local/history/`，给历史 closing 信号回算 `ah_validation_shadow` 和 `movement_shadow`。
+- 报告默认输出 `data/local/diagnostics/shadow_backfill_diagnostics.json`；该路径在本地忽略数据区，只用于研究诊断，不回填线上 snapshot、不改模型参数、不改信号等级、不触发 refresh/publish/quota、不联网、不部署。
+- TDD 覆盖：旧 closing snapshot 缺 shadow 时可回算 AH fair-line / movement shadow；CLI 可写出本地 JSON 报告。
+- 已运行真实本地报告：`match_count=20`、`raw_strong_signal_count=32`、`decided_raw_strong_signal_count=31`、`sample_too_small=false`、`missing_closing_entry=0`；source coverage 为 `closing_entry=32`、`ah_shadow=16`、`movement_shadow=32`。
+- 当前观察：raw S/A 总体 `hit=9`、`miss=22`、`push=1`；AH `candidate_validated=true` 为 `hit=5`、`miss=7`；`movement_shadow.supports_signal=true` 为 `hit=5`、`miss=12`；`both_shadow_support=true` 为 `hit=4`、`miss=5`。暂不支持直接用 shadow 升级 S/A，只能继续作为诊断观察。
+- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `420/420 tests passed`。
+
+## 2026-06-18 AH 验证与赔率移动信号级 shadow
+
+- AH 信号新增 `ah_validation_shadow`：基于模型净胜球分布计算标准赔率下的 `model_fair_line`，并记录 `market_line`、`fair_line_delta`、`line_consensus`、`dispersion_ok` 和 `candidate_validated`。
+- 当前 AH 验证仍为 `activation=shadow_only`：即使候选验证通过，也不改变 `ah_market_validated=false`、不解除 `ah_market_edge_missing`、不增加 S/A 数量。
+- `attach_trends()` 现在会在每条信号上附加 `movement_shadow`，用既有 `odds_movement` 判断赔率方向和盘口方向是否支持该信号；该字段只做诊断，不参与模型概率、EV、Edge、排序或等级裁决。
+- TDD 覆盖：AH shadow 不升级等级、信号级 movement shadow 不改等级、snapshot 序列化保留 `ah_validation_shadow`。
+- 本轮不改模型参数、不改 S/A 阈值、不改赔率源、不触发 refresh/publish/quota、不联网、不部署。
+- 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `418/418 tests passed`。
+
 ## 2026-06-17 finished 定格 schema v2 诊断字段
 
 - 已增强 `worldcup.finished_record`：新定格的 `closing_signals` 在保留旧字段的基础上写入 `diagnostic_schema_version=2`，并冻结 `raw_grade`、`ev`、`edge`、`reasons`、`probability_family_probs`、`probability_family_deltas`、`odds_movement_quality` 和 `diagnostic_flags`。
@@ -21,6 +226,17 @@
 - 当前真实报告分桶：`hit=7`、`miss=14`、`push=1`；`S=5/12/0`、`A=2/2/1`；市场分布为 `1X2_90min=1/6/0`、`AsianHandicap_90min=5/6/1`、`OverUnder_90min=1/2/0`。
 - 当前历史归档限制已显式暴露：22 条强信号均可匹配 closing entry/full signal，但 `reason=0`、`probability_family=0`、`odds_movement=0`，说明较早 closing snapshot 缺少这些后续诊断字段；因此现阶段不能按 reason/概率族/盘口移动对早期 miss 下结论。
 - 验证：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `414/414 tests passed`；`python3 -m worldcup.postmatch_diagnostics` 返回 `status=ok`。
+
+## 2026-06-17 Phase 2B ECS 部署与受控 live refresh
+
+- 已部署 `72e9540 feat: add odds movement diagnostics` 到 ECS `/opt/worldcup/releases/72e9540`；`/opt/worldcup/current` 已从 `/opt/worldcup/releases/71c4d68` 切换到新 release，`worldcup.service` 与 `nginx` 均为 active。
+- 部署前完整测试入口通过：`/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `412/412 tests passed`。
+- 部署后公网 smoke：`/healthz`、`/api/matches`、`/api/finished`、首页和 `/preview` 均返回 200；页面保留研究免责声明，资金/下注禁词扫描为空。
+- 已执行一次受控 `worldcup.scheduled_publish --live --force --no-notify`：新 run 为 `20260617T054825Z-live`，ECS ingest 返回 HTTP 200 / `ingest_status=stored`，snapshot_id 为 `18b00589bc9b49f1b1c378abcc1866a11158c904ca14c3798af0a1c5d994bb01`。
+- 新 snapshot 共 53 场，`source_errors=[]`、`stale_sources=[]`、`invalid_odds_count=0`；The Odds API primary quota 从 162 变为 159，本轮消耗 3。
+- `odds_movement` 已写入全部 53 场，`line_changed=14`、`sparse=0`；信号等级分布为 `S=3`、`A=2`、`B=90`、`C=276`。
+- P0 fail-safe 不变量继续成立：`same_market_total_anchor=true` 的 OU S/A 为 0，`ah_market_validated=false` 的 AH S/A 为 0。
+- `python3 -m worldcup.ops_check` 返回 `ok=true`、`errors=0`、`warnings=3`；warning 仍为既有日志类告警，不阻塞本次上线。远端最近 10 分钟 `worldcup.service` journal 未扫到敏感词或 error。
 
 ## 2026-06-17 Phase 2B 赔率/盘口移动 diagnostic schema
 
