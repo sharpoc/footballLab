@@ -2,11 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
-## 2026-06-22 P9.3 中超历史赛果来源与清洗实现计划
+## 2026-06-22 P9.3 中超历史赛果来源与清洗实现
 
-- 新增 implementation plan：`docs/superpowers/plans/2026-06-22-csl-results-source-cleaning.md`。
-- 计划分为严格 alias gate、CSL 赛果解析、双源校验与质量门槛、本地 dry-run probe CLI、文档与全量验证。
-- P9.3 实现范围保持本地只读/本地写 ignored 诊断，不接 `league_runner`，不解除 `club_rating_pending`，不联网执行、不使用密钥、不部署。
+- 新增严格 CSL alias gate：`match_known_club_alias()` 只接受 competition-scoped 已知别名，未知俱乐部不再静默 slugify 进入清洗链路。
+- 新增 `worldcup.collectors.csl_results`：解析本地 2023-2026 CSL 样例、阻断未知 alias/非法比分/日期/状态/重复场次，按 `match_key` 双源校验并输出质量门槛诊断与 replay candidate CSV。
+- 新增 `worldcup.csl_results_probe`：只读本地 CSV/JSON 样例，写 `data/local/diagnostics/csl_results_source_probe.json`，只有本地 gate 允许时才可选写 replay candidate。
+- 本轮不接 `league_runner`，不解除 `club_rating_pending`，不联网、不读取 `.env`、不消耗 The Odds API quota、不部署、不改 LaunchAgent。
+- 关键提交：`0b598ac`、`4b22de8`、`5ffe210`、`4c02d07`、`d0c9639`、`ed7cd43`、`5d2905b`、`2a670b5`、`500cb35`。
+- 目标验证：`tests/collectors/test_club_aliases.py` 6/6、`tests/collectors/test_csl_results.py` 18/18、`tests/test_csl_results_probe.py` 6/6 均通过；`git diff --check` 通过。隔离 worktree 的全量 `tests/run_tests.py` 仍被既有 clean baseline 缺失 `worldcup.collectors.lineups` 阻塞，非 P9.3 改动引入。
 
 ## 2026-06-22 P9.3 中超历史赛果来源与清洗设计
 
