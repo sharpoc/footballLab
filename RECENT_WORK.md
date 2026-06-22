@@ -10,7 +10,7 @@
 - final review 后补强 duplicate blocking gate：primary/check 任一来源出现同 `match_key` 重复/冲突行时进入 `manual_review_required`，即使其他四季双源覆盖通过，也不能写 replay candidate。
 - 本轮不接 `league_runner`，不解除 `club_rating_pending`，不联网、不读取 `.env`、不消耗 The Odds API quota、不部署、不改 LaunchAgent。
 - 关键提交：`0b598ac`、`4b22de8`、`5ffe210`、`4c02d07`、`d0c9639`、`ed7cd43`、`5d2905b`、`2a670b5`、`500cb35`；文档收尾和 final review 修复在本分支后续本地提交中。
-- 目标验证：`tests/collectors/test_club_aliases.py` 6/6、`tests/collectors/test_csl_results.py` 20/20、`tests/test_csl_results_probe.py` 7/7 均通过；`git diff --check` 通过。隔离 worktree 的全量 `tests/run_tests.py` 仍被既有 clean baseline 缺失 `worldcup.collectors.lineups` 阻塞，非 P9.3 改动引入。
+- 目标验证：`tests/collectors/test_club_aliases.py` 6/6、`tests/collectors/test_csl_results.py` 20/20、`tests/test_csl_results_probe.py` 7/7 均通过；合入 lineups baseline repair 后，隔离 worktree 标准入口 `tests/run_tests.py` 全量通过。
 
 ## 2026-06-22 Lineups baseline repair
 
