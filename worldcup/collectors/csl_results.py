@@ -38,6 +38,8 @@ class CSLResultRow:
     date: str
     home_team_raw: str
     away_team_raw: str
+    home_team: str
+    away_team: str
     home_canonical: str
     away_canonical: str
     home_score: int
@@ -58,16 +60,16 @@ class CSLResultRow:
         return (self.season, self.date, self.home_canonical, self.away_canonical)
 
     @property
-    def team_key(self) -> tuple[str, str]:
-        return (self.home_canonical, self.away_canonical)
+    def team_key(self) -> tuple[str, str, str]:
+        return (self.season, self.home_canonical, self.away_canonical)
 
     def to_replay_row(self) -> dict[str, str]:
         return {
             "competition_id": self.competition_id,
             "season": self.season,
             "date": self.date,
-            "home_team": self.home_canonical,
-            "away_team": self.away_canonical,
+            "home_team": self.home_team,
+            "away_team": self.away_team,
             "home_score": str(self.home_score),
             "away_score": str(self.away_score),
             "neutral": "1" if self.neutral else "0",
@@ -224,6 +226,8 @@ def parse_csl_result_rows(
             date=parsed_date,
             home_team_raw=home_team,
             away_team_raw=away_team,
+            home_team=home_team,
+            away_team=away_team,
             home_canonical=home_alias.canonical_key,
             away_canonical=away_alias.canonical_key,
             home_score=home_score,

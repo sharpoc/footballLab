@@ -37,6 +37,8 @@ def test_parse_csl_result_rows_returns_finished_clean_rows():
     assert parsed.date == "2026-03-01"
     assert parsed.home_team_raw == "Shanghai Port"
     assert parsed.away_team_raw == "Shandong Taishan"
+    assert parsed.home_team == "Shanghai Port"
+    assert parsed.away_team == "Shandong Taishan"
     assert parsed.home_canonical == "shanghai_port"
     assert parsed.away_canonical == "shandong_taishan"
     assert parsed.home_score == 2
@@ -47,6 +49,9 @@ def test_parse_csl_result_rows_returns_finished_clean_rows():
     assert parsed.source_primary_url == "https://example.invalid/m1"
     assert parsed.source_check_id is None
     assert parsed.match_key == ("2026", "2026-03-01", "shanghai_port", "shandong_taishan")
+    assert parsed.team_key == ("2026", "shanghai_port", "shandong_taishan")
+    assert parsed.to_replay_row()["home_team"] == "Shanghai Port"
+    assert parsed.to_replay_row()["away_team"] == "Shandong Taishan"
 
 
 def test_parse_csl_result_rows_blocks_unknown_team_without_slug_fallback():
