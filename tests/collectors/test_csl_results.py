@@ -317,6 +317,103 @@ def test_compare_csl_sources_reports_check_only_rows_as_missing_primary():
     ]
 
 
+def test_compare_csl_sources_blocks_ambiguous_same_team_different_dates():
+    primary = parse_csl_result_rows(
+        [_row(date="2026-03-01")],
+        competition_id="csl_2026",
+        source_id="primary",
+        source_role="primary",
+    )
+    check = parse_csl_result_rows(
+        [
+            _row(date="2026-03-02", source_match_id="c1"),
+            _row(date="2026-03-03", source_match_id="c2"),
+        ],
+        competition_id="csl_2026",
+        source_id="check",
+        source_role="check",
+    )
+
+    comparison = compare_csl_sources(primary, check)
+
+    assert comparison.clean_rows == []
+    assert comparison.quality["manual_review_required"][0]["reason"] == "duplicate_candidate"
+    assert comparison.pending_gate["can_enter_replay"] is False
+
+
+def test_compare_csl_sources_allows_replay_when_all_gate_conditions_pass():
+    primary = parse_csl_result_rows(
+        [
+            _row(season="2023", date="2023-03-01", source_match_id="p1"),
+            _row(season="2024", date="2024-03-01", source_match_id="p2"),
+            _row(season="2025", date="2025-03-01", source_match_id="p3"),
+            _row(season="2026", date="2026-03-01", source_match_id="p4"),
+        ],
+        competition_id="csl_2026",
+        source_id="primary",
+        source_role="primary",
+    )
+    check = parse_csl_result_rows(
+        [
+            _row(season="2023", date="2023-03-01", source_match_id="c1"),
+            _row(season="2024", date="2024-03-01", source_match_id="c2"),
+            _row(season="2025", date="2025-03-01", source_match_id="c3"),
+            _row(season="2026", date="2026-03-01", source_match_id="c4"),
+        ],
+        competition_id="csl_2026",
+        source_id="check",
+        source_role="check",
+    )
+
+    comparison = compare_csl_sources(primary, check, min_valid_matches=4)
+
+    assert len(comparison.clean_rows) == 4
+    assert comparison.pending_gate["can_enter_replay"] is True
+    assert comparison.pending_gate["can_lift_club_rating_pending"] is False
+    assert comparison.pending_gate["reasons"] == []
+
+
+def test_compare_csl_sources_blocks_replay_when_primary_row_missing_in_check():
+    primary = parse_csl_result_rows(
+        [
+            _row(season="2023", date="2023-03-01", source_match_id="p1"),
+            _row(season="2024", date="2024-03-01", source_match_id="p2"),
+            _row(season="2025", date="2025-03-01", source_match_id="p3"),
+            _row(season="2026", date="2026-03-01", source_match_id="p4"),
+            _row(
+                season="2026",
+                date="2026-03-08",
+                home_team="Shanghai Shenhua",
+                away_team="Beijing Guoan",
+                home_score="1",
+                away_score="1",
+                source_match_id="p5",
+            ),
+        ],
+        competition_id="csl_2026",
+        source_id="primary",
+        source_role="primary",
+    )
+    check = parse_csl_result_rows(
+        [
+            _row(season="2023", date="2023-03-01", source_match_id="c1"),
+            _row(season="2024", date="2024-03-01", source_match_id="c2"),
+            _row(season="2025", date="2025-03-01", source_match_id="c3"),
+            _row(season="2026", date="2026-03-01", source_match_id="c4"),
+        ],
+        competition_id="csl_2026",
+        source_id="check",
+        source_role="check",
+    )
+
+    comparison = compare_csl_sources(primary, check, min_valid_matches=4)
+
+    assert len(comparison.clean_rows) == 4
+    assert comparison.degraded_rows[0].source_agreement == "missing_in_check"
+    assert comparison.pending_gate["can_enter_replay"] is False
+    assert "missing_in_check" in comparison.pending_gate["reasons"]
+
+
 def test_write_replay_candidate_csv_uses_p92_contract():
     primary = parse_csl_result_rows(
         [_row(), _row(date="2026-03-08", home_team="Shanghai Shenhua", away_team="Beijing Guoan", home_score="1", away_score="1")],

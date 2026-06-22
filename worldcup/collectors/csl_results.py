@@ -356,6 +356,7 @@ def _build_pending_gate(
     team_alias_unmatched: list[str],
     manual_review_required: list[dict[str, Any]],
     missing_in_primary: list[dict[str, Any]],
+    degraded_candidates: list[dict[str, Any]],
     valid_finished_matches: int,
     min_valid_matches: int,
 ) -> dict[str, Any]:
@@ -374,6 +375,8 @@ def _build_pending_gate(
         reasons.append("manual_review_required")
     if missing_in_primary:
         reasons.append("missing_in_primary")
+    if degraded_candidates:
+        reasons.append("missing_in_check")
     if valid_finished_matches < min_valid_matches:
         reasons.append(f"valid_finished_matches_below_{min_valid_matches}")
     return {
@@ -388,26 +391,60 @@ def compare_csl_sources(
     check: CSLParseResult,
     min_valid_matches: int = 300,
 ) -> CSLCrossCheckResult:
-    check_by_team = {row.team_key: row for row in check.rows}
-    check_by_reversed_team = {
-        (row.season, row.away_canonical, row.home_canonical): row
-        for row in check.rows
-    }
+    check_by_match = {row.match_key: row for row in check.rows}
+    check_by_team: dict[tuple[str, str, str], list[CSLResultRow]] = {}
+    check_by_reversed_match: dict[tuple[str, str, str, str], list[CSLResultRow]] = {}
+    for row in check.rows:
+        check_by_team.setdefault(row.team_key, []).append(row)
+        reversed_match_key = (row.season, row.date, row.away_canonical, row.home_canonical)
+        check_by_reversed_match.setdefault(reversed_match_key, []).append(row)
+
     clean_rows: list[CSLResultRow] = []
     degraded_rows: list[CSLResultRow] = []
     score_mismatches: list[dict[str, Any]] = []
     manual_review_required: list[dict[str, Any]] = []
-    seen_check_keys: set[tuple[str, str, str]] = set()
+    seen_check_keys: set[tuple[str, str, str, str]] = set()
     comparable = 0
     score_agree = 0
     date_home_away_agree = 0
 
     for row in primary.rows:
-        check_row = check_by_team.get(row.team_key)
+        check_row = check_by_match.get(row.match_key)
         if check_row is None:
-            reversed_row = check_by_reversed_team.get(row.team_key)
-            if reversed_row is not None and reversed_row.date == row.date:
-                seen_check_keys.add(reversed_row.team_key)
+            same_team_candidates = check_by_team.get(row.team_key, [])
+            if len(same_team_candidates) > 1:
+                seen_check_keys.update(candidate.match_key for candidate in same_team_candidates)
+                comparable += 1
+                manual_review_required.append(
+                    {
+                        "reason": "duplicate_candidate",
+                        "season": row.season,
+                        "home_canonical": row.home_canonical,
+                        "away_canonical": row.away_canonical,
+                        "primary_date": row.date,
+                        "check_dates": sorted({candidate.date for candidate in same_team_candidates}),
+                    }
+                )
+                continue
+            if len(same_team_candidates) == 1:
+                same_team_candidate = same_team_candidates[0]
+                seen_check_keys.add(same_team_candidate.match_key)
+                comparable += 1
+                manual_review_required.append(
+                    {
+                        "reason": "date_mismatch",
+                        "season": row.season,
+                        "home_canonical": row.home_canonical,
+                        "away_canonical": row.away_canonical,
+                        "primary_date": row.date,
+                        "check_date": same_team_candidate.date,
+                    }
+                )
+                continue
+            reversed_candidates = check_by_reversed_match.get(row.match_key, [])
+            if reversed_candidates:
+                reversed_row = reversed_candidates[0]
+                seen_check_keys.add(reversed_row.match_key)
                 comparable += 1
                 manual_review_required.append(
                     {
@@ -424,21 +461,8 @@ def compare_csl_sources(
             degraded_rows.append(_with_agreement(row, "missing_in_check"))
             continue
 
-        seen_check_keys.add(check_row.team_key)
+        seen_check_keys.add(check_row.match_key)
         comparable += 1
-        if check_row.date != row.date:
-            manual_review_required.append(
-                {
-                    "reason": "date_mismatch",
-                    "season": row.season,
-                    "home_canonical": row.home_canonical,
-                    "away_canonical": row.away_canonical,
-                    "primary_date": row.date,
-                    "check_date": check_row.date,
-                }
-            )
-            continue
-
         date_home_away_agree += 1
         if (check_row.home_score, check_row.away_score) != (row.home_score, row.away_score):
             score_mismatches.append(
@@ -474,7 +498,7 @@ def compare_csl_sources(
             "away_canonical": row.away_canonical,
         }
         for row in check.rows
-        if row.team_key not in seen_check_keys
+        if row.match_key not in seen_check_keys
     ]
     primary_issue_count = len(primary.issues)
     primary_required_fields_coverage = _rate(primary.valid_rows, primary.valid_rows + primary_issue_count)
@@ -485,6 +509,16 @@ def compare_csl_sources(
             if issue.reason == "team_alias_unmatched" and issue.value is not None
         }
     )
+    degraded_candidates = [
+        {
+            "reason": row.source_agreement,
+            "season": row.season,
+            "date": row.date,
+            "home_canonical": row.home_canonical,
+            "away_canonical": row.away_canonical,
+        }
+        for row in degraded_rows
+    ]
     quality = {
         "primary_required_fields_coverage": primary_required_fields_coverage,
         "dual_source_score_agreement": _rate(score_agree, comparable),
@@ -493,16 +527,7 @@ def compare_csl_sources(
         "score_mismatches": score_mismatches,
         "manual_review_required": manual_review_required,
         "missing_in_primary": missing_in_primary,
-        "degraded_candidates": [
-            {
-                "reason": row.source_agreement,
-                "season": row.season,
-                "date": row.date,
-                "home_canonical": row.home_canonical,
-                "away_canonical": row.away_canonical,
-            }
-            for row in degraded_rows
-        ],
+        "degraded_candidates": degraded_candidates,
     }
     pending_gate = _build_pending_gate(
         seasons={row.season for row in primary.rows},
@@ -512,6 +537,7 @@ def compare_csl_sources(
         team_alias_unmatched=team_alias_unmatched,
         manual_review_required=manual_review_required,
         missing_in_primary=missing_in_primary,
+        degraded_candidates=degraded_candidates,
         valid_finished_matches=len(clean_rows),
         min_valid_matches=min_valid_matches,
     )
