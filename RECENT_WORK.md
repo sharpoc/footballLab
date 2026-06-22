@@ -2,6 +2,13 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-22 P9.3 中超历史赛果来源与清洗设计
+
+- 新增设计文档：`docs/superpowers/specs/2026-06-22-csl-results-source-cleaning-design.md`。
+- 已确认首版覆盖 `2023-2026` 中超联赛赛果，采用“双源交叉校验”：开源结构化主源 + 官方/权威校验源。
+- 设计只允许 Phase 0 公开源只读探测，不使用密钥、不接生产链路、不抓真实数据入库、不写线上、不部署、不更新 LaunchAgent。
+- 设计定义进入 `club_rating` replay 前的质量门槛，并明确 P9.3 不解除 `club_rating_pending`，不输出下注金额或执行建议。
+
 ## 2026-06-22 P9.2 中超 Club Rating 本地基线
 
 - 新增 `worldcup.club_rating`：只读本地 `data/cache/club_results_<competition_id>.csv`，按 competition 独立解析、canonicalize 俱乐部名称并重放 Elo-style rating。
