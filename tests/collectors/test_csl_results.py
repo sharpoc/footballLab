@@ -30,9 +30,19 @@ def test_parse_csl_result_rows_returns_finished_clean_rows():
 
     assert result.raw_rows == 1
     assert result.valid_rows == 1
+    assert result.competition_id == "csl_2026"
+    assert result.source_id == "primary"
+    assert result.source_role == "primary"
     assert result.issues == []
+    summary = result.to_summary()
+    assert summary["competition_id"] == "csl_2026"
+    assert summary["source_id"] == "primary"
+    assert summary["source_role"] == "primary"
+    assert summary["valid_rows"] == 1
     parsed = result.rows[0]
     assert parsed.competition_id == "csl_2026"
+    assert parsed.source_role == "primary"
+    assert parsed.source_agreement == "uncompared"
     assert parsed.season == "2026"
     assert parsed.date == "2026-03-01"
     assert parsed.home_team_raw == "Shanghai Port"
@@ -67,6 +77,8 @@ def test_parse_csl_result_rows_blocks_unknown_team_without_slug_fallback():
     assert result.issues[0].reason == "team_alias_unmatched"
     assert result.issues[0].field == "home_team"
     assert result.issues[0].value == "Unknown FC"
+    assert result.issues[0].source_role == "primary"
+    assert result.issues[0].to_dict()["source_role"] == "primary"
 
 
 def test_parse_csl_result_rows_records_invalid_score_and_bad_date():

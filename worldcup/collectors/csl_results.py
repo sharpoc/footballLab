@@ -24,11 +24,21 @@ REPLAY_FIELDS = [
 @dataclass(frozen=True)
 class CSLParseIssue:
     source_id: str
+    source_role: str
     row_number: int
     reason: str
     field: str
     value: str | None = None
-    message: str | None = None
+
+    def to_dict(self) -> dict[str, str | int | None]:
+        return {
+            "source_id": self.source_id,
+            "source_role": self.source_role,
+            "row_number": self.row_number,
+            "reason": self.reason,
+            "field": self.field,
+            "value": self.value,
+        }
 
 
 @dataclass(frozen=True)
@@ -47,6 +57,8 @@ class CSLResultRow:
     neutral: bool
     status: str
     source_id: str
+    source_role: str
+    source_agreement: str = "uncompared"
     source_primary_id: str | None = None
     source_primary_url: str | None = None
     source_check_id: str | None = None
@@ -78,13 +90,26 @@ class CSLResultRow:
 
 @dataclass(frozen=True)
 class CSLParseResult:
+    competition_id: str
+    source_id: str
+    source_role: str
+    raw_rows: int = 0
     rows: list[CSLResultRow] = field(default_factory=list)
     issues: list[CSLParseIssue] = field(default_factory=list)
-    raw_rows: int = 0
 
     @property
     def valid_rows(self) -> int:
         return len(self.rows)
+
+    def to_summary(self) -> dict[str, object]:
+        return {
+            "competition_id": self.competition_id,
+            "source_id": self.source_id,
+            "source_role": self.source_role,
+            "raw_rows": self.raw_rows,
+            "valid_rows": self.valid_rows,
+            "issues": [issue.to_dict() for issue in self.issues],
+        }
 
 
 def _as_str(row: dict[str, Any], field_name: str) -> str:
@@ -96,19 +121,19 @@ def _as_str(row: dict[str, Any], field_name: str) -> str:
 
 def _issue(
     source_id: str,
+    source_role: str,
     row_number: int,
     reason: str,
     field_name: str,
     value: str | None = None,
-    message: str | None = None,
 ) -> CSLParseIssue:
     return CSLParseIssue(
         source_id=source_id,
+        source_role=source_role,
         row_number=row_number,
         reason=reason,
         field=field_name,
         value=value,
-        message=message,
     )
 
 
@@ -173,38 +198,38 @@ def parse_csl_result_rows(
         row_issues: list[CSLParseIssue] = []
 
         if season not in CSL_SEASONS:
-            row_issues.append(_issue(source_id, row_number, "invalid_season", "season", season))
+            row_issues.append(_issue(source_id, source_role, row_number, "invalid_season", "season", season))
 
         parsed_date = _parse_iso_date(match_date)
         if parsed_date is None:
-            row_issues.append(_issue(source_id, row_number, "invalid_date", "date", match_date))
+            row_issues.append(_issue(source_id, source_role, row_number, "invalid_date", "date", match_date))
 
         home_score = _parse_score(home_score_raw)
         if home_score is None:
-            row_issues.append(_issue(source_id, row_number, "invalid_score", "home_score", home_score_raw))
+            row_issues.append(_issue(source_id, source_role, row_number, "invalid_score", "home_score", home_score_raw))
 
         away_score = _parse_score(away_score_raw)
         if away_score is None:
-            row_issues.append(_issue(source_id, row_number, "invalid_score", "away_score", away_score_raw))
+            row_issues.append(_issue(source_id, source_role, row_number, "invalid_score", "away_score", away_score_raw))
 
         neutral = _parse_neutral(neutral_raw)
         if neutral is None:
-            row_issues.append(_issue(source_id, row_number, "invalid_neutral", "neutral", neutral_raw))
+            row_issues.append(_issue(source_id, source_role, row_number, "invalid_neutral", "neutral", neutral_raw))
 
         home_alias = match_known_club_alias(competition_id, home_team)
         if home_alias.canonical_key is None:
-            row_issues.append(_issue(source_id, row_number, "team_alias_unmatched", "home_team", home_team))
+            row_issues.append(_issue(source_id, source_role, row_number, "team_alias_unmatched", "home_team", home_team))
 
         away_alias = match_known_club_alias(competition_id, away_team)
         if away_alias.canonical_key is None:
-            row_issues.append(_issue(source_id, row_number, "team_alias_unmatched", "away_team", away_team))
+            row_issues.append(_issue(source_id, source_role, row_number, "team_alias_unmatched", "away_team", away_team))
 
         status, quality_flags, status_issue = _parse_status(
             status_raw,
             home_score is not None and away_score is not None,
         )
         if status_issue is not None:
-            row_issues.append(_issue(source_id, row_number, status_issue, "status", status_raw))
+            row_issues.append(_issue(source_id, source_role, row_number, status_issue, "status", status_raw))
 
         if row_issues:
             issues.extend(row_issues)
@@ -235,6 +260,7 @@ def parse_csl_result_rows(
             neutral=neutral,
             status=status,
             source_id=source_id,
+            source_role=source_role,
             source_primary_id=source_match_id if source_role == "primary" else None,
             source_primary_url=source_url if source_role == "primary" else None,
             source_check_id=source_match_id if source_role == "check" else None,
@@ -247,6 +273,7 @@ def parse_csl_result_rows(
             issues.append(
                 _issue(
                     source_id,
+                    source_role,
                     row_number,
                     "duplicate_candidate",
                     "match_key",
@@ -257,4 +284,11 @@ def parse_csl_result_rows(
         seen_match_keys.add(parsed.match_key)
         parsed_rows.append(parsed)
 
-    return CSLParseResult(rows=parsed_rows, issues=issues, raw_rows=len(rows))
+    return CSLParseResult(
+        competition_id=competition_id,
+        source_id=source_id,
+        source_role=source_role,
+        raw_rows=len(rows),
+        rows=parsed_rows,
+        issues=issues,
+    )
