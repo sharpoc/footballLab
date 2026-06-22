@@ -1,3 +1,4 @@
+import csv
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -61,6 +62,24 @@ def _write_csl_odds_cache(cache_dir: Path) -> None:
     )
 
 
+def _write_club_results_cache(cache_dir: Path, rows: list[dict[str, str]]) -> None:
+    fieldnames = [
+        "competition_id",
+        "season",
+        "date",
+        "home_team",
+        "away_team",
+        "home_score",
+        "away_score",
+        "neutral",
+    ]
+    with (cache_dir / "club_results_csl_2026.csv").open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
 def test_cap_signals_for_pending_club_rating_caps_strong_grades():
     signals = [
         Signal(MarketType.X12, "home", Grade.S, 0.12, 0.08, "OK", ["value_edge"]),
@@ -115,6 +134,113 @@ def test_build_league_snapshot_from_cache_builds_local_csl_snapshot():
         assert match["signals"]
         assert all(signal["grade"] not in ("S", "A") for signal in match["signals"])
         assert any("club_rating_pending" in signal["reasons"] for signal in match["signals"])
+
+
+def test_build_league_snapshot_reports_missing_club_rating_quality():
+    with TemporaryDirectory() as tmp:
+        cache_dir = Path(tmp) / "cache"
+        _write_csl_odds_cache(cache_dir)
+
+        snapshot = build_league_snapshot_from_cache(
+            cache_dir,
+            snapshot_at="2026-06-22T09:00:00+00:00",
+        )
+
+        club_quality = snapshot["data_quality"]["club_rating"]
+        assert club_quality["mode"] == "missing"
+        assert club_quality["source"].endswith("club_results_csl_2026.csv")
+        assert club_quality["competition_id"] == "csl_2026"
+        assert club_quality["matches_replayed"] == 0
+        assert club_quality["teams_rated"] == 0
+        assert club_quality["sample_too_small"] is True
+        assert club_quality["missing_teams"] == []
+
+
+def test_build_league_snapshot_uses_sample_club_ratings_but_keeps_signal_cap():
+    with TemporaryDirectory() as tmp:
+        cache_dir = Path(tmp) / "cache"
+        _write_csl_odds_cache(cache_dir)
+        _write_club_results_cache(
+            cache_dir,
+            [
+                {
+                    "competition_id": "csl_2026",
+                    "season": "2026",
+                    "date": "2026-03-01",
+                    "home_team": "Shanghai Port",
+                    "away_team": "Shandong Taishan",
+                    "home_score": "2",
+                    "away_score": "0",
+                    "neutral": "0",
+                },
+                {
+                    "competition_id": "csl_2026",
+                    "season": "2026",
+                    "date": "2026-03-08",
+                    "home_team": "Shanghai Port",
+                    "away_team": "Beijing Guoan",
+                    "home_score": "1",
+                    "away_score": "0",
+                    "neutral": "0",
+                },
+            ],
+        )
+
+        snapshot = build_league_snapshot_from_cache(
+            cache_dir,
+            snapshot_at="2026-06-22T09:00:00+00:00",
+            club_rating_min_matches=2,
+        )
+
+        club_quality = snapshot["data_quality"]["club_rating"]
+        assert club_quality["mode"] == "sample_replay"
+        assert club_quality["matches_replayed"] == 2
+        assert club_quality["teams_rated"] == 3
+        assert club_quality["missing_teams"] == []
+        assert "club_rating_pending" in snapshot["data_quality"]["warnings"]
+
+        match = snapshot["matches"][0]
+        assert match["elo"]["home"] > 1500
+        assert match["elo"]["away"] < 1500
+        assert match["signals"]
+        assert all(signal["grade"] not in ("S", "A") for signal in match["signals"])
+        assert any("club_rating_pending" in signal["reasons"] for signal in match["signals"])
+
+
+def test_build_league_snapshot_falls_back_when_fixture_team_missing_rating():
+    with TemporaryDirectory() as tmp:
+        cache_dir = Path(tmp) / "cache"
+        _write_csl_odds_cache(cache_dir)
+        _write_club_results_cache(
+            cache_dir,
+            [
+                {
+                    "competition_id": "csl_2026",
+                    "season": "2026",
+                    "date": "2026-03-01",
+                    "home_team": "Shanghai Port",
+                    "away_team": "Beijing Guoan",
+                    "home_score": "2",
+                    "away_score": "0",
+                    "neutral": "0",
+                }
+            ],
+        )
+
+        snapshot = build_league_snapshot_from_cache(
+            cache_dir,
+            snapshot_at="2026-06-22T09:00:00+00:00",
+            club_rating_min_matches=1,
+        )
+
+        club_quality = snapshot["data_quality"]["club_rating"]
+        assert club_quality["mode"] == "sample_replay"
+        assert club_quality["missing_teams"] == ["shandong_taishan"]
+        assert "club_rating_missing" in snapshot["data_quality"]["warnings"]
+
+        match = snapshot["matches"][0]
+        assert match["elo"] == {"home": 1500, "away": 1500}
+        assert all(signal["grade"] not in ("S", "A") for signal in match["signals"])
 
 
 def test_build_league_snapshot_reports_invalid_league_odds_quality():
