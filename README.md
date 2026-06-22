@@ -79,6 +79,7 @@ worldcup/
   line_move_report.py           # 赔率/让球线移动分桶报告
   daily_eval.py                 # 赛后每日 results/eval/backtest 编排与日报
   postmatch_diagnostics.py      # 完赛 S/A 信号本地诊断报告
+  csl_results_probe.py          # 中超历史赛果本地样例清洗与双源诊断 CLI
   lineup_audit.py               # 官方首发抓取 × snapshot/post-information odds 本地审计
   scores_capture.py             # The Odds API scores → 本地 results CSV（默认 dry-run）
   lineups_refresh.py            # FIFA public API 官方首发 → 本地 lineup cache（默认 dry-run）
@@ -127,6 +128,8 @@ worldcup/
     theoddsapi_scores.py        # The Odds API scores 离线解析为 MatchResult
     eloratings.py               # eloratings TSV 解析
     team_aliases.py             # 队名规范化与别名
+    club_aliases.py             # 俱乐部联赛队名规范化与别名
+    csl_results.py              # 中超历史赛果本地样例解析、双源校验与 replay candidate 输出
   engine/
     odds.py                     # 赔率去水、聚合
     elo.py                      # Elo 1X2 概率
@@ -191,6 +194,30 @@ python3 -m worldcup.league_runner --competition csl_2026 --cache-dir data/cache 
 ```
 
 缺少 CSV、样本不足、CSV 无效或 fixture 球队缺少 rating 时，snapshot 会在 `data_quality.club_rating` 和 `data_quality.warnings` 标记原因，并回退到 1500 占位。真实中超历史数据来源、清洗规则、回测和解除强信号压制需后续单独确认。
+
+### CSL Historical Results Probe
+
+P9.3 新增本地-only 中超历史赛果 probe，用于从人工保存的 2023-2026 公开源样例中做严格 alias、双源比分/日期校验、质量门槛诊断和可选 replay candidate CSV。样例默认放在被忽略路径，例如 `data/probe/`；诊断默认写入 `data/local/diagnostics/`。
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_results_probe \
+  --competition csl_2026 \
+  --primary-source-id <primary_id> \
+  --primary-sample data/probe/csl_results_primary_sample.csv \
+  --check-source-id <check_id> \
+  --check-sample data/probe/csl_results_check_sample.csv \
+  --output data/local/diagnostics/csl_results_source_probe.json
+```
+
+该 probe 只读取本地 CSV/JSON 样例，不联网、不读取 `.env`、不调用 The Odds API、不消耗 quota、不发布 snapshot、不部署、不更新 LaunchAgent、不解除 `club_rating_pending`。只有显式传入 `--write-replay-candidate` 且本地质量门槛允许 `can_enter_replay=true` 时，才会写出 replay candidate CSV；该 candidate 不会自动安装到 `data/cache/club_results_csl_2026.csv`。
+
+候选 CSV 仍沿用 P9.2 replay 契约：
+
+```text
+competition_id,season,date,home_team,away_team,home_score,away_score,neutral
+```
+
+双源冲突、未知 alias、主客队反转、比分冲突、日期冲突、主源缺校验源或校验源缺主源都会进入 diagnostics；`pending_gate.can_lift_club_rating_pending` 在 P9.3 中始终为 `false`。
 
 ## 本地验证
 

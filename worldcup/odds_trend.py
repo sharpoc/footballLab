@@ -212,6 +212,180 @@ def build_odds_movement(trend: dict[str, dict[str, list]]) -> dict:
     return movement
 
 
+def _quality_allows_shadow_support(movement: dict) -> bool:
+    quality = movement.get("quality") or {}
+    return bool(quality.get("enough_points")) and not bool(quality.get("noisy_or_sparse"))
+
+
+def _movement_base(movement: dict) -> dict:
+    return {
+        "schema_version": 1,
+        "activation": "shadow_only",
+        "source": "odds_movement",
+        "quality": movement.get("quality") or {},
+    }
+
+
+def _odds_direction_supports(block: dict) -> bool:
+    return block.get("direction") == "shortened"
+
+
+def _ah_signal_side(selection: str) -> str | None:
+    if selection.startswith("home_"):
+        return "home"
+    if selection.startswith("away_"):
+        return "away"
+    return None
+
+
+def _ah_line_supports(side: str | None, direction: str | None) -> bool:
+    if side == "home":
+        return direction == "home_strengthened"
+    if side == "away":
+        return direction == "away_strengthened"
+    return False
+
+
+def _ou_line_supports(selection: str, line_move: float | None) -> bool:
+    if line_move is None or line_move == 0:
+        return False
+    if selection == "over":
+        return line_move > 0
+    if selection == "under":
+        return line_move < 0
+    return False
+
+
+def _signal_movement_shadow(signal: dict, movement: dict) -> dict | None:
+    market_type = signal.get("market_type")
+    selection = str(signal.get("selection") or "")
+    usable = _quality_allows_shadow_support(movement)
+
+    if market_type == "1X2_90min":
+        block = ((movement.get("1x2") or {}).get(selection) or {})
+        odds_support = _odds_direction_supports(block)
+        return {
+            **_movement_base(movement),
+            "market_odds_direction": block.get("direction"),
+            "odds_direction_supports_signal": odds_support,
+            "line_direction_supports_signal": False,
+            "supports_signal": usable and odds_support,
+        }
+
+    if market_type == "AsianHandicap_90min":
+        side = _ah_signal_side(selection)
+        block = ((movement.get("ah_main") or {}).get(side or "") or {})
+        line_direction = (movement.get("ah_main") or {}).get("favorite_line_direction")
+        odds_support = _odds_direction_supports(block)
+        line_support = _ah_line_supports(side, line_direction)
+        return {
+            **_movement_base(movement),
+            "market_odds_direction": block.get("direction"),
+            "line_direction": line_direction,
+            "odds_direction_supports_signal": odds_support,
+            "line_direction_supports_signal": line_support,
+            "supports_signal": usable and (odds_support or line_support),
+        }
+
+    if market_type == "OverUnder_90min":
+        block = ((movement.get("ou") or {}).get(selection) or {})
+        line_move = (movement.get("ou") or {}).get("total_line_move")
+        odds_support = _odds_direction_supports(block)
+        line_support = _ou_line_supports(selection, line_move)
+        return {
+            **_movement_base(movement),
+            "market_odds_direction": block.get("direction"),
+            "line_move": line_move,
+            "odds_direction_supports_signal": odds_support,
+            "line_direction_supports_signal": line_support,
+            "supports_signal": usable and (odds_support or line_support),
+        }
+
+    return None
+
+
+def _attach_signal_movement_shadow(match: dict[str, Any], movement: dict) -> None:
+    for signal in match.get("signals") or []:
+        shadow = _signal_movement_shadow(signal, movement)
+        if shadow is not None:
+            signal["movement_shadow"] = shadow
+
+
+_OFFICIAL_GRADES = {"S", "A"}
+_CANDIDATE_HARD_VETO_REASONS = {
+    "stale_odds",
+    "few_books",
+    "market_dispersion",
+    "longshot_uncertainty",
+    "unconfirmed_backup",
+    "line_changed_unknown",
+    "model_disagreement",
+}
+
+
+def _lineup_allows_ah_promotion(match: dict[str, Any]) -> bool:
+    shadow = ((match.get("model") or {}).get("lineup_shadow") or {})
+    return (
+        shadow.get("confirmed_starting_xi") is True
+        and shadow.get("post_information_odds_available") is True
+    )
+
+
+def _has_hard_veto(signal: dict[str, Any]) -> bool:
+    return any(str(reason) in _CANDIDATE_HARD_VETO_REASONS for reason in signal.get("reasons") or [])
+
+
+def _is_supported_ah_candidate(signal: dict[str, Any], match: dict[str, Any]) -> bool:
+    raw_grade = str(signal.get("raw_grade") or "")
+    return (
+        signal.get("market_type") == "AsianHandicap_90min"
+        and raw_grade in _OFFICIAL_GRADES
+        and signal.get("grade") not in _OFFICIAL_GRADES
+        and signal.get("candidate_grade") == f"{raw_grade}-candidate"
+        and ((signal.get("ah_validation_shadow") or {}).get("candidate_validated") is True)
+        and ((signal.get("movement_shadow") or {}).get("supports_signal") is True)
+        and not _has_hard_veto(signal)
+        and _lineup_allows_ah_promotion(match)
+    )
+
+
+def _promote_ah_candidate(signal: dict[str, Any]) -> None:
+    from_grade = signal.get("grade")
+    to_grade = signal.get("raw_grade")
+    candidate_grade = signal.pop("candidate_grade", None)
+    candidate_reasons = list(signal.pop("candidate_reasons", []) or [])
+    reasons = [
+        str(reason)
+        for reason in signal.get("reasons") or []
+        if str(reason) != "ah_market_edge_missing"
+    ]
+    if "ah_candidate_promoted" not in reasons:
+        reasons.append("ah_candidate_promoted")
+    signal["grade"] = to_grade
+    signal["reasons"] = reasons
+    signal["ah_market_validated"] = True
+    signal["promotion"] = {
+        "schema_version": 1,
+        "activation": "official",
+        "method": "ah_candidate_v1",
+        "from_grade": from_grade,
+        "to_grade": to_grade,
+        "source_candidate_grade": candidate_grade,
+        "validated_by": ["ah_validation_shadow", "movement_shadow"],
+        "candidate_reasons": candidate_reasons,
+        "promotion_reasons": [
+            "ah_validation_shadow_candidate_validated",
+            "movement_shadow_supports_signal",
+        ],
+    }
+
+
+def _promote_supported_ah_candidates(match: dict[str, Any]) -> None:
+    for signal in match.get("signals") or []:
+        if _is_supported_ah_candidate(signal, match):
+            _promote_ah_candidate(signal)
+
+
 def extract_match_trend(
     snapshots: list[dict],
     home_canonical: str,
@@ -270,4 +444,7 @@ def attach_trends(
             continue
         trend = extract_match_trend(history, home, away)
         match["odds_trend"] = trend
-        match["odds_movement"] = build_odds_movement(trend)
+        movement = build_odds_movement(trend)
+        match["odds_movement"] = movement
+        _attach_signal_movement_shadow(match, movement)
+        _promote_supported_ah_candidates(match)

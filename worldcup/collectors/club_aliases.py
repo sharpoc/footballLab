@@ -51,3 +51,12 @@ def match_club_alias(competition_id: str, name: str) -> TeamAliasResult:
     if canonical in known:
         return TeamAliasResult(name, canonical)
     return TeamAliasResult(name, None, name)
+
+
+def match_known_club_alias(competition_id: str, name: str) -> TeamAliasResult:
+    stripped = name.strip()
+    aliases = _KNOWN_BY_COMPETITION.get(competition_id, {})
+    canonical = aliases.get(stripped.lower())
+    if canonical is None:
+        return TeamAliasResult(stripped, None, stripped)
+    return TeamAliasResult(stripped, canonical)

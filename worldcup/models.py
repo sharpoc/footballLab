@@ -56,3 +56,6 @@ class Signal:
     total_mu_source: str | None = None
     same_market_total_anchor: bool | None = None
     ah_market_validated: bool | None = None
+    ah_validation_shadow: dict | None = None
+    candidate_grade: str | None = None
+    candidate_reasons: list[str] = field(default_factory=list)
