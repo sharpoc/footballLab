@@ -60,6 +60,36 @@ def test_read_sample_rows_supports_csv_and_json_files():
         assert read_sample_rows(json_path)[0]["home_score"] == "1"
 
 
+def test_read_sample_rows_rejects_unsupported_suffix():
+    with TemporaryDirectory() as tmp:
+        path = Path(tmp) / "sample.txt"
+        path.write_text("not a supported sample format", encoding="utf-8")
+
+        try:
+            read_sample_rows(path)
+        except ValueError as exc:
+            assert "unsupported sample file suffix" in str(exc)
+        else:
+            raise AssertionError("expected ValueError")
+
+
+def test_read_sample_rows_rejects_invalid_json_shape():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        object_path = root / "object.json"
+        scalar_list_path = root / "scalar-list.json"
+        object_path.write_text(json.dumps({}), encoding="utf-8")
+        scalar_list_path.write_text(json.dumps([1]), encoding="utf-8")
+
+        for path in [object_path, scalar_list_path]:
+            try:
+                read_sample_rows(path)
+            except ValueError as exc:
+                assert "sample JSON must be a list of row objects" in str(exc)
+            else:
+                raise AssertionError(f"expected ValueError for {path.name}")
+
+
 def test_probe_main_writes_diagnostics_and_candidate_without_network():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -145,4 +175,40 @@ def test_probe_main_does_not_write_replay_candidate_when_gate_fails():
         payload = json.loads(output_path.read_text(encoding="utf-8"))
         assert code == 1
         assert payload["quality"]["score_mismatches"]
+        assert replay_path.exists() is False
+
+
+def test_probe_main_returns_zero_for_gate_only_failure_without_candidate():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        primary_path = root / "primary.csv"
+        check_path = root / "check.csv"
+        output_path = root / "diagnostics.json"
+        replay_path = root / "candidate.csv"
+        _write_csv(primary_path, [_sample_row()])
+        _write_csv(check_path, [_sample_row()])
+
+        code = main(
+            [
+                "--competition",
+                "csl_2026",
+                "--primary-source-id",
+                "primary",
+                "--primary-sample",
+                str(primary_path),
+                "--check-source-id",
+                "check",
+                "--check-sample",
+                str(check_path),
+                "--output",
+                str(output_path),
+                "--write-replay-candidate",
+                str(replay_path),
+            ]
+        )
+
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+        assert code == 0
+        assert payload["quality"]["manual_review_required"] == []
+        assert payload["pending_gate"]["can_enter_replay"] is False
         assert replay_path.exists() is False
