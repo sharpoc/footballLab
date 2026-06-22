@@ -1,9 +1,12 @@
 import csv
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from worldcup.league_runner import build_league_snapshot_from_cache, main
+from worldcup.club_rating import ClubRating, ClubRatingPool
+from worldcup.collectors.models import Fixture
+from worldcup.league_runner import _ratings_for_fixture, build_league_snapshot_from_cache, main
 from worldcup.local_runner import cap_signals_for_pending_club_rating
 from worldcup.models import Grade, MarketType, Signal
 
@@ -154,6 +157,40 @@ def test_build_league_snapshot_reports_missing_club_rating_quality():
         assert club_quality["teams_rated"] == 0
         assert club_quality["sample_too_small"] is True
         assert club_quality["missing_teams"] == []
+        assert "club_rating_missing" in snapshot["data_quality"]["warnings"]
+        assert "club_rating_sample_too_small" not in snapshot["data_quality"]["warnings"]
+
+
+def test_build_league_snapshot_reports_invalid_club_rating_without_sample_warning():
+    with TemporaryDirectory() as tmp:
+        cache_dir = Path(tmp) / "cache"
+        _write_csl_odds_cache(cache_dir)
+        _write_club_results_cache(
+            cache_dir,
+            [
+                {
+                    "competition_id": "csl_2026",
+                    "season": "2026",
+                    "date": "not-a-date",
+                    "home_team": "Shanghai Port",
+                    "away_team": "Shandong Taishan",
+                    "home_score": "2",
+                    "away_score": "0",
+                    "neutral": "0",
+                }
+            ],
+        )
+
+        snapshot = build_league_snapshot_from_cache(
+            cache_dir,
+            snapshot_at="2026-06-22T09:00:00+00:00",
+        )
+
+        club_quality = snapshot["data_quality"]["club_rating"]
+        assert club_quality["mode"] == "invalid"
+        assert club_quality["errors"] == ["no_valid_rows"]
+        assert "club_rating_invalid" in snapshot["data_quality"]["warnings"]
+        assert "club_rating_sample_too_small" not in snapshot["data_quality"]["warnings"]
 
 
 def test_build_league_snapshot_uses_sample_club_ratings_but_keeps_signal_cap():
@@ -243,6 +280,29 @@ def test_build_league_snapshot_falls_back_when_fixture_team_missing_rating():
         assert all(signal["grade"] not in ("S", "A") for signal in match["signals"])
 
 
+def test_ratings_for_fixture_falls_back_when_canonical_is_missing_without_recording_none():
+    fixture = Fixture(
+        source_match_no=None,
+        kickoff_at_utc=datetime(2026, 6, 24, 11, 35, tzinfo=timezone.utc),
+        kickoff_time_raw="2026-06-24T11:35:00Z",
+        home_team_name="Unknown Club",
+        away_team_name="Shandong Taishan",
+        home_canonical=None,
+        away_canonical="shandong_taishan",
+    )
+    rating_pool = ClubRatingPool(
+        competition_id="csl_2026",
+        ratings={"shandong_taishan": ClubRating("shandong_taishan", 1520, 1)},
+        matches_replayed=1,
+    )
+
+    home_rating, away_rating, missing = _ratings_for_fixture(fixture, rating_pool)
+
+    assert home_rating.rating == 1500
+    assert away_rating.rating == 1500
+    assert missing == []
+
+
 def test_build_league_snapshot_reports_invalid_league_odds_quality():
     with TemporaryDirectory() as tmp:
         cache_dir = Path(tmp) / "cache"
@@ -293,3 +353,42 @@ def test_main_accepts_competition_alias_without_network():
 
         assert result == 0
         assert out.exists()
+
+
+def test_main_passes_club_rating_min_matches_to_snapshot_builder():
+    with TemporaryDirectory() as tmp:
+        cache_dir = Path(tmp) / "cache"
+        out = Path(tmp) / "league_snapshot.json"
+        _write_csl_odds_cache(cache_dir)
+        _write_club_results_cache(
+            cache_dir,
+            [
+                {
+                    "competition_id": "csl_2026",
+                    "season": "2026",
+                    "date": "2026-03-01",
+                    "home_team": "Shanghai Port",
+                    "away_team": "Shandong Taishan",
+                    "home_score": "2",
+                    "away_score": "0",
+                    "neutral": "0",
+                }
+            ],
+        )
+
+        result = main(
+            [
+                "--competition",
+                "csl_2026",
+                "--cache-dir",
+                str(cache_dir),
+                "--out",
+                str(out),
+                "--club-rating-min-matches",
+                "1",
+            ]
+        )
+
+        snapshot = json.loads(out.read_text(encoding="utf-8"))
+        assert result == 0
+        assert snapshot["data_quality"]["club_rating"]["mode"] == "sample_replay"

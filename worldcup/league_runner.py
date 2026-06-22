@@ -66,11 +66,12 @@ def _ratings_for_fixture(
     home_rating = rating_pool.to_elo_rating(fixture.home_canonical)
     away_rating = rating_pool.to_elo_rating(fixture.away_canonical)
     missing = []
+    canonical_missing = fixture.home_canonical is None or fixture.away_canonical is None
     if home_rating is None and fixture.home_canonical is not None:
         missing.append(fixture.home_canonical)
     if away_rating is None and fixture.away_canonical is not None:
         missing.append(fixture.away_canonical)
-    if missing:
+    if canonical_missing or missing:
         return (
             _placeholder_rating(fixture.home_canonical),
             _placeholder_rating(fixture.away_canonical),
@@ -141,14 +142,14 @@ def build_league_snapshot_from_cache(
         warnings.append("odds_event_only")
     if club_rating_pending:
         warnings.append("club_rating_pending")
-    if club_rating_result.quality.mode == "missing" or missing_rating_teams:
-        warnings.append("club_rating_missing")
-    if club_rating_result.quality.sample_too_small:
-        warnings.append("club_rating_sample_too_small")
-    if club_rating_result.quality.mode == "invalid":
-        warnings.append("club_rating_invalid")
-
     club_quality = club_rating_result.quality.with_missing_teams(missing_rating_teams)
+    if club_quality.mode == "missing" or missing_rating_teams:
+        warnings.append("club_rating_missing")
+    if club_quality.mode == "sample_too_small":
+        warnings.append("club_rating_sample_too_small")
+    if club_quality.mode == "invalid":
+        warnings.append("club_rating_invalid")
+    warnings = sorted(set(warnings))
 
     return {
         "snapshot_at": observed_at,
