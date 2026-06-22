@@ -4,6 +4,7 @@ import csv
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+import re
 
 from worldcup.collectors.club_aliases import canonicalize_club
 from worldcup.collectors.models import EloRating
@@ -11,6 +12,7 @@ from worldcup.elo_replay import DEFAULT_HOME_ADV, DEFAULT_INITIAL_RATING, update
 
 DEFAULT_CLUB_K = 30.0
 DEFAULT_MIN_MATCHES = 20
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 @dataclass(frozen=True)
@@ -246,6 +248,8 @@ def _load_club_results_csv_with_skipped(
 
 def _parse_result_row(row: dict[str, str], competition_id: str) -> ClubResult | None:
     raw_date = (row.get("date") or "").strip()
+    if not _DATE_RE.match(raw_date):
+        return None
     try:
         date.fromisoformat(raw_date)
     except ValueError:

@@ -148,6 +148,26 @@ def test_load_club_rating_pool_reports_sample_too_small_and_invalid_rows():
         assert result.quality.sample_too_small is True
 
 
+def test_load_club_rating_pool_rejects_non_contract_date_format():
+    with TemporaryDirectory() as tmp:
+        cache_dir = Path(tmp)
+        path = cache_dir / "club_results_csl_2026.csv"
+        _write_results(
+            path,
+            [
+                _row("Shanghai Port", "Shandong Taishan", "2", "0", date="20260301"),
+                _row("Shanghai Port", "Beijing Guoan", "1", "0", date="2026-03-08"),
+            ],
+        )
+
+        result = load_club_rating_pool(cache_dir, "csl_2026", min_matches=1)
+
+        assert result.pool is not None
+        assert result.quality.mode == "sample_replay"
+        assert result.quality.matches_replayed == 1
+        assert result.quality.skipped_rows == 1
+
+
 def test_load_club_rating_pool_reports_csv_parse_error_as_invalid():
     with TemporaryDirectory() as tmp:
         cache_dir = Path(tmp)
