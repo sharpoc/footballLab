@@ -166,6 +166,10 @@ def _source_value(row: dict[str, Any], field_name: str) -> str | None:
     return value or None
 
 
+def _source_match_id(row: dict[str, Any]) -> str | None:
+    return _source_value(row, "source_match_id") or _source_value(row, "match_id")
+
+
 def _parse_status(status: str, has_scores: bool) -> tuple[str | None, tuple[str, ...], str | None]:
     normalized = status.lower()
     if normalized in FINISHED_STATUSES:
@@ -243,7 +247,7 @@ def parse_csl_result_rows(
         assert home_alias.canonical_key is not None
         assert away_alias.canonical_key is not None
 
-        source_match_id = _source_value(row, "source_match_id")
+        source_match_id = _source_match_id(row)
         source_url = _source_value(row, "source_url")
         parsed = CSLResultRow(
             competition_id=competition_id,

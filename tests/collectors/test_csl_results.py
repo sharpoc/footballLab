@@ -96,6 +96,20 @@ def test_parse_csl_result_rows_records_invalid_score_and_bad_date():
     assert [issue.reason for issue in result.issues] == ["invalid_score", "invalid_date"]
 
 
+def test_parse_csl_result_rows_records_invalid_neutral():
+    result = parse_csl_result_rows(
+        [_row(neutral="maybe")],
+        competition_id="csl_2026",
+        source_id="primary",
+        source_role="primary",
+    )
+
+    assert result.rows == []
+    assert result.issues[0].reason == "invalid_neutral"
+    assert result.issues[0].field == "neutral"
+    assert result.issues[0].value == "maybe"
+
+
 def test_parse_csl_result_rows_excludes_unfinished_status():
     result = parse_csl_result_rows(
         [_row(status="postponed")],
@@ -133,3 +147,24 @@ def test_parse_csl_result_rows_reports_duplicate_match_candidate():
     assert len(result.rows) == 1
     assert result.issues[0].reason == "duplicate_candidate"
     assert result.issues[0].field == "match_key"
+
+
+def test_parse_csl_result_rows_check_source_uses_match_id_fallback():
+    result = parse_csl_result_rows(
+        [
+            _row(
+                source_match_id="",
+                match_id="c1",
+                source_url="https://example.invalid/check/c1",
+            )
+        ],
+        competition_id="csl_2026",
+        source_id="check",
+        source_role="check",
+    )
+
+    parsed = result.rows[0]
+    assert parsed.source_check_id == "c1"
+    assert parsed.source_check_url == "https://example.invalid/check/c1"
+    assert parsed.source_primary_id is None
+    assert parsed.source_primary_url is None
