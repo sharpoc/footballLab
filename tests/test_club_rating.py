@@ -104,6 +104,7 @@ def test_replay_club_ratings_moves_winner_up_and_returns_pipeline_elo():
         assert pool.matches_replayed == 2
         assert pool.to_elo_rating("shanghai_port").code == "shanghai_port"
         assert pool.to_elo_rating("shanghai_port").rating == shanghai.rating
+        assert pool.to_elo_rating("unknown_club") is None
 
 
 def test_load_club_rating_pool_reports_missing_file_without_exception():

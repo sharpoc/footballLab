@@ -42,10 +42,11 @@ class ClubRatingPool:
     def rating_for(self, code: str) -> ClubRating | None:
         return self.ratings.get(code)
 
-    def to_elo_rating(self, code: str) -> EloRating:
+    def to_elo_rating(self, code: str) -> EloRating | None:
         rating = self.ratings.get(code)
-        value = DEFAULT_INITIAL_RATING if rating is None else rating.rating
-        return EloRating(code=code, rank=0, rating=int(round(value)))
+        if rating is None:
+            return None
+        return EloRating(code=code, rank=0, rating=rating.rating)
 
 
 @dataclass(frozen=True)
