@@ -178,6 +178,66 @@ def test_probe_main_does_not_write_replay_candidate_when_gate_fails():
         assert replay_path.exists() is False
 
 
+def test_probe_main_does_not_write_replay_candidate_for_duplicate_parse_issue():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        primary_path = root / "primary.csv"
+        check_path = root / "check.csv"
+        output_path = root / "diagnostics.json"
+        replay_path = root / "candidate.csv"
+        primary_rows = [
+            _sample_row(season="2023", date="2023-04-01", source_match_id="m2023"),
+            _sample_row(season="2024", date="2024-04-01", home_team="Shanghai Port", away_team="Beijing Guoan", home_score="1", away_score="0", source_match_id="m2024"),
+            _sample_row(season="2025", date="2025-04-01", home_team="Shanghai Shenhua", away_team="Beijing Guoan", home_score="1", away_score="1", source_match_id="m2025"),
+            _sample_row(season="2026", date="2026-03-01", source_match_id="m2026"),
+        ]
+        check_rows = [
+            _sample_row(season="2023", date="2023-04-01", source_match_id="c2023"),
+            _sample_row(season="2024", date="2024-04-01", home_team="Shanghai Port", away_team="Beijing Guoan", home_score="1", away_score="0", source_match_id="c2024"),
+            _sample_row(season="2025", date="2025-04-01", home_team="Shanghai Shenhua", away_team="Beijing Guoan", home_score="1", away_score="1", source_match_id="c2025"),
+            _sample_row(season="2026", date="2026-03-01", source_match_id="c2026"),
+            _sample_row(season="2026", date="2026-03-01", home_score="1", source_match_id="c2026b"),
+        ]
+        _write_csv(primary_path, primary_rows)
+        _write_csv(check_path, check_rows)
+
+        code = main(
+            [
+                "--competition",
+                "csl_2026",
+                "--primary-source-id",
+                "primary",
+                "--primary-sample",
+                str(primary_path),
+                "--check-source-id",
+                "check",
+                "--check-sample",
+                str(check_path),
+                "--output",
+                str(output_path),
+                "--write-replay-candidate",
+                str(replay_path),
+                "--min-valid-matches",
+                "4",
+            ]
+        )
+
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+        assert code == 1
+        assert payload["quality"]["manual_review_required"] == [
+            {
+                "reason": "duplicate_candidate",
+                "source_id": "check",
+                "source_role": "check",
+                "row_number": 5,
+                "field": "match_key",
+                "value": "2026|2026-03-01|shanghai_port|shandong_taishan",
+            }
+        ]
+        assert payload["pending_gate"]["can_enter_replay"] is False
+        assert replay_path.exists() is False
+
+
 def test_probe_main_returns_zero_for_gate_only_failure_without_candidate():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)

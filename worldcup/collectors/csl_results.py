@@ -21,6 +21,14 @@ REPLAY_FIELDS = [
     "away_score",
     "neutral",
 ]
+BLOCKING_PARSE_REASONS = {
+    "duplicate_candidate",
+    "invalid_date",
+    "invalid_neutral",
+    "invalid_score",
+    "invalid_season",
+    "team_alias_unmatched",
+}
 
 
 @dataclass(frozen=True)
@@ -386,6 +394,22 @@ def _build_pending_gate(
     }
 
 
+def _blocking_parse_issue_reviews(*results: CSLParseResult) -> list[dict[str, Any]]:
+    return [
+        {
+            "reason": issue.reason,
+            "source_id": issue.source_id,
+            "source_role": issue.source_role,
+            "row_number": issue.row_number,
+            "field": issue.field,
+            "value": issue.value,
+        }
+        for result in results
+        for issue in result.issues
+        if issue.reason in BLOCKING_PARSE_REASONS
+    ]
+
+
 def compare_csl_sources(
     primary: CSLParseResult,
     check: CSLParseResult,
@@ -519,13 +543,15 @@ def compare_csl_sources(
         }
         for row in degraded_rows
     ]
+    parse_issue_reviews = _blocking_parse_issue_reviews(primary, check)
+    manual_review_with_parse_issues = manual_review_required + parse_issue_reviews
     quality = {
         "primary_required_fields_coverage": primary_required_fields_coverage,
         "dual_source_score_agreement": _rate(score_agree, comparable),
         "date_home_away_agreement": _rate(date_home_away_agree, comparable),
         "team_alias_unmatched": team_alias_unmatched,
         "score_mismatches": score_mismatches,
-        "manual_review_required": manual_review_required,
+        "manual_review_required": manual_review_with_parse_issues,
         "missing_in_primary": missing_in_primary,
         "degraded_candidates": degraded_candidates,
     }
@@ -535,7 +561,7 @@ def compare_csl_sources(
         dual_source_score_agreement=quality["dual_source_score_agreement"],
         date_home_away_agreement=quality["date_home_away_agreement"],
         team_alias_unmatched=team_alias_unmatched,
-        manual_review_required=manual_review_required,
+        manual_review_required=manual_review_with_parse_issues,
         missing_in_primary=missing_in_primary,
         degraded_candidates=degraded_candidates,
         valid_finished_matches=len(clean_rows),

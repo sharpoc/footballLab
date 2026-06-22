@@ -7,9 +7,10 @@
 - 新增严格 CSL alias gate：`match_known_club_alias()` 只接受 competition-scoped 已知别名，未知俱乐部不再静默 slugify 进入清洗链路。
 - 新增 `worldcup.collectors.csl_results`：解析本地 2023-2026 CSL 样例、阻断未知 alias/非法比分/日期/状态/重复场次，按 `match_key` 双源校验并输出质量门槛诊断与 replay candidate CSV。
 - 新增 `worldcup.csl_results_probe`：只读本地 CSV/JSON 样例，写 `data/local/diagnostics/csl_results_source_probe.json`，只有本地 gate 允许时才可选写 replay candidate。
+- final review 后补强 duplicate blocking gate：primary/check 任一来源出现同 `match_key` 重复/冲突行时进入 `manual_review_required`，即使其他四季双源覆盖通过，也不能写 replay candidate。
 - 本轮不接 `league_runner`，不解除 `club_rating_pending`，不联网、不读取 `.env`、不消耗 The Odds API quota、不部署、不改 LaunchAgent。
-- 关键提交：`0b598ac`、`4b22de8`、`5ffe210`、`4c02d07`、`d0c9639`、`ed7cd43`、`5d2905b`、`2a670b5`、`500cb35`。
-- 目标验证：`tests/collectors/test_club_aliases.py` 6/6、`tests/collectors/test_csl_results.py` 18/18、`tests/test_csl_results_probe.py` 6/6 均通过；`git diff --check` 通过。隔离 worktree 的全量 `tests/run_tests.py` 仍被既有 clean baseline 缺失 `worldcup.collectors.lineups` 阻塞，非 P9.3 改动引入。
+- 关键提交：`0b598ac`、`4b22de8`、`5ffe210`、`4c02d07`、`d0c9639`、`ed7cd43`、`5d2905b`、`2a670b5`、`500cb35`；文档收尾和 final review 修复在本分支后续本地提交中。
+- 目标验证：`tests/collectors/test_club_aliases.py` 6/6、`tests/collectors/test_csl_results.py` 20/20、`tests/test_csl_results_probe.py` 7/7 均通过；`git diff --check` 通过。隔离 worktree 的全量 `tests/run_tests.py` 仍被既有 clean baseline 缺失 `worldcup.collectors.lineups` 阻塞，非 P9.3 改动引入。
 
 ## 2026-06-22 P9.3 中超历史赛果来源与清洗设计
 

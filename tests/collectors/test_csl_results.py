@@ -373,6 +373,88 @@ def test_compare_csl_sources_allows_replay_when_all_gate_conditions_pass():
     assert comparison.pending_gate["reasons"] == []
 
 
+def test_compare_csl_sources_blocks_check_duplicate_parse_issue_from_replay():
+    primary = parse_csl_result_rows(
+        [
+            _row(season="2023", date="2023-03-01", source_match_id="p1"),
+            _row(season="2024", date="2024-03-01", source_match_id="p2"),
+            _row(season="2025", date="2025-03-01", source_match_id="p3"),
+            _row(season="2026", date="2026-03-01", source_match_id="p4"),
+        ],
+        competition_id="csl_2026",
+        source_id="primary",
+        source_role="primary",
+    )
+    check = parse_csl_result_rows(
+        [
+            _row(season="2023", date="2023-03-01", source_match_id="c1"),
+            _row(season="2024", date="2024-03-01", source_match_id="c2"),
+            _row(season="2025", date="2025-03-01", source_match_id="c3"),
+            _row(season="2026", date="2026-03-01", source_match_id="c4"),
+            _row(season="2026", date="2026-03-01", home_score="1", source_match_id="c4b"),
+        ],
+        competition_id="csl_2026",
+        source_id="check",
+        source_role="check",
+    )
+
+    comparison = compare_csl_sources(primary, check, min_valid_matches=4)
+
+    assert len(comparison.clean_rows) == 4
+    assert comparison.quality["manual_review_required"] == [
+        {
+            "reason": "duplicate_candidate",
+            "source_id": "check",
+            "source_role": "check",
+            "row_number": 5,
+            "field": "match_key",
+            "value": "2026|2026-03-01|shanghai_port|shandong_taishan",
+        }
+    ]
+    assert comparison.pending_gate["can_enter_replay"] is False
+    assert "manual_review_required" in comparison.pending_gate["reasons"]
+
+
+def test_compare_csl_sources_blocks_primary_duplicate_parse_issue_from_replay():
+    primary = parse_csl_result_rows(
+        [
+            _row(season="2023", date="2023-03-01", source_match_id="p1"),
+            _row(season="2024", date="2024-03-01", source_match_id="p2"),
+            _row(season="2025", date="2025-03-01", source_match_id="p3"),
+            _row(season="2026", date="2026-03-01", source_match_id="p4"),
+            _row(season="2026", date="2026-03-01", home_score="1", source_match_id="p4b"),
+        ],
+        competition_id="csl_2026",
+        source_id="primary",
+        source_role="primary",
+    )
+    check = parse_csl_result_rows(
+        [
+            _row(season="2023", date="2023-03-01", source_match_id="c1"),
+            _row(season="2024", date="2024-03-01", source_match_id="c2"),
+            _row(season="2025", date="2025-03-01", source_match_id="c3"),
+            _row(season="2026", date="2026-03-01", source_match_id="c4"),
+        ],
+        competition_id="csl_2026",
+        source_id="check",
+        source_role="check",
+    )
+
+    comparison = compare_csl_sources(primary, check, min_valid_matches=4)
+
+    assert len(comparison.clean_rows) == 4
+    assert comparison.quality["manual_review_required"][-1] == {
+        "reason": "duplicate_candidate",
+        "source_id": "primary",
+        "source_role": "primary",
+        "row_number": 5,
+        "field": "match_key",
+        "value": "2026|2026-03-01|shanghai_port|shandong_taishan",
+    }
+    assert comparison.pending_gate["can_enter_replay"] is False
+    assert "manual_review_required" in comparison.pending_gate["reasons"]
+
+
 def test_compare_csl_sources_blocks_replay_when_primary_row_missing_in_check():
     primary = parse_csl_result_rows(
         [
