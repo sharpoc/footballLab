@@ -1,4 +1,11 @@
-from worldcup.collectors.csl_results import parse_csl_result_rows
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from worldcup.collectors.csl_results import (
+    compare_csl_sources,
+    parse_csl_result_rows,
+    write_replay_candidate_csv,
+)
 
 
 def _row(**overrides):
@@ -168,3 +175,169 @@ def test_parse_csl_result_rows_check_source_uses_match_id_fallback():
     assert parsed.source_check_url == "https://example.invalid/check/c1"
     assert parsed.source_primary_id is None
     assert parsed.source_primary_url is None
+
+
+def test_compare_csl_sources_allows_exact_dual_source_agreement():
+    primary = parse_csl_result_rows(
+        [_row()],
+        competition_id="csl_2026",
+        source_id="primary",
+        source_role="primary",
+    )
+    check = parse_csl_result_rows(
+        [_row(source_match_id="c1")],
+        competition_id="csl_2026",
+        source_id="check",
+        source_role="check",
+    )
+
+    comparison = compare_csl_sources(primary, check)
+
+    assert len(comparison.clean_rows) == 1
+    assert comparison.clean_rows[0].source_agreement == "match_agree"
+    assert comparison.quality["dual_source_score_agreement"] == 1.0
+    assert comparison.quality["date_home_away_agreement"] == 1.0
+    assert comparison.pending_gate["can_enter_replay"] is False
+    assert comparison.pending_gate["can_lift_club_rating_pending"] is False
+    assert "valid_finished_matches_below_300" in comparison.pending_gate["reasons"]
+
+
+def test_compare_csl_sources_blocks_score_mismatch_from_replay():
+    primary = parse_csl_result_rows(
+        [_row()],
+        competition_id="csl_2026",
+        source_id="primary",
+        source_role="primary",
+    )
+    check = parse_csl_result_rows(
+        [_row(home_score="1", source_match_id="c1")],
+        competition_id="csl_2026",
+        source_id="check",
+        source_role="check",
+    )
+
+    comparison = compare_csl_sources(primary, check)
+
+    assert comparison.clean_rows == []
+    assert comparison.quality["score_mismatches"][0]["primary_score"] == "2:0"
+    assert comparison.quality["score_mismatches"][0]["check_score"] == "1:0"
+    assert comparison.pending_gate["can_enter_replay"] is False
+
+
+def test_compare_csl_sources_reports_date_mismatch_without_auto_merge():
+    primary = parse_csl_result_rows(
+        [_row(date="2026-03-01")],
+        competition_id="csl_2026",
+        source_id="primary",
+        source_role="primary",
+    )
+    check = parse_csl_result_rows(
+        [_row(date="2026-03-02", source_match_id="c1")],
+        competition_id="csl_2026",
+        source_id="check",
+        source_role="check",
+    )
+
+    comparison = compare_csl_sources(primary, check)
+
+    assert comparison.clean_rows == []
+    assert comparison.quality["manual_review_required"][0]["reason"] == "date_mismatch"
+    assert comparison.quality["date_home_away_agreement"] == 0.0
+
+
+def test_compare_csl_sources_reports_home_away_mismatch_without_auto_merge():
+    primary = parse_csl_result_rows(
+        [_row()],
+        competition_id="csl_2026",
+        source_id="primary",
+        source_role="primary",
+    )
+    check = parse_csl_result_rows(
+        [_row(home_team="Shandong Taishan", away_team="Shanghai Port", source_match_id="c1")],
+        competition_id="csl_2026",
+        source_id="check",
+        source_role="check",
+    )
+
+    comparison = compare_csl_sources(primary, check)
+
+    assert comparison.clean_rows == []
+    assert comparison.quality["manual_review_required"][0]["reason"] == "home_away_mismatch"
+    assert comparison.quality["date_home_away_agreement"] == 0.0
+
+
+def test_compare_csl_sources_reports_missing_check_row_as_degraded_candidate():
+    primary = parse_csl_result_rows(
+        [_row()],
+        competition_id="csl_2026",
+        source_id="primary",
+        source_role="primary",
+    )
+    check = parse_csl_result_rows(
+        [],
+        competition_id="csl_2026",
+        source_id="check",
+        source_role="check",
+    )
+
+    comparison = compare_csl_sources(primary, check)
+
+    assert comparison.clean_rows == []
+    assert comparison.degraded_rows[0].source_agreement == "missing_in_check"
+    assert comparison.pending_gate["can_enter_replay"] is False
+
+
+def test_compare_csl_sources_reports_check_only_rows_as_missing_primary():
+    primary = parse_csl_result_rows(
+        [_row()],
+        competition_id="csl_2026",
+        source_id="primary",
+        source_role="primary",
+    )
+    check = parse_csl_result_rows(
+        [
+            _row(source_match_id="c1"),
+            _row(date="2026-03-08", home_team="Shanghai Shenhua", away_team="Beijing Guoan", home_score="1", away_score="1", source_match_id="c2"),
+        ],
+        competition_id="csl_2026",
+        source_id="check",
+        source_role="check",
+    )
+
+    comparison = compare_csl_sources(primary, check)
+
+    assert comparison.quality["missing_in_primary"] == [
+        {
+            "reason": "missing_in_primary",
+            "season": "2026",
+            "date": "2026-03-08",
+            "home_canonical": "shanghai_shenhua",
+            "away_canonical": "beijing_guoan",
+        }
+    ]
+
+
+def test_write_replay_candidate_csv_uses_p92_contract():
+    primary = parse_csl_result_rows(
+        [_row(), _row(date="2026-03-08", home_team="Shanghai Shenhua", away_team="Beijing Guoan", home_score="1", away_score="1")],
+        competition_id="csl_2026",
+        source_id="primary",
+        source_role="primary",
+    )
+    check = parse_csl_result_rows(
+        [_row(source_match_id="c1"), _row(date="2026-03-08", home_team="Shanghai Shenhua", away_team="Beijing Guoan", home_score="1", away_score="1", source_match_id="c2")],
+        competition_id="csl_2026",
+        source_id="check",
+        source_role="check",
+    )
+    comparison = compare_csl_sources(primary, check, min_valid_matches=2)
+
+    with TemporaryDirectory() as tmp:
+        path = Path(tmp) / "club_results_csl_2026.candidate.csv"
+        write_replay_candidate_csv(path, comparison.clean_rows)
+
+        assert path.read_text(encoding="utf-8").splitlines() == [
+            "competition_id,season,date,home_team,away_team,home_score,away_score,neutral",
+            "csl_2026,2026,2026-03-01,Shanghai Port,Shandong Taishan,2,0,0",
+            "csl_2026,2026,2026-03-08,Shanghai Shenhua,Beijing Guoan,1,1,0",
+        ]

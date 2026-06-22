@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import csv
+from dataclasses import dataclass, field, replace
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from worldcup.collectors.club_aliases import match_known_club_alias
@@ -296,3 +298,240 @@ def parse_csl_result_rows(
         rows=parsed_rows,
         issues=issues,
     )
+
+
+@dataclass(frozen=True)
+class CSLCrossCheckResult:
+    competition_id: str
+    primary: CSLParseResult
+    check: CSLParseResult
+    clean_rows: list[CSLResultRow]
+    degraded_rows: list[CSLResultRow]
+    quality: dict[str, Any]
+    pending_gate: dict[str, Any]
+
+    def to_diagnostics(self) -> dict[str, Any]:
+        return {
+            "competition_id": self.competition_id,
+            "coverage": {
+                "seasons": sorted({row.season for row in self.primary.rows}),
+                "primary_rows": self.primary.valid_rows,
+                "check_rows": self.check.valid_rows,
+                "valid_finished_matches": len(self.clean_rows),
+            },
+            "sources": {
+                "primary": self.primary.to_summary(),
+                "check": self.check.to_summary(),
+            },
+            "quality": self.quality,
+            "pending_gate": self.pending_gate,
+        }
+
+
+def _with_agreement(row: CSLResultRow, agreement: str, check: CSLResultRow | None = None) -> CSLResultRow:
+    return replace(
+        row,
+        source_agreement=agreement,
+        source_check_id=check.source_check_id if check is not None else row.source_check_id,
+        source_check_url=check.source_check_url if check is not None else row.source_check_url,
+    )
+
+
+def _score(row: CSLResultRow) -> str:
+    return f"{row.home_score}:{row.away_score}"
+
+
+def _rate(numerator: int, denominator: int) -> float:
+    if denominator == 0:
+        return 0.0
+    return round(numerator / denominator, 4)
+
+
+def _build_pending_gate(
+    *,
+    seasons: set[str],
+    primary_required_fields_coverage: float,
+    dual_source_score_agreement: float,
+    date_home_away_agreement: float,
+    team_alias_unmatched: list[str],
+    manual_review_required: list[dict[str, Any]],
+    missing_in_primary: list[dict[str, Any]],
+    valid_finished_matches: int,
+    min_valid_matches: int,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    if not CSL_SEASONS.issubset(seasons):
+        reasons.append("season_coverage_incomplete")
+    if primary_required_fields_coverage < 0.99:
+        reasons.append("primary_required_fields_coverage_below_99pct")
+    if dual_source_score_agreement < 0.99:
+        reasons.append("dual_source_score_agreement_below_99pct")
+    if date_home_away_agreement < 0.98:
+        reasons.append("date_home_away_agreement_below_98pct")
+    if team_alias_unmatched:
+        reasons.append("team_alias_unmatched")
+    if manual_review_required:
+        reasons.append("manual_review_required")
+    if missing_in_primary:
+        reasons.append("missing_in_primary")
+    if valid_finished_matches < min_valid_matches:
+        reasons.append(f"valid_finished_matches_below_{min_valid_matches}")
+    return {
+        "can_enter_replay": len(reasons) == 0,
+        "can_lift_club_rating_pending": False,
+        "reasons": reasons,
+    }
+
+
+def compare_csl_sources(
+    primary: CSLParseResult,
+    check: CSLParseResult,
+    min_valid_matches: int = 300,
+) -> CSLCrossCheckResult:
+    check_by_team = {row.team_key: row for row in check.rows}
+    check_by_reversed_team = {
+        (row.season, row.away_canonical, row.home_canonical): row
+        for row in check.rows
+    }
+    clean_rows: list[CSLResultRow] = []
+    degraded_rows: list[CSLResultRow] = []
+    score_mismatches: list[dict[str, Any]] = []
+    manual_review_required: list[dict[str, Any]] = []
+    seen_check_keys: set[tuple[str, str, str]] = set()
+    comparable = 0
+    score_agree = 0
+    date_home_away_agree = 0
+
+    for row in primary.rows:
+        check_row = check_by_team.get(row.team_key)
+        if check_row is None:
+            reversed_row = check_by_reversed_team.get(row.team_key)
+            if reversed_row is not None and reversed_row.date == row.date:
+                seen_check_keys.add(reversed_row.team_key)
+                comparable += 1
+                manual_review_required.append(
+                    {
+                        "reason": "home_away_mismatch",
+                        "season": row.season,
+                        "date": row.date,
+                        "primary_home_canonical": row.home_canonical,
+                        "primary_away_canonical": row.away_canonical,
+                        "check_home_canonical": reversed_row.home_canonical,
+                        "check_away_canonical": reversed_row.away_canonical,
+                    }
+                )
+                continue
+            degraded_rows.append(_with_agreement(row, "missing_in_check"))
+            continue
+
+        seen_check_keys.add(check_row.team_key)
+        comparable += 1
+        if check_row.date != row.date:
+            manual_review_required.append(
+                {
+                    "reason": "date_mismatch",
+                    "season": row.season,
+                    "home_canonical": row.home_canonical,
+                    "away_canonical": row.away_canonical,
+                    "primary_date": row.date,
+                    "check_date": check_row.date,
+                }
+            )
+            continue
+
+        date_home_away_agree += 1
+        if (check_row.home_score, check_row.away_score) != (row.home_score, row.away_score):
+            score_mismatches.append(
+                {
+                    "season": row.season,
+                    "date": row.date,
+                    "home_canonical": row.home_canonical,
+                    "away_canonical": row.away_canonical,
+                    "primary_score": _score(row),
+                    "check_score": _score(check_row),
+                }
+            )
+            manual_review_required.append(
+                {
+                    "reason": "score_mismatch",
+                    "season": row.season,
+                    "date": row.date,
+                    "home_canonical": row.home_canonical,
+                    "away_canonical": row.away_canonical,
+                }
+            )
+            continue
+
+        score_agree += 1
+        clean_rows.append(_with_agreement(row, "match_agree", check_row))
+
+    missing_in_primary = [
+        {
+            "reason": "missing_in_primary",
+            "season": row.season,
+            "date": row.date,
+            "home_canonical": row.home_canonical,
+            "away_canonical": row.away_canonical,
+        }
+        for row in check.rows
+        if row.team_key not in seen_check_keys
+    ]
+    primary_issue_count = len(primary.issues)
+    primary_required_fields_coverage = _rate(primary.valid_rows, primary.valid_rows + primary_issue_count)
+    team_alias_unmatched = sorted(
+        {
+            issue.value
+            for issue in primary.issues + check.issues
+            if issue.reason == "team_alias_unmatched" and issue.value is not None
+        }
+    )
+    quality = {
+        "primary_required_fields_coverage": primary_required_fields_coverage,
+        "dual_source_score_agreement": _rate(score_agree, comparable),
+        "date_home_away_agreement": _rate(date_home_away_agree, comparable),
+        "team_alias_unmatched": team_alias_unmatched,
+        "score_mismatches": score_mismatches,
+        "manual_review_required": manual_review_required,
+        "missing_in_primary": missing_in_primary,
+        "degraded_candidates": [
+            {
+                "reason": row.source_agreement,
+                "season": row.season,
+                "date": row.date,
+                "home_canonical": row.home_canonical,
+                "away_canonical": row.away_canonical,
+            }
+            for row in degraded_rows
+        ],
+    }
+    pending_gate = _build_pending_gate(
+        seasons={row.season for row in primary.rows},
+        primary_required_fields_coverage=quality["primary_required_fields_coverage"],
+        dual_source_score_agreement=quality["dual_source_score_agreement"],
+        date_home_away_agreement=quality["date_home_away_agreement"],
+        team_alias_unmatched=team_alias_unmatched,
+        manual_review_required=manual_review_required,
+        missing_in_primary=missing_in_primary,
+        valid_finished_matches=len(clean_rows),
+        min_valid_matches=min_valid_matches,
+    )
+    return CSLCrossCheckResult(
+        competition_id=primary.competition_id,
+        primary=primary,
+        check=check,
+        clean_rows=clean_rows,
+        degraded_rows=degraded_rows,
+        quality=quality,
+        pending_gate=pending_gate,
+    )
+
+
+def write_replay_candidate_csv(path: str | Path, rows: list[CSLResultRow]) -> Path:
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=REPLAY_FIELDS)
+        writer.writeheader()
+        for row in sorted(rows, key=lambda item: item.match_key):
+            writer.writerow(row.to_replay_row())
+    return output
