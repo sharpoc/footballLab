@@ -160,6 +160,38 @@ python3 -m worldcup.league_runner --competition csl_2026 --cache-dir data/cache 
 
 中超初期 `rating_policy=club_rating_pending` 时，强信号会降级或仅作为观察；不得把国家队 Elo 套用于俱乐部联赛。任何 live odds 探测、scheduled publish、ECS ingest 或 LaunchAgent 更新都需要单独确认。
 
+### 中超 Club Rating 本地基线
+
+P9.2 新增本地 `club_rating` 基线能力，但仍保持 `csl_2026.rating_policy=club_rating_pending`。这表示样例或本地历史赛果可以进入模型输入，强信号仍会被降级，不把中超输出包装成高置信结论。
+
+本地历史赛果 CSV 默认路径：
+
+```bash
+data/cache/club_results_csl_2026.csv
+```
+
+字段契约：
+
+```text
+competition_id,season,date,home_team,away_team,home_score,away_score,neutral
+```
+
+规则：
+
+- `competition_id` 必须等于 `csl_2026`。
+- `date` 使用 `YYYY-MM-DD`。
+- `home_team` / `away_team` 通过俱乐部 alias 映射到 competition-scoped canonical key。
+- `home_score` / `away_score` 必须是非负整数；无效行会跳过并进入 `data_quality.club_rating.skipped_rows`。
+- `neutral` 支持 `0/1`、`true/false`、`yes/no`；中超常规主客场默认 `0`。
+
+`league_runner` 只读取本地 cache，不联网：
+
+```bash
+python3 -m worldcup.league_runner --competition csl_2026 --cache-dir data/cache --out data/cache/league_analysis_snapshot.json
+```
+
+缺少 CSV、样本不足、CSV 无效或 fixture 球队缺少 rating 时，snapshot 会在 `data_quality.club_rating` 和 `data_quality.warnings` 标记原因，并回退到 1500 占位。真实中超历史数据来源、清洗规则、回测和解除强信号压制需后续单独确认。
+
 ## 本地验证
 
 当前机器没有安装 `pytest` 时，用：
