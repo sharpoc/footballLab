@@ -83,6 +83,7 @@ def grade_signal(
     total_mu_source = ctx.get("total_mu_source")
     same_market_total_anchor = ctx.get("same_market_total_anchor")
     ah_market_validated = ctx.get("ah_market_validated")
+    ah_validation_shadow = ctx.get("ah_validation_shadow")
     if status in ("NO_MARKET_YET", "ODDS_PENDING", "D"):
         grade = {
             "NO_MARKET_YET": Grade.NO_MARKET_YET,
@@ -102,6 +103,7 @@ def grade_signal(
             total_mu_source,
             same_market_total_anchor,
             ah_market_validated,
+            ah_validation_shadow,
         )
 
     reasons: list[str] = []
@@ -126,6 +128,7 @@ def grade_signal(
                 total_mu_source,
                 same_market_total_anchor,
                 ah_market_validated,
+                ah_validation_shadow,
             )
         ev_val = ev(p_model, odds)
         edge_val = edge(p_model, p_market)
@@ -174,4 +177,5 @@ def grade_signal(
         total_mu_source,
         same_market_total_anchor,
         ah_market_validated,
+        ah_validation_shadow,
     )

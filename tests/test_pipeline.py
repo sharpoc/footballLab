@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from worldcup.collectors.models import EloRating, Fixture, ParsedOddsEvent
 from worldcup.collectors.eloratings import parse_elo_ratings, parse_elo_team_aliases
+from worldcup.collectors.lineups import parse_lineup_contexts
 from worldcup.collectors.openfootball import parse_openfootball_fixtures
 from worldcup.collectors.theoddsapi import parse_theoddsapi_events
 from worldcup.config import load_config
@@ -71,6 +72,147 @@ def test_build_match_inputs_matches_fixture_odds_and_elo_aliases():
     assert len(item.quotes) == 3
     assert result.missing_elo == []
     assert result.missing_odds == []
+
+
+def test_build_match_inputs_attaches_matching_lineup_context():
+    fixtures = parse_openfootball_fixtures(
+        {
+            "matches": [
+                {
+                    "num": 1,
+                    "round": "Matchday 1",
+                    "date": "2026-06-11",
+                    "time": "13:00 UTC-6",
+                    "team1": "Mexico",
+                    "team2": "South Africa",
+                    "ground": "Mexico City",
+                }
+            ]
+        }
+    )
+    events = parse_theoddsapi_events(
+        [
+            {
+                "id": "event-1",
+                "sport_key": "soccer_fifa_world_cup",
+                "commence_time": "2026-06-11T19:00:00Z",
+                "home_team": "Mexico",
+                "away_team": "South Africa",
+                "bookmakers": [],
+            }
+        ]
+    )
+    ratings = parse_elo_ratings("1\t1\tMX\t1875\n2\t2\tZA\t1700\n")
+    aliases = parse_elo_team_aliases("MX\tMexico\nZA\tSouth Africa\n")
+    lineups = parse_lineup_contexts(
+        {
+            "provider": "manual_json",
+            "matches": [
+                {
+                    "source_match_no": 1,
+                    "kickoff_at_utc": "2026-06-11T19:00:00Z",
+                    "home_team": "Mexico",
+                    "away_team": "South Africa",
+                    "confirmed_starting_xi": True,
+                    "lineup_confirmed_at": "2026-06-11T18:00:00Z",
+                    "home": {
+                        "starting": [{"name": "Mexico GK"}],
+                        "impact": {"attack_delta": 0.03},
+                    },
+                    "away": {
+                        "starting": [{"name": "South Africa GK"}],
+                        "impact": {"defense_delta": -0.02},
+                    },
+                }
+            ],
+        }
+    )
+
+    result = build_match_inputs(fixtures, events, ratings, aliases, lineup_contexts=lineups)
+
+    context = result.inputs[0].lineup_context
+    assert context["provider"] == "manual_json"
+    assert context["confirmed_starting_xi"] is True
+    assert context["lineup_confirmed_at"] == "2026-06-11T18:00:00+00:00"
+    assert context["home_attack_delta"] == 0.03
+    assert context["away_defense_delta"] == -0.02
+    assert context["lineups"]["home"]["starting_count"] == 1
+
+
+def test_build_match_inputs_does_not_attach_lineup_by_match_no_without_team_time_match():
+    fixtures = parse_openfootball_fixtures(
+        {
+            "matches": [
+                {
+                    "num": 29,
+                    "round": "Matchday 1",
+                    "date": "2026-06-25",
+                    "time": "20:00 UTC+0",
+                    "team1": "Mexico",
+                    "team2": "South Africa",
+                    "ground": "Example Stadium",
+                },
+                {
+                    "num": 99,
+                    "round": "Matchday 1",
+                    "date": "2026-06-20",
+                    "time": "00:30 UTC+0",
+                    "team1": "Brazil",
+                    "team2": "Haiti",
+                    "ground": "Example Stadium",
+                },
+            ]
+        }
+    )
+    events = parse_theoddsapi_events(
+        [
+            {
+                "id": "event-mexico",
+                "sport_key": "soccer_fifa_world_cup",
+                "commence_time": "2026-06-25T20:00:00Z",
+                "home_team": "Mexico",
+                "away_team": "South Africa",
+                "bookmakers": [],
+            },
+            {
+                "id": "event-brazil",
+                "sport_key": "soccer_fifa_world_cup",
+                "commence_time": "2026-06-20T00:30:00Z",
+                "home_team": "Brazil",
+                "away_team": "Haiti",
+                "bookmakers": [],
+            },
+        ]
+    )
+    ratings = parse_elo_ratings(
+        "1\t1\tMX\t1875\n2\t2\tZA\t1700\n3\t3\tBR\t2100\n4\t4\tHT\t1500\n"
+    )
+    aliases = parse_elo_team_aliases(
+        "MX\tMexico\nZA\tSouth Africa\nBR\tBrazil\nHT\tHaiti\n"
+    )
+    lineups = parse_lineup_contexts(
+        {
+            "provider": "fifa_public_api",
+            "matches": [
+                {
+                    "source_match_no": 29,
+                    "kickoff_at_utc": "2026-06-20T00:30:00Z",
+                    "home_team": "Brazil",
+                    "away_team": "Haiti",
+                    "confirmed_starting_xi": True,
+                    "lineup_confirmed_at": "2026-06-20T00:00:00Z",
+                    "home": {"starting": [{"name": "Brazil GK"}]},
+                    "away": {"starting": [{"name": "Haiti GK"}]},
+                }
+            ],
+        }
+    )
+
+    result = build_match_inputs(fixtures, events, ratings, aliases, lineup_contexts=lineups)
+
+    by_event_id = {item.odds_event.source_event_id: item for item in result.inputs}
+    assert by_event_id["event-mexico"].lineup_context is None
+    assert by_event_id["event-brazil"].lineup_context["lineups"]["home"]["team"] == "Brazil"
 
 
 def test_build_match_inputs_reports_missing_odds_for_confirmed_fixture():
@@ -362,6 +504,136 @@ def test_analyze_match_input_outputs_raw_and_market_total_probability_families()
     assert raw["combined_1x2"] != market_total["combined_1x2"]
 
 
+def test_analyze_match_input_outputs_independent_ou_total_shadow_without_changing_active_ou():
+    match_input = _priced_match_input(
+        home_team="Team A",
+        away_team="Team B",
+        home_canonical="team_a",
+        away_canonical="team_b",
+        venue_name="Neutral Venue",
+        home_elo=1900,
+        away_elo=1780,
+        home_advantage_elo=0.0,
+        h2h_odds={"home": 2.0, "draw": 3.5, "away": 3.8},
+        ah_home_line=-0.5,
+        ah_odds={"home": 1.9, "away": 1.9},
+        ou_odds={"over": 1.55, "under": 2.6},
+    )
+    base_cfg = load_config()
+    cfg = {
+        **base_cfg,
+        "odds": {**base_cfg["odds"], "min_books": 1},
+        "poisson": {**base_cfg["poisson"], "mu_market_weight": 1.0},
+    }
+
+    analysis = analyze_match_input(match_input, cfg)
+    signals = generate_value_signals(analysis, cfg, observed_at="2026-06-08T00:00:00+00:00")
+    ou_signals = [signal for signal in signals if signal.market_type == MarketType.OU]
+    shadow = analysis.ou_total_shadow
+
+    assert analysis.same_market_total_anchor is True
+    assert shadow["schema_version"] == 1
+    assert shadow["activation"] == "shadow_only"
+    assert shadow["active_family"] == "model_market_total"
+    assert shadow["shadow_family"] == "model_raw"
+    assert shadow["mu_active"] == analysis.mu_total_used
+    assert shadow["mu_independent"] == analysis.mu_prior_used
+    assert shadow["probability_active"]["probs"] == analysis.ou_2_5
+    assert shadow["probability_independent"]["probs"] == analysis.probability_families["families"]["model_raw"]["ou"]["probs"]
+    assert shadow["edge_independent"] != shadow["edge_active"]
+    assert all(signal.grade not in (Grade.S, Grade.A) for signal in ou_signals)
+    assert all("market_informed_total" in signal.reasons for signal in ou_signals)
+
+
+def test_analyze_match_input_outputs_lineup_shadow_without_changing_active_probabilities():
+    cfg = load_config()
+    base_input = _priced_match_input(
+        home_team="Mexico",
+        away_team="South Africa",
+        home_canonical="mexico",
+        away_canonical="south_africa",
+        venue_name="Mexico City",
+        home_elo=1875,
+        away_elo=1517,
+        home_advantage_elo=cfg["elo"]["home_adv"],
+        h2h_odds={"home": 1.8, "draw": 3.6, "away": 4.8},
+        ah_home_line=-0.5,
+        ah_odds={"home": 1.9, "away": 1.9},
+        ou_odds={"over": 1.9, "under": 2.0},
+    )
+    odds_seen_at = datetime(2026, 6, 12, 23, 30, tzinfo=timezone.utc)
+    quotes = [replace(quote, fetched_at=odds_seen_at) for quote in base_input.quotes]
+    base_input = replace(
+        base_input,
+        quotes=quotes,
+        odds_event=replace(base_input.odds_event, quotes=quotes),
+    )
+    lineup_input = replace(
+        base_input,
+        lineup_context={
+            "confirmed_starting_xi": True,
+            "lineup_confirmed_at": "2026-06-12T23:00:00+00:00",
+            "lineup_confidence": 0.82,
+            "home_attack_delta": 0.10,
+            "home_defense_delta": 0.03,
+            "home_goalkeeper_delta": -0.01,
+            "away_attack_delta": -0.04,
+            "away_defense_delta": -0.02,
+            "away_goalkeeper_delta": 0.01,
+        },
+    )
+
+    base_analysis = analyze_match_input(base_input, cfg)
+    lineup_analysis = analyze_match_input(lineup_input, cfg)
+    shadow = lineup_analysis.lineup_shadow
+
+    assert lineup_analysis.lambdas == base_analysis.lambdas
+    assert lineup_analysis.combined_1x2 == base_analysis.combined_1x2
+    assert shadow["schema_version"] == 1
+    assert shadow["activation"] == "shadow_only"
+    assert shadow["confirmed_starting_xi"] is True
+    assert shadow["lineup_confirmed_at"] == "2026-06-12T23:00:00+00:00"
+    assert shadow["post_information_odds_available"] is True
+    assert shadow["lambda_adjusted"]["home"] > shadow["lambda_base"]["home"]
+    assert shadow["lambda_adjusted"]["away"] < shadow["lambda_base"]["away"]
+    assert shadow["probability_after"]["1x2"]["home"] > shadow["probability_before"]["1x2"]["home"]
+    assert shadow["edge_after"]["1x2"]["home"] > shadow["edge_before"]["1x2"]["home"]
+
+
+def test_analyze_match_input_marks_lineup_shadow_when_odds_precede_lineup_news():
+    cfg = load_config()
+    base_input = _priced_match_input(
+        home_team="Mexico",
+        away_team="South Africa",
+        home_canonical="mexico",
+        away_canonical="south_africa",
+        venue_name="Mexico City",
+        home_elo=1875,
+        away_elo=1517,
+        home_advantage_elo=cfg["elo"]["home_adv"],
+        h2h_odds={"home": 1.8, "draw": 3.6, "away": 4.8},
+        ah_home_line=-0.5,
+        ah_odds={"home": 1.9, "away": 1.9},
+        ou_odds={"over": 1.9, "under": 2.0},
+    )
+    odds_seen_at = datetime(2026, 6, 12, 22, 0, tzinfo=timezone.utc)
+    quotes = [replace(quote, fetched_at=odds_seen_at) for quote in base_input.quotes]
+    lineup_input = replace(
+        base_input,
+        quotes=quotes,
+        odds_event=replace(base_input.odds_event, quotes=quotes),
+        lineup_context={
+            "confirmed_starting_xi": True,
+            "lineup_confirmed_at": "2026-06-12T23:00:00+00:00",
+            "home_attack_delta": 0.08,
+        },
+    )
+
+    analysis = analyze_match_input(lineup_input, cfg)
+
+    assert analysis.lineup_shadow["post_information_odds_available"] is False
+
+
 def test_probability_families_do_not_change_current_signal_grades_in_shadow_mode():
     match_input = _priced_match_input(
         home_team="Team A",
@@ -392,6 +664,7 @@ def test_probability_families_do_not_change_current_signal_grades_in_shadow_mode
     assert ou_signals
     assert all(signal.same_market_total_anchor is True for signal in ou_signals)
     assert all(signal.grade not in (Grade.S, Grade.A) for signal in ou_signals)
+    assert all(signal.candidate_grade is None for signal in ou_signals)
     assert all("market_informed_total" in signal.reasons for signal in ou_signals)
 
 
@@ -413,6 +686,55 @@ def test_generate_value_signals_caps_unvalidated_ah_to_b():
     assert "ah_market_edge_missing" in ah_home.reasons
     assert ah_home.ev is not None
     assert ah_home.edge is None
+
+
+def test_generate_value_signals_adds_ah_validation_shadow_without_upgrading_grade():
+    cfg = load_config()
+    analysis = analyze_match_input(
+        _priced_match_input(
+            home_team="Mexico",
+            away_team="South Africa",
+            home_canonical="mexico",
+            away_canonical="south_africa",
+            venue_name="Mexico City",
+            home_elo=1875,
+            away_elo=1517,
+            home_advantage_elo=cfg["elo"]["home_adv"],
+            h2h_odds={"home": 1.4395833333333332, "draw": 4.429583333333333, "away": 8.668750000000001},
+            ah_home_line=-1.0,
+            ah_odds={"home": 1.7433333333333334, "away": 2.1266666666666665},
+        ),
+        cfg,
+    )
+    analysis = replace(analysis, handicap_dist={2: 1.0})
+
+    signals = generate_value_signals(analysis, cfg)
+    home_ah = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.AH and signal.selection == "home_-1"
+    )
+
+    assert home_ah.grade == Grade.B
+    assert home_ah.raw_grade == Grade.S
+    assert home_ah.candidate_grade == "S-candidate"
+    assert home_ah.candidate_reasons == [
+        "official_grade_capped_by_ah_market_edge_missing",
+        "ah_validation_shadow_candidate_validated",
+    ]
+    assert home_ah.ah_market_validated is False
+    assert home_ah.ah_validation_shadow == {
+        "schema_version": 1,
+        "side": "home",
+        "market_line": -1.0,
+        "model_fair_line": -2.0,
+        "fair_line_delta": 1.0,
+        "line_consensus": True,
+        "dispersion_ok": True,
+        "candidate_validated": True,
+        "activation": "shadow_only",
+    }
+    assert "ah_market_edge_missing" in home_ah.reasons
 
 
 def test_generate_value_signals_caps_1x2_when_models_disagree():

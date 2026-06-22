@@ -12,6 +12,13 @@
 - 关键提交：`0b598ac`、`4b22de8`、`5ffe210`、`4c02d07`、`d0c9639`、`ed7cd43`、`5d2905b`、`2a670b5`、`500cb35`；文档收尾和 final review 修复在本分支后续本地提交中。
 - 目标验证：`tests/collectors/test_club_aliases.py` 6/6、`tests/collectors/test_csl_results.py` 20/20、`tests/test_csl_results_probe.py` 7/7 均通过；`git diff --check` 通过。隔离 worktree 的全量 `tests/run_tests.py` 仍被既有 clean baseline 缺失 `worldcup.collectors.lineups` 阻塞，非 P9.3 改动引入。
 
+## 2026-06-22 Lineups baseline repair
+
+- 将主工作区已验证但未提交的首发链路纳入隔离分支：`worldcup.collectors.lineups`、`worldcup.collectors.fifa_lineups`、`worldcup.lineups_refresh`、`worldcup.pre_match_runner`、`worldcup.pre_match_launch_agent`、`worldcup.lineup_audit`、`worldcup.shadow_backfill_diagnostics` 与对应 tests。
+- 补齐已跟踪代码依赖的 lineup / post-information odds / shadow backfill 类型与逻辑，解决 clean checkout 下 `worldcup.collectors.lineups` 缺失导致标准测试无法启动的问题。
+- 本轮只整理本地代码与测试基线，未执行 live lineups、未执行 live refresh、未消耗 The Odds API quota、未发通知、未改已安装 LaunchAgent、未部署、未推送。
+- 验证：标准入口 `PYTHONDONTWRITEBYTECODE=1 /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py` 返回 `498/498 tests passed`。
+
 ## 2026-06-22 P9.3 中超历史赛果来源与清洗设计
 
 - 新增设计文档：`docs/superpowers/specs/2026-06-22-csl-results-source-cleaning-design.md`。

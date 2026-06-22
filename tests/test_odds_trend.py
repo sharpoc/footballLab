@@ -197,3 +197,193 @@ def test_attach_trends_writes_odds_movement_diagnostic():
         assert movement["1x2"]["home"]["relative_move"] == -0.05
         assert movement["ah_main"]["line_move_abs"] == 0.25
         assert movement["ou"]["total_line_move"] == 0.5
+
+
+def test_attach_trends_adds_signal_level_movement_shadow_without_changing_grade():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for at, odds, ah_line, ou_line in (
+            ("20260612T000000Z", 2.0, -0.5, 2.5),
+            ("20260612T110000Z", 1.9, -0.75, 3.0),
+        ):
+            iso = f"{at[:4]}-{at[4:6]}-{at[6:8]}T{at[9:11]}:{at[11:13]}:00+00:00"
+            (root / f"snapshot_{at}-live.json").write_text(
+                json.dumps(_hist_snapshot(iso, odds, ah_line=ah_line, ou_line=ou_line))
+            )
+        snapshot = _hist_snapshot("2026-06-12T12:00:00+00:00", 1.88, ah_line=-0.75, ou_line=3.0)
+        snapshot["matches"][0]["signals"] = [
+            {
+                "market_type": "1X2_90min",
+                "selection": "home",
+                "grade": "B",
+                "raw_grade": "S",
+            },
+            {
+                "market_type": "AsianHandicap_90min",
+                "selection": "home_-0.75",
+                "grade": "B",
+                "raw_grade": "S",
+                "line": -0.75,
+            },
+            {
+                "market_type": "OverUnder_90min",
+                "selection": "over",
+                "grade": "C",
+                "raw_grade": "S",
+                "line": 3.0,
+            },
+        ]
+
+        attach_trends(snapshot, root, now="2026-06-12T12:00:00+00:00")
+
+        x12, ah, ou = snapshot["matches"][0]["signals"]
+        assert x12["grade"] == "B"
+        assert x12["movement_shadow"]["activation"] == "shadow_only"
+        assert x12["movement_shadow"]["market_odds_direction"] == "shortened"
+        assert x12["movement_shadow"]["supports_signal"] is True
+        assert ah["movement_shadow"]["line_direction_supports_signal"] is True
+        assert ah["movement_shadow"]["supports_signal"] is True
+        assert ou["movement_shadow"]["line_direction_supports_signal"] is True
+        assert ou["movement_shadow"]["supports_signal"] is True
+
+
+def test_attach_trends_promotes_supported_ah_candidate_to_official_grade():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for at, odds, ah_line, ou_line in (
+            ("20260612T000000Z", 2.0, -0.5, 2.5),
+            ("20260612T110000Z", 1.9, -0.75, 3.0),
+        ):
+            iso = f"{at[:4]}-{at[4:6]}-{at[6:8]}T{at[9:11]}:{at[11:13]}:00+00:00"
+            (root / f"snapshot_{at}-live.json").write_text(
+                json.dumps(_hist_snapshot(iso, odds, ah_line=ah_line, ou_line=ou_line))
+            )
+        snapshot = _hist_snapshot("2026-06-12T12:00:00+00:00", 1.88, ah_line=-0.75, ou_line=3.0)
+        snapshot["matches"][0]["model"] = {
+            "lineup_shadow": {
+                "confirmed_starting_xi": True,
+                "post_information_odds_available": True,
+            }
+        }
+        snapshot["matches"][0]["signals"] = [
+            {
+                "market_type": "AsianHandicap_90min",
+                "selection": "home_-0.75",
+                "grade": "B",
+                "raw_grade": "S",
+                "line": -0.75,
+                "reasons": ["ah_market_edge_missing"],
+                "candidate_grade": "S-candidate",
+                "candidate_reasons": [
+                    "official_grade_capped_by_ah_market_edge_missing",
+                    "ah_validation_shadow_candidate_validated",
+                ],
+                "ah_validation_shadow": {"candidate_validated": True},
+            },
+            {
+                "market_type": "OverUnder_90min",
+                "selection": "over",
+                "grade": "C",
+                "raw_grade": "S",
+                "line": 3.0,
+                "reasons": ["market_informed_total"],
+                "candidate_grade": "S-candidate",
+                "candidate_reasons": ["ou_shadow_candidate"],
+            },
+        ]
+
+        attach_trends(snapshot, root, now="2026-06-12T12:00:00+00:00")
+
+        ah, ou = snapshot["matches"][0]["signals"]
+        assert ah["grade"] == "S"
+        assert ah["promotion"]["activation"] == "official"
+        assert ah["promotion"]["from_grade"] == "B"
+        assert ah["promotion"]["to_grade"] == "S"
+        assert "ah_candidate_promoted" in ah["reasons"]
+        assert "ah_market_edge_missing" not in ah["reasons"]
+        assert "candidate_grade" not in ah
+        assert "candidate_reasons" not in ah
+        assert ou["grade"] == "C"
+        assert "promotion" not in ou
+
+
+def test_attach_trends_does_not_promote_ah_candidate_without_confirmed_lineup():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for at, odds, ah_line in (
+            ("20260612T000000Z", 2.0, -0.5),
+            ("20260612T110000Z", 1.9, -0.75),
+        ):
+            iso = f"{at[:4]}-{at[4:6]}-{at[6:8]}T{at[9:11]}:{at[11:13]}:00+00:00"
+            (root / f"snapshot_{at}-live.json").write_text(
+                json.dumps(_hist_snapshot(iso, odds, ah_line=ah_line))
+            )
+        snapshot = _hist_snapshot("2026-06-12T12:00:00+00:00", 1.88, ah_line=-0.75)
+        snapshot["matches"][0]["signals"] = [
+            {
+                "market_type": "AsianHandicap_90min",
+                "selection": "home_-0.75",
+                "grade": "B",
+                "raw_grade": "S",
+                "line": -0.75,
+                "reasons": ["ah_market_edge_missing"],
+                "candidate_grade": "S-candidate",
+                "candidate_reasons": [
+                    "official_grade_capped_by_ah_market_edge_missing",
+                    "ah_validation_shadow_candidate_validated",
+                ],
+                "ah_validation_shadow": {"candidate_validated": True},
+            },
+        ]
+
+        attach_trends(snapshot, root, now="2026-06-12T12:00:00+00:00")
+
+        signal = snapshot["matches"][0]["signals"][0]
+        assert signal["movement_shadow"]["supports_signal"] is True
+        assert signal["grade"] == "B"
+        assert signal["candidate_grade"] == "S-candidate"
+        assert "promotion" not in signal
+
+
+def test_attach_trends_does_not_promote_ah_candidate_before_post_information_odds():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for at, odds, ah_line in (
+            ("20260612T000000Z", 2.0, -0.5),
+            ("20260612T110000Z", 1.9, -0.75),
+        ):
+            iso = f"{at[:4]}-{at[4:6]}-{at[6:8]}T{at[9:11]}:{at[11:13]}:00+00:00"
+            (root / f"snapshot_{at}-live.json").write_text(
+                json.dumps(_hist_snapshot(iso, odds, ah_line=ah_line))
+            )
+        snapshot = _hist_snapshot("2026-06-12T12:00:00+00:00", 1.88, ah_line=-0.75)
+        snapshot["matches"][0]["model"] = {
+            "lineup_shadow": {
+                "confirmed_starting_xi": True,
+                "post_information_odds_available": False,
+            }
+        }
+        snapshot["matches"][0]["signals"] = [
+            {
+                "market_type": "AsianHandicap_90min",
+                "selection": "home_-0.75",
+                "grade": "B",
+                "raw_grade": "S",
+                "line": -0.75,
+                "reasons": ["ah_market_edge_missing"],
+                "candidate_grade": "S-candidate",
+                "candidate_reasons": [
+                    "official_grade_capped_by_ah_market_edge_missing",
+                    "ah_validation_shadow_candidate_validated",
+                ],
+                "ah_validation_shadow": {"candidate_validated": True},
+            },
+        ]
+
+        attach_trends(snapshot, root, now="2026-06-12T12:00:00+00:00")
+
+        signal = snapshot["matches"][0]["signals"][0]
+        assert signal["movement_shadow"]["supports_signal"] is True
+        assert signal["grade"] == "B"
+        assert signal["candidate_grade"] == "S-candidate"
+        assert "promotion" not in signal
