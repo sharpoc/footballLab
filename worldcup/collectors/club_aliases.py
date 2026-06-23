@@ -6,25 +6,81 @@ import unicodedata
 from worldcup.collectors.models import TeamAliasResult
 
 
+_CSL_ALIAS_GROUPS = {
+    "shanghai_port": (
+        "Shanghai Port",
+        "Shanghai SIPG",
+        "Shanghai Port FC",
+        "上海海港",
+        "上海上港",
+    ),
+    "shanghai_shenhua": ("Shanghai Shenhua", "上海申花"),
+    "shandong_taishan": ("Shandong Taishan", "山东泰山"),
+    "beijing_guoan": ("Beijing Guoan", "北京国安"),
+    "chengdu_rongcheng": ("Chengdu Rongcheng", "成都蓉城"),
+    "zhejiang_professional": (
+        "Zhejiang Professional",
+        "Zhejiang",
+        "Zhejiang FC",
+        "Zhejiang Greentown",
+        "浙江队",
+        "浙江",
+        "浙江俱乐部绿城",
+    ),
+    "henan": (
+        "Henan FC",
+        "Henan",
+        "Henan Songshan Longmen",
+        "Henan Jiuzu Dukang",
+        "Henan Club Jiuzu Dukang",
+        "Henan Club Caitao Fang",
+        "河南队",
+        "河南",
+        "河南俱乐部",
+        "河南酒祖杜康",
+        "河南俱乐部酒祖杜康",
+        "河南俱乐部彩陶坊",
+    ),
+    "tianjin_jinmen_tiger": ("Tianjin Jinmen Tiger", "天津津门虎"),
+    "wuhan_three_towns": ("Wuhan Three Towns", "武汉三镇"),
+    "meizhou_hakka": ("Meizhou Hakka", "梅州客家"),
+    "qingdao_west_coast": ("Qingdao West Coast", "青岛西海岸"),
+    "qingdao_hainiu": ("Qingdao Hainiu", "青岛海牛"),
+    "changchun_yatai": ("Changchun Yatai", "长春亚泰"),
+    "shenzhen_peng_city": ("Shenzhen Peng City", "深圳新鹏城"),
+    "yunnan_yukun": ("Yunnan Yukun", "云南玉昆"),
+    "dalian_yingbo": ("Dalian Yingbo", "大连英博", "大连英博海发"),
+    "cangzhou_mighty_lions": (
+        "Cangzhou Mighty Lions",
+        "Cangzhou Mighty Lions FC",
+        "Cangzhou Mighty Lions F.C.",
+        "沧州雄狮",
+    ),
+    "dalian_pro": (
+        "Dalian Pro",
+        "Dalian Professional",
+        "Dalian Professional FC",
+        "大连人",
+    ),
+    "nantong_zhiyun": ("Nantong Zhiyun", "南通支云"),
+    "shenzhen": ("Shenzhen", "Shenzhen FC", "深圳队"),
+    "chongqing_tonglianglong": (
+        "Chongqing Tonglianglong",
+        "Chongqing Tonglianglong FC",
+        "重庆铜梁龙",
+    ),
+    "liaoning_tieren": (
+        "Liaoning Tieren",
+        "Liaoning Tieren FC",
+        "辽宁铁人",
+        "辽宁铁人楠波湾",
+    ),
+}
+
 _CSL_ALIASES = {
-    "shanghai port": "shanghai_port",
-    "shanghai sipg": "shanghai_port",
-    "shanghai port fc": "shanghai_port",
-    "shanghai shenhua": "shanghai_shenhua",
-    "shandong taishan": "shandong_taishan",
-    "beijing guoan": "beijing_guoan",
-    "chengdu rongcheng": "chengdu_rongcheng",
-    "zhejiang professional": "zhejiang_professional",
-    "henan fc": "henan",
-    "tianjin jinmen tiger": "tianjin_jinmen_tiger",
-    "wuhan three towns": "wuhan_three_towns",
-    "meizhou hakka": "meizhou_hakka",
-    "qingdao west coast": "qingdao_west_coast",
-    "qingdao hainiu": "qingdao_hainiu",
-    "changchun yatai": "changchun_yatai",
-    "shenzhen peng city": "shenzhen_peng_city",
-    "yunnan yukun": "yunnan_yukun",
-    "dalian yingbo": "dalian_yingbo",
+    alias.lower(): canonical_key
+    for canonical_key, aliases in _CSL_ALIAS_GROUPS.items()
+    for alias in aliases
 }
 
 _KNOWN_BY_COMPETITION = {

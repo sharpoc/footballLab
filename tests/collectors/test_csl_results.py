@@ -88,6 +88,56 @@ def test_parse_csl_result_rows_blocks_unknown_team_without_slug_fallback():
     assert result.issues[0].to_dict()["source_role"] == "primary"
 
 
+def test_parse_csl_result_rows_accepts_verified_csl_source_aliases():
+    result = parse_csl_result_rows(
+        [
+            _row(
+                season="2023",
+                date="2023-04-16",
+                home_team="Cangzhou Mighty Lions",
+                away_team="Nantong Zhiyun",
+                source_match_id="csl-2023-1",
+            ),
+            _row(
+                season="2023",
+                date="2023-04-17",
+                home_team="大连人",
+                away_team="深圳队",
+                source_match_id="csl-2023-2",
+            ),
+            _row(
+                season="2025",
+                date="2025-02-23",
+                home_team="Henan",
+                away_team="Zhejiang",
+                source_match_id="csl-2025-1",
+            ),
+            _row(
+                season="2026",
+                date="2026-03-07",
+                home_team="重庆铜梁龙",
+                away_team="辽宁铁人楠波湾",
+                source_match_id="csl-2026-1",
+            ),
+        ],
+        competition_id="csl_2026",
+        source_id="primary",
+        source_role="primary",
+    )
+
+    assert result.issues == []
+    assert result.valid_rows == 4
+    assert [
+        (row.home_canonical, row.away_canonical)
+        for row in result.rows
+    ] == [
+        ("cangzhou_mighty_lions", "nantong_zhiyun"),
+        ("dalian_pro", "shenzhen"),
+        ("henan", "zhejiang_professional"),
+        ("chongqing_tonglianglong", "liaoning_tieren"),
+    ]
+
+
 def test_parse_csl_result_rows_records_invalid_score_and_bad_date():
     result = parse_csl_result_rows(
         [

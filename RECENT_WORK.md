@@ -2,6 +2,22 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-23 P9.5 CSL alias gate expansion
+
+- Expanded strict `csl_2026` alias coverage for verified 2023-2026 CFL official / 7M source names, including historical clubs and source Chinese names that blocked P9.4 full-sample parsing.
+- Preserved `match_known_club_alias()` strict behavior: unknown clubs still do not fall back to slugified names and remain blocked from replay.
+- P9.4 proof probe remains clean: `valid_finished_matches=8`, `manual_review_required=0`, `team_alias_unmatched=[]`, `score_mismatches=0`, `degraded_candidates=0`, `can_enter_replay=false`, `can_lift_club_rating_pending=false`, `pending_reasons=['valid_finished_matches_below_300']`.
+- This did not create `data/local/diagnostics/csl_results_replay_candidate.csv`, did not install `data/cache/club_results_csl_2026.csv`, did not call The Odds API, did not read `.env`, did not deploy, did not update LaunchAgent, and did not lift `club_rating_pending`.
+- Verification: focused collector tests passed; full `tests/run_tests.py` with bundled Python 3.12 plus existing user-site FastAPI path returned `530/530 tests passed`; `git diff --check` passed. The raw bundled-Python command remains blocked in this local environment by missing `fastapi`.
+
+## 2026-06-23 P9.4 中超赛果 proof sample 与 alias blocker
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-22-csl-results-sample-acquisition.md`；选定 `sevenm` 为 primary、`cfl-official` 为 check，样例与诊断只写入 ignored 本地路径：`data/probe/`、`data/local/diagnostics/`。
+- 已保存 2023-2026 每季 2 场 finished proof sample：primary/check 各 8 行；`worldcup.csl_results_probe` 返回 `probe_status=0`、`valid_finished_matches=8`、`manual_review_required=0`、`score_mismatches=0`、`degraded_candidates=0`。
+- 质量门槛保持关闭：`pending_gate.can_enter_replay=false`，原因是 `valid_finished_matches_below_300`；`pending_gate.can_lift_club_rating_pending=false`；未生成 `data/local/diagnostics/csl_results_replay_candidate.csv`，也未安装 `data/cache/club_results_csl_2026.csv`。
+- full sample expansion 已按计划暂停：CFL 全量只读扫描确认当前 `csl_2026` alias 表缺少历史/现役若干名称，例如 `Cangzhou Mighty Lions`、`Dalian Pro`、`Nantong Zhiyun`、`Shenzhen`、`Henan`、`Zhejiang`、`Chongqing Tonglianglong`、`Liaoning Tieren`；下一步需要单独 alias-update plan，不能在 P9.4 偷改 alias。
+- 本轮未改业务代码、未读取 `.env`、未调用 The Odds API、未消耗 quota、未部署、未改 LaunchAgent、未写线上、未提交/推送。验证：`tests/run_tests.py` 返回 `528/528 tests passed`。
+
 ## 2026-06-22 P9.3 中超历史赛果来源与清洗实现
 
 - 新增严格 CSL alias gate：`match_known_club_alias()` 只接受 competition-scoped 已知别名，未知俱乐部不再静默 slugify 进入清洗链路。
