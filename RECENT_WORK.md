@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-23 P9.7 CSL league runner synthetic odds smoke
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-23-csl-league-runner-synthetic-odds-smoke.md`；按计划写入 ignored synthetic odds cache：`data/cache/theoddsapi_csl_2026_odds.json`，并明确标记 `_synthetic_smoke=true` / `Local wiring smoke only; not real odds.`。
+- 本地 runner smoke 成功：`python3 -m worldcup.league_runner --competition csl_2026 --cache-dir data/cache --out data/local/diagnostics/csl_league_analysis_snapshot_synthetic_smoke.json --club-rating-min-matches 300 --snapshot-at 2026-06-23T12:00:00+00:00` 写出 1 场 ignored diagnostics snapshot。
+- Smoke 诊断写入 ignored 文件：`data/local/diagnostics/csl_league_runner_synthetic_smoke.json`；结果为 `club_rating.mode=sample_replay`、`matches_replayed=840`、`teams_rated=22`、`skipped_rows=0`、`sample_too_small=false`、`errors=[]`，`club_alias_unmatched=[]`、`invalid_odds_count=0`、`rating_policy=club_rating_pending`，fixture 为 Shanghai Port vs Shandong Taishan，Elo 为 home 1664 / away 1631。
+- `data_quality.warnings` 保留 `club_rating_pending` 和 `odds_event_only`；snapshot 中 7 个 signals 没有 S/A final grades，只有 wiring smoke 意义，不代表真实市场数据、不证明 value signal。
+- 本轮未改业务代码、未联网、未调用 The Odds API、未读取 `.env`、未消耗 quota、未部署、未改 LaunchAgent、未 push。
+
 ## 2026-06-23 P9.6 中超 replay candidate 本地安装
 
 - 新增 implementation plan：`docs/superpowers/plans/2026-06-23-csl-replay-candidate-local-install.md`；按计划把 P9.4 已验证的 ignored replay candidate：`data/local/diagnostics/csl_results_replay_candidate.csv`，安装到本地 ignored cache：`data/cache/club_results_csl_2026.csv`。
