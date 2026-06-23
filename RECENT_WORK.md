@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-23 P9.6 中超 replay candidate 本地安装
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-23-csl-replay-candidate-local-install.md`；按计划把 P9.4 已验证的 ignored replay candidate：`data/local/diagnostics/csl_results_replay_candidate.csv`，安装到本地 ignored cache：`data/cache/club_results_csl_2026.csv`。
+- 安装前 preflight 通过：candidate 840 行，2023/2024/2025 各 240 行、2026 120 行，`neutral=12`，重复 key 数为 0；直接 replay 返回 `parsed_results=840`、`matches_replayed=840`、`teams_rated=22`。
+- 正式 cache contract 验证通过：`club_rating.mode=sample_replay`、`matches_replayed=840`、`teams_rated=22`、`skipped_rows=0`、`sample_too_small=false`、`errors=[]`；诊断写入 ignored 文件 `data/local/diagnostics/csl_club_rating_install_check.json`。
+- `league_runner` 本地 smoke 按计划跳过：当前不存在 `data/cache/theoddsapi_csl_2026_odds.json`，未联网补抓、未调用 The Odds API；`club_rating_pending` 未解除，`worldcup/competitions.py` 未修改。
+- 本轮未改业务代码、未读取 `.env`、未消耗 quota、未部署、未改 LaunchAgent、未 push。验证：full `tests/run_tests.py` with bundled Python 3.12 plus existing user-site FastAPI path returned `530/530 tests passed`；`git diff --check` passed。
+
 ## 2026-06-23 P9.4 中超赛果 full local sample 验收
 
 - 按 P9.4 计划在用户确认后只读公开源，扩展 `sevenm` primary 与 `cfl-official` check 的 CSL 2023-2026 finished rows；样例与诊断只写入 ignored 本地路径：`data/probe/`、`data/local/diagnostics/`。
