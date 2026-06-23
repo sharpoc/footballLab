@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-23 P9.4 中超赛果 full local sample 验收
+
+- 按 P9.4 计划在用户确认后只读公开源，扩展 `sevenm` primary 与 `cfl-official` check 的 CSL 2023-2026 finished rows；样例与诊断只写入 ignored 本地路径：`data/probe/`、`data/local/diagnostics/`。
+- Full probe 返回 `probe_status=0`，`valid_finished_matches=840`，`manual_review_required=0`，`team_alias_unmatched=[]`，`score_mismatches=0`，`missing_in_primary=0`，`degraded_candidates=0`。
+- `pending_gate.can_enter_replay=true`，已生成 ignored replay candidate：`data/local/diagnostics/csl_results_replay_candidate.csv`；`pending_gate.can_lift_club_rating_pending=false`，未安装 `data/cache/club_results_csl_2026.csv`。
+- 本轮未改业务代码、未读取 `.env`、未调用 The Odds API、未消耗 quota、未部署、未改 LaunchAgent、未发布线上、未 push。
+- 验证：full `tests/run_tests.py` with bundled Python 3.12 plus existing user-site FastAPI path returned `530/530 tests passed`; `git diff --check` passed.
+
 ## 2026-06-23 P9.5 CSL alias gate expansion
 
 - Expanded strict `csl_2026` alias coverage for verified 2023-2026 CFL official / 7M source names, including historical clubs and source Chinese names that blocked P9.4 full-sample parsing.
