@@ -2,6 +2,12 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-23 P9.7 synthetic odds cache 清理
+
+- 已将 P9.7 synthetic smoke odds 从 runner 默认路径 `data/cache/theoddsapi_csl_2026_odds.json` 移出，备份到 ignored diagnostics：`data/local/diagnostics/theoddsapi_csl_2026_odds.synthetic_smoke.json`。
+- 当前默认 CSL odds cache 路径为空，后续真实 CSL runner 不会误读 synthetic odds；保留 diagnostics 备份仅用于追溯 P9.7 wiring smoke，不是真实市场数据。
+- 本轮未改业务代码、未联网、未调用 The Odds API、未读取 `.env`、未消耗 quota、未部署、未改 LaunchAgent、未 push。
+
 ## 2026-06-23 P9.7 CSL league runner synthetic odds smoke
 
 - 新增 implementation plan：`docs/superpowers/plans/2026-06-23-csl-league-runner-synthetic-odds-smoke.md`；按计划写入 ignored synthetic odds cache：`data/cache/theoddsapi_csl_2026_odds.json`，并明确标记 `_synthetic_smoke=true` / `Local wiring smoke only; not real odds.`。
