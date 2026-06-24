@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-24 P9.11 ops_check 本地日报 dry-run 实现
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-24-ops-daily-report-dry-run.md`。
+- 新增 `worldcup.ops_daily_report`：默认只跑本地 `run_ops_check(public_base_url=None, remote_host=None)`，从已脱敏的 `report` 摘要生成 `local_dry_run` 日报，写入 ignored `data/cache/ops_daily_report_<UTC>.md`；支持 `--format json`。
+- 日报 payload 包含 `scope` 全 false、`delivery=skipped/dry_run_no_notification`、研究免责声明、`ops_summary` 和 `csl_live_odds` 摘要；不读取 full raw `local` payload，不输出 raw odds、bookmaker、market、price、URL、API key、HMAC、`.env` 值或原始响应。
+- `generated_at` 统一规范化为 UTC `Z`；invalid `--generated-at` 在执行 `ops_check` 前报错；missing/malformed/inconsistent `report`、非法 status、status/count mismatch 或空 CSL report 都降级为 `status=error` 且非零退出，避免把坏巡检伪装成成功日报。
+- README 已补充本地 Markdown/JSON 日报 dry-run 用法；本轮未执行 live refresh、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发通知、未部署、未改 LaunchAgent。
+- 验证：`git diff --check` 通过；`tests/test_ops_daily_report.py` direct tests `14/14` 通过；full `tests/run_tests.py` 返回 `572/572 tests passed`；本地 dry-run `python3 -m worldcup.ops_daily_report --generated-at 2026-06-24T08:00:00Z` 写入 ignored `data/cache/ops_daily_report_20260624T080000Z.md`，返回 `status=warn errors=0 warnings=1`，CSL live odds 摘要为 `ok events=8`，敏感/原始赔率关键词扫描无命中。
+
 ## 2026-06-24 P9.10 CSL live odds 巡检报告化实现
 
 - `worldcup.ops_check` 新增顶层 `report` 摘要和 `--format summary`，从既有只读 `local.csl_live_odds` 安全字段生成 CSL live odds 日常巡检短报告。

@@ -330,6 +330,18 @@ python3 -m worldcup.ops_check --format summary
 python3 -m worldcup.ops_check --no-public --no-remote --format summary
 ```
 
+P9.11 起，可把上述本地巡检摘要写成本地 dry-run 日报文件：
+
+```bash
+python3 -m worldcup.ops_daily_report
+```
+
+默认输出到被忽略的 `data/cache/ops_daily_report_<UTC>.md`，只跑本地 `ops_check`，并强制跳过公网 HTTP、ECS remote、live refresh、通知发送和部署动作。该日报只使用 `ops_check` 已脱敏的 `report` 摘要，不输出 raw odds、bookmaker、market、price、URL、API key、HMAC、`.env` 值或原始响应。需要 JSON 产物时：
+
+```bash
+python3 -m worldcup.ops_daily_report --format json
+```
+
 Elo 基线与本地重放可用只读命令检查；该命令只读 `data/cache/elo_baseline_*` 与 openfootball 缓存，不联网、不打印 secret：
 
 ```bash
