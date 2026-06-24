@@ -994,6 +994,179 @@ def _count_issues(result: dict[str, Any]) -> dict[str, int]:
     return {"errors": errors, "warnings": warnings}
 
 
+def _report_status_from_counts(summary: dict[str, Any]) -> str:
+    if _as_int(summary.get("errors")) > 0:
+        return "error"
+    if _as_int(summary.get("warnings")) > 0:
+        return "warn"
+    return "ok"
+
+
+def _first_safe_number(*values: Any) -> int | float | None:
+    for value in values:
+        if _is_safe_number(value):
+            return value
+    return None
+
+
+def _report_csl_issue_codes(csl: dict[str, Any], runner: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    status = csl.get("status")
+    if status == "missing":
+        issues.append("live_odds_cache_missing")
+        return issues
+    if status == "error":
+        message = _safe_string(csl.get("message")) or "live_odds_cache_error"
+        issues.append(message)
+        return issues
+    if status != "ok":
+        issues.append("live_odds_status_unknown")
+        return issues
+    if csl.get("has_synthetic_marker") is True:
+        issues.append("synthetic_live_cache")
+    if _as_int(csl.get("club_alias_unmatched_count")) > 0:
+        issues.append("club_alias_unmatched")
+    if _as_int(csl.get("invalid_odds_count")) > 0:
+        issues.append("invalid_decimal_odds")
+    if runner.get("status") == "missing" and not issues:
+        issues.append("runner_diagnostic_missing")
+    elif _csl_runner_has_error(runner):
+        if runner.get("status") == "error":
+            issues.append("runner_status_error")
+        if _runner_has_blocking_warning(runner):
+            issues.append("runner_blocking_warning")
+        if _as_int(runner.get("club_alias_unmatched_count")) > 0:
+            issues.append("runner_club_alias_unmatched")
+        if _as_int(runner.get("invalid_odds_count")) > 0:
+            issues.append("runner_invalid_odds")
+        if _as_int(runner.get("errors_count")) > 0:
+            issues.append("runner_errors")
+        club_rating = runner.get("club_rating") if isinstance(runner.get("club_rating"), dict) else {}
+        if _as_int(club_rating.get("errors_count")) > 0:
+            issues.append("runner_club_rating_errors")
+        if _list_values(runner.get("strong_grades")):
+            issues.append("runner_strong_grades_present")
+    return issues
+
+
+def _report_csl_live_odds(csl: dict[str, Any]) -> dict[str, Any]:
+    runner = csl.get("runner_check") if isinstance(csl.get("runner_check"), dict) else {}
+    refresh = (
+        csl.get("refresh_diagnostic")
+        if isinstance(csl.get("refresh_diagnostic"), dict)
+        else {}
+    )
+    quota = csl.get("quota") if isinstance(csl.get("quota"), dict) else {}
+    providers = quota.get("providers") if isinstance(quota.get("providers"), dict) else {}
+    provider = refresh.get("theoddsapi_provider")
+    provider_quota = providers.get(provider) if isinstance(providers.get(provider), dict) else {}
+    club_rating = runner.get("club_rating") if isinstance(runner.get("club_rating"), dict) else {}
+    counts = runner.get("counts") if isinstance(runner.get("counts"), dict) else {}
+    issues = _report_csl_issue_codes(csl, runner)
+    status = "ok"
+    if csl.get("status") == "missing" or runner.get("status") == "missing":
+        status = "warn"
+    if any(issue not in {"live_odds_cache_missing", "runner_diagnostic_missing"} for issue in issues):
+        status = "error"
+    report: dict[str, Any] = {
+        "status": status,
+        "competition_id": csl.get("competition_id"),
+        "events": csl.get("events"),
+        "fixtures": csl.get("fixtures"),
+        "odds_events": csl.get("odds_events"),
+        "sport_keys": csl.get("sport_keys") or [],
+        "observed_at": refresh.get("observed_at"),
+        "provider": provider,
+        "quota_remaining": _first_safe_number(
+            refresh.get("quota_remaining"),
+            provider_quota.get("remaining"),
+        ),
+        "quota_last": _first_safe_number(refresh.get("quota_last"), provider_quota.get("last")),
+        "has_synthetic_marker": csl.get("has_synthetic_marker"),
+        "club_alias_unmatched_count": _as_int(csl.get("club_alias_unmatched_count")),
+        "invalid_odds_count": _as_int(csl.get("invalid_odds_count")),
+        "runner_status": runner.get("status"),
+        "runner_matches": counts.get("matches"),
+        "runner_warnings": runner.get("warnings") or [],
+        "runner_errors_count": _as_int(runner.get("errors_count")),
+        "runner_strong_grades": runner.get("strong_grades") or [],
+        "rating_policy": runner.get("rating_policy"),
+        "club_rating_mode": club_rating.get("mode"),
+        "club_rating_matches_replayed": club_rating.get("matches_replayed"),
+        "club_rating_teams_rated": club_rating.get("teams_rated"),
+        "issues": issues,
+    }
+    return {key: value for key, value in report.items() if value is not None}
+
+
+def build_ops_report(result: dict[str, Any]) -> dict[str, Any]:
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    local = result.get("local") if isinstance(result.get("local"), dict) else {}
+    csl = local.get("csl_live_odds") if isinstance(local.get("csl_live_odds"), dict) else {}
+    return {
+        "schema_version": 1,
+        "status": _report_status_from_counts(summary),
+        "errors": _as_int(summary.get("errors")),
+        "warnings": _as_int(summary.get("warnings")),
+        "csl_live_odds": _report_csl_live_odds(csl),
+    }
+
+
+def _format_bool(value: Any) -> str:
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return "unknown"
+
+
+def _format_list(value: Any) -> str:
+    items = [str(item) for item in value] if isinstance(value, list) else []
+    return ",".join(items) if items else "none"
+
+
+def format_ops_report(report: dict[str, Any]) -> str:
+    csl = report.get("csl_live_odds") if isinstance(report.get("csl_live_odds"), dict) else {}
+    lines = [
+        (
+            f"ops_check: {report.get('status')} "
+            f"errors={_as_int(report.get('errors'))} "
+            f"warnings={_as_int(report.get('warnings'))}"
+        ),
+        (
+            f"CSL live odds: {csl.get('status')} "
+            f"events={csl.get('events', 'n/a')} "
+            f"fixtures={csl.get('fixtures', 'n/a')} "
+            f"odds_events={csl.get('odds_events', 'n/a')}"
+        ),
+        (
+            f"  observed_at={csl.get('observed_at', 'n/a')} "
+            f"provider={csl.get('provider', 'n/a')} "
+            f"quota_remaining={csl.get('quota_remaining', 'n/a')} "
+            f"quota_last={csl.get('quota_last', 'n/a')}"
+        ),
+        (
+            f"  guards: synthetic={_format_bool(csl.get('has_synthetic_marker'))} "
+            f"alias_unmatched={_as_int(csl.get('club_alias_unmatched_count'))} "
+            f"invalid_odds={_as_int(csl.get('invalid_odds_count'))} "
+            f"issues={_format_list(csl.get('issues'))}"
+        ),
+        (
+            f"  runner: {csl.get('runner_status', 'n/a')} "
+            f"matches={csl.get('runner_matches', 'n/a')} "
+            f"rating_policy={csl.get('rating_policy', 'n/a')} "
+            f"club_rating={csl.get('club_rating_mode', 'n/a')} "
+            f"replayed={csl.get('club_rating_matches_replayed', 'n/a')} "
+            f"teams={csl.get('club_rating_teams_rated', 'n/a')}"
+        ),
+        (
+            f"  warnings={_format_list(csl.get('runner_warnings'))} "
+            f"strong_grades={_format_list(csl.get('runner_strong_grades'))}"
+        ),
+    ]
+    return "\n".join(lines)
+
+
 def run_ops_check(
     root: str | Path = ".",
     public_base_url: str | None = DEFAULT_PUBLIC_BASE_URL,
@@ -1028,6 +1201,7 @@ def run_ops_check(
     summary = _count_issues(result)
     result["summary"] = summary
     result["ok"] = summary["errors"] == 0
+    result["report"] = build_ops_report(result)
     return result
 
 
@@ -1046,6 +1220,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pre-match-log", action="append", dest="pre_match_logs")
     parser.add_argument("--lineup-audit", default=str(DEFAULT_LINEUP_AUDIT_PATH))
     parser.add_argument("--timeout", type=int, default=20)
+    parser.add_argument("--format", choices=("json", "summary"), default="json")
     args = parser.parse_args(argv)
 
     result = run_ops_check(
@@ -1059,7 +1234,10 @@ def main(argv: list[str] | None = None) -> int:
         lineup_audit_path=args.lineup_audit,
         timeout=args.timeout,
     )
-    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    if args.format == "summary":
+        print(format_ops_report(result["report"]))
+    else:
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if result["ok"] else 1
 
 

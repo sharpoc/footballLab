@@ -316,10 +316,18 @@ python3 -m worldcup.backtest --csv data/local/backtest/history.csv --min-sample 
 python3 -m worldcup.refresh_audit
 ```
 
-日常运维推荐使用一键只读检查命令；它会汇总本机 snapshot/history/quota/LaunchAgent、本机 scheduled-publish 日志、pre-match LaunchAgent 参数、pre-match 日志、最新 lineup audit 摘要、公网 `/healthz` / `/api/matches` / 页面更新时间、ECS 服务/SQLite/latest snapshot 和日志安全计数。pre-match wiring 会显示 `--refresh-guard`，且如果检测到 `--live-refresh` 但没有 `--refresh-guard` 会计入 error。该命令不触发 refresh、不发布、不读取或打印 secret。
+日常运维推荐使用一键只读检查命令；它会汇总本机 snapshot/history/quota/LaunchAgent、本机 scheduled-publish 日志、pre-match LaunchAgent 参数、pre-match 日志、最新 lineup audit 摘要、公网 `/healthz` / `/api/matches` / 页面更新时间、ECS 服务/SQLite/latest snapshot 和日志安全计数。pre-match wiring 会显示 `--refresh-guard`，且如果检测到 `--live-refresh` 但没有 `--refresh-guard` 会计入 error。该命令不触发 refresh、不发布、不调用 The Odds API、不消耗 The Odds API quota、不读取或打印 secret；如需纯本地离线巡检，加 `--no-public --no-remote`。P9.10 起，默认 JSON 会包含顶层 `report.csl_live_odds` 日常摘要；需要人工快速巡检时可用 `python3 -m worldcup.ops_check --format summary` 输出短报告，展示 CSL live odds cache 状态、event/fixture 数、provider/quota 摘要、synthetic/alias/非法赔率 guard、runner 状态、`club_rating_pending`/`odds_event_only` warning 和 runner 强等级残留异常。
 
 ```bash
 python3 -m worldcup.ops_check
+```
+
+```bash
+python3 -m worldcup.ops_check --format summary
+```
+
+```bash
+python3 -m worldcup.ops_check --no-public --no-remote --format summary
 ```
 
 Elo 基线与本地重放可用只读命令检查；该命令只读 `data/cache/elo_baseline_*` 与 openfootball 缓存，不联网、不打印 secret：

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
 import plistlib
+from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from worldcup.ops_check import run_ops_check, scan_text
+from worldcup.ops_check import format_ops_report, main as ops_check_main, run_ops_check, scan_text
 
 
 def _write(path: Path, text: str) -> None:
@@ -380,6 +382,291 @@ def test_run_ops_check_summarizes_csl_live_odds_without_raw_prices_or_secrets():
     assert "bookmakers" not in rendered
     assert "safe_book" not in rendered
     assert "2.05" not in rendered
+
+
+def test_run_ops_check_adds_csl_live_odds_report_digest_without_raw_payload():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs_dir = root / "logs"
+        launch_agent = logs_dir / "xin.celab.football.scheduled-publish.plist"
+        _write_minimal_ops_inputs(root, launch_agent)
+        _write(
+            root / "data/cache/theoddsapi_csl_2026_odds.json",
+            json.dumps([_csl_live_odds_event()]),
+        )
+        _write(
+            root / "data/local/diagnostics/csl_live_odds_refresh.json",
+            json.dumps(
+                {
+                    "status": "fetched",
+                    "events": 1,
+                    "observed_at": "2026-06-24T01:51:18+00:00",
+                    "has_synthetic_marker": False,
+                    "theoddsapi_provider": "theoddsapi_secondary",
+                    "quota_remaining": 248,
+                    "quota_last": 3,
+                    "cache_path": "data/cache/theoddsapi_csl_2026_odds.json",
+                    "bookmaker": "must-not-leak",
+                    "price": 2.05,
+                }
+            ),
+        )
+        _write(
+            root / "data/local/diagnostics/csl_live_league_runner_check.json",
+            json.dumps(
+                {
+                    "status": "ok",
+                    "counts": {
+                        "fixtures": 1,
+                        "odds_events": 1,
+                        "match_inputs": 1,
+                        "matches": 1,
+                    },
+                    "fixture_source": "odds_event_only",
+                    "warnings": ["club_rating_pending", "odds_event_only"],
+                    "club_alias_unmatched": [],
+                    "invalid_odds_count": 0,
+                    "rating_policy": "club_rating_pending",
+                    "club_rating": {
+                        "mode": "sample_replay",
+                        "matches_replayed": 840,
+                        "teams_rated": 22,
+                        "sample_too_small": False,
+                        "errors": [],
+                    },
+                    "signals": 7,
+                    "strong_grades": [],
+                }
+            ),
+        )
+
+        result = run_ops_check(
+            root=root,
+            public_base_url=None,
+            remote_host=None,
+            launch_agent_path=launch_agent,
+            local_log_paths=[],
+            pre_match_launch_agent_path=None,
+            pre_match_log_paths=[],
+        )
+
+    report = result["report"]["csl_live_odds"]
+    assert result["report"]["status"] == "ok"
+    assert report == {
+        "status": "ok",
+        "competition_id": "csl_2026",
+        "events": 1,
+        "fixtures": 1,
+        "odds_events": 1,
+        "sport_keys": ["soccer_china_superleague"],
+        "observed_at": "2026-06-24T01:51:18+00:00",
+        "provider": "theoddsapi_secondary",
+        "quota_remaining": 248,
+        "quota_last": 3,
+        "has_synthetic_marker": False,
+        "club_alias_unmatched_count": 0,
+        "invalid_odds_count": 0,
+        "runner_status": "ok",
+        "runner_matches": 1,
+        "runner_warnings": ["club_rating_pending", "odds_event_only"],
+        "runner_errors_count": 0,
+        "runner_strong_grades": [],
+        "rating_policy": "club_rating_pending",
+        "club_rating_mode": "sample_replay",
+        "club_rating_matches_replayed": 840,
+        "club_rating_teams_rated": 22,
+        "issues": [],
+    }
+    assert "must-not-leak" not in str(result)
+    assert "2.05" not in str(result)
+    assert "bookmakers" not in str(result)
+
+
+def test_csl_live_odds_report_marks_missing_cache_as_warning():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs_dir = root / "logs"
+        launch_agent = logs_dir / "xin.celab.football.scheduled-publish.plist"
+        _write_minimal_ops_inputs(root, launch_agent)
+
+        result = run_ops_check(
+            root=root,
+            public_base_url=None,
+            remote_host=None,
+            launch_agent_path=launch_agent,
+            local_log_paths=[],
+            pre_match_launch_agent_path=None,
+            pre_match_log_paths=[],
+        )
+
+    csl_report = result["report"]["csl_live_odds"]
+    assert result["ok"] is True
+    assert csl_report["status"] == "warn"
+    assert csl_report["issues"] == ["live_odds_cache_missing"]
+
+
+def test_csl_live_odds_report_marks_alias_drift_as_error():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs_dir = root / "logs"
+        launch_agent = logs_dir / "xin.celab.football.scheduled-publish.plist"
+        _write_minimal_ops_inputs(root, launch_agent)
+        _write(
+            root / "data/cache/theoddsapi_csl_2026_odds.json",
+            json.dumps([_csl_live_odds_event(away_team="Unknown FC")]),
+        )
+
+        result = run_ops_check(
+            root=root,
+            public_base_url=None,
+            remote_host=None,
+            launch_agent_path=launch_agent,
+            local_log_paths=[],
+            pre_match_launch_agent_path=None,
+            pre_match_log_paths=[],
+        )
+
+    csl_report = result["report"]["csl_live_odds"]
+    assert result["ok"] is False
+    assert csl_report["status"] == "error"
+    assert csl_report["club_alias_unmatched_count"] == 1
+    assert csl_report["issues"] == ["club_alias_unmatched"]
+
+
+def test_csl_live_odds_report_marks_runner_blockers_as_error():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs_dir = root / "logs"
+        launch_agent = logs_dir / "xin.celab.football.scheduled-publish.plist"
+        _write_minimal_ops_inputs(root, launch_agent)
+        _write(
+            root / "data/cache/theoddsapi_csl_2026_odds.json",
+            json.dumps([_csl_live_odds_event()]),
+        )
+        _write(
+            root / "data/local/diagnostics/csl_live_league_runner_check.json",
+            json.dumps(
+                {
+                    "status": "ok",
+                    "counts": {"fixtures": 1, "odds_events": 1, "match_inputs": 1, "matches": 1},
+                    "warnings": ["club_rating_missing"],
+                    "club_alias_unmatched": [],
+                    "invalid_odds_count": 0,
+                    "club_rating": {
+                        "mode": "fallback",
+                        "matches_replayed": 0,
+                        "teams_rated": 0,
+                        "sample_too_small": True,
+                        "errors": ["missing"],
+                    },
+                    "strong_grades": [],
+                }
+            ),
+        )
+
+        result = run_ops_check(
+            root=root,
+            public_base_url=None,
+            remote_host=None,
+            launch_agent_path=launch_agent,
+            local_log_paths=[],
+            pre_match_launch_agent_path=None,
+            pre_match_log_paths=[],
+        )
+
+    csl_report = result["report"]["csl_live_odds"]
+    assert result["ok"] is False
+    assert csl_report["status"] == "error"
+    assert csl_report["runner_warnings"] == ["club_rating_missing"]
+    assert csl_report["issues"] == ["runner_blocking_warning", "runner_club_rating_errors"]
+
+
+def test_ops_check_summary_format_prints_daily_csl_digest_without_raw_payload():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs_dir = root / "logs"
+        launch_agent = logs_dir / "xin.celab.football.scheduled-publish.plist"
+        pre_match_launch_agent = logs_dir / "xin.celab.football.pre-match.plist"
+        _write_minimal_ops_inputs(root, launch_agent)
+        _write_pre_match_plist(pre_match_launch_agent)
+        _write(logs_dir / "scheduled-publish.out.log", "")
+        _write(logs_dir / "scheduled-publish.err.log", "")
+        _write(logs_dir / "pre-match.out.log", "")
+        _write(logs_dir / "pre-match.err.log", "")
+        _write(root / "data/cache/theoddsapi_csl_2026_odds.json", json.dumps([_csl_live_odds_event()]))
+        _write(
+            root / "data/local/diagnostics/csl_live_odds_refresh.json",
+            json.dumps(
+                {
+                    "status": "fetched",
+                    "events": 1,
+                    "observed_at": "2026-06-24T01:51:18+00:00",
+                    "has_synthetic_marker": False,
+                    "theoddsapi_provider": "theoddsapi_secondary",
+                    "quota_remaining": 248,
+                    "quota_last": 3,
+                }
+            ),
+        )
+        _write(
+            root / "data/local/diagnostics/csl_live_league_runner_check.json",
+            json.dumps(
+                {
+                    "status": "ok",
+                    "counts": {"fixtures": 1, "odds_events": 1, "match_inputs": 1, "matches": 1},
+                    "warnings": ["club_rating_pending", "odds_event_only"],
+                    "club_alias_unmatched": [],
+                    "invalid_odds_count": 0,
+                    "rating_policy": "club_rating_pending",
+                    "club_rating": {
+                        "mode": "sample_replay",
+                        "matches_replayed": 840,
+                        "teams_rated": 22,
+                        "sample_too_small": False,
+                        "errors": [],
+                    },
+                    "strong_grades": [],
+                }
+            ),
+        )
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = ops_check_main(
+                [
+                    "--root",
+                    str(root),
+                    "--no-public",
+                    "--no-remote",
+                    "--launch-agent",
+                    str(launch_agent),
+                    "--local-log",
+                    str(logs_dir / "scheduled-publish.out.log"),
+                    "--local-log",
+                    str(logs_dir / "scheduled-publish.err.log"),
+                    "--pre-match-launch-agent",
+                    str(pre_match_launch_agent),
+                    "--pre-match-log",
+                    str(logs_dir / "pre-match.out.log"),
+                    "--pre-match-log",
+                    str(logs_dir / "pre-match.err.log"),
+                    "--format",
+                    "summary",
+                ]
+            )
+
+    text = out.getvalue()
+    assert code == 0
+    assert "ops_check: ok errors=0 warnings=0" in text
+    assert "CSL live odds: ok events=1 fixtures=1 odds_events=1" in text
+    assert "provider=theoddsapi_secondary quota_remaining=248 quota_last=3" in text
+    assert "guards: synthetic=false alias_unmatched=0 invalid_odds=0 issues=none" in text
+    assert "runner: ok matches=1 rating_policy=club_rating_pending" in text
+    assert "club_rating=sample_replay replayed=840 teams=22" in text
+    assert "warnings=club_rating_pending,odds_event_only strong_grades=none" in text
+    assert "bookmakers" not in text
+    assert "safe_book" not in text
+    assert "2.05" not in text
 
 
 def test_run_ops_check_sanitizes_csl_live_whitelisted_values():

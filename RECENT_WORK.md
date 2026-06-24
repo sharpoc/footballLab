@@ -2,6 +2,23 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-24 P9.10 CSL live odds 巡检报告化实现
+
+- `worldcup.ops_check` 新增顶层 `report` 摘要和 `--format summary`，从既有只读 `local.csl_live_odds` 安全字段生成 CSL live odds 日常巡检短报告。
+- 短报告展示 cache status、events/fixtures/odds_events、provider/quota 摘要、synthetic/alias/非法赔率 guard、runner status、runner warnings、club rating replay 状态和 runner 强等级残留异常；不输出 raw odds、bookmaker、market、price、URL、API key、HMAC 或 `.env` 值。
+- P9.10 不改变 P9.9 issue 计数语义：缺少 live cache 仍为 warning；synthetic、alias drift、非法赔率、runner blocker、runner error、runner strong grades 仍为 error。
+- README 已补充日常用法：默认 JSON 含 `report.csl_live_odds`，人工快速巡检可跑 `python3 -m worldcup.ops_check --format summary`；该命令不触发 refresh、不发布、不调用 The Odds API、不消耗 The Odds API quota、不读取或打印 secret；纯本地离线巡检可跑 `python3 -m worldcup.ops_check --no-public --no-remote --format summary`。
+- 经用户确认，已对 bundled Python 3.12 执行 `python3 -m pip install -e .`，补齐 `pyproject.toml` 声明的 FastAPI / HTTPX / Uvicorn 测试依赖。
+- 本轮未执行 live refresh、未读取 `.env`、未调用 The Odds API、未消耗 quota、未部署、未改 LaunchAgent、未发布线上 snapshot、未提交、未 push。
+- 验证：新增 report/summary 聚焦测试通过；`tests/test_ops_check.py` `25/25` 通过；只读 `python3 -m worldcup.ops_check --no-public --no-remote --format summary` 输出 CSL live odds `ok events=8`；项目标准 full `tests/run_tests.py` 返回 `558/558 tests passed`；`git diff --check` 通过。
+
+## 2026-06-24 P9.10 CSL live odds 巡检报告化计划
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-24-csl-live-odds-ops-reporting.md`。
+- 计划目标是在 P9.9 已有只读 `local.csl_live_odds` 检查之上，增加顶层 `report.csl_live_odds` 和 `--format summary`，让日常 `worldcup.ops_check` 一眼看到 CSL live odds cache、alias、synthetic、非法赔率、runner warning/error、club rating replay 和 strong grades 状态。
+- 计划保持 P9.9 安全边界：只读本地已脱敏摘要，不读取 `.env`，不调用 The Odds API，不 live，不写 cache，不部署，不改 LaunchAgent，不解除 `club_rating_pending`，不发布 CSL 预览或信号。
+- 本轮实际只写计划和近期记录；只读跑过 `python3 -m worldcup.ops_check --no-public --no-remote`，当前 CSL live odds 为 `ok`、`events=8`、`alias_unmatched=0`、`invalid_odds=0`、`synthetic=false`、runner `strong_grades=[]`。
+
 ## 2026-06-24 P9.9 CSL live odds 巡检实现
 
 - `worldcup.ops_check` 新增只读 `local.csl_live_odds`，读取 ignored live odds cache / quota / diagnostics：`data/cache/theoddsapi_csl_2026_odds.json`、`data/cache/quota.json`、`data/local/diagnostics/csl_live_odds_refresh.json`、`data/local/diagnostics/csl_live_league_runner_check.json`。
