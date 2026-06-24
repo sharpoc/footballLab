@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-24 S 信号 AH candidate 收紧推送与部署
+
+- 已提交并推送 `6dc5751 fix: tighten AH S signal promotion guards` 到 `origin/main`，并部署到 ECS `/opt/worldcup/releases/6dc5751`；`/opt/worldcup/current` 已从 `/opt/worldcup/releases/72e9540` 切到新 release，`worldcup.service` 与 `nginx` 均为 active。
+- 部署前验证：`git diff --check` 通过；`tests/test_odds_trend.py` 直跑 14 个测试通过；pipeline 聚焦 3 个护栏测试通过；bundled Python 一次性 runner 跑过除本机缺 `fastapi` 的 `test_fastapi_app.py` 外 393 个无 fixture 测试，`failures=0`。标准 `tests/run_tests.py` 仍在导入 `test_fastapi_app.py` 时因当前 runtime 缺少 `fastapi` 中断。
+- 部署后公网 smoke：`/healthz`、`/api/matches`、`/api/finished`、首页和 `/preview` 均返回 200；`/api/matches` 当前返回 25 场，公网 `/api/finished` 汇总 `match_count=44`、`sample_too_small=false`；页面保留研究免责声明，资金/下注禁词扫描为 0。
+- `python3 -m worldcup.ops_check` 返回 `ok=true`、`errors=0`、`warnings=4`；warning 来自既有本地日志和远端 Nginx 历史计数，不阻塞本次上线。远端最近 10 分钟 `worldcup.service` 关键词扫描无 error 或 secret-like 命中。
+- 本次部署只切换 S 信号晋级护栏代码并重启服务，未执行 live refresh、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布新 snapshot、未改 LaunchAgent。研究边界不变：不构成投注建议，不输出资金或执行建议。
+
 ## 2026-06-24 S 信号 AH candidate 晋级收紧
 
 - 复盘 Portugal vs Uzbekistan 的正式 S 信号失效：问题信号为 `AsianHandicap_90min away_+2.5`，不是葡萄牙胜方向；盘口方向显示热门葡萄牙增强，但原 AH movement 逻辑允许仅凭受让方赔率缩短把候选升为正式 S。
