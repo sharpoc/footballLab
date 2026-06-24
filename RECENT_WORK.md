@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-23 P9.8 CSL live odds refresh 计划与 code-only 实现
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-23-csl-live-odds-refresh.md`。
+- `worldcup.sources.theoddsapi` 已新增通用 `build_odds_url()` / `fetch_odds_for_sport()`，原 `build_worldcup_odds_url()` / `fetch_worldcup_odds()` 保持兼容并委托到通用实现；非 legacy key slot 仍同步写 `theoddsapi` legacy quota alias。
+- 新增 guarded CLI：`worldcup.league_odds_refresh`。默认 dry-run 不读取 `.env`、不调用 transport、不写 odds cache；CSL 仍要求显式 `--sport-key soccer_china_superleague`，未修改 `worldcup/competitions.py`，未解除 `club_rating_pending`。
+- Dry-run 命令返回 `status=dry_run`、`cache_exists=false`、`target_cache_path=data/cache/theoddsapi_csl_2026_odds.json`；确认默认 cache 仍不存在，synthetic backup 仍只保留在 ignored diagnostics：`data/local/diagnostics/theoddsapi_csl_2026_odds.synthetic_smoke.json`。
+- Live fetch 尚未执行，仍需单独确认后才会读取 `.env`、调用 The Odds API、消耗 quota、写 `data/cache/theoddsapi_csl_2026_odds.json` 和 live diagnostics；本轮未部署、未改 LaunchAgent、未 push、未打印 API key 或 `.env` 值。
+- 验证：新增 source 单文件测试 `4/4` 通过，新增 league refresh 单文件测试 `5/5` 通过；项目标准 full `tests/run_tests.py` 返回 `537/537 tests passed`；`git diff --check` 通过。
+
 ## 2026-06-23 P9.7 synthetic odds cache 清理
 
 - 已将 P9.7 synthetic smoke odds 从 runner 默认路径 `data/cache/theoddsapi_csl_2026_odds.json` 移出，备份到 ignored diagnostics：`data/local/diagnostics/theoddsapi_csl_2026_odds.synthetic_smoke.json`。

@@ -68,3 +68,53 @@ def test_fetch_worldcup_odds_writes_slot_quota_and_legacy_alias():
         assert result.quota_entry == quota["providers"][SECONDARY_PROVIDER]
         assert quota["providers"][SECONDARY_PROVIDER]["remaining"] == 497
         assert quota["providers"][LEGACY_PROVIDER]["remaining"] == 497
+
+
+def test_build_odds_url_accepts_custom_sport_key_without_logging_secret():
+    from worldcup.sources.theoddsapi import build_odds_url
+
+    url = build_odds_url(
+        sport_key="soccer_china_superleague",
+        api_key="fake-key",
+        regions="eu",
+        markets=("h2h", "spreads", "totals"),
+    )
+
+    assert "sports/soccer_china_superleague/odds" in url
+    assert "markets=h2h%2Cspreads%2Ctotals" in url
+    assert "oddsFormat=decimal" in url
+    assert "dateFormat=iso" in url
+    assert "apiKey=fake-key" in url
+
+
+def test_fetch_odds_for_sport_writes_csl_cache_and_slot_quota():
+    from worldcup.sources.theoddsapi import fetch_odds_for_sport
+
+    seen = {}
+
+    def fake_transport(url):
+        seen["url"] = url
+        return FakeResponse()
+
+    with TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "theoddsapi_csl_2026_odds.json"
+        quota_path = Path(tmp) / "quota.json"
+
+        result = fetch_odds_for_sport(
+            api_key="fake-key",
+            sport_key="soccer_china_superleague",
+            transport=fake_transport,
+            cache_path=cache_path,
+            quota_path=quota_path,
+            observed_at="2026-06-23T12:00:00+00:00",
+            quota_provider=SECONDARY_PROVIDER,
+        )
+
+        assert "soccer_china_superleague/odds" in seen["url"]
+        assert "apiKey=fake-key" in seen["url"]
+        assert result.status == 200
+        assert result.json_body == [{"id": "event-1"}]
+        assert json.loads(cache_path.read_text()) == [{"id": "event-1"}]
+        quota = json.loads(quota_path.read_text())
+        assert quota["providers"][SECONDARY_PROVIDER]["remaining"] == 497
+        assert quota["providers"][LEGACY_PROVIDER]["remaining"] == 497

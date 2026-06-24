@@ -32,6 +32,24 @@ def build_worldcup_odds_url(
     odds_format: str = "decimal",
     date_format: str = "iso",
 ) -> str:
+    return build_odds_url(
+        sport_key=WORLD_CUP_SPORT_KEY,
+        api_key=api_key,
+        regions=regions,
+        markets=markets,
+        odds_format=odds_format,
+        date_format=date_format,
+    )
+
+
+def build_odds_url(
+    sport_key: str,
+    api_key: str,
+    regions: str = "eu",
+    markets: tuple[str, ...] = DEFAULT_MARKETS,
+    odds_format: str = "decimal",
+    date_format: str = "iso",
+) -> str:
     params = {
         "regions": regions,
         "markets": ",".join(markets),
@@ -39,7 +57,7 @@ def build_worldcup_odds_url(
         "dateFormat": date_format,
         "apiKey": api_key,
     }
-    return f"{BASE_URL}/sports/{WORLD_CUP_SPORT_KEY}/odds?{urlencode(params)}"
+    return f"{BASE_URL}/sports/{sport_key}/odds?{urlencode(params)}"
 
 
 def _default_transport(url: str):
@@ -61,7 +79,31 @@ def fetch_worldcup_odds(
     regions: str = "eu",
     markets: tuple[str, ...] = DEFAULT_MARKETS,
 ) -> SourceFetchResult:
-    url = build_worldcup_odds_url(api_key=api_key, regions=regions, markets=markets)
+    return fetch_odds_for_sport(
+        api_key=api_key,
+        sport_key=WORLD_CUP_SPORT_KEY,
+        transport=transport,
+        cache_path=cache_path,
+        quota_path=quota_path,
+        observed_at=observed_at,
+        quota_provider=quota_provider,
+        regions=regions,
+        markets=markets,
+    )
+
+
+def fetch_odds_for_sport(
+    api_key: str,
+    sport_key: str,
+    transport: Callable[[str], Any] | None = None,
+    cache_path: str | Path | None = None,
+    quota_path: str | Path | None = None,
+    observed_at: str | None = None,
+    quota_provider: str = LEGACY_PROVIDER,
+    regions: str = "eu",
+    markets: tuple[str, ...] = DEFAULT_MARKETS,
+) -> SourceFetchResult:
+    url = build_odds_url(api_key=api_key, sport_key=sport_key, regions=regions, markets=markets)
     response = (transport or _default_transport)(url)
     body = response.read()
     json_body = json.loads(body.decode("utf-8"))
