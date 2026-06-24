@@ -307,6 +307,98 @@ def test_attach_trends_promotes_supported_ah_candidate_to_official_grade():
         assert "promotion" not in ou
 
 
+def test_attach_trends_does_not_promote_ah_candidate_when_line_moves_against_side():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for at, ah_line, away_odds in (
+            ("20260612T000000Z", -2.0, 1.95),
+            ("20260612T110000Z", -2.5, 1.75),
+        ):
+            iso = f"{at[:4]}-{at[4:6]}-{at[6:8]}T{at[9:11]}:{at[11:13]}:00+00:00"
+            payload = _hist_snapshot(iso, 1.2, ah_line=ah_line, ou_line=3.5)
+            payload["matches"][0]["market"]["ah_main"]["odds"]["away"] = away_odds
+            (root / f"snapshot_{at}-live.json").write_text(json.dumps(payload))
+        snapshot = _hist_snapshot("2026-06-12T12:00:00+00:00", 1.18, ah_line=-2.5, ou_line=3.5)
+        snapshot["matches"][0]["model"] = {
+            "lineup_shadow": {
+                "confirmed_starting_xi": True,
+                "post_information_odds_available": True,
+            }
+        }
+        snapshot["matches"][0]["signals"] = [
+            {
+                "market_type": "AsianHandicap_90min",
+                "selection": "away_+2.5",
+                "grade": "B",
+                "raw_grade": "S",
+                "line": 2.5,
+                "reasons": ["ah_market_edge_missing"],
+                "candidate_grade": "S-candidate",
+                "candidate_reasons": [
+                    "official_grade_capped_by_ah_market_edge_missing",
+                    "ah_validation_shadow_candidate_validated",
+                ],
+                "ah_validation_shadow": {"candidate_validated": True},
+            },
+        ]
+
+        attach_trends(snapshot, root, now="2026-06-12T12:00:00+00:00")
+
+        signal = snapshot["matches"][0]["signals"][0]
+        assert signal["movement_shadow"]["market_odds_direction"] == "shortened"
+        assert signal["movement_shadow"]["line_direction"] == "home_strengthened"
+        assert signal["movement_shadow"]["line_direction_supports_signal"] is False
+        assert signal["movement_shadow"]["supports_signal"] is False
+        assert signal["grade"] == "B"
+        assert signal["candidate_grade"] == "S-candidate"
+        assert "promotion" not in signal
+
+
+def test_attach_trends_does_not_promote_extreme_favorite_ah_candidate():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for at, ah_line, away_odds in (
+            ("20260612T000000Z", -2.5, 2.05),
+            ("20260612T110000Z", -2.0, 1.85),
+        ):
+            iso = f"{at[:4]}-{at[4:6]}-{at[6:8]}T{at[9:11]}:{at[11:13]}:00+00:00"
+            payload = _hist_snapshot(iso, 1.2, ah_line=ah_line, ou_line=3.5)
+            payload["matches"][0]["market"]["ah_main"]["odds"]["away"] = away_odds
+            (root / f"snapshot_{at}-live.json").write_text(json.dumps(payload))
+        snapshot = _hist_snapshot("2026-06-12T12:00:00+00:00", 1.18, ah_line=-2.0, ou_line=3.5)
+        snapshot["matches"][0]["model"] = {
+            "lineup_shadow": {
+                "confirmed_starting_xi": True,
+                "post_information_odds_available": True,
+            }
+        }
+        snapshot["matches"][0]["signals"] = [
+            {
+                "market_type": "AsianHandicap_90min",
+                "selection": "away_+2",
+                "grade": "B",
+                "raw_grade": "S",
+                "line": 2.0,
+                "reasons": ["ah_market_edge_missing", "extreme_favorite_handicap"],
+                "candidate_grade": "S-candidate",
+                "candidate_reasons": [
+                    "official_grade_capped_by_ah_market_edge_missing",
+                    "ah_validation_shadow_candidate_validated",
+                ],
+                "ah_validation_shadow": {"candidate_validated": True},
+            },
+        ]
+
+        attach_trends(snapshot, root, now="2026-06-12T12:00:00+00:00")
+
+        signal = snapshot["matches"][0]["signals"][0]
+        assert signal["movement_shadow"]["line_direction"] == "away_strengthened"
+        assert signal["movement_shadow"]["supports_signal"] is True
+        assert signal["grade"] == "B"
+        assert signal["candidate_grade"] == "S-candidate"
+        assert "promotion" not in signal
+
+
 def test_attach_trends_does_not_promote_ah_candidate_without_confirmed_lineup():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)

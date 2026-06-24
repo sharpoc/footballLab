@@ -2,6 +2,22 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-24 S 信号 AH candidate 晋级收紧
+
+- 复盘 Portugal vs Uzbekistan 的正式 S 信号失效：问题信号为 `AsianHandicap_90min away_+2.5`，不是葡萄牙胜方向；盘口方向显示热门葡萄牙增强，但原 AH movement 逻辑允许仅凭受让方赔率缩短把候选升为正式 S。
+- 收紧 `worldcup.odds_trend`：AH movement 若盘口方向明确反向，则赔率缩短不能单独构成 `supports_signal=true`；带 `extreme_favorite_handicap` 的 AH candidate 不再允许晋级正式 S/A。
+- 收紧 `worldcup.pipeline`：`extreme_favorite_handicap` 进入 candidate hard veto，源头不再生成 `S-candidate`。
+- 新增回归测试覆盖“盘口向热门增强但受让方赔率缩短不晋级”和“极端热门逆向 AH 候选不晋级”；保留正常同向 AH candidate 可晋级的既有测试。
+- 验证：新增红灯先失败；实施后 `tests/test_odds_trend.py` 14 个测试通过，pipeline 聚焦用例通过；bundled Python 一次性 runner 跑过除本机缺 `fastapi` 的 `test_fastapi_app.py` 外 528 个测试，`failures=0`；标准 bundled `tests/run_tests.py` 当前被环境缺少 `fastapi` 阻塞，系统 Python 3.9 又不支持项目 `dict | None` 语法。
+- 本轮未执行 live refresh、未读取 `.env`、未调用 The Odds API、未消耗 quota、未部署、未改 LaunchAgent、未发布线上 snapshot。研究边界不变：不构成投注建议，不输出资金或执行建议。
+
+## 2026-06-24 P9.9 CSL live odds 巡检计划
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-24-csl-live-odds-ops-check.md`。
+- 计划目标是在 `worldcup.ops_check` 增加只读 `local.csl_live_odds` 检查，读取 ignored live odds cache 与 diagnostics，复用 `parse_league_odds_events()` 检测 CSL live alias 漂移、synthetic marker、非法 decimal odds 和 runner 诊断 blocker。
+- 计划明确缺少 live odds cache 只计 warning，避免干净机器或尚未执行 live 的环境失败；真实 alias drift、synthetic cache、脏赔率、`club_rating_missing` 等状态才计 error。
+- 本轮只写计划和近期记录，未改业务代码、未执行 live refresh、未读取 `.env`、未调用 The Odds API、未消耗 quota、未部署、未改 LaunchAgent、未发布线上 snapshot。
+
 ## 2026-06-24 P9.8 CSL live odds fetch 与 live alias 补丁
 
 - 经用户明确确认，执行 `worldcup.league_odds_refresh --competition csl_2026 --sport-key soccer_china_superleague --cache-dir data/cache --quota-path data/cache/quota.json --live`；读取本地 `.env`，调用 The Odds API，写入 ignored cache：`data/cache/theoddsapi_csl_2026_odds.json`。

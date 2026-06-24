@@ -930,6 +930,7 @@ _CANDIDATE_HARD_VETO_REASONS = {
     "unconfirmed_backup",
     "line_changed_unknown",
     "model_disagreement",
+    "extreme_favorite_handicap",
 }
 
 

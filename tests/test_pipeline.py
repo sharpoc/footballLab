@@ -1037,6 +1037,7 @@ def test_generate_value_signals_caps_ah_dog_against_extreme_favorite():
 
     assert away_ah.grade == Grade.B
     assert "extreme_favorite_handicap" in away_ah.reasons
+    assert away_ah.candidate_grade is None
 
 
 def test_generate_value_signals_caps_zero_handicap_strong_signal():

@@ -278,13 +278,18 @@ def _signal_movement_shadow(signal: dict, movement: dict) -> dict | None:
         line_direction = (movement.get("ah_main") or {}).get("favorite_line_direction")
         odds_support = _odds_direction_supports(block)
         line_support = _ah_line_supports(side, line_direction)
+        line_conflicts = (
+            side in ("home", "away")
+            and line_direction in ("home_strengthened", "away_strengthened")
+            and not line_support
+        )
         return {
             **_movement_base(movement),
             "market_odds_direction": block.get("direction"),
             "line_direction": line_direction,
             "odds_direction_supports_signal": odds_support,
             "line_direction_supports_signal": line_support,
-            "supports_signal": usable and (odds_support or line_support),
+            "supports_signal": usable and (line_support or (odds_support and not line_conflicts)),
         }
 
     if market_type == "OverUnder_90min":
@@ -320,6 +325,7 @@ _CANDIDATE_HARD_VETO_REASONS = {
     "unconfirmed_backup",
     "line_changed_unknown",
     "model_disagreement",
+    "extreme_favorite_handicap",
 }
 
 
