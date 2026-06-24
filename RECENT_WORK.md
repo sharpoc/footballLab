@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-24 P9.9 CSL live odds 巡检实现
+
+- `worldcup.ops_check` 新增只读 `local.csl_live_odds`，读取 ignored live odds cache / quota / diagnostics：`data/cache/theoddsapi_csl_2026_odds.json`、`data/cache/quota.json`、`data/local/diagnostics/csl_live_odds_refresh.json`、`data/local/diagnostics/csl_live_league_runner_check.json`。
+- 巡检复用 `parse_league_odds_events()` 检测 CSL live alias 漂移和非法 decimal odds；缺少 live cache 只计 warning，synthetic marker、alias drift、非法赔率、runner error/blocking warning/strong grades 均计 error。
+- 输出改为安全摘要：provider、sport key、诊断 code、grade、path、club alias 等字段使用白名单/固定路径约束；raw odds、bookmaker、market、price、URL、API key、HMAC、`.env` 值和疑似 opaque secret 不进入结果，相关原始问题通过 count 保留。
+- 本机只读 `python3 -m worldcup.ops_check --no-public --no-remote` 返回 `ok=true`、`errors=0`；`local.csl_live_odds` 为 `events=8`、`club_alias_unmatched_count=0`、`invalid_odds_count=0`、`has_synthetic_marker=false`、runner `strong_grades=[]`，warnings 仅来自既有本地日志计数。
+- 本轮未执行 live refresh、未读取 `.env`、未调用 The Odds API、未消耗 quota、未部署、未改 LaunchAgent、未发布线上 snapshot、未提交、未 push。
+- 验证：CSL focused ops tests `12/12` 通过；`tests/test_ops_check.py` `20/20` 通过；项目标准 full `tests/run_tests.py` 返回 `553/553 tests passed`；`git diff --check` 通过；subagent spec/code review 最终通过。
+
 ## 2026-06-24 S 信号 AH candidate 收紧推送与部署
 
 - 已提交并推送 `6dc5751 fix: tighten AH S signal promotion guards` 到 `origin/main`，并部署到 ECS `/opt/worldcup/releases/6dc5751`；`/opt/worldcup/current` 已从 `/opt/worldcup/releases/72e9540` 切到新 release，`worldcup.service` 与 `nginx` 均为 active。

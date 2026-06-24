@@ -7,11 +7,12 @@ import json
 import re
 import shlex
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from worldcup.collectors.league_odds import parse_league_odds_events
 from worldcup.query import summarize_finished_block
 from worldcup.refresh_audit import DEFAULT_LAUNCH_AGENT, inspect_launch_agent, summarize_history
 
@@ -29,6 +30,55 @@ DEFAULT_PRE_MATCH_LOGS = (
     Path.home() / "Library" / "Logs" / "worldcup" / "pre-match.err.log",
 )
 DEFAULT_LINEUP_AUDIT_PATH = Path("data/local/diagnostics/lineup_audit.json")
+DEFAULT_CSL_COMPETITION_ID = "csl_2026"
+DEFAULT_CSL_LIVE_ODDS_CACHE_PATH = Path("data/cache/theoddsapi_csl_2026_odds.json")
+DEFAULT_CSL_LIVE_REFRESH_DIAGNOSTIC_PATH = Path(
+    "data/local/diagnostics/csl_live_odds_refresh.json"
+)
+DEFAULT_CSL_LIVE_RUNNER_CHECK_PATH = Path(
+    "data/local/diagnostics/csl_live_league_runner_check.json"
+)
+SAFE_QUOTA_FIELDS = ("remaining", "used", "last")
+CSL_RUNNER_BLOCKING_WARNINGS = {
+    "club_rating_missing",
+    "club_rating_invalid",
+    "club_rating_sample_too_small",
+}
+DANGEROUS_SAFE_STRING_TERMS = ("secret", "hmac", "credential", "apikey")
+SAFE_STRING_MAX_LENGTH = 120
+ALLOWED_QUOTA_PROVIDERS = {
+    "theoddsapi",
+    "theoddsapi_primary",
+    "theoddsapi_secondary",
+}
+ALLOWED_CSL_SPORT_KEYS = {
+    "soccer_china_superleague",
+    "soccer_china_super_league",
+}
+ALLOWED_REFRESH_STATUSES = {"ok", "missing", "fetched", "dry_run", "skipped", "error", "warn"}
+ALLOWED_RUNNER_STATUSES = {"ok", "missing", "skipped", "error", "warn"}
+ALLOWED_FIXTURE_SOURCES = {"odds_event_only", "explicit_fixture_source", "openfootball"}
+ALLOWED_RATING_POLICIES = {"club_rating_pending", "national_team_elo"}
+ALLOWED_CLUB_RATING_MODES = {"sample_replay", "sample_too_small", "missing", "invalid", "fallback"}
+ALLOWED_DIAGNOSTIC_CODES = {
+    "club_rating_pending",
+    "club_rating_missing",
+    "club_rating_invalid",
+    "club_rating_sample_too_small",
+    "odds_event_only",
+    "missing",
+    "runner_failed",
+    "no_valid_rows",
+}
+ALLOWED_STRONG_GRADES = {"S", "A", "B", "C", "D"}
+ALLOWED_RUNNER_COUNT_KEYS = {"fixtures", "odds_events", "match_inputs", "matches"}
+ALLOWED_REFRESH_CACHE_PATHS = {
+    "data/cache/theoddsapi_csl_2026_odds.json",
+    "data/local/diagnostics/csl_live_odds_refresh.json",
+    "data/local/diagnostics/csl_live_league_runner_check.json",
+}
+SAFE_ISOISH_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T[0-9:.+-]+Z?$")
+SAFE_TEAM_LABEL_RE = re.compile(r"^[A-Za-z .&'()/-]{1,80}$")
 DISCLAIMER = "仅用于研究分析，不构成投注建议"
 FORBIDDEN_PUBLIC_TERMS = [
     "stake",
@@ -134,6 +184,281 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def _read_json_any(path: Path) -> Any | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _is_safe_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_safe_bool(value: Any) -> bool:
+    return isinstance(value, bool)
+
+
+def _safe_quota_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: payload[key]
+        for key in SAFE_QUOTA_FIELDS
+        if key in payload and _is_safe_number(payload[key])
+    }
+
+
+def _safe_string(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    if len(value) > SAFE_STRING_MAX_LENGTH:
+        return None
+    lowered = value.lower()
+    if "http://" in lowered or "https://" in lowered:
+        return None
+    if ".env" in lowered:
+        return None
+    if any(term in lowered for term in DANGEROUS_SAFE_STRING_TERMS):
+        return None
+    if "?" in value or "=" in value:
+        return None
+    if SENSITIVE_RE.search(value):
+        return None
+    return value
+
+
+def _safe_allowed_string(value: Any, allowed: set[str]) -> str | None:
+    safe = _safe_string(value)
+    return safe if safe in allowed else None
+
+
+def _safe_allowed_string_list(value: Any, allowed: set[str]) -> list[str]:
+    safe: list[str] = []
+    if not isinstance(value, list):
+        return safe
+    for item in value:
+        safe_item = _safe_allowed_string(item, allowed)
+        if safe_item is not None:
+            safe.append(safe_item)
+    return safe
+
+
+def _safe_isoish(value: Any) -> str | None:
+    safe = _safe_string(value)
+    if safe is None:
+        return None
+    return safe if SAFE_ISOISH_RE.match(safe) else None
+
+
+def _safe_team_label(value: Any) -> str | None:
+    safe = _safe_string(value)
+    if safe is None or SAFE_TEAM_LABEL_RE.match(safe) is None:
+        return None
+    if " " not in safe:
+        return None
+    return safe
+
+
+def _safe_team_label_list(value: Any) -> list[str]:
+    safe: list[str] = []
+    if not isinstance(value, list):
+        return safe
+    for item in value:
+        safe_item = _safe_team_label(item)
+        if safe_item is not None:
+            safe.append(safe_item)
+    return safe
+
+
+def _safe_relative_path(value: Any) -> str | None:
+    safe = _safe_string(value)
+    if safe is None:
+        return None
+    path = PurePosixPath(safe)
+    if path.is_absolute() or ".." in path.parts:
+        return None
+    if safe in ALLOWED_REFRESH_CACHE_PATHS:
+        return safe
+    return None
+
+
+def _safe_counts(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    counts: dict[str, Any] = {}
+    for key, item in value.items():
+        safe_key = _safe_allowed_string(key, ALLOWED_RUNNER_COUNT_KEYS)
+        if safe_key is not None and _is_safe_number(item):
+            counts[safe_key] = item
+    return counts
+
+
+def _raw_list_count(value: Any) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
+def _safe_quota_providers(root: Path) -> dict[str, Any]:
+    path = root / "data/cache/quota.json"
+    quota = _read_json(path)
+    if quota is None:
+        return {"status": "missing", "path": str(path), "providers": {}}
+    providers = quota.get("providers") if isinstance(quota.get("providers"), dict) else {}
+    safe_providers: dict[str, Any] = {}
+    for provider, value in providers.items():
+        safe_provider = _safe_allowed_string(provider, ALLOWED_QUOTA_PROVIDERS)
+        if safe_provider is not None and isinstance(value, dict):
+            safe_providers[safe_provider] = _safe_quota_fields(value)
+    return {"status": "ok", "path": str(path), "providers": safe_providers}
+
+
+def _safe_refresh_diagnostic(root: Path) -> dict[str, Any]:
+    path = root / DEFAULT_CSL_LIVE_REFRESH_DIAGNOSTIC_PATH
+    payload = _read_json(path)
+    if payload is None:
+        return {"status": "missing", "path": str(path)}
+    result: dict[str, Any] = {"path": str(path)}
+    status = _safe_allowed_string(payload.get("status"), ALLOWED_REFRESH_STATUSES)
+    if status is not None:
+        result["status"] = status
+    observed_at = _safe_isoish(payload.get("observed_at"))
+    if observed_at is not None:
+        result["observed_at"] = observed_at
+    provider = _safe_allowed_string(payload.get("theoddsapi_provider"), ALLOWED_QUOTA_PROVIDERS)
+    if provider is not None:
+        result["theoddsapi_provider"] = provider
+    for key in ("events", "quota_remaining", "quota_last"):
+        if _is_safe_number(payload.get(key)):
+            result[key] = payload[key]
+    if _is_safe_bool(payload.get("has_synthetic_marker")):
+        result["has_synthetic_marker"] = payload["has_synthetic_marker"]
+    cache_path = _safe_relative_path(payload.get("cache_path"))
+    if cache_path is not None:
+        result["cache_path"] = cache_path
+    if "status" not in result:
+        result["status"] = "ok"
+    return result
+
+
+def _safe_club_rating(payload: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    mode = _safe_allowed_string(payload.get("mode"), ALLOWED_CLUB_RATING_MODES)
+    if mode is not None:
+        result["mode"] = mode
+    for key in ("matches_replayed", "teams_rated", "skipped_rows"):
+        if _is_safe_number(payload.get(key)):
+            result[key] = payload[key]
+    if _is_safe_bool(payload.get("sample_too_small")):
+        result["sample_too_small"] = payload["sample_too_small"]
+    result["errors_count"] = _raw_list_count(payload.get("errors"))
+    result["errors"] = _safe_allowed_string_list(payload.get("errors"), ALLOWED_DIAGNOSTIC_CODES)
+    return result
+
+
+def _safe_runner_check(root: Path) -> dict[str, Any]:
+    path = root / DEFAULT_CSL_LIVE_RUNNER_CHECK_PATH
+    payload = _read_json(path)
+    if payload is None:
+        return {"status": "missing", "path": str(path)}
+    result: dict[str, Any] = {"path": str(path)}
+    status = _safe_allowed_string(payload.get("status"), ALLOWED_RUNNER_STATUSES)
+    if status is not None:
+        result["status"] = status
+    fixture_source = _safe_allowed_string(payload.get("fixture_source"), ALLOWED_FIXTURE_SOURCES)
+    if fixture_source is not None:
+        result["fixture_source"] = fixture_source
+    rating_policy = _safe_allowed_string(payload.get("rating_policy"), ALLOWED_RATING_POLICIES)
+    if rating_policy is not None:
+        result["rating_policy"] = rating_policy
+    counts = _safe_counts(payload.get("counts"))
+    if counts:
+        result["counts"] = counts
+    result["warnings"] = _safe_allowed_string_list(payload.get("warnings"), ALLOWED_DIAGNOSTIC_CODES)
+    result["errors_count"] = _raw_list_count(payload.get("errors"))
+    result["errors"] = _safe_allowed_string_list(payload.get("errors"), ALLOWED_DIAGNOSTIC_CODES)
+    result["club_alias_unmatched_count"] = _raw_list_count(payload.get("club_alias_unmatched"))
+    result["club_alias_unmatched"] = _safe_team_label_list(payload.get("club_alias_unmatched"))
+    if _is_safe_number(payload.get("invalid_odds_count")):
+        result["invalid_odds_count"] = payload["invalid_odds_count"]
+    if _is_safe_number(payload.get("signals")):
+        result["signals"] = payload["signals"]
+    result["strong_grades"] = _safe_allowed_string_list(payload.get("strong_grades"), ALLOWED_STRONG_GRADES)
+    club_rating = payload.get("club_rating")
+    if isinstance(club_rating, dict):
+        result["club_rating"] = _safe_club_rating(club_rating)
+    if "status" not in result:
+        result["status"] = "ok"
+    return result
+
+
+def _csl_live_odds_summary(
+    root: Path,
+    competition_id: str = DEFAULT_CSL_COMPETITION_ID,
+) -> dict[str, Any]:
+    cache_path = root / DEFAULT_CSL_LIVE_ODDS_CACHE_PATH
+    if not cache_path.exists():
+        return {
+            "status": "missing",
+            "competition_id": competition_id,
+            "path": str(cache_path),
+            "message": "live_odds_cache_missing",
+            "quota": _safe_quota_providers(root),
+            "refresh_diagnostic": _safe_refresh_diagnostic(root),
+            "runner_check": _safe_runner_check(root),
+        }
+
+    payload = _read_json_any(cache_path)
+    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+        return {
+            "status": "error",
+            "competition_id": competition_id,
+            "path": str(cache_path),
+            "message": "invalid_odds_cache_shape",
+            "quota": _safe_quota_providers(root),
+            "refresh_diagnostic": _safe_refresh_diagnostic(root),
+            "runner_check": _safe_runner_check(root),
+        }
+
+    try:
+        parse_result = parse_league_odds_events(payload, competition_id)
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        return {
+            "status": "error",
+            "competition_id": competition_id,
+            "path": str(cache_path),
+            "message": "invalid_odds_cache_payload",
+            "error_type": type(exc).__name__,
+            "quota": _safe_quota_providers(root),
+            "refresh_diagnostic": _safe_refresh_diagnostic(root),
+            "runner_check": _safe_runner_check(root),
+        }
+
+    raw_unmatched = parse_result.unmatched_clubs
+    safe_sport_keys = sorted(
+        set(
+            _safe_allowed_string(item.get("sport_key"), ALLOWED_CSL_SPORT_KEYS)
+            for item in payload
+        )
+        - {None}
+    )
+    safe_unmatched = _safe_team_label_list(raw_unmatched)
+
+    return {
+        "status": "ok",
+        "competition_id": competition_id,
+        "path": str(cache_path),
+        "events": len(payload),
+        "fixtures": len(parse_result.fixtures),
+        "odds_events": len(parse_result.odds_events),
+        "sport_keys": safe_sport_keys,
+        "has_synthetic_marker": any(item.get("_synthetic_smoke") is True for item in payload),
+        "club_alias_unmatched": safe_unmatched,
+        "club_alias_unmatched_count": len(raw_unmatched),
+        "invalid_odds_count": sum(len(event.invalid_odds) for event in parse_result.odds_events),
+        "quota": _safe_quota_providers(root),
+        "refresh_diagnostic": _safe_refresh_diagnostic(root),
+        "runner_check": _safe_runner_check(root),
+    }
 
 
 def _snapshot_summary(path: Path) -> dict[str, Any]:
@@ -249,7 +574,12 @@ def _quota_summary(path: Path) -> dict[str, Any]:
     if quota is None:
         return {"status": "warn", "path": str(path), "message": "missing_or_unreadable"}
     providers = quota.get("providers") if isinstance(quota.get("providers"), dict) else {}
-    return {"status": "ok", "path": str(path), "providers": providers}
+    safe_providers: dict[str, Any] = {}
+    for provider, value in providers.items():
+        safe_provider = _safe_allowed_string(provider, ALLOWED_QUOTA_PROVIDERS)
+        if safe_provider is not None and isinstance(value, dict):
+            safe_providers[safe_provider] = _safe_quota_fields(value)
+    return {"status": "ok", "path": str(path), "providers": safe_providers}
 
 
 def _scan_log_file(path: Path, max_bytes: int = 200_000) -> dict[str, Any]:
@@ -321,6 +651,7 @@ def _local_checks(
     return {
         "snapshot": _snapshot_summary(root / "data/cache/analysis_snapshot.json"),
         "quota": _quota_summary(root / "data/cache/quota.json"),
+        "csl_live_odds": _csl_live_odds_summary(root),
         "finished": _finished_consistency(root),
         "history": summarize_history(root / "data/local/history", limit=3),
         "launch_agent": inspect_launch_agent(launch_agent_path),
@@ -557,11 +888,55 @@ def _remote_checks(host: str | None, runner: RemoteRunner, timeout: int) -> dict
     return {"status": "error", "host": host, "message": "invalid_remote_shape"}
 
 
+def _list_values(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _runner_has_blocking_warning(runner: dict[str, Any]) -> bool:
+    warnings = {str(item) for item in _list_values(runner.get("warnings"))}
+    return bool(warnings & CSL_RUNNER_BLOCKING_WARNINGS)
+
+
+def _csl_runner_has_error(runner: dict[str, Any]) -> bool:
+    if runner.get("status") == "missing":
+        return False
+    if runner.get("status") == "error":
+        return True
+    club_rating = runner.get("club_rating") if isinstance(runner.get("club_rating"), dict) else {}
+    return (
+        _runner_has_blocking_warning(runner)
+        or bool(_list_values(runner.get("club_alias_unmatched")))
+        or _as_int(runner.get("club_alias_unmatched_count")) > 0
+        or _as_int(runner.get("invalid_odds_count")) > 0
+        or _as_int(runner.get("errors_count")) > 0
+        or _as_int(club_rating.get("errors_count")) > 0
+        or bool(_list_values(runner.get("strong_grades")))
+    )
+
+
 def _count_issues(result: dict[str, Any]) -> dict[str, int]:
     errors = 0
     warnings = 0
 
     local = result.get("local") or {}
+    csl_live_odds = local.get("csl_live_odds") if isinstance(local.get("csl_live_odds"), dict) else {}
+    csl_status = csl_live_odds.get("status")
+    warnings += int(csl_status == "missing")
+    errors += int(csl_status == "error")
+    if csl_status == "ok":
+        errors += int(csl_live_odds.get("has_synthetic_marker") is True)
+        errors += int(
+            bool(_list_values(csl_live_odds.get("club_alias_unmatched")))
+            or _as_int(csl_live_odds.get("club_alias_unmatched_count")) > 0
+        )
+        errors += int(_as_int(csl_live_odds.get("invalid_odds_count")) > 0)
+        runner = (
+            csl_live_odds.get("runner_check")
+            if isinstance(csl_live_odds.get("runner_check"), dict)
+            else {}
+        )
+        warnings += int(runner.get("status") == "missing")
+        errors += int(_csl_runner_has_error(runner))
     if (local.get("snapshot") or {}).get("status") != "ok":
         errors += 1
     for log in local.get("logs") or []:
@@ -638,9 +1013,11 @@ def run_ops_check(
         "local": _local_checks(
             project_root,
             launch_agent_path=launch_agent_path,
-            local_log_paths=list(local_log_paths or DEFAULT_LOCAL_LOGS),
+            local_log_paths=list(DEFAULT_LOCAL_LOGS if local_log_paths is None else local_log_paths),
             pre_match_launch_agent_path=pre_match_launch_agent_path,
-            pre_match_log_paths=list(pre_match_log_paths or DEFAULT_PRE_MATCH_LOGS),
+            pre_match_log_paths=list(
+                DEFAULT_PRE_MATCH_LOGS if pre_match_log_paths is None else pre_match_log_paths
+            ),
             lineup_audit_path=lineup_audit_path,
         ),
         "public": {"status": "skipped"}
