@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-24 P9.8 CSL live odds fetch 与 live alias 补丁
+
+- 经用户明确确认，执行 `worldcup.league_odds_refresh --competition csl_2026 --sport-key soccer_china_superleague --cache-dir data/cache --quota-path data/cache/quota.json --live`；读取本地 `.env`，调用 The Odds API，写入 ignored cache：`data/cache/theoddsapi_csl_2026_odds.json`。
+- Live fetch 返回 `status=fetched`、`events=8`、`theoddsapi_provider=theoddsapi_secondary`、`quota_remaining=248`、`quota_last=3`；安全摘要写入 ignored diagnostics：`data/local/diagnostics/csl_live_odds_refresh.json`，确认 `has_synthetic_marker=false`。
+- 首次 live runner 发现真实 The Odds API 队名存在未覆盖别名，例如 `Shanghai SIPG FC`、`Beijing FC`、`Shandong Luneng Taishan FC`；按 TDD 补充 `csl_2026` live alias 测试和最小 alias 表，不放宽 unknown club fallback。
+- 重跑 live runner 写入 ignored diagnostics：`data/local/diagnostics/csl_live_league_snapshot.json` 和 `data/local/diagnostics/csl_live_league_runner_check.json`；结果为 `counts.matches=8`、`club_alias_unmatched=[]`、`invalid_odds_count=0`、`club_rating.mode=sample_replay`、`matches_replayed=840`、`teams_rated=22`、`sample_too_small=false`、`errors=[]`。
+- `rating_policy=club_rating_pending` 未改变；warnings 保留 `club_rating_pending` / `odds_event_only`，无 `club_rating_missing`，56 个 signals 没有 S/A final grades。本轮未部署、未改 LaunchAgent、未发布线上 snapshot、未打印 API key 或 `.env` 值。
+- 验证：`tests/collectors/test_club_aliases.py` 单文件 `8/8` 通过；项目标准 full `tests/run_tests.py` 返回 `538/538 tests passed`；`git diff --check` 通过。
+
 ## 2026-06-23 P9.8 CSL live odds refresh 计划与 code-only 实现
 
 - 新增 implementation plan：`docs/superpowers/plans/2026-06-23-csl-live-odds-refresh.md`。

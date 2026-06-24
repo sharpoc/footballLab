@@ -105,3 +105,24 @@ def test_csl_2023_2026_source_aliases_are_known():
         assert result.raw_name == raw_name
         assert result.canonical_key == canonical_key
         assert result.unmatched_name is None
+
+
+def test_csl_theoddsapi_live_aliases_are_known():
+    cases = [
+        ("Beijing FC", "beijing_guoan"),
+        ("Chengdu Rongcheng FC", "chengdu_rongcheng"),
+        ("Qingdao Hainiu FC", "qingdao_hainiu"),
+        ("Qingdao West Coast FC", "qingdao_west_coast"),
+        ("Shandong Luneng Taishan FC", "shandong_taishan"),
+        ("Shanghai SIPG FC", "shanghai_port"),
+        ("Shanghai Shenhua FC", "shanghai_shenhua"),
+        ("Shenzhen Peng City FC", "shenzhen_peng_city"),
+        ("Tianjin Jinmen Tiger FC", "tianjin_jinmen_tiger"),
+    ]
+
+    for raw_name, canonical_key in cases:
+        result = match_known_club_alias("csl_2026", raw_name)
+
+        assert result.raw_name == raw_name
+        assert result.canonical_key == canonical_key
+        assert result.unmatched_name is None
