@@ -365,6 +365,40 @@ def test_build_pending_gate_report_keeps_no_lift_without_market_odds():
         assert "historical_market_odds_missing" in report["decision"]["reasons"]
 
 
+def test_build_pending_gate_report_reflects_market_baseline_without_lifting():
+    with TemporaryDirectory() as tmp:
+        results = _load_fixture_results(tmp)
+        market_report = {
+            "sample": {"n_matches": 12, "n_1x2": 12},
+            "markets": {
+                "1x2": {
+                    "market": {"n": 12, "brier": 0.51, "log_loss": 0.91},
+                }
+            },
+        }
+
+        report = build_pending_gate_report(
+            results,
+            source="club_results_csl_2026.csv",
+            warmup_matches=2,
+            min_eval_matches=3,
+            generated_at="2026-06-29T10:50:00Z",
+            home_adv=100.0,
+            market_report=market_report,
+        )
+
+        assert report["sample"]["has_market_odds"] is True
+        assert report["checks"]["market_baseline_available"] is True
+        assert report["metrics"]["market_baseline"] == {
+            "n": 12,
+            "brier": 0.51,
+            "log_loss": 0.91,
+        }
+        assert report["decision"]["can_lift_club_rating_pending"] is False
+        assert report["can_lift_club_rating_pending"] is False
+        assert "historical_market_odds_missing" not in report["decision"]["reasons"]
+
+
 def test_pending_gate_marks_small_sample_as_keep_pending():
     with TemporaryDirectory() as tmp:
         results = _load_fixture_results(tmp)
@@ -465,6 +499,61 @@ def test_pending_gate_cli_writes_json():
         _assert_forbidden_terms_absent(json.dumps(report, ensure_ascii=False, sort_keys=True))
 
 
+def test_pending_gate_cli_reads_market_report_json():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        cache_dir = root / "data" / "cache"
+        results_path = cache_dir / "club_results_csl_2026.csv"
+        market_report_path = root / "data" / "local" / "backtest" / "csl_2026_report.json"
+        out = root / "data" / "local" / "diagnostics" / "custom_gate.json"
+        _write_results(results_path)
+        market_report_path.parent.mkdir(parents=True, exist_ok=True)
+        market_report_path.write_text(
+            json.dumps(
+                {
+                    "sample": {"n_matches": 12, "n_1x2": 12},
+                    "markets": {
+                        "1x2": {
+                            "market": {"n": 12, "brier": 0.51, "log_loss": 0.91},
+                        }
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            exit_code = pending_gate_main(
+                [
+                    "--root",
+                    str(root),
+                    "--cache-dir",
+                    str(cache_dir),
+                    "--generated-at",
+                    "2026-06-29T10:50:00Z",
+                    "--warmup-matches",
+                    "2",
+                    "--min-eval-matches",
+                    "3",
+                    "--market-report",
+                    str(market_report_path),
+                    "--out",
+                    str(out),
+                ]
+            )
+
+        assert exit_code == 0
+        summary = json.loads(stdout.getvalue())
+        report = json.loads(out.read_text(encoding="utf-8"))
+        assert summary["can_lift_club_rating_pending"] is False
+        assert report["sample"]["has_market_odds"] is True
+        assert report["checks"]["market_baseline_available"] is True
+        assert report["metrics"]["market_baseline"]["n"] == 12
+        assert report["can_lift_club_rating_pending"] is False
+
+
 def test_pending_gate_cli_writes_markdown_without_project_config_read():
     from worldcup import config as config_module
 
@@ -542,10 +631,12 @@ def load_tests(loader, tests, pattern):
             test_build_pending_gate_report_rejects_none_source,
             test_pending_gate_home_prior_uses_only_dates_before_evaluated_match,
             test_build_pending_gate_report_keeps_no_lift_without_market_odds,
+            test_build_pending_gate_report_reflects_market_baseline_without_lifting,
             test_pending_gate_marks_small_sample_as_keep_pending,
             test_format_pending_gate_markdown_is_clear_and_safe,
             test_default_gate_path_uses_diagnostics_timestamp,
             test_pending_gate_cli_writes_json,
+            test_pending_gate_cli_reads_market_report_json,
             test_pending_gate_cli_writes_markdown_without_project_config_read,
             test_pending_gate_cli_rejects_legacy_short_aliases,
         )

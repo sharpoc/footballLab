@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-29 P9.15 CSL postmatch eval loop
+
+- 新增 `worldcup.csl_eval_data`：只读本地 CSL snapshot history 与 `data/cache/club_results_csl_2026.csv`，用开球前最后一份 snapshot join 完赛赛果，输出现有 `worldcup.backtest` 可读取的 `data/local/backtest/csl_2026_eval.csv`。
+- `worldcup.csl_pending_gate` 新增可选 `--market-report`，从本地 CSL backtest JSON 读取 `markets.1x2.market` 作为市场 baseline；即使 baseline 可用，也保持 `can_lift_club_rating_pending=false`，只进入观察/keep pending。
+- README 新增 CSL 赛后评估闭环：归档本地 CSL snapshot、生成 eval CSV、跑 `worldcup.backtest`、把 report 接入 pending gate；准确率判断强调 Brier / Log Loss / calibration / model_matched vs market，而不是只看命中率。
+- 本轮未联网、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布 snapshot、未部署、未改 LaunchAgent、未 push。
+- 验证：TDD 红灯覆盖 `worldcup.csl_eval_data` 缺失和 `market_report` 未实现；实现后项目标准 `tests/run_tests.py` 返回 `603/603 tests passed`。
+
 ## 2026-06-29 P9.14 CSL observation report 与 pending gate
 
 - 新增 `worldcup.csl_observation_report`：从本地 CSL live league snapshot 生成已脱敏观察报告，保留研究免责声明，过滤 raw odds、bookmaker、provider、API key、secret、资金和执行建议等不应暴露内容。

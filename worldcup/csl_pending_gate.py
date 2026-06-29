@@ -200,6 +200,24 @@ def _beats(left: dict[str, Any], right: dict[str, Any]) -> bool:
     )
 
 
+def _market_baseline_from_report(report: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(report, dict):
+        return {"n": 0, "brier": None, "log_loss": None}
+    markets = report.get("markets") if isinstance(report.get("markets"), dict) else {}
+    x12 = markets.get("1x2") if isinstance(markets.get("1x2"), dict) else {}
+    market = x12.get("market") if isinstance(x12.get("market"), dict) else {}
+    n = market.get("n", 0)
+    if not isinstance(n, int) or n <= 0:
+        return {"n": 0, "brier": None, "log_loss": None}
+    return {
+        "n": n,
+        "brier": market.get("brier") if isinstance(market.get("brier"), float) else None,
+        "log_loss": (
+            market.get("log_loss") if isinstance(market.get("log_loss"), float) else None
+        ),
+    }
+
+
 def build_pending_gate_report(
     results: list[ClubResult],
     *,
@@ -210,6 +228,7 @@ def build_pending_gate_report(
     min_eval_matches: int = 200,
     cfg: dict[str, Any] | None = None,
     home_adv: float | None = None,
+    market_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if source is None:
         raise ValueError("source is required")
@@ -241,9 +260,13 @@ def build_pending_gate_report(
     sample_size_ok = not sample_too_small
     model_beats_uniform = _beats(model_metrics, uniform_metrics)
     model_beats_home_prior = _beats(model_metrics, home_prior_metrics)
+    market_baseline = _market_baseline_from_report(market_report)
+    market_baseline_available = bool(market_baseline.get("n"))
 
     if sample_too_small:
-        reasons = ["sample_too_small", "historical_market_odds_missing"]
+        reasons = ["sample_too_small"]
+        if not market_baseline_available:
+            reasons.append("historical_market_odds_missing")
         status = "keep_pending"
     else:
         reasons = []
@@ -251,8 +274,9 @@ def build_pending_gate_report(
             reasons.append("model_not_beating_uniform_brier")
         if not model_beats_home_prior:
             reasons.append("model_not_beating_home_prior_brier")
-        reasons.append("historical_market_odds_missing")
-        status = "observe_only_no_lift" if reasons == ["historical_market_odds_missing"] else "keep_pending"
+        if not market_baseline_available:
+            reasons.append("historical_market_odds_missing")
+        status = "observe_only_no_lift" if not reasons else "keep_pending"
 
     sample = {
         "total_results": len(results),
@@ -260,7 +284,7 @@ def build_pending_gate_report(
         "evaluated_matches": evaluated,
         "min_eval_matches": min_eval_matches,
         "sample_too_small": sample_too_small,
-        "has_market_odds": False,
+        "has_market_odds": market_baseline_available,
     }
     decision: dict[str, Any] = {
         "status": status,
@@ -280,13 +304,13 @@ def build_pending_gate_report(
             "model_1x2": model_metrics,
             "uniform_1x2": uniform_metrics,
             "home_prior_1x2": home_prior_metrics,
-            "market_baseline": {"n": 0, "brier": None, "log_loss": None},
+            "market_baseline": market_baseline,
         },
         "checks": {
             "sample_size_ok": sample_size_ok,
             "model_beats_uniform_brier": model_beats_uniform,
             "model_beats_home_prior_brier": model_beats_home_prior,
-            "market_baseline_available": False,
+            "market_baseline_available": market_baseline_available,
         },
         "decision": decision,
         "can_lift_club_rating_pending": False,
@@ -375,6 +399,12 @@ def _resolve_under_root(root: Path, path: str | Path) -> Path:
     return candidate if candidate.is_absolute() else root / candidate
 
 
+def _load_market_report(path: str | Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Write a local CSL pending gate report.",
@@ -391,6 +421,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--generated-at", default=None)
     parser.add_argument("--warmup-matches", type=int, default=300)
     parser.add_argument("--min-eval-matches", type=int, default=200)
+    parser.add_argument(
+        "--market-report",
+        default=None,
+        help="Optional local backtest report JSON with CSL market baseline metrics.",
+    )
     parser.add_argument("--format", choices=("json", "markdown"), default="json")
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
@@ -399,6 +434,9 @@ def main(argv: list[str] | None = None) -> int:
     cache_dir = _resolve_under_root(root, args.cache_dir)
     source = cache_dir / f"club_results_{args.competition_id}.csv"
     results = load_club_results_csv(source, args.competition_id)
+    market_report_path = (
+        _resolve_under_root(root, args.market_report) if args.market_report else None
+    )
     report = build_pending_gate_report(
         results,
         competition_id=args.competition_id,
@@ -406,6 +444,7 @@ def main(argv: list[str] | None = None) -> int:
         generated_at=args.generated_at,
         warmup_matches=args.warmup_matches,
         min_eval_matches=args.min_eval_matches,
+        market_report=_load_market_report(market_report_path),
     )
     out_path = (
         _resolve_under_root(root, args.out)
