@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
@@ -18,10 +20,25 @@ from worldcup.refresh_runner import _load_env
 from worldcup.store_contract import SnapshotStore
 
 
-def _json_response(status: int, data: dict[str, Any]) -> dict[str, Any]:
+DEFAULT_MAX_INGEST_BODY_BYTES = 1_000_000
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
+_AUTH_REJECTION_REASONS = {
+    "signature_format_invalid",
+    "signature_mismatch",
+}
+
+
+def _json_response(
+    status: int,
+    data: dict[str, Any],
+    extra_headers: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    headers = {"Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(dict(extra_headers))
     return {
         "status": status,
-        "headers": {"Content-Type": "application/json"},
+        "headers": headers,
         "body": json.dumps(data, ensure_ascii=False, sort_keys=True),
     }
 
@@ -38,6 +55,64 @@ def _latest_or_404(db_path: str | Path, store: SnapshotStore | None = None) -> d
     return load_latest_snapshot(db_path, store=store)
 
 
+def _normalize_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    return {key.lower(): value for key, value in headers.items()}
+
+
+def _request_id(headers: Mapping[str, str]) -> str:
+    normalized = _normalize_headers(headers)
+    candidate = normalized.get("x-request-id", "").strip()
+    if _REQUEST_ID_RE.fullmatch(candidate):
+        return candidate
+    return uuid.uuid4().hex
+
+
+def _is_json_content_type(value: str | None) -> bool:
+    if not value:
+        return False
+    return value.split(";", 1)[0].strip().lower() == "application/json"
+
+
+def _content_length(headers: Mapping[str, str]) -> int | None:
+    normalized = _normalize_headers(headers)
+    value = normalized.get("content-length")
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError("invalid_content_length") from exc
+    if parsed < 0:
+        raise ValueError("invalid_content_length")
+    return parsed
+
+
+def _ingest_headers(request_id: str) -> dict[str, str]:
+    return {
+        "Cache-Control": "no-store",
+        "X-Request-Id": request_id,
+    }
+
+
+def _ingest_error_response(status: int, code: str, request_id: str) -> dict[str, Any]:
+    return _json_response(
+        status,
+        {
+            "error": {
+                "code": code,
+                "request_id": request_id,
+            }
+        },
+        extra_headers=_ingest_headers(request_id),
+    )
+
+
+def _ingest_rejection_status(reason: str) -> int:
+    if reason in _AUTH_REJECTION_REASONS:
+        return 401
+    return 400
+
+
 def handle_request(
     method: str,
     path: str,
@@ -47,6 +122,7 @@ def handle_request(
     secret: str,
     now: str | None = None,
     store: SnapshotStore | None = None,
+    max_ingest_body_bytes: int = DEFAULT_MAX_INGEST_BODY_BYTES,
 ) -> dict[str, Any]:
     route = path.split("?", 1)[0]
     method_upper = method.upper()
@@ -62,6 +138,19 @@ def handle_request(
         )
 
     if method_upper == "POST" and route == "/api/ingest/snapshot":
+        request_id = _request_id(headers)
+        normalized_headers = _normalize_headers(headers)
+        if not _is_json_content_type(normalized_headers.get("content-type")):
+            return _ingest_error_response(415, "unsupported_media_type", request_id)
+        try:
+            declared_length = _content_length(headers)
+        except ValueError:
+            return _ingest_error_response(400, "invalid_content_length", request_id)
+        if declared_length is not None and declared_length > max_ingest_body_bytes:
+            return _ingest_error_response(413, "body_too_large", request_id)
+        if len(body.encode("utf-8")) > max_ingest_body_bytes:
+            return _ingest_error_response(413, "body_too_large", request_id)
+
         result = process_local_ingest(
             db_path=db_path,
             method=method_upper,
@@ -72,7 +161,15 @@ def handle_request(
             now=now,
             store=store,
         )
-        return _json_response(200 if result["status"] != "rejected" else 400, result)
+        if result["status"] == "rejected":
+            return _ingest_error_response(
+                _ingest_rejection_status(result["reason"]),
+                result["reason"],
+                request_id,
+            )
+        response_body = dict(result)
+        response_body["request_id"] = request_id
+        return _json_response(200, response_body, extra_headers=_ingest_headers(request_id))
 
     if method_upper == "GET" and route == "/api/snapshot/latest":
         snapshot = _latest_or_404(db_path, store=store)
@@ -126,13 +223,26 @@ def make_handler(db_path: str | Path, secret: str):
             )
 
         def do_POST(self) -> None:
-            length = int(self.headers.get("Content-Length", "0"))
-            body = self.rfile.read(length).decode("utf-8")
+            headers = dict(self.headers.items())
+            request_id = _request_id(headers)
+            try:
+                length = _content_length(headers) or 0
+            except ValueError:
+                self._send(_ingest_error_response(400, "invalid_content_length", request_id))
+                return
+            if length > DEFAULT_MAX_INGEST_BODY_BYTES:
+                self._send(_ingest_error_response(413, "body_too_large", request_id))
+                return
+            try:
+                body = self.rfile.read(length).decode("utf-8")
+            except UnicodeDecodeError:
+                self._send(_ingest_error_response(400, "invalid_utf8_body", request_id))
+                return
             self._send(
                 handle_request(
                     method="POST",
                     path=self.path,
-                    headers=dict(self.headers.items()),
+                    headers=headers,
                     body=body,
                     db_path=db_path,
                     secret=secret,

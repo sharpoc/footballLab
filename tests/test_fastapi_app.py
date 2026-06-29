@@ -268,6 +268,7 @@ def test_fastapi_post_ingest_snapshot_rejects_bad_signature_without_writing():
         )
         headers = dict(request["headers"])
         headers["X-Worldcup-Signature"] = "sha256=bad"
+        headers["X-Request-Id"] = "req-fastapi-bad-signature"
         app = create_fastapi_app(db_path=db_path, secret="test-hmac-secret")
         client = TestClient(app)
 
@@ -278,8 +279,14 @@ def test_fastapi_post_ingest_snapshot_rejects_bad_signature_without_writing():
         )
 
         body = response.json()
-        assert response.status_code == 400
-        assert body["status"] == "rejected"
+        assert response.status_code == 401
+        assert response.headers["x-request-id"] == "req-fastapi-bad-signature"
+        assert body == {
+            "error": {
+                "code": "signature_mismatch",
+                "request_id": "req-fastapi-bad-signature",
+            }
+        }
         assert SQLiteSnapshotStore(db_path).count_snapshots() == 0
 
 

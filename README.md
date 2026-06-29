@@ -13,7 +13,7 @@
 
 - Git 仓库已初始化。
 - Plan 1 引擎核心已完成第一版。
-- 本地测试执行器通过：`612/612 tests passed`。
+- 本地测试执行器通过：`616/616 tests passed`。
 - Plan 0 核心数据源探测已完成第一轮：openfootball 赛程、eloratings Elo、The Odds API 赔率可用；API-Football Free plan 不能访问 2026 season。
 - Plan 2 已启动：当前完成纯离线解析层、单场价值信号、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、按每场比赛独立计算的刷新计划、post-information odds 定向刷新调度判定、post-lineup refresh guard、run metadata、调度执行包装、显著变化手机通知、完赛战绩定格、赔率走势富化、AH 验证 shadow、研究候选池 `candidate_grade`、首发/球员影响 `lineup_shadow` schema、`manual_json` 首发/球员本地入口、FIFA public API 官方首发抓取 CLI、赛前首发轮询编排 runner、赛前 LaunchAgent plist 生成器、lineups-only 赛前 LaunchAgent、官方首发链路审计与一次性通知、独立 OU total `ou_total_shadow` schema、AH candidate 正式激活规则、世界杯 1X2 平局/长赔率强信号候选化、淘汰赛 scores 90 分钟人工确认 guard、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照，本地 runner 生成的快照也包含 ingest 所需 run metadata。
 - Plan 3A FastAPI 本地适配层已实现并完成测试。
@@ -37,6 +37,7 @@
 - 当前 scores capture 默认 dry-run；淘汰赛开始后（`2026-06-28T00:00:00Z` 起）即使显式 `--live` 也会默认阻断并返回 `knockout_score_manual_review_required`，避免把可能含加时/点球的比分写入 90 分钟结算链路；只有人工确认 90 分钟口径后显式传 `--allow-knockout-scores` 才会放行。
 - 当前 ingest 默认 dry-run；只构造请求体、HMAC 签名头和 body hash，不发送线上请求
 - 当前 ingest server 是纯本地验签/幂等模块；FastAPI adapter 已复用它，ECS 部署另行确认
+- 当前 HTTP ingest 入口会拒绝非 JSON 请求、超限 body、非法 Content-Length 和非法 UTF-8；ingest 响应统一携带 `X-Request-Id`，错误体只暴露结构化 `error.code` / `error.request_id`，不回显 raw body、签名、secret 或 payload
 - 当前 SQLite store / preview 都是本地低风险链路；默认输出在已忽略的 `data/local/` 或 `data/cache/`
 - 当前 PostgreSQL store adapter 可用于后续 ECS/RDS 接入；`psycopg` 只作为可选依赖声明，本轮未安装、未连接真实数据库
 - 当前 store selection 默认 `sqlite`；单服务器 MVP 首发推荐 SQLite，只有显式 `--store postgres` 或 `.env` 中 `WORLDCUP_STORE=postgres` 时才要求 `DATABASE_URL`

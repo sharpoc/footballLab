@@ -19,16 +19,23 @@ def _headers(request: Request) -> dict[str, str]:
 
 def _response(result: dict[str, Any]) -> Response:
     content_type = result["headers"].get("Content-Type", "application/json")
+    headers = {
+        key: value
+        for key, value in result["headers"].items()
+        if key.lower() != "content-type"
+    }
     if content_type.startswith("text/html"):
         return HTMLResponse(
             content=result["body"],
             status_code=result["status"],
             media_type="text/html",
+            headers=headers,
         )
     return Response(
         content=result["body"],
         status_code=result["status"],
         media_type="application/json",
+        headers=headers,
     )
 
 

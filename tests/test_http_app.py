@@ -298,6 +298,137 @@ def test_http_post_ingest_snapshot_stores_signed_request():
         assert SQLiteSnapshotStore(db_path).count_snapshots() == 1
 
 
+def test_http_post_ingest_snapshot_echoes_request_id_on_success():
+    store = MemorySnapshotStore()
+    request = build_ingest_request(
+        snapshot=_snapshot(),
+        endpoint="https://example.com/api/ingest/snapshot",
+        secret="test-hmac-secret",
+        timestamp="2026-06-08T00:02:00+00:00",
+    )
+    headers = dict(request["headers"])
+    headers["X-Request-Id"] = "req-csl-001"
+
+    response = handle_request(
+        method=request["method"],
+        path=request["path"],
+        headers=headers,
+        body=request["body"],
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        now="2026-06-08T00:03:00+00:00",
+        store=store,
+    )
+
+    body = json.loads(response["body"])
+    assert response["status"] == 200
+    assert response["headers"]["X-Request-Id"] == "req-csl-001"
+    assert body["request_id"] == "req-csl-001"
+    assert body["status"] == "stored"
+    assert store.count_snapshots() == 1
+
+
+def test_http_post_ingest_snapshot_requires_json_content_type_without_writing():
+    store = MemorySnapshotStore()
+    request = build_ingest_request(
+        snapshot=_snapshot(),
+        endpoint="https://example.com/api/ingest/snapshot",
+        secret="test-hmac-secret",
+        timestamp="2026-06-08T00:02:00+00:00",
+    )
+    headers = dict(request["headers"])
+    headers["Content-Type"] = "text/plain"
+    headers["X-Request-Id"] = "req-bad-type"
+
+    response = handle_request(
+        method=request["method"],
+        path=request["path"],
+        headers=headers,
+        body=request["body"],
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        now="2026-06-08T00:03:00+00:00",
+        store=store,
+    )
+
+    body = json.loads(response["body"])
+    assert response["status"] == 415
+    assert response["headers"]["X-Request-Id"] == "req-bad-type"
+    assert body == {
+        "error": {
+            "code": "unsupported_media_type",
+            "request_id": "req-bad-type",
+        }
+    }
+    assert store.count_snapshots() == 0
+
+
+def test_http_post_ingest_snapshot_rejects_large_body_without_writing():
+    store = MemorySnapshotStore()
+    request = build_ingest_request(
+        snapshot=_snapshot(),
+        endpoint="https://example.com/api/ingest/snapshot",
+        secret="test-hmac-secret",
+        timestamp="2026-06-08T00:02:00+00:00",
+    )
+    headers = dict(request["headers"])
+    headers["X-Request-Id"] = "req-too-large"
+
+    response = handle_request(
+        method=request["method"],
+        path=request["path"],
+        headers=headers,
+        body=request["body"],
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        now="2026-06-08T00:03:00+00:00",
+        store=store,
+        max_ingest_body_bytes=10,
+    )
+
+    body = json.loads(response["body"])
+    assert response["status"] == 413
+    assert response["headers"]["X-Request-Id"] == "req-too-large"
+    assert body["error"]["code"] == "body_too_large"
+    assert body["error"]["request_id"] == "req-too-large"
+    assert store.count_snapshots() == 0
+
+
+def test_http_post_ingest_snapshot_returns_structured_error_for_bad_signature():
+    store = MemorySnapshotStore()
+    request = build_ingest_request(
+        snapshot=_snapshot(),
+        endpoint="https://example.com/api/ingest/snapshot",
+        secret="test-hmac-secret",
+        timestamp="2026-06-08T00:02:00+00:00",
+    )
+    headers = dict(request["headers"])
+    headers["X-Worldcup-Signature"] = "sha256=bad"
+    headers["X-Request-Id"] = "req-bad-signature"
+
+    response = handle_request(
+        method=request["method"],
+        path=request["path"],
+        headers=headers,
+        body=request["body"],
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        now="2026-06-08T00:03:00+00:00",
+        store=store,
+    )
+
+    body = json.loads(response["body"])
+    assert response["status"] == 401
+    assert response["headers"]["X-Request-Id"] == "req-bad-signature"
+    assert body == {
+        "error": {
+            "code": "signature_mismatch",
+            "request_id": "req-bad-signature",
+        }
+    }
+    assert store.count_snapshots() == 0
+
+
 def test_http_post_ingest_snapshot_uses_injected_store():
     store = MemorySnapshotStore()
     request = build_ingest_request(

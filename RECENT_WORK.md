@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-29 P9.19 HTTP ingest hardening
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-29-http-ingest-hardening.md`。
+- 加固 `worldcup.http_app` 的 `/api/ingest/snapshot` 边界：非 `application/json` 请求返回 415；声明或实际 body 超过默认 1,000,000 bytes 返回 413；非法 `Content-Length` 与非法 UTF-8 在标准库 handler 进入业务逻辑前被拒绝。
+- Ingest 响应新增安全 request id：可信 `X-Request-Id` 会被校验后回传，缺失或不安全时生成本地 uuid；成功和错误响应都带 `X-Request-Id` 与 `Cache-Control: no-store`。HMAC/验签失败改为结构化错误体 `error.code` / `error.request_id`，不回显 raw body、签名、secret、payload 或 header 原文。
+- `worldcup.fastapi_app` 保持薄适配器，只透传 `handle_request` 的非 content-type 响应头，不重复实现 HMAC/幂等逻辑。
+- 本轮不改模型、不拆 `pipeline.py`、不解除 `club_rating_pending`、不联网、不读取 `.env`、不调用 The Odds API、不消耗 quota、不发布、不部署、不改 LaunchAgent。
+- 验证：新增红灯先使项目测试为 `611/616 tests passed`；实现后项目标准 `tests/run_tests.py` 返回 `616/616 tests passed`。
+
 ## 2026-06-29 P9.18 engineering guardrails
 
 - 新增 implementation plan：`docs/superpowers/plans/2026-06-29-engineering-hardening-guardrails.md`，把外部工程评审转成低风险后续顺序：CI/依赖边界先行，再做 HTTP ingest、source fetch、config/profile 和 pipeline split。
