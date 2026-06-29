@@ -358,6 +358,8 @@ def _signal_risk_note(signal: dict[str, Any], stale: bool) -> str:
         "line_changed_unknown": "盘口线变动未完全确认",
         "model_disagreement": "Elo 与 Poisson 模型分歧，等级已压低",
         "market_dispersion": "多家赔率报价分歧较大，等级已压低",
+        "x12_draw_candidate_only": "世界杯 1X2 平局强信号暂列研究候选，不计入正式 S/A",
+        "x12_long_odds_candidate_only": "世界杯 1X2 赔率高于正式强信号上限，暂列研究候选",
     }
     for reason in _as_list(signal.get("reasons")):
         label = reason_labels.get(str(reason))

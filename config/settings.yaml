@@ -34,6 +34,8 @@ quality:
   extreme_favorite_ah_abs_line_min: 2.5
   big_handicap_under_line_max: 2.5
   ah_zero_abs_line_max_for_strong: 0.25
+  x12_draw_official: false
+  x12_official_odds_max: 2.2
 
 value:
   s_ev: 0.08

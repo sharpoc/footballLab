@@ -17,6 +17,12 @@ from worldcup.results_capture import _load_rows, _write_rows, upsert_results
 from worldcup.sources.theoddsapi_scores import fetch_worldcup_scores
 from worldcup.theoddsapi_keys import choose_key_slot
 
+KNOCKOUT_SCORE_REVIEW_START = datetime(2026, 6, 28, tzinfo=timezone.utc)
+
+
+def _parse_observed_at(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
 
 def run_scores_capture(
     live: bool,
@@ -26,6 +32,7 @@ def run_scores_capture(
     results_out: str | Path = "data/local/results/wc2026_results.csv",
     transport: Callable[[str], object] | None = None,
     observed_at: str | None = None,
+    allow_knockout_scores: bool = False,
 ) -> dict:
     if not live:
         return {"status": "dry_run", "note": "pass --live to fetch scores (~2 credits)"}
@@ -36,6 +43,14 @@ def run_scores_capture(
         return {"status": "blocked", "reason": "quota_exhausted"}
 
     observed = observed_at or datetime.now(timezone.utc).isoformat()
+    if not allow_knockout_scores and _parse_observed_at(observed) >= KNOCKOUT_SCORE_REVIEW_START:
+        return {
+            "status": "blocked",
+            "reason": "knockout_score_manual_review_required",
+            "knockout_boundary": KNOCKOUT_SCORE_REVIEW_START.isoformat(),
+            "note": "Confirm 90-minute score semantics before capturing knockout results.",
+        }
+
     fetch_result = fetch_worldcup_scores(
         api_key=selected.api_key,
         transport=transport,
@@ -67,6 +82,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cache-path", default="data/cache/theoddsapi_scores.json")
     parser.add_argument("--quota-path", default="data/cache/quota.json")
     parser.add_argument("--out", default="data/local/results/wc2026_results.csv")
+    parser.add_argument(
+        "--allow-knockout-scores",
+        action="store_true",
+        help="Allow live score capture after manual 90-minute knockout score review.",
+    )
     args = parser.parse_args(argv)
 
     result = run_scores_capture(
@@ -75,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         cache_path=args.cache_path,
         quota_path=args.quota_path,
         results_out=args.out,
+        allow_knockout_scores=args.allow_knockout_scores,
     )
     print(json.dumps(result, ensure_ascii=False))
     return 0

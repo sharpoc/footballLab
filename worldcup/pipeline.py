@@ -849,6 +849,24 @@ def _x12_confidence_guard_reasons(analysis: MatchAnalysis, signal: Signal, cfg: 
     return reasons
 
 
+def _x12_candidate_only_reasons(analysis: MatchAnalysis, signal: Signal, cfg: dict) -> list[str]:
+    if signal.market_type != MarketType.X12 or signal.grade not in (Grade.S, Grade.A):
+        return []
+    if analysis.match_input.odds_event.sport_key != "soccer_fifa_world_cup":
+        return []
+
+    reasons: list[str] = []
+    quality_cfg = cfg.get("quality", {})
+    if signal.selection == "draw" and quality_cfg.get("x12_draw_official", True) is False:
+        reasons.append("x12_draw_candidate_only")
+
+    max_odds = quality_cfg.get("x12_official_odds_max")
+    odds_value = (analysis.market_1x2.get("odds") or {}).get(signal.selection)
+    if max_odds is not None and odds_value is not None and float(odds_value) > float(max_odds):
+        reasons.append("x12_long_odds_candidate_only")
+    return reasons
+
+
 def _big_handicap(analysis: MatchAnalysis, cfg: dict) -> bool:
     line_home = _ah_main_line_home(analysis)
     if line_home is None or not _ah_main_has_min_books(analysis, cfg):
@@ -976,6 +994,7 @@ def _apply_confidence_guards(analysis: MatchAnalysis, cfg: dict, signals: list[S
     for signal in signals:
         reasons = [
             *_x12_confidence_guard_reasons(analysis, signal, cfg),
+            *_x12_candidate_only_reasons(analysis, signal, cfg),
             *_ou_confidence_guard_reasons(analysis, signal, cfg),
             *_ah_confidence_guard_reasons(analysis, signal, cfg),
         ]

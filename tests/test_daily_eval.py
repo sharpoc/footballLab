@@ -214,6 +214,41 @@ def test_daily_eval_live_scores_runs_capture_first():
         assert str(capture_calls[0]["results_out"]) == str(paths["results_out"])
 
 
+def test_daily_eval_live_scores_can_forward_knockout_review_opt_in():
+    from worldcup.daily_eval import main
+
+    with TemporaryDirectory() as tmp:
+        paths = _seed_project(Path(tmp), with_score=True)
+        capture_calls = []
+
+        def scores_capture_fn(**kwargs):
+            capture_calls.append(kwargs)
+            return {"status": "captured", "completed": 0, "added": 0, "updated": 0}
+
+        code = main(
+            [
+                "--cache-dir",
+                str(paths["cache_dir"]),
+                "--history",
+                str(paths["history_dir"]),
+                "--results-out",
+                str(paths["results_out"]),
+                "--eval-out",
+                str(paths["eval_out"]),
+                "--report-out",
+                str(paths["report_out"]),
+                "--min-sample",
+                "1",
+                "--live-scores",
+                "--allow-knockout-scores",
+            ],
+            scores_capture_fn=scores_capture_fn,
+        )
+
+        assert code == 0
+        assert capture_calls[0]["allow_knockout_scores"] is True
+
+
 def test_daily_eval_live_scores_fresh_results_drive_eval_when_openfootball_lags():
     from datetime import datetime, timezone
 

@@ -21,6 +21,22 @@ def _scores_body() -> list[dict]:
     ]
 
 
+def _knockout_scores_body() -> list[dict]:
+    return [
+        {
+            "id": "e73",
+            "commence_time": "2026-06-28T19:00:00Z",
+            "completed": True,
+            "home_team": "South Africa",
+            "away_team": "Canada",
+            "scores": [
+                {"name": "South Africa", "score": "1"},
+                {"name": "Canada", "score": "2"},
+            ],
+        }
+    ]
+
+
 class FakeResponse:
     status = 200
     headers = {
@@ -72,6 +88,7 @@ def test_scores_capture_live_upserts_results():
             quota_path=root / "quota.json",
             results_out=root / "results.csv",
             transport=transport,
+            observed_at="2026-06-12T08:00:00+00:00",
         )
 
         assert out["status"] == "captured"
@@ -99,3 +116,53 @@ def test_scores_capture_live_blocks_when_all_slots_exhausted():
 
     assert out["status"] == "blocked"
     assert out["reason"] == "quota_exhausted"
+
+
+def test_scores_capture_blocks_after_knockout_boundary_without_manual_review():
+    calls = []
+
+    def transport(url):
+        calls.append(url)
+        return FakeResponse(json.dumps(_knockout_scores_body()).encode())
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        out = run_scores_capture(
+            live=True,
+            env={"THE_ODDS_API_KEY_PRIMARY": "fake-key"},
+            cache_path=root / "scores.json",
+            quota_path=root / "quota.json",
+            results_out=root / "results.csv",
+            transport=transport,
+            observed_at="2026-06-29T00:00:00+00:00",
+        )
+
+        assert out["status"] == "blocked"
+        assert out["reason"] == "knockout_score_manual_review_required"
+        assert out["knockout_boundary"] == "2026-06-28T00:00:00+00:00"
+        assert calls == []
+        assert not (root / "results.csv").exists()
+
+
+def test_scores_capture_allows_knockout_scores_after_manual_review_opt_in():
+    def transport(_url):
+        return FakeResponse(json.dumps(_knockout_scores_body()).encode())
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        out = run_scores_capture(
+            live=True,
+            env={"THE_ODDS_API_KEY_PRIMARY": "fake-key"},
+            cache_path=root / "scores.json",
+            quota_path=root / "quota.json",
+            results_out=root / "results.csv",
+            transport=transport,
+            observed_at="2026-06-29T00:00:00+00:00",
+            allow_knockout_scores=True,
+        )
+
+        assert out["status"] == "captured"
+        assert out["completed"] == 1
+        assert out["added"] == 1
+        rows = (root / "results.csv").read_text()
+        assert "south_africa" in rows and "canada" in rows

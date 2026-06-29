@@ -836,6 +836,136 @@ def test_generate_value_signals_caps_1x2_when_market_and_ah_disagree():
     assert "ah_not_supporting_1x2" in away_1x2.reasons
 
 
+def test_generate_value_signals_caps_1x2_draw_strong_signal_to_candidate():
+    cfg = load_config()
+    analysis = analyze_match_input(
+        _priced_match_input(
+            home_team="Germany",
+            away_team="Paraguay",
+            home_canonical="germany",
+            away_canonical="paraguay",
+            venue_name="Kansas City",
+            home_elo=1990,
+            away_elo=1830,
+            home_advantage_elo=0.0,
+            h2h_odds={"home": 1.72, "draw": 5.2, "away": 5.8},
+            ah_home_line=-1.0,
+            ah_odds={"home": 1.9, "away": 1.9},
+        ),
+        cfg,
+    )
+    analysis = replace(
+        analysis,
+        combined_1x2={"home": 0.42, "draw": 0.30, "away": 0.28},
+        elo_1x2={"home": 0.42, "draw": 0.30, "away": 0.28},
+        poisson_1x2={"home": 0.41, "draw": 0.31, "away": 0.28},
+        market_1x2={
+            "market_probs": {"home": 0.60, "draw": 0.18, "away": 0.22},
+            "odds": {"home": 1.72, "draw": 5.2, "away": 5.8},
+            "n_books_by_selection": {"home": 3, "draw": 3, "away": 3},
+            "dispersion_by_selection": {"home": 1.0, "draw": 1.0, "away": 1.0},
+        },
+    )
+
+    signals = generate_value_signals(analysis, cfg)
+    draw_1x2 = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.X12 and signal.selection == "draw"
+    )
+
+    assert draw_1x2.raw_grade == Grade.S
+    assert draw_1x2.grade == Grade.B
+    assert "x12_draw_candidate_only" in draw_1x2.reasons
+
+
+def test_generate_value_signals_caps_long_odds_1x2_strong_signal_to_candidate():
+    cfg = load_config()
+    analysis = analyze_match_input(
+        _priced_match_input(
+            home_team="Ivory Coast",
+            away_team="Norway",
+            home_canonical="ivory_coast",
+            away_canonical="norway",
+            venue_name="Neutral Venue",
+            home_elo=1720,
+            away_elo=1860,
+            home_advantage_elo=0.0,
+            h2h_odds={"home": 3.4, "draw": 3.2, "away": 2.6},
+            ah_home_line=0.5,
+            ah_odds={"home": 1.9, "away": 1.9},
+        ),
+        cfg,
+    )
+    analysis = replace(
+        analysis,
+        combined_1x2={"home": 0.28, "draw": 0.28, "away": 0.44},
+        elo_1x2={"home": 0.28, "draw": 0.28, "away": 0.44},
+        poisson_1x2={"home": 0.29, "draw": 0.27, "away": 0.44},
+        market_1x2={
+            "market_probs": {"home": 0.33, "draw": 0.29, "away": 0.38},
+            "odds": {"home": 3.4, "draw": 3.2, "away": 2.6},
+            "n_books_by_selection": {"home": 3, "draw": 3, "away": 3},
+            "dispersion_by_selection": {"home": 1.0, "draw": 1.0, "away": 1.0},
+        },
+    )
+
+    signals = generate_value_signals(analysis, cfg)
+    away_1x2 = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.X12 and signal.selection == "away"
+    )
+
+    assert away_1x2.raw_grade == Grade.S
+    assert away_1x2.grade == Grade.B
+    assert "x12_long_odds_candidate_only" in away_1x2.reasons
+
+
+def test_generate_value_signals_keeps_short_priced_1x2_strong_signal_official():
+    cfg = load_config()
+    analysis = analyze_match_input(
+        _priced_match_input(
+            home_team="Colombia",
+            away_team="Ghana",
+            home_canonical="colombia",
+            away_canonical="ghana",
+            venue_name="Neutral Venue",
+            home_elo=1870,
+            away_elo=1710,
+            home_advantage_elo=0.0,
+            h2h_odds={"home": 1.7, "draw": 3.8, "away": 5.4},
+            ah_home_line=-0.5,
+            ah_odds={"home": 1.9, "away": 1.9},
+        ),
+        cfg,
+    )
+    analysis = replace(
+        analysis,
+        combined_1x2={"home": 0.65, "draw": 0.21, "away": 0.14},
+        elo_1x2={"home": 0.65, "draw": 0.21, "away": 0.14},
+        poisson_1x2={"home": 0.64, "draw": 0.22, "away": 0.14},
+        market_1x2={
+            "market_probs": {"home": 0.56, "draw": 0.25, "away": 0.19},
+            "odds": {"home": 1.7, "draw": 3.8, "away": 5.4},
+            "n_books_by_selection": {"home": 3, "draw": 3, "away": 3},
+            "dispersion_by_selection": {"home": 1.0, "draw": 1.0, "away": 1.0},
+        },
+    )
+
+    signals = generate_value_signals(analysis, cfg)
+    home_1x2 = next(
+        signal
+        for signal in signals
+        if signal.market_type == MarketType.X12 and signal.selection == "home"
+    )
+
+    assert home_1x2.raw_grade == Grade.S
+    assert home_1x2.grade == Grade.S
+    assert "x12_draw_candidate_only" not in home_1x2.reasons
+    assert "x12_long_odds_candidate_only" not in home_1x2.reasons
+
+
 def test_generate_value_signals_caps_1x2_without_ah_favorite_support():
     cfg = load_config()
     analysis = analyze_match_input(

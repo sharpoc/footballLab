@@ -2,6 +2,16 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-29 P9.12 淘汰赛策略降噪与 scores guard
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-29-knockout-strategy-hardening.md`。
+- 世界杯 `1X2_90min` 正式强信号新增候选化护栏：平局强信号默认降到 B 并记录 `x12_draw_candidate_only`；赔率高于 `quality.x12_official_odds_max`（当前 2.2）的 1X2 强信号降到 B 并记录 `x12_long_odds_candidate_only`。该护栏限定 `soccer_fifa_world_cup`，不影响 CSL league runner。
+- 研究台账风险提示已补充上述两个新 reason 的中文说明，dry-run 预览页可读地展示“平局强信号暂列研究候选”和“赔率高于正式强信号上限”。
+- 首发链路保持 shadow-only：`lineup_shadow` 不改 active 概率、EV/Edge 或正式等级，继续作为 AH candidate 晋级和 post-information odds 的门槛。
+- `worldcup.scores_capture` 在 `2026-06-28T00:00:00Z` 起默认阻断 live scores 捕获，返回 `knockout_score_manual_review_required`，不调用 transport、不写 results；人工确认 90 分钟比分口径后可显式 `--allow-knockout-scores` 放行。`worldcup.daily_eval --live-scores` 同步支持该 opt-in。
+- README 已补充淘汰赛 scores 人工确认规则和 1X2 强信号候选化护栏。本轮未执行 live refresh、未读取 `.env`、未调用 The Odds API、未消耗 quota、未部署、未改 LaunchAgent、未提交、未 push。
+- 验证：新增 TDD 红灯覆盖后实现；当前 `tests/run_tests.py` 摘要返回 `579/579 tests passed`（同时输出既有 FastAPI/TestClient deprecation warning 和 ops_check 临时目录 warning）；`git diff --check` 通过。
+
 ## 2026-06-24 P9.11 ops_check 本地日报 dry-run 实现
 
 - 新增 implementation plan：`docs/superpowers/plans/2026-06-24-ops-daily-report-dry-run.md`。

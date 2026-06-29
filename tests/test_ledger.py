@@ -382,6 +382,23 @@ def test_project_signal_rows_explains_quality_guard_reasons():
     assert "多家赔率报价分歧较大" in risk_item["value"]
 
 
+def test_project_signal_rows_explains_x12_candidate_only_reasons():
+    snapshot = _snapshot()
+    snapshot["run"]["stale_sources"] = []
+    snapshot["matches"][0]["signals"][0]["reasons"] = [
+        "x12_draw_candidate_only",
+        "x12_long_odds_candidate_only",
+    ]
+
+    rows = project_signal_rows(snapshot)
+    risk_item = next(
+        item for item in rows[0]["detail_items"] if item["label"] == "风险提示"
+    )
+
+    assert "平局强信号暂列研究候选" in risk_item["value"]
+    assert "赔率高于正式强信号上限" in risk_item["value"]
+
+
 def test_project_signal_rows_reads_realistic_over_under_probabilities():
     snapshot = {
         "matches": [

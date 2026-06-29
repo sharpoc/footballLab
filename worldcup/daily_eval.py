@@ -218,6 +218,11 @@ def main(
     parser.add_argument("--min-sample", type=int, default=30)
     parser.add_argument("--notify", action="store_true", help="Send WxPusher digest.")
     parser.add_argument("--live-scores", action="store_true", help="Fetch The Odds API scores first.")
+    parser.add_argument(
+        "--allow-knockout-scores",
+        action="store_true",
+        help="Allow live score capture after manual 90-minute knockout score review.",
+    )
     args = parser.parse_args(argv)
 
     scores_stats = None
@@ -232,6 +237,7 @@ def main(
             cache_path=Path(args.cache_dir) / "theoddsapi_scores.json",
             quota_path=Path(args.cache_dir) / "quota.json",
             results_out=args.results_out,
+            allow_knockout_scores=args.allow_knockout_scores,
         )
 
     digest = run_daily_eval(
