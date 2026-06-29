@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-29 P9.17 CSL postmatch runner
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-29-csl-postmatch-runner.md`。
+- 新增 `worldcup.csl_postmatch_runner`：一条本地-only 命令串起 CSL snapshot history + 本地完赛结果生成 eval CSV、运行 `worldcup.backtest`、再把 market baseline 接入 `csl_pending_gate`。
+- Runner 默认写入 ignored 本地输出：`data/local/backtest/csl_2026_eval.csv`、`data/local/backtest/csl_2026_report.json` 和 `data/local/diagnostics/csl_pending_gate_<UTC>.json`；输出摘要只包含计数、sample 和 pending decision，不暴露 raw odds、bookmaker、API key 或 secret。
+- 该链路仍然不解除 `club_rating_pending`，只用于赛后研究观察；本轮未联网、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布 snapshot、未部署、未改 LaunchAgent、未 push。
+- 验证：TDD 红灯先因 `worldcup.csl_postmatch_runner` 缺失失败；实现后 `tests/test_csl_postmatch_runner.py` 聚焦测试 `2/2` 通过；`git diff --check` 通过；项目标准 `tests/run_tests.py` 返回 `612/612 tests passed`。
+
 ## 2026-06-29 P9.16 CSL snapshot archive
 
 - 新增 `worldcup.csl_snapshot_archive`：把已生成的本地 `data/local/diagnostics/csl_live_league_snapshot.json` 校验后归档到 ignored `data/local/diagnostics/csl_history/`，文件名使用 snapshot 自身 `snapshot_at` 生成 UTC stamp，避免手工复制时钟偏差。

@@ -264,25 +264,15 @@ P9.15 新增中超本地赛后评估闭环，用于把已归档的 CSL league sn
   --snapshot data/local/diagnostics/csl_live_league_snapshot.json \
   --history data/local/diagnostics/csl_history
 
-# 2) 用开球前最后一份 CSL snapshot join 本地完赛赛果
-/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_eval_data \
+# 2) 一条命令跑本地赛后复盘：eval CSV -> backtest -> pending gate
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_postmatch_runner \
   --history data/local/diagnostics/csl_history \
   --results data/cache/club_results_csl_2026.csv \
-  --out data/local/backtest/csl_2026_eval.csv
-
-# 3) 复用现有 backtest 口径评估 CSL 真实表现
-/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.backtest \
-  --csv data/local/backtest/csl_2026_eval.csv \
+  --eval-out data/local/backtest/csl_2026_eval.csv \
+  --report-out data/local/backtest/csl_2026_report.json \
   --min-sample 30 \
-  --out data/local/backtest/csl_2026_report.json
-
-# 4) 把市场 baseline 接入 pending gate；仍然不会解除 club_rating_pending
-/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_pending_gate \
-  --competition csl_2026 \
-  --cache-dir data/cache \
   --warmup-matches 300 \
-  --min-eval-matches 200 \
-  --market-report data/local/backtest/csl_2026_report.json
+  --min-eval-matches 200
 ```
 
 判断“准确率”时不要只看命中率：优先看 `csl_2026_report.json` 中 `sample.sample_too_small`、`markets.1x2.model_matched` vs `markets.1x2.market`、`markets.1x2.uniform`、校准分箱，以及 `csl_pending_gate` 的 `checks.market_baseline_available`。样本不足、closing snapshot 覆盖不足或模型弱于市场/主场先验时，只能作为观察，不能调参或升级强信号。
