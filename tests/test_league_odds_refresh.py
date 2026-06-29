@@ -124,6 +124,31 @@ def test_league_odds_refresh_live_writes_cache_and_quota_without_returning_key()
         assert quota["providers"]["theoddsapi"]["remaining"] == 497
 
 
+def test_league_odds_refresh_live_returns_safe_error_without_key_or_cache():
+    def fail_transport(_url):
+        raise TimeoutError("network failed for primary-key")
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        result = run_league_odds_refresh(
+            live=True,
+            env={"THE_ODDS_API_KEY_PRIMARY": "primary-key"},
+            competition_id="csl_2026",
+            sport_key="soccer_china_superleague",
+            cache_dir=root / "cache",
+            quota_path=root / "cache" / "quota.json",
+            transport=fail_transport,
+            observed_at="2026-06-23T12:00:00+00:00",
+        )
+
+        assert result["status"] == "error"
+        assert result["reason"] == "network_error"
+        assert result["retryable"] is True
+        assert result["attempts"] == 2
+        assert "primary-key" not in json.dumps(result)
+        assert not (root / "cache" / "theoddsapi_csl_2026_odds.json").exists()
+
+
 def test_main_dry_run_does_not_load_env():
     def fail_load_env(_path):
         raise AssertionError("dry-run must not load env")

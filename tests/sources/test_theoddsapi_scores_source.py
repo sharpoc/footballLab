@@ -3,6 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from worldcup.sources.theoddsapi_scores import fetch_worldcup_scores
+from worldcup.sources.theoddsapi import SourceFetchError
 
 
 class FakeResponse:
@@ -60,3 +61,35 @@ def test_fetch_scores_writes_cache_and_slot_quota():
         quota = json.loads((root / "quota.json").read_text())["providers"]
         assert quota["theoddsapi_primary"]["remaining"] == 427
         assert quota["theoddsapi"]["remaining"] == 427
+
+
+def test_fetch_scores_reuses_safe_source_error_contract_without_writing_cache():
+    class RateLimitResponse:
+        status = 429
+        headers = {"x-requests-remaining": "0"}
+
+        def read(self):
+            return b'{"message":"quota exceeded"}'
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        try:
+            fetch_worldcup_scores(
+                api_key="secret-score-key",
+                transport=lambda _url: RateLimitResponse(),
+                cache_path=root / "theoddsapi_scores.json",
+                quota_path=root / "quota.json",
+                quota_provider="theoddsapi_primary",
+                max_attempts=3,
+            )
+        except SourceFetchError as exc:
+            assert exc.reason == "quota_error"
+            assert exc.status == 429
+            assert exc.retryable is False
+            assert exc.attempts == 1
+            assert "secret-score-key" not in str(exc)
+        else:
+            raise AssertionError("expected SourceFetchError")
+
+        assert not (root / "theoddsapi_scores.json").exists()
+        assert not (root / "quota.json").exists()

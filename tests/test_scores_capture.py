@@ -166,3 +166,27 @@ def test_scores_capture_allows_knockout_scores_after_manual_review_opt_in():
         assert out["added"] == 1
         rows = (root / "results.csv").read_text()
         assert "south_africa" in rows and "canada" in rows
+
+
+def test_scores_capture_returns_safe_fetch_error_without_writing_results():
+    def fail_transport(_url):
+        raise TimeoutError("scores failed for fake-key")
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        out = run_scores_capture(
+            live=True,
+            env={"THE_ODDS_API_KEY_PRIMARY": "fake-key"},
+            cache_path=root / "scores.json",
+            quota_path=root / "quota.json",
+            results_out=root / "results.csv",
+            transport=fail_transport,
+            observed_at="2026-06-12T08:00:00+00:00",
+        )
+
+        assert out["status"] == "error"
+        assert out["reason"] == "network_error"
+        assert out["retryable"] is True
+        assert out["attempts"] == 2
+        assert "fake-key" not in json.dumps(out)
+        assert not (root / "results.csv").exists()

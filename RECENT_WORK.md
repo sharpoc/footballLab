@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-29 P9.20 source fetch hardening
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-29-source-fetch-hardening.md`。
+- `worldcup.sources.theoddsapi` 新增统一 `SourceFetchError` / `fetch_json_from_url`：按 `credential_error`、`quota_error`、`http_error`、`transient_http_error`、`network_error`、`invalid_json` 和 `invalid_encoding` 分类；只对可重试网络/5xx 做有限重试。
+- The Odds API odds 与 scores 抓取现在只有在响应为有效 JSON 后才写 cache / quota ledger；错误中的 URL、detail 和调用方摘要会脱敏 `apiKey`，不暴露密钥、raw header 或 raw body。
+- `worldcup.refresh_runner` 的 `data_quality.source_errors` 对 The Odds API fallback 输出安全结构化诊断；`worldcup.league_odds_refresh` 与 `worldcup.scores_capture` 在 live fetch 失败时返回安全 error 摘要，不写本地结果。
+- 本轮不改模型、不拆 `pipeline.py`、不解除 `club_rating_pending`、不联网、不读取 `.env`、不调用 The Odds API、不消耗 quota、不发布、不部署、不改 LaunchAgent。
+- 验证：TDD 红灯先因 `SourceFetchError` 缺失失败；实现后曾捕获一次 `apiKey=%3Credacted%3E` 脱敏格式问题；修正后项目标准 `tests/run_tests.py` 返回 `622/622 tests passed`。
+
 ## 2026-06-29 P9.19 HTTP ingest hardening
 
 - 新增 implementation plan：`docs/superpowers/plans/2026-06-29-http-ingest-hardening.md`。

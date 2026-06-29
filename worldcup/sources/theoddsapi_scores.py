@@ -10,7 +10,7 @@ from worldcup.sources.theoddsapi import (
     BASE_URL,
     WORLD_CUP_SPORT_KEY,
     SourceFetchResult,
-    _default_transport,
+    fetch_json_from_url,
     _write_json,
 )
 from worldcup.theoddsapi_keys import LEGACY_PROVIDER
@@ -36,12 +36,15 @@ def fetch_worldcup_scores(
     observed_at: str | None = None,
     quota_provider: str = LEGACY_PROVIDER,
     days_from: int = DEFAULT_DAYS_FROM,
+    max_attempts: int = 2,
 ) -> SourceFetchResult:
     url = build_worldcup_scores_url(api_key=api_key, days_from=days_from)
-    response = (transport or _default_transport)(url)
-    body = response.read()
-    json_body = json.loads(body.decode("utf-8"))
-    headers = dict(getattr(response, "headers", {}))
+    status, json_body, headers = fetch_json_from_url(
+        url,
+        transport=transport,
+        max_attempts=max_attempts,
+        redact_values=(api_key,),
+    )
 
     written_cache_path = Path(cache_path) if cache_path is not None else None
     if written_cache_path is not None:
@@ -66,7 +69,7 @@ def fetch_worldcup_scores(
             )
 
     return SourceFetchResult(
-        status=int(getattr(response, "status", 200)),
+        status=status,
         json_body=json_body,
         headers=headers,
         cache_path=written_cache_path,

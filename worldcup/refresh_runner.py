@@ -18,7 +18,7 @@ from worldcup.quota import load_quota_ledger
 from worldcup.scheduler import build_match_refresh_decision, build_run_metadata, make_run_id
 from worldcup.sources.eloratings import fetch_elo_files
 from worldcup.sources.openfootball import fetch_openfootball_2026
-from worldcup.sources.theoddsapi import fetch_worldcup_odds
+from worldcup.sources.theoddsapi import SourceFetchError, fetch_worldcup_odds
 from worldcup.theoddsapi_keys import LEGACY_PROVIDER
 
 
@@ -77,6 +77,21 @@ def _next_kickoff_from_snapshot(snapshot: dict, observed_at: str) -> str | None:
     return min(upcoming).isoformat()
 
 
+def _source_error(source: str, exc: Exception) -> dict:
+    entry = {"source": source, "error": f"{type(exc).__name__}: {exc}"}
+    if isinstance(exc, SourceFetchError):
+        entry.update(
+            {
+                "reason": exc.reason,
+                "retryable": exc.retryable,
+                "attempts": exc.attempts,
+            }
+        )
+        if exc.status is not None:
+            entry["status"] = exc.status
+    return entry
+
+
 def refresh_cache_and_build_snapshot(
     api_key: str,
     cache_dir: str | Path = "data/cache",
@@ -111,7 +126,7 @@ def refresh_cache_and_build_snapshot(
     except Exception as exc:
         if not openfootball_cache.exists():
             raise
-        source_errors.append({"source": "openfootball", "error": f"{type(exc).__name__}: {exc}"})
+        source_errors.append(_source_error("openfootball", exc))
         stale_sources.append("openfootball")
 
     elo_quality: dict = {"mode": "local_replay"}
@@ -122,7 +137,7 @@ def refresh_cache_and_build_snapshot(
     except Exception as exc:
         if not (elo_world_cache.exists() and elo_teams_cache.exists()):
             raise
-        source_errors.append({"source": "eloratings", "error": f"{type(exc).__name__}: {exc}"})
+        source_errors.append(_source_error("eloratings", exc))
 
     if not has_baseline(cache):
         baseline_at = datetime.fromtimestamp(elo_world_cache.stat().st_mtime, tz=timezone.utc).isoformat()
@@ -133,7 +148,7 @@ def refresh_cache_and_build_snapshot(
         elo_world_cache.write_text(computed, encoding="utf-8")
         elo_quality["results_applied"] = _count_results_applied(cache)
     except Exception as exc:
-        source_errors.append({"source": "elo_local", "error": f"{type(exc).__name__}: {exc}"})
+        source_errors.append(_source_error("elo_local", exc))
         elo_quality["mode"] = "cache_passthrough"
 
     try:
@@ -148,7 +163,7 @@ def refresh_cache_and_build_snapshot(
     except Exception as exc:
         if not odds_cache.exists():
             raise
-        source_errors.append({"source": "theoddsapi", "error": f"{type(exc).__name__}: {exc}"})
+        source_errors.append(_source_error("theoddsapi", exc))
         stale_sources.append("theoddsapi")
 
     snapshot = build_snapshot_from_cache(cache, snapshot_at=observed, stale_sources=stale_sources)

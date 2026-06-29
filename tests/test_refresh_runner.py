@@ -212,7 +212,11 @@ def test_refresh_uses_stale_odds_cache_when_theoddsapi_times_out():
         assert result.snapshot["run"]["stale_sources"] == ["theoddsapi"]
         assert result.snapshot["data_quality"]["stale_sources"] == ["theoddsapi"]
         assert result.snapshot["data_quality"]["source_errors"][0]["source"] == "theoddsapi"
+        assert result.snapshot["data_quality"]["source_errors"][0]["reason"] == "network_error"
+        assert result.snapshot["data_quality"]["source_errors"][0]["retryable"] is True
+        assert result.snapshot["data_quality"]["source_errors"][0]["attempts"] == 2
         assert "handshake timed out" in result.snapshot["data_quality"]["source_errors"][0]["error"]
+        assert "fake-key" not in json.dumps(result.snapshot["data_quality"]["source_errors"][0])
         home_signal = next(
             signal
             for signal in result.snapshot["matches"][0]["signals"]

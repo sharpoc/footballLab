@@ -9,7 +9,7 @@ from typing import Callable
 from worldcup.competitions import get_competition
 from worldcup.quota import load_quota_ledger
 from worldcup.refresh_runner import _load_env
-from worldcup.sources.theoddsapi import DEFAULT_MARKETS, fetch_odds_for_sport
+from worldcup.sources.theoddsapi import DEFAULT_MARKETS, SourceFetchError, fetch_odds_for_sport
 from worldcup.theoddsapi_keys import choose_key_slot
 
 
@@ -77,16 +77,30 @@ def run_league_odds_refresh(
             **base,
         }
 
-    fetch_result = fetch_odds_for_sport(
-        api_key=selected.api_key,
-        sport_key=resolved_sport_key,
-        transport=transport,
-        cache_path=cache_path,
-        quota_path=quota_path,
-        observed_at=observed,
-        quota_provider=selected.provider,
-        markets=DEFAULT_MARKETS,
-    )
+    try:
+        fetch_result = fetch_odds_for_sport(
+            api_key=selected.api_key,
+            sport_key=resolved_sport_key,
+            transport=transport,
+            cache_path=cache_path,
+            quota_path=quota_path,
+            observed_at=observed,
+            quota_provider=selected.provider,
+            markets=DEFAULT_MARKETS,
+        )
+    except SourceFetchError as exc:
+        result = {
+            "status": "error",
+            "reason": exc.reason,
+            "retryable": exc.retryable,
+            "attempts": exc.attempts,
+            "slot": selected.slot,
+            "theoddsapi_provider": selected.provider,
+            **base,
+        }
+        if exc.status is not None:
+            result["source_status"] = exc.status
+        return result
     return {
         "status": "fetched",
         "competition_id": competition_id,

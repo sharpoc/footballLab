@@ -14,6 +14,7 @@ from worldcup.collectors.theoddsapi_scores import parse_theoddsapi_scores
 from worldcup.quota import load_quota_ledger
 from worldcup.refresh_runner import _load_env
 from worldcup.results_capture import _load_rows, _write_rows, upsert_results
+from worldcup.sources.theoddsapi import SourceFetchError
 from worldcup.sources.theoddsapi_scores import fetch_worldcup_scores
 from worldcup.theoddsapi_keys import choose_key_slot
 
@@ -51,14 +52,26 @@ def run_scores_capture(
             "note": "Confirm 90-minute score semantics before capturing knockout results.",
         }
 
-    fetch_result = fetch_worldcup_scores(
-        api_key=selected.api_key,
-        transport=transport,
-        cache_path=cache_path,
-        quota_path=quota_path,
-        observed_at=observed,
-        quota_provider=selected.provider,
-    )
+    try:
+        fetch_result = fetch_worldcup_scores(
+            api_key=selected.api_key,
+            transport=transport,
+            cache_path=cache_path,
+            quota_path=quota_path,
+            observed_at=observed,
+            quota_provider=selected.provider,
+        )
+    except SourceFetchError as exc:
+        result = {
+            "status": "error",
+            "reason": exc.reason,
+            "retryable": exc.retryable,
+            "attempts": exc.attempts,
+            "slot": selected.slot,
+        }
+        if exc.status is not None:
+            result["source_status"] = exc.status
+        return result
     raw = fetch_result.json_body
     results = parse_theoddsapi_scores(raw)
     out = Path(results_out)

@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from worldcup.sources.theoddsapi import fetch_worldcup_odds
+from worldcup.sources.theoddsapi import SourceFetchError, fetch_worldcup_odds
 from worldcup.theoddsapi_keys import LEGACY_PROVIDER, SECONDARY_PROVIDER
 
 
@@ -118,3 +118,100 @@ def test_fetch_odds_for_sport_writes_csl_cache_and_slot_quota():
         quota = json.loads(quota_path.read_text())
         assert quota["providers"][SECONDARY_PROVIDER]["remaining"] == 497
         assert quota["providers"][LEGACY_PROVIDER]["remaining"] == 497
+
+
+def test_fetch_worldcup_odds_retries_transient_transport_error_then_succeeds():
+    calls = []
+
+    def flaky_transport(url):
+        calls.append(url)
+        if len(calls) == 1:
+            raise TimeoutError("handshake timed out for fake-key")
+        return FakeResponse()
+
+    with TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "theoddsapi_wc_odds.json"
+
+        result = fetch_worldcup_odds(
+            api_key="fake-key",
+            transport=flaky_transport,
+            cache_path=cache_path,
+            max_attempts=2,
+        )
+
+        assert len(calls) == 2
+        assert result.json_body == [{"id": "event-1"}]
+        assert json.loads(cache_path.read_text()) == [{"id": "event-1"}]
+
+
+def test_fetch_worldcup_odds_does_not_retry_credential_error_or_write_cache():
+    calls = []
+
+    class UnauthorizedResponse:
+        status = 401
+        headers = {}
+
+        def read(self):
+            return b'{"message":"bad api key"}'
+
+    def transport(url):
+        calls.append(url)
+        return UnauthorizedResponse()
+
+    with TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "theoddsapi_wc_odds.json"
+        quota_path = Path(tmp) / "quota.json"
+
+        try:
+            fetch_worldcup_odds(
+                api_key="secret-key",
+                transport=transport,
+                cache_path=cache_path,
+                quota_path=quota_path,
+                max_attempts=3,
+            )
+        except SourceFetchError as exc:
+            assert exc.reason == "credential_error"
+            assert exc.status == 401
+            assert exc.retryable is False
+            assert exc.attempts == 1
+            assert "apiKey=<redacted>" in exc.sanitized_url
+            assert "secret-key" not in str(exc)
+        else:
+            raise AssertionError("expected SourceFetchError")
+
+        assert len(calls) == 1
+        assert not cache_path.exists()
+        assert not quota_path.exists()
+
+
+def test_fetch_worldcup_odds_invalid_json_raises_safe_error_without_cache_or_quota():
+    class BadJsonResponse:
+        status = 200
+        headers = {"x-requests-remaining": "99"}
+
+        def read(self):
+            return b"not-json"
+
+    with TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "theoddsapi_wc_odds.json"
+        quota_path = Path(tmp) / "quota.json"
+
+        try:
+            fetch_worldcup_odds(
+                api_key="secret-key",
+                transport=lambda _url: BadJsonResponse(),
+                cache_path=cache_path,
+                quota_path=quota_path,
+            )
+        except SourceFetchError as exc:
+            assert exc.reason == "invalid_json"
+            assert exc.status == 200
+            assert exc.retryable is False
+            assert exc.attempts == 1
+            assert "secret-key" not in str(exc)
+        else:
+            raise AssertionError("expected SourceFetchError")
+
+        assert not cache_path.exists()
+        assert not quota_path.exists()
