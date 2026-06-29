@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-29 P9.16 CSL snapshot archive
+
+- 新增 `worldcup.csl_snapshot_archive`：把已生成的本地 `data/local/diagnostics/csl_live_league_snapshot.json` 校验后归档到 ignored `data/local/diagnostics/csl_history/`，文件名使用 snapshot 自身 `snapshot_at` 生成 UTC stamp，避免手工复制时钟偏差。
+- 归档器只读本地 snapshot 并写本地 history；校验 `competition.id=csl_2026`、`snapshot_at` 和非空 `matches`；同内容重复归档返回 `duplicate`，不同内容同名冲突拒绝覆盖。
+- CLI 支持 `--dry-run`，输出安全摘要；README 的 CSL Postmatch Eval Loop 已从手工 `mkdir/cp` 改为归档器命令。
+- 本轮未联网、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布 snapshot、未部署、未改 LaunchAgent、未 push。
+- 验证：新增 TDD 红灯先因 `worldcup.csl_snapshot_archive` 缺失失败；实现后 `tests/test_csl_snapshot_archive.py` 聚焦测试 `7/7` 通过；`git diff --check` 通过；项目标准 `tests/run_tests.py` 返回 `610/610 tests passed`。
+
 ## 2026-06-29 P9.15 CSL postmatch eval loop
 
 - 新增 `worldcup.csl_eval_data`：只读本地 CSL snapshot history 与 `data/cache/club_results_csl_2026.csv`，用开球前最后一份 snapshot join 完赛赛果，输出现有 `worldcup.backtest` 可读取的 `data/local/backtest/csl_2026_eval.csv`。

@@ -253,24 +253,30 @@ P9.15 新增中超本地赛后评估闭环，用于把已归档的 CSL league sn
 要让 CSL 评估有效，必须先在赛前持续保留 opening/closing 候选 snapshot；没有开球前 snapshot 的完赛场会计入 `skipped_no_closing`，不能用来声称准确率。
 
 ```bash
-# 示例：把人工确认过的当前 CSL snapshot 归档到本地 ignored history
-mkdir -p data/local/diagnostics/csl_history
-cp data/local/diagnostics/csl_live_league_snapshot.json \
-  data/local/diagnostics/csl_history/snapshot_$(date -u +%Y%m%dT%H%M%SZ)-live.json
+# 0) 先 dry-run 校验当前 CSL snapshot 会归档到哪里；不写文件
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_snapshot_archive \
+  --snapshot data/local/diagnostics/csl_live_league_snapshot.json \
+  --history data/local/diagnostics/csl_history \
+  --dry-run
 
-# 1) 用开球前最后一份 CSL snapshot join 本地完赛赛果
+# 1) 把人工确认过的当前 CSL snapshot 归档到本地 ignored history
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_snapshot_archive \
+  --snapshot data/local/diagnostics/csl_live_league_snapshot.json \
+  --history data/local/diagnostics/csl_history
+
+# 2) 用开球前最后一份 CSL snapshot join 本地完赛赛果
 /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_eval_data \
   --history data/local/diagnostics/csl_history \
   --results data/cache/club_results_csl_2026.csv \
   --out data/local/backtest/csl_2026_eval.csv
 
-# 2) 复用现有 backtest 口径评估 CSL 真实表现
+# 3) 复用现有 backtest 口径评估 CSL 真实表现
 /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.backtest \
   --csv data/local/backtest/csl_2026_eval.csv \
   --min-sample 30 \
   --out data/local/backtest/csl_2026_report.json
 
-# 3) 把市场 baseline 接入 pending gate；仍然不会解除 club_rating_pending
+# 4) 把市场 baseline 接入 pending gate；仍然不会解除 club_rating_pending
 /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_pending_gate \
   --competition csl_2026 \
   --cache-dir data/cache \
