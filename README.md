@@ -220,6 +220,31 @@ competition_id,season,date,home_team,away_team,home_score,away_score,neutral
 
 双源冲突、未知 alias、主客队反转、比分冲突、日期冲突、主源缺校验源或校验源缺主源都会进入 diagnostics；`pending_gate.can_lift_club_rating_pending` 在 P9.3 中始终为 `false`。
 
+### CSL Observation Report 与 Pending Gate
+
+P9.14 新增两个中超本地诊断入口，用于中超开赛后从已保存的本地快照和本地历史赛果生成只读观察报告，不联网、不读取 `.env`、不调用 The Odds API、不消耗 quota、不发布 snapshot、不部署、不更新 LaunchAgent，也不解除 `club_rating_pending`。
+
+本地观察报告读取已脱敏的 CSL runner snapshot，输出 Markdown 或 JSON 到 ignored 路径：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_observation_report \
+  --snapshot data/local/diagnostics/csl_live_league_snapshot.json
+```
+
+该报告只保留研究所需的比赛、计数、警告和信号摘要；会过滤 raw odds、bookmaker、provider、API key、secret、资金或执行建议等不应出现在报告里的内容，并保留“仅用于研究分析，不构成投注建议。”声明。
+
+Pending gate 读取本地 `data/cache/club_results_csl_2026.csv`，做无同日泄漏的 walk-forward replay 诊断：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_pending_gate \
+  --competition csl_2026 \
+  --cache-dir data/cache \
+  --warmup-matches 300 \
+  --min-eval-matches 200
+```
+
+Gate report 使用单一 schema：`sample.total_results`、`decision.can_lift_club_rating_pending` 和顶层 `can_lift_club_rating_pending=false`。由于当前没有历史市场赔率 baseline，报告始终保持观察模式，不解除中超 `club_rating_pending`。Replay 按日期批量评估和批量更新 rating；同一天没有开球时间时，不会让当天早些比赛影响当天后续比赛的 rating 或 home-prior baseline。
+
 ## 本地验证
 
 当前机器没有安装 `pytest` 时，用：

@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-29 P9.14 CSL observation report 与 pending gate
+
+- 新增 `worldcup.csl_observation_report`：从本地 CSL live league snapshot 生成已脱敏观察报告，保留研究免责声明，过滤 raw odds、bookmaker、provider、API key、secret、资金和执行建议等不应暴露内容。
+- 新增 `worldcup.csl_pending_gate`：只读本地 `club_results_<competition>.csv`，按日期批量 walk-forward replay club ratings；同一天无开球时间时，rating 与 home-prior baseline 都只使用评估日期之前的信息，避免同日泄漏。
+- Pending gate report 固定单一 schema：`sample.total_results`、`decision.can_lift_club_rating_pending` 和顶层 `can_lift_club_rating_pending=false`；历史市场赔率缺失时保持观察/keep pending，不解除 `club_rating_pending`。
+- 本轮未联网、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布 snapshot、未部署、未改 LaunchAgent、未提交、未 push。
+- 验证：聚焦 `tests.test_csl_pending_gate` + `tests.test_csl_observation_report` 19 个测试通过；项目标准 `tests/run_tests.py` 返回 `598/598 tests passed`；最终 subagent 规格复审通过。
+
 ## 2026-06-29 P9.12 推送部署与 live publish
 
 - 已推送 `f978ec9 Harden knockout signal strategy` 到 `origin/main`，并部署到 ECS `/opt/worldcup/releases/f978ec9`；`/opt/worldcup/current` 已从 `/opt/worldcup/releases/6dc5751` 切到新 release，`worldcup.service` 与 `nginx` 均为 active。
