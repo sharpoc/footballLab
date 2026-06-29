@@ -10,6 +10,21 @@
 - 本轮未联网、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布 snapshot、未部署、未改 LaunchAgent、未提交、未 push。
 - 验证：聚焦 `tests.test_csl_pending_gate` + `tests.test_csl_observation_report` 19 个测试通过；项目标准 `tests/run_tests.py` 返回 `598/598 tests passed`；最终 subagent 规格复审通过。
 
+## 2026-06-29 P9.14 CSL observation report and pending gate 计划
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-29-csl-observation-report-and-pending-gate.md`。
+- 计划覆盖两块本地-only 能力：`worldcup.csl_observation_report` 从最新 CSL league snapshot 生成观察报告；`worldcup.csl_pending_gate` 用 `data/cache/club_results_csl_2026.csv` 做 walk-forward club-rating 评估。
+- 计划明确当前历史数据缺少 closing odds / market baseline，因此 pending gate 即使模型健康也必须保持 `can_lift_club_rating_pending=false`，最多支持 `observe_only_no_lift`，不能解除中超正式强信号压制。
+- 本轮只写计划和近期记录；未改业务代码、未执行 live refresh、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布、未部署、未改 LaunchAgent、未提交、未 push。
+
+## 2026-06-29 P9.13 CSL live odds 本地受控刷新
+
+- 经用户确认，执行一次受控 `worldcup.league_odds_refresh --competition csl_2026 --sport-key soccer_china_superleague --live --replace-existing`；读取本地 `.env`，调用 The Odds API，覆盖 ignored cache：`data/cache/theoddsapi_csl_2026_odds.json`。
+- 本轮使用 `theoddsapi_secondary`，返回 `events=8`、`quota_last=3`、`quota_remaining=34`、`used=466`，刷新时间为 `2026-06-29T02:32:31.106142+00:00`；未打印 API key、`.env` 值、raw odds、bookmaker 或 price。
+- 已用新 cache 跑本地 `worldcup.league_runner`，写入 ignored snapshot / diagnostics：`data/local/diagnostics/csl_live_league_snapshot.json`、`data/local/diagnostics/csl_live_odds_refresh.json`、`data/local/diagnostics/csl_live_league_runner_check.json`。
+- Runner 结果：`matches=8`、`club_rating.mode=sample_replay`、`matches_replayed=840`、`teams_rated=22`、`club_alias_unmatched=[]`、`invalid_odds_count=0`、`strong_grades=[]`；`rating_policy=club_rating_pending` 未解除，warnings 保留 `club_rating_pending` / `odds_event_only`。
+- 验证：`python3 -m worldcup.ops_check --no-public --no-remote --format summary` 返回 `errors=0`、CSL live odds `ok events=8 fixtures=8 odds_events=8`；本轮未发布线上 snapshot、未部署、未改 LaunchAgent、未 push。
+
 ## 2026-06-29 P9.12 推送部署与 live publish
 
 - 已推送 `f978ec9 Harden knockout signal strategy` 到 `origin/main`，并部署到 ECS `/opt/worldcup/releases/f978ec9`；`/opt/worldcup/current` 已从 `/opt/worldcup/releases/6dc5751` 切到新 release，`worldcup.service` 与 `nginx` 均为 active。
