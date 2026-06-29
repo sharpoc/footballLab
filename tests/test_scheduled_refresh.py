@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import worldcup.scheduled_refresh as scheduled_refresh
 from worldcup.scheduled_refresh import run_scheduled_refresh
 from worldcup.theoddsapi_keys import PRIMARY_PROVIDER, SECONDARY_PROVIDER
 
@@ -32,6 +33,30 @@ def test_scheduled_refresh_dry_run_does_not_call_refresh_even_when_due():
         assert result["status"] == "dry_run"
         assert result["report"]["decision"]["should_refresh"] is True
         assert result["refresh"] is None
+
+
+def test_scheduled_refresh_dry_run_does_not_load_env():
+    def fail_load_env(_path):
+        raise AssertionError("dry-run must not load env")
+
+    old_load_env = scheduled_refresh._load_env
+    scheduled_refresh._load_env = fail_load_env
+    try:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_scheduled_refresh(
+                now="2026-06-08T00:00:00+00:00",
+                live=False,
+                env_path=root / ".env",
+                cache_dir=root / "cache",
+                snapshot_path=root / "cache" / "analysis_snapshot.json",
+                quota_path=root / "cache" / "quota.json",
+            )
+
+            assert result["status"] == "dry_run"
+            assert result["refresh"] is None
+    finally:
+        scheduled_refresh._load_env = old_load_env
 
 
 def test_scheduled_refresh_skips_live_when_not_due():

@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-29 P9.21 dry-run env boundary hardening
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-29-dry-run-env-boundary-hardening.md`。
+- 加固 `worldcup.scheduled_refresh` / `worldcup.scheduled_publish` / `worldcup.scores_capture` 的 dry-run 边界：默认 dry-run 不再读取 `.env`；只有显式 live / live scores 路径才加载 env 并进入 key 选择、refresh、publish 或 scores capture。
+- `worldcup.daily_eval` 补充非 `--live-scores` 回归测试，确认普通赛后日报链路不读取 env；现有 `--live-scores` 行为保持只在显式 live scores 时读取 env。
+- 新增 TDD 覆盖：scheduled refresh dry-run 不读 env、scheduled publish dry-run 不读 env/不刷新/不发布、scores capture CLI dry-run 不读 env、daily eval 非 live scores 不读 env。
+- 本轮不改模型、不拆 `pipeline.py`、不解除 `club_rating_pending`、不联网、不读取真实 `.env`、不调用 The Odds API、不消耗 quota、不发布、不部署、不改 LaunchAgent。
+- 验证：新增红灯先使项目测试为 `623/626 tests passed`；实现后项目标准 `tests/run_tests.py` 返回 `626/626 tests passed`。
+
 ## 2026-06-29 P9.20 source fetch hardening
 
 - 新增 implementation plan：`docs/superpowers/plans/2026-06-29-source-fetch-hardening.md`。

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import worldcup.refresh_runner as refresh_runner
 from worldcup.daily_eval import run_daily_eval
 
 
@@ -176,6 +177,39 @@ def test_daily_eval_no_notify_without_new_results():
 
         assert code == 0
         assert calls == []
+
+
+def test_daily_eval_without_live_scores_does_not_load_env():
+    from worldcup.daily_eval import main
+
+    def fail_load_env(_path):
+        raise AssertionError("non-live daily eval must not load env")
+
+    old_load_env = refresh_runner._load_env
+    refresh_runner._load_env = fail_load_env
+    try:
+        with TemporaryDirectory() as tmp:
+            paths = _seed_project(Path(tmp), with_score=True)
+            code = main(
+                [
+                    "--cache-dir",
+                    str(paths["cache_dir"]),
+                    "--history",
+                    str(paths["history_dir"]),
+                    "--results-out",
+                    str(paths["results_out"]),
+                    "--eval-out",
+                    str(paths["eval_out"]),
+                    "--report-out",
+                    str(paths["report_out"]),
+                    "--min-sample",
+                    "1",
+                ],
+            )
+
+            assert code == 0
+    finally:
+        refresh_runner._load_env = old_load_env
 
 
 def test_daily_eval_live_scores_runs_capture_first():

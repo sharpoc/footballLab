@@ -27,7 +27,7 @@ def run_scheduled_refresh(
     refresh_fn: Callable[..., object] = refresh_cache_and_build_snapshot,
 ) -> dict:
     observed = now or _now_utc_iso()
-    env = _load_env(env_path)
+    env = {} if (not live or api_key) else _load_env(env_path)
     report = build_scheduler_report(
         now=observed,
         snapshot_path=snapshot_path,

@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import worldcup.scheduled_publish as scheduled_publish
 from worldcup.scheduled_publish import run_scheduled_publish
 from worldcup.theoddsapi_keys import PRIMARY_PROVIDER, SECONDARY_PROVIDER
 
@@ -68,6 +69,40 @@ def test_scheduled_publish_skips_publish_when_refresh_is_not_due():
     assert result["status"] == "skipped"
     assert result["refresh"]["status"] == "skipped"
     assert result["publish"] is None
+
+
+def test_scheduled_publish_dry_run_does_not_load_env_or_publish():
+    def fail_load_env(_path):
+        raise AssertionError("dry-run must not load env")
+
+    def refresh_fn(**_kwargs):
+        raise AssertionError("dry-run must not refresh")
+
+    def publish_fn(**_kwargs):
+        raise AssertionError("dry-run must not publish")
+
+    old_load_env = scheduled_publish._load_env
+    scheduled_publish._load_env = fail_load_env
+    try:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_scheduled_publish(
+                now="2026-06-08T00:00:00+00:00",
+                live=False,
+                notify=False,
+                env_path=root / ".env",
+                cache_dir=root / "cache",
+                snapshot_path=root / "cache" / "analysis_snapshot.json",
+                quota_path=root / "cache" / "quota.json",
+                refresh_fn=refresh_fn,
+                publish_fn=publish_fn,
+            )
+
+            assert result["status"] == "dry_run"
+            assert result["publish"] is None
+            assert result["notification"] is None
+    finally:
+        scheduled_publish._load_env = old_load_env
 
 
 def test_scheduled_publish_refreshes_then_publishes_when_due():

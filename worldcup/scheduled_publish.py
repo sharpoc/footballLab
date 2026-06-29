@@ -118,10 +118,10 @@ def run_scheduled_publish(
     publish_fn: Callable[..., dict] = publish_snapshot,
     notify_fn: Callable[..., dict] = send_wxpusher_notification,
 ) -> dict:
-    env = _load_env(env_path)
-    watched_providers = _watched_providers(env) if notify else []
-    quota_before = _quota_by_provider(quota_path, watched_providers) if notify else {}
-    previous_snapshot = load_snapshot_if_exists(snapshot_path) if notify else None
+    env = _load_env(env_path) if live else {}
+    watched_providers = _watched_providers(env) if live and notify else []
+    quota_before = _quota_by_provider(quota_path, watched_providers) if live and notify else {}
+    previous_snapshot = load_snapshot_if_exists(snapshot_path) if live and notify else None
     refresh = run_scheduled_refresh(
         now=now,
         live=live,

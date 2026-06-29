@@ -104,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
 
     result = run_scores_capture(
         live=args.live,
-        env=_load_env(args.env),
+        env=_load_env(args.env) if args.live else {},
         cache_path=args.cache_path,
         quota_path=args.quota_path,
         results_out=args.out,

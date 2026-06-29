@@ -1,7 +1,10 @@
+import contextlib
+import io
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import worldcup.scores_capture as scores_capture
 from worldcup.scores_capture import run_scores_capture
 
 
@@ -73,6 +76,38 @@ def test_scores_capture_dry_run_does_not_fetch():
     assert out["status"] == "dry_run"
     assert calls == []
     assert not (root / "results.csv").exists()
+
+
+def test_scores_capture_main_dry_run_does_not_load_env():
+    def fail_load_env(_path):
+        raise AssertionError("dry-run must not load env")
+
+    old_load_env = scores_capture._load_env
+    scores_capture._load_env = fail_load_env
+    try:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = scores_capture.main(
+                    [
+                        "--env",
+                        str(root / ".env"),
+                        "--cache-path",
+                        str(root / "scores.json"),
+                        "--quota-path",
+                        str(root / "quota.json"),
+                        "--out",
+                        str(root / "results.csv"),
+                    ]
+                )
+
+            result = json.loads(stdout.getvalue())
+            assert exit_code == 0
+            assert result["status"] == "dry_run"
+            assert not (root / "results.csv").exists()
+    finally:
+        scores_capture._load_env = old_load_env
 
 
 def test_scores_capture_live_upserts_results():
