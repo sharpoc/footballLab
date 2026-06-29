@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-29 P9.12 推送部署与 live publish
+
+- 已推送 `f978ec9 Harden knockout signal strategy` 到 `origin/main`，并部署到 ECS `/opt/worldcup/releases/f978ec9`；`/opt/worldcup/current` 已从 `/opt/worldcup/releases/6dc5751` 切到新 release，`worldcup.service` 与 `nginx` 均为 active。
+- 已执行一次受控 `worldcup.scheduled_publish --live --force --no-notify --endpoint https://football.celab.xin/api/ingest/snapshot`：新 run 为 `20260629T021939Z-live`，ECS ingest 返回 HTTP 200 / `ingest_status=stored`，snapshot_id 为 `698b8a63e231e288047867fbe7c687e267d69e5c758c04ac45046734afce3f45`。
+- 本轮 live refresh 使用 `theoddsapi_secondary`，The Odds API ledger 显示 secondary 剩余 37、used 463；primary 仍为 0。刷新后本地 snapshot 为 15 场，正式强信号仅保留 2 条 S：`Ivory Coast vs Norway` 客胜、`Colombia vs Ghana` 主胜；5 条长赔率 `1X2` raw 强信号已被 `x12_long_odds_candidate_only` 压到 B。
+- 部署/发布后公网 smoke：`/healthz`、`/api/matches`、`/api/finished`、首页和 `/preview` 均返回 200；公网 `/api/matches` 返回 15 场；首页和 `/preview` 保留研究免责声明，`stake` / `下注金额` / `资金` 禁词扫描为空。
+- `python3 -m worldcup.ops_check --format summary` 返回 `errors=0`、`warnings=5`；warning 属于既有巡检类提示，不阻断本次上线。本次未改 LaunchAgent、未发送 WxPusher 通知、未 push secret 或 cache。
+
 ## 2026-06-29 P9.12 淘汰赛策略降噪与 scores guard
 
 - 新增 implementation plan：`docs/superpowers/plans/2026-06-29-knockout-strategy-hardening.md`。
@@ -9,7 +17,7 @@
 - 研究台账风险提示已补充上述两个新 reason 的中文说明，dry-run 预览页可读地展示“平局强信号暂列研究候选”和“赔率高于正式强信号上限”。
 - 首发链路保持 shadow-only：`lineup_shadow` 不改 active 概率、EV/Edge 或正式等级，继续作为 AH candidate 晋级和 post-information odds 的门槛。
 - `worldcup.scores_capture` 在 `2026-06-28T00:00:00Z` 起默认阻断 live scores 捕获，返回 `knockout_score_manual_review_required`，不调用 transport、不写 results；人工确认 90 分钟比分口径后可显式 `--allow-knockout-scores` 放行。`worldcup.daily_eval --live-scores` 同步支持该 opt-in。
-- README 已补充淘汰赛 scores 人工确认规则和 1X2 强信号候选化护栏。本轮未执行 live refresh、未读取 `.env`、未调用 The Odds API、未消耗 quota、未部署、未改 LaunchAgent、未提交、未 push。
+- README 已补充淘汰赛 scores 人工确认规则和 1X2 强信号候选化护栏。实现和验证阶段未执行 live refresh、未读取 `.env`、未调用 The Odds API、未消耗 quota、未部署、未改 LaunchAgent、未提交、未 push。
 - 验证：新增 TDD 红灯覆盖后实现；当前 `tests/run_tests.py` 摘要返回 `579/579 tests passed`（同时输出既有 FastAPI/TestClient deprecation warning 和 ops_check 临时目录 warning）；`git diff --check` 通过。
 
 ## 2026-06-24 P9.11 ops_check 本地日报 dry-run 实现
