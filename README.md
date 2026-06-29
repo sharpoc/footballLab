@@ -85,6 +85,7 @@ worldcup/
   postmatch_diagnostics.py      # 完赛 S/A 信号本地诊断报告
   csl_results_probe.py          # 中超历史赛果本地样例清洗与双源诊断 CLI
   csl_eval_data.py              # 中超本地 snapshot × 完赛赛果 join 成回测 CSV
+  csl_ops_runner.py             # 中超本地实战闭环：dry-run、snapshot、归档、观察报告、postmatch
   lineup_audit.py               # 官方首发抓取 × snapshot/post-information odds 本地审计
   scores_capture.py             # The Odds API scores → 本地 results CSV（默认 dry-run）
   lineups_refresh.py            # FIFA public API 官方首发 → 本地 lineup cache（默认 dry-run）
@@ -169,6 +170,36 @@ python3 -m worldcup.league_runner --competition csl_2026 --cache-dir data/cache 
 `--competition` 与 `--competition-id` 等价，默认 competition id 为 `csl_2026`。
 
 中超初期 `rating_policy=club_rating_pending` 时，强信号会降级或仅作为观察；不得把国家队 Elo 套用于俱乐部联赛。任何 live odds 探测、scheduled publish、ECS ingest 或 LaunchAgent 更新都需要单独确认。
+
+### CSL Ops Runner
+
+P9.23 新增一条中超本地实战命令，把本地状态检查、cache snapshot、赛前归档、观察报告和可选 postmatch 复盘收束到 `worldcup.csl_ops_runner`。默认 dry-run 只读本地文件，不写入、不读取 `.env`、不联网、不调用 The Odds API、不消耗 quota、不发布、不部署、不更新 LaunchAgent。
+
+```bash
+# 只读检查当前 CSL cache/results/history/quota 状态
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_ops_runner
+
+# 使用现有本地 cache 写 ignored 本地研究产物
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_ops_runner --run-local
+
+# 在本地赛果已确认后，同时跑赛后 eval/backtest/pending gate
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_ops_runner \
+  --run-local \
+  --postmatch \
+  --postmatch-min-sample 30 \
+  --postmatch-warmup-matches 300 \
+  --postmatch-min-eval-matches 200
+```
+
+`--run-local` 只允许写入 ignored 的 `data/local/` 或 `data/cache/` 产物：`data/local/diagnostics/csl_live_league_snapshot.json`、`data/local/diagnostics/csl_history/`、`data/cache/csl_observation_report_*.md|json`、`data/local/diagnostics/csl_ops_runner_*.json`，以及 postmatch 的 `data/local/backtest/` / pending gate 输出。摘要只包含安全计数、路径、质量警告和 safety flags，不输出 raw bookmaker rows、per-book prices、API key、secret、provider payload、资金或执行建议。
+
+受控 live odds 刷新仍必须单独确认后才运行：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_ops_runner --live-odds --run-local
+```
+
+该模式会读取 `.env` 并消耗 The Odds API quota；默认 dry-run 和普通 `--run-local` 不会触发。
 
 ### 中超 Club Rating 本地基线
 

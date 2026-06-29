@@ -2,6 +2,24 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-29 P9.23 CSL ops runner
+
+- 新增 `worldcup.csl_ops_runner` 中超本地实战闭环：默认 dry-run 只读本地 CSL cache/results/history/quota 状态；`--run-local` 用本地 cache 生成 snapshot、归档赛前快照、写 observation report 和 runner summary；`--run-local --postmatch` 继续串起 eval CSV、backtest report 和 pending gate。
+- dry-run 不写文件、不读取 `.env`、不调用 The Odds API、不发布、不部署、不改 LaunchAgent；普通 `--run-local` 也不读取 `.env` 或联网。`--live-odds --run-local` 已有显式 guard 和 fake-transport 测试覆盖，但真实运行仍必须单独确认，因为会读取 `.env` 并消耗 The Odds API quota。
+- runner 写出路径限制在 ignored 的 `data/local/` 或 `data/cache/`；summary 只输出安全计数、路径、质量警告和 safety flags，不暴露 raw bookmaker rows、per-book prices、provider payload、API key、secret、资金或执行建议。
+- `club_rating_pending` 仍不解除；准确率提升路径是持续保存赛前 snapshot，再用 postmatch 的 Brier / Log Loss / calibration / model-vs-market / `skipped_no_closing` 做观察复盘，不在本轮调参。
+- README 已新增 CSL Ops Runner 使用入口；设计/计划文档已记录 P9.23 范围和安全边界。
+- 验证：`python3 -m unittest tests.test_csl_ops_runner -v` 聚焦测试 `20/20` 通过；`python3 -m py_compile worldcup/csl_ops_runner.py` 通过；项目标准 `tests/run_tests.py` 返回 `648/648 tests passed`。
+
+## 2026-06-29 P9.23 CSL ops runner 设计
+
+- 新增设计文档：`docs/superpowers/specs/2026-06-29-csl-ops-runner-design.md`。
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-29-csl-ops-runner.md`。
+- 设计目标是做一个 `worldcup.csl_ops_runner`，把中超实战运行闭环收束成一条本地命令：dry-run 巡检、本地 cache 生成 snapshot、归档赛前快照、生成观察报告，并可选串起 postmatch eval。
+- 设计采用三档模式：默认 `--dry-run` 不写入、不读 `.env`、不联网；`--run-local` 使用现有本地 cache 写 ignored 本地产物；`--live-odds` 必须单独显式确认，才可能读取 `.env` 并消耗 The Odds API quota。
+- 设计明确准确率提升先靠持续保存赛前 snapshot 与赛后 Brier / Log Loss / calibration / model-vs-market 复盘，不通过本轮调参或解除 `club_rating_pending` 达成。
+- 本轮只写设计、实施计划和近期记录；未改业务代码、未执行 live refresh、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布、未部署、未改 LaunchAgent、未提交、未 push。
+
 ## 2026-06-29 P9.22 pipeline module boundary cleanup
 
 - 新增 implementation plan：`docs/superpowers/plans/2026-06-29-pipeline-module-boundary-cleanup.md`。
