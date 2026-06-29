@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-29 P9.22 pipeline module boundary cleanup
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-29-pipeline-module-boundary-cleanup.md`。
+- `worldcup.pipeline` 已缩成兼容 facade + collector 输出对齐层，继续导出 `MatchAnalysisInput`、`BuildMatchInputsResult`、`MatchAnalysis`、`build_match_inputs`、`analyze_match_input`、`generate_value_signals` 和 `_ah_validation_shadow`，保持 `local_runner`、`league_runner`、`shadow_backfill_diagnostics` 等旧导入兼容。
+- 新增 `worldcup.pipeline_analysis` 承载单场概率族、market-total/independent OU shadow、lineup shadow 和 `analyze_match_input`；新增 `worldcup.pipeline_signals` 承载信号生成、质量护栏、AH validation shadow、candidate grade 逻辑和主盘口 helper。
+- README 已同步目录职责；新增 `tests/test_pipeline.py` 导入契约测试，锁住 facade 与新模块边界。
+- 本轮不改模型数学、概率口径、signal grade 阈值、candidate grade 激活规则、shadow schema、`club_rating_pending`、refresh/publish/ingest 线上链路或 The Odds API 行为；未联网、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布、未部署、未改 LaunchAgent、未提交、未 push。
+- 验证：新增红灯先因 `worldcup.pipeline_analysis` 缺失返回 `627/628 tests passed`；实现后 import smoke 和 `py_compile` 通过，项目标准 `tests/run_tests.py` 返回 `628/628 tests passed`。
+
 ## 2026-06-29 P9.21 dry-run env boundary hardening
 
 - 新增 implementation plan：`docs/superpowers/plans/2026-06-29-dry-run-env-boundary-hardening.md`。

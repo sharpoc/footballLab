@@ -17,6 +17,29 @@ from worldcup.pipeline import (
 )
 
 
+def test_pipeline_public_facade_keeps_existing_import_contract():
+    import worldcup.pipeline as pipeline
+
+    assert pipeline.MatchAnalysisInput is MatchAnalysisInput
+    assert callable(pipeline.build_match_inputs)
+    assert callable(pipeline.analyze_match_input)
+    assert callable(pipeline.generate_value_signals)
+    assert callable(pipeline._ah_validation_shadow)
+
+
+def test_pipeline_module_split_exports_analysis_and_signal_modules():
+    import worldcup.pipeline as pipeline
+    from worldcup.pipeline_analysis import analyze_match_input as analysis_analyze
+    from worldcup.pipeline_signals import (
+        _ah_validation_shadow as signal_ah_validation_shadow,
+        generate_value_signals as signal_generate,
+    )
+
+    assert analysis_analyze is pipeline.analyze_match_input
+    assert signal_generate is pipeline.generate_value_signals
+    assert signal_ah_validation_shadow is pipeline._ah_validation_shadow
+
+
 def test_build_match_inputs_matches_fixture_odds_and_elo_aliases():
     fixtures = parse_openfootball_fixtures(
         {
