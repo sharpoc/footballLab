@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-29 P9.18 engineering guardrails
+
+- 新增 implementation plan：`docs/superpowers/plans/2026-06-29-engineering-hardening-guardrails.md`，把外部工程评审转成低风险后续顺序：CI/依赖边界先行，再做 HTTP ingest、source fetch、config/profile 和 pipeline split。
+- 调整 `pyproject.toml`：核心包默认无第三方依赖；FastAPI/Uvicorn/HTTPX 移到 `web` extra；`dev` extra 安装 Web 测试依赖和 pytest；`postgres` extra 保持 psycopg。
+- 新增 `.github/workflows/ci.yml`：GitHub Actions 使用 Python 3.12，安装 `.[dev]`，运行现有 `tests/run_tests.py`。
+- README 同步当前测试状态和可选依赖安装方式。本轮不改模型、不拆 `pipeline.py`、不解除 `club_rating_pending`、不联网、不读取 `.env`、不调用 The Odds API、不消耗 quota、不发布、不部署、不改 LaunchAgent。
+- 验证：`git diff --check` 通过；项目标准 `tests/run_tests.py` 返回 `612/612 tests passed`。
+
 ## 2026-06-29 P9.17 CSL postmatch runner
 
 - 新增 implementation plan：`docs/superpowers/plans/2026-06-29-csl-postmatch-runner.md`。

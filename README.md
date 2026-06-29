@@ -13,7 +13,7 @@
 
 - Git 仓库已初始化。
 - Plan 1 引擎核心已完成第一版。
-- 本地测试执行器通过：`460/460 tests passed`。
+- 本地测试执行器通过：`612/612 tests passed`。
 - Plan 0 核心数据源探测已完成第一轮：openfootball 赛程、eloratings Elo、The Odds API 赔率可用；API-Football Free plan 不能访问 2026 season。
 - Plan 2 已启动：当前完成纯离线解析层、单场价值信号、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、按每场比赛独立计算的刷新计划、post-information odds 定向刷新调度判定、post-lineup refresh guard、run metadata、调度执行包装、显著变化手机通知、完赛战绩定格、赔率走势富化、AH 验证 shadow、研究候选池 `candidate_grade`、首发/球员影响 `lineup_shadow` schema、`manual_json` 首发/球员本地入口、FIFA public API 官方首发抓取 CLI、赛前首发轮询编排 runner、赛前 LaunchAgent plist 生成器、lineups-only 赛前 LaunchAgent、官方首发链路审计与一次性通知、独立 OU total `ou_total_shadow` schema、AH candidate 正式激活规则、世界杯 1X2 平局/长赔率强信号候选化、淘汰赛 scores 90 分钟人工确认 guard、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照，本地 runner 生成的快照也包含 ingest 所需 run metadata。
 - Plan 3A FastAPI 本地适配层已实现并完成测试。
@@ -27,6 +27,7 @@
 
 - Python 3
 - 标准库优先
+- 核心包默认不安装 Web / PostgreSQL 适配依赖；本地 Web 适配使用 `.[web]`，开发和 CI 使用 `.[dev]`，PostgreSQL 适配使用 `.[postgres]`
 - 当前引擎不联网、不连数据库、不依赖云资源
 - 当前 collector 解析层不联网；后续真实请求层可再引入 HTTP 客户端
 - 当前 refresh runner 默认 dry-run；只有显式 `--live` 才会读取 `.env` 并联网消耗 The Odds API 额度
@@ -289,6 +290,12 @@ P9.15 新增中超本地赛后评估闭环，用于把已归档的 CSL league sn
 
 ```bash
 python3 -m pytest -v
+```
+
+可选依赖安装：
+
+```bash
+python3 -m pip install -e ".[dev]"
 ```
 
 本地 FastAPI 适配层可用以下命令启动：
