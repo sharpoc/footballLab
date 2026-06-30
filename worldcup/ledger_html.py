@@ -230,6 +230,32 @@ def _date_button_label(label: str) -> str:
     return label
 
 
+def _compact_date_label(group: dict[str, Any]) -> str:
+    date_iso = str(group.get("kickoff_date_iso") or "")
+    if date_iso:
+        try:
+            parsed = datetime.fromisoformat(date_iso)
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            return f"{parsed.month}/{parsed.day}"
+    label = str(group.get("kickoff_date") or "")
+    parts = label.split()
+    if len(parts) >= 6 and parts[1] == "年" and parts[3] == "月" and parts[5] == "日":
+        return f"{parts[2]}/{parts[4]}"
+    return ""
+
+
+def _render_match_kickoff_cell(group: dict[str, Any]) -> str:
+    kickoff = _text(group.get("kickoff_time"))
+    date_label = _compact_date_label(group)
+    if not date_label:
+        return "<td>{kickoff}</td>".format(kickoff=kickoff)
+    return (
+        '<td class="match-kickoff-cell"><span>{date}</span><strong>{kickoff}</strong></td>'
+    ).format(date=_text(date_label), kickoff=kickoff)
+
+
 def _row_date_iso(row: dict[str, Any]) -> str:
     raw = row.get("kickoff_at_utc")
     if not raw:
@@ -923,7 +949,7 @@ def _render_workbench_ledger(
             'data-workbench-match-target="{detail_id}" data-signal-count="{signal_count}" '
             'data-grade="{grade_bucket}" data-grade-buckets="{grade_buckets}" '
             'data-date="{date}" data-date-iso="{date_iso}" data-league="{competition_id}" data-search="{search}">'
-            "<td>{kickoff}</td>"
+            "{kickoff_cell}"
             "<td><strong>{matchup}</strong></td>"
             '<td><span class="grade-pill {grade_class}">{grade}</span></td>'
             "<td>{stage_group}</td>"
@@ -940,7 +966,7 @@ def _render_workbench_ledger(
                 date_iso=_text(group.get("kickoff_date_iso")),
                 competition_id=_text(group.get("competition_id")),
                 search=_text(group.get("search_text")),
-                kickoff=_text(group.get("kickoff_time")),
+                kickoff_cell=_render_match_kickoff_cell(group),
                 matchup=matchup_html,
                 stage_group=_text(
                     " · ".join(
@@ -2292,6 +2318,22 @@ def build_research_ledger_html(
       border-left: 3px solid transparent;
       font-weight: 800;
       white-space: nowrap;
+    }}
+    .match-list-row .match-kickoff-cell {{
+      line-height: 1.15;
+    }}
+    .match-list-row .match-kickoff-cell span {{
+      margin-top: 0;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.1;
+    }}
+    .match-list-row .match-kickoff-cell strong {{
+      display: block;
+      margin-top: 3px;
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.1;
     }}
     .match-list-row strong {{ font-weight: 850; }}
     .match-list-row span {{

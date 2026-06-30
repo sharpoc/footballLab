@@ -2,6 +2,13 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-06-30 研究台账左侧比赛日期显示
+
+- 研究台账 workbench 左侧比赛列表的“开赛时间”列改为紧凑日期 + 时间两行显示，例如 `6/13` / `03:00`；缺少日期时仍回退到原单行时间，兼容旧 snapshot。
+- 改动限定在 `worldcup.ledger_html` 渲染层和 `tests/test_preview.py` 回归断言；未改 snapshot schema、数据模型、筛选逻辑、模型参数或信号等级。
+- 发布范围经用户确认限定为代码提交、推送 `origin/main` 和 ECS 代码部署；不执行 `worldcup.scheduled_publish --live --force`，不主动刷新数据源、不调用 The Odds API、不消耗 quota、不写新 snapshot、不改 LaunchAgent。
+- 验证：TDD 红灯先因时间格缺少日期失败；实现后定点用例通过，项目标准 `tests/run_tests.py` 返回 `648/648 tests passed`。静态 HTML 已确认输出 `match-kickoff-cell`；内置浏览器打开 `file://` 临时文件被安全策略拦截，因此未做截图验证。
+
 ## 2026-06-29 P9.23 CSL ops runner
 
 - 新增 `worldcup.csl_ops_runner` 中超本地实战闭环：默认 dry-run 只读本地 CSL cache/results/history/quota 状态；`--run-local` 用本地 cache 生成 snapshot、归档赛前快照、写 observation report 和 runner summary；`--run-local --postmatch` 继续串起 eval CSV、backtest report 和 pending gate。

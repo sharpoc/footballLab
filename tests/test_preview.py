@@ -339,7 +339,11 @@ def test_build_preview_html_uses_workbench_signal_layout():
             "</tr>", html.index('<tr class="match-list-row active"')
         )
     ]
-    assert match_list_row.index("<td>03:00</td>") < match_list_row.index(
+    assert (
+        '<td class="match-kickoff-cell"><span>6/13</span><strong>03:00</strong></td>'
+        in match_list_row
+    )
+    assert match_list_row.index('<td class="match-kickoff-cell"') < match_list_row.index(
         '<td><strong><span class="team-matchup"'
     ) < match_list_row.index(
         '<td><span class="grade-pill grade-s">S</span></td>'
