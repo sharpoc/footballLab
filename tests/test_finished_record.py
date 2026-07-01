@@ -222,6 +222,49 @@ def test_build_finished_block_is_incremental_via_store():
         assert second["tally"] == first["tally"]
 
 
+def test_build_finished_block_dedupes_legacy_competition_keys_in_store():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        results = root / "results.csv"
+        _write_results(results, [MEXICO_ROW])
+        store = root / "store.json"
+        legacy_record = {
+            "kickoff_at_utc": MEXICO_ROW["kickoff_at_utc"],
+            "home_team": MEXICO_ROW["home_team"],
+            "away_team": MEXICO_ROW["away_team"],
+            "home_canonical": MEXICO_ROW["home_canonical"],
+            "away_canonical": MEXICO_ROW["away_canonical"],
+            "result": {"home_score": 2, "away_score": 0},
+            "closing_signals": [],
+            "odds_trend": [],
+        }
+        richer_record = {
+            **legacy_record,
+            "competition": {"id": "fifa_world_cup_2026"},
+            "closing_match_decision": {"market": "DNB", "selection": "home"},
+        }
+        store.write_text(
+            json.dumps(
+                {
+                    "2026-06-11_mexico_south_africa": legacy_record,
+                    "fifa_world_cup_2026_2026-06-11_mexico_south_africa": richer_record,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        block = build_finished_block(root / "history", results, store)
+
+        assert len(block["matches"]) == 1
+        assert block["matches"][0]["competition"] == {"id": "fifa_world_cup_2026"}
+        assert block["matches"][0]["closing_match_decision"] == {
+            "market": "DNB",
+            "selection": "home",
+        }
+        persisted = json.loads(store.read_text(encoding="utf-8"))
+        assert list(persisted) == ["2026-06-11_mexico_south_africa"]
+
+
 def test_build_finished_block_counts_missing_closing():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)

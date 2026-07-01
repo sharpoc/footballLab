@@ -20,7 +20,7 @@ from worldcup.refresh_runner import _load_env
 from worldcup.store_contract import SnapshotStore
 
 
-DEFAULT_MAX_INGEST_BODY_BYTES = 1_000_000
+DEFAULT_MAX_INGEST_BODY_BYTES = 5_000_000
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
 _AUTH_REJECTION_REASONS = {
     "signature_format_invalid",

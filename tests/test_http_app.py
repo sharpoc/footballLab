@@ -394,6 +394,32 @@ def test_http_post_ingest_snapshot_rejects_large_body_without_writing():
     assert store.count_snapshots() == 0
 
 
+def test_http_post_ingest_snapshot_default_limit_allows_signed_multi_mb_snapshot():
+    store = MemorySnapshotStore()
+    snapshot = _snapshot()
+    snapshot["matches"][0]["large_finished_payload"] = "x" * 1_200_000
+    request = build_ingest_request(
+        snapshot=snapshot,
+        endpoint="https://example.com/api/ingest/snapshot",
+        secret="test-hmac-secret",
+        timestamp="2026-06-08T00:02:00+00:00",
+    )
+
+    response = handle_request(
+        method=request["method"],
+        path=request["path"],
+        headers=request["headers"],
+        body=request["body"],
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        now="2026-06-08T00:03:00+00:00",
+        store=store,
+    )
+
+    assert response["status"] == 200
+    assert store.count_snapshots() == 1
+
+
 def test_http_post_ingest_snapshot_returns_structured_error_for_bad_signature():
     store = MemorySnapshotStore()
     request = build_ingest_request(

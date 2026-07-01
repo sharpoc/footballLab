@@ -29,6 +29,57 @@ def _record_key(row: dict) -> str:
     return f"{row['kickoff_at_utc'][:10]}_{row['home_canonical']}_{row['away_canonical']}"
 
 
+def _row_identity(row: dict) -> tuple[str, str, str]:
+    return (
+        row["kickoff_at_utc"],
+        row["home_team"].casefold(),
+        row["away_team"].casefold(),
+    )
+
+
+def _record_identity(record: dict) -> tuple[str, str, str] | None:
+    kickoff = record.get("kickoff_at_utc")
+    home = record.get("home_team")
+    away = record.get("away_team")
+    if not all(isinstance(value, str) and value for value in (kickoff, home, away)):
+        return None
+    return (kickoff, home.casefold(), away.casefold())
+
+
+def _record_richness(record: dict) -> tuple[int, int, int, int]:
+    return (
+        int(isinstance(record.get("closing_match_decision"), dict)),
+        int(isinstance(record.get("competition"), dict)),
+        int(bool(record.get("closing_snapshot_at"))),
+        len(json.dumps(record, ensure_ascii=False, sort_keys=True)),
+    )
+
+
+def _dedupe_store(store: dict[str, dict]) -> dict[str, dict]:
+    deduped: dict[str, tuple[str, dict]] = {}
+    passthrough: dict[str, dict] = {}
+    for key, record in store.items():
+        identity = _record_identity(record)
+        if identity is None:
+            passthrough[key] = record
+            continue
+        current = deduped.get(identity)
+        if current is None or _record_richness(record) > _record_richness(current[1]):
+            deduped[identity] = (key, record)
+    return {key: record for key, record in [*deduped.values(), *passthrough.items()]}
+
+
+def _canonicalize_store_key(store: dict[str, dict], row: dict) -> None:
+    key = _record_key(row)
+    if key in store:
+        return
+    identity = _row_identity(row)
+    for existing_key, record in list(store.items()):
+        if _record_identity(record) == identity:
+            store[key] = store.pop(existing_key)
+            return
+
+
 def _history_file_time(path: Path) -> datetime | None:
     matched = _HISTORY_NAME_RE.match(path.name)
     if not matched:
@@ -263,12 +314,13 @@ def build_finished_block(
     store_path: str | Path,
 ) -> dict[str, Any]:
     store_file = Path(store_path)
-    store = _load_store(store_file)
+    store = _dedupe_store(_load_store(store_file))
     results_file = Path(results_csv)
     results_rows = _load_results(results_file)
 
     skipped = 0
     for row in results_rows:
+        _canonicalize_store_key(store, row)
         key = _record_key(row)
         if key in store:
             continue
