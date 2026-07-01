@@ -286,7 +286,7 @@ def _date_filter_options(rows: list[dict[str, Any]]) -> str:
     for date_iso in sorted(dates):
         entry = dates[date_iso]
         options.append(
-            '<option value="{value}">{label} · {matches}场 · {signals}信号</option>'.format(
+            '<option value="{value}">{label} · {matches}场 · {signals}分歧</option>'.format(
                 value=_text(date_iso),
                 label=_text(_date_button_label(entry["label"])),
                 matches=_text(len(entry["matches"])),
@@ -344,9 +344,9 @@ def _render_workbench_filter_row(
       <div class="ledger-filter-row workbench-filter-row">
         <div class="filter-group grade-filter-group" role="group" aria-label="等级筛选">
           <button type="button" class="filter-button grade-filter-button active" data-filter="all" aria-pressed="true">全部</button>
-          <button type="button" class="filter-button grade-filter-button" data-filter="strong" aria-pressed="false">强信号 (S/A)</button>
-          <button type="button" class="filter-button grade-filter-button" data-filter="watch" aria-pressed="false">观察 (B)</button>
-          <button type="button" class="filter-button grade-filter-button" data-filter="weak" aria-pressed="false">弱信号 (C/D)</button>
+          <button type="button" class="filter-button grade-filter-button" data-filter="strong" aria-pressed="false">价值分歧 (S/A)</button>
+          <button type="button" class="filter-button grade-filter-button" data-filter="watch" aria-pressed="false">观察分歧 (B)</button>
+          <button type="button" class="filter-button grade-filter-button" data-filter="weak" aria-pressed="false">低价值分歧 (C/D)</button>
         </div>
         <div class="workbench-tools">
           <label class="search-label">
@@ -371,14 +371,14 @@ def _render_workbench_filter_row(
 def _render_view_tabs() -> str:
     return """
     <nav class="view-tabs" aria-label="视图切换">
-      <button type="button" class="view-tab active" data-view-filter="live" aria-pressed="true">实时信号</button>
+      <button type="button" class="view-tab active" data-view-filter="live" aria-pressed="true">实时方向</button>
       <button type="button" class="view-tab" data-view-filter="history" aria-pressed="false">历史回顾</button>
     </nav>
     """
 
 
 def _render_primary_nav() -> str:
-    items = ["研究台账", "赛程", "数据", "模型", "价值信号", "设置"]
+    items = ["研究台账", "赛程", "数据", "模型", "价值分歧", "设置"]
     links = []
     for index, label in enumerate(items):
         active = " active" if index == 0 else ""
@@ -444,6 +444,9 @@ def _row_search_text(row: dict[str, Any]) -> str:
         row.get("next_update_label", ""),
         row.get("next_update_description", ""),
         row.get("market_label", ""),
+        row.get("match_decision_summary", ""),
+        row.get("match_decision_label_text", ""),
+        row.get("match_decision_market_label", ""),
         row.get("model_prob", ""),
         row.get("market_prob", ""),
         row.get("ev", ""),
@@ -471,7 +474,7 @@ def _render_signal_detail(row: dict[str, Any]) -> str:
         "<h3>分析详情</h3>"
         "<dl class=\"detail-grid\">{items}</dl>"
         "{trend}"
-        "<p class=\"detail-note\">这些内容只解释研究信号来源，不构成投注建议。</p>"
+        "<p class=\"detail-note\">这些内容只解释价值分歧来源，不构成投注建议。</p>"
         "</div>"
     ).format(items="".join(items), trend=_render_odds_trend(row.get("odds_trend_points") or []))
 
@@ -655,6 +658,8 @@ def _group_signal_rows_by_match(rows: list[dict[str, Any]]) -> list[dict[str, An
                 "updated_label": row.get("updated_label"),
                 "next_update_time": row.get("next_update_time"),
                 "next_update_label": row.get("next_update_label"),
+                "match_decision_summary": row.get("match_decision_summary") or "—",
+                "match_decision_p_hit_safe": row.get("match_decision_p_hit_safe") or "—",
             },
         )
         group["rows"].append(row)
@@ -728,14 +733,14 @@ def _render_date_strip(groups: list[dict[str, Any]]) -> str:
     cards = [
         (
             '<button class="date-card active" data-date-filter="all" type="button" '
-            'aria-pressed="true"><span>全部 日期</span><strong>{matches}场 · {signals}信号</strong></button>'
+            'aria-pressed="true"><span>全部 日期</span><strong>{matches}场 · {signals}分歧</strong></button>'
         ).format(matches=_text(total_matches), signals=_text(total_signals))
     ]
     for entry in entries:
         cards.append(
             (
                 '<button class="date-card" data-date-filter="{date_iso}" type="button" '
-                'aria-pressed="false"><span>{label}</span><strong>{matches}场 · {signals}信号</strong></button>'
+                'aria-pressed="false"><span>{label}</span><strong>{matches}场 · {signals}分歧</strong></button>'
             ).format(
                 date_iso=_text(entry["iso"]),
                 label=_text(_date_button_label(str(entry["label"]))),
@@ -908,8 +913,8 @@ def _render_workbench_ledger(
           {workbench_filters}
           <section class="ledger-workbench">
             <div class="empty-state">
-              <h2>暂无研究信号</h2>
-              <p>当前快照没有达到阈值的信号行。</p>
+              <h2>暂无价值分歧</h2>
+              <p>当前快照没有达到阈值的价值分歧行。</p>
             </div>
           </section>
         </section>
@@ -951,10 +956,10 @@ def _render_workbench_ledger(
             'data-date="{date}" data-date-iso="{date_iso}" data-league="{competition_id}" data-search="{search}">'
             "{kickoff_cell}"
             "<td><strong>{matchup}</strong></td>"
-            '<td><span class="grade-pill {grade_class}">{grade}</span></td>'
+            "<td><strong>{match_decision}</strong></td>"
             "<td>{stage_group}</td>"
-            "<td><strong>{signal_count}条信号</strong></td>"
-            "<td><strong>{top_value}</strong><span>最高</span></td>"
+            "<td><strong>{signal_count}条分歧</strong></td>"
+            "<td><strong>{decision_prob}</strong><span>安全胜率</span></td>"
             "</tr>".format(
                 active=active_class,
                 expanded="true" if index == 0 else "false",
@@ -975,32 +980,33 @@ def _render_workbench_ledger(
                         if part
                     )
                 ),
-                grade_class=_text(grade_class),
-                grade=_text(grade),
-                top_value=_text(_signal_display_value(top)),
+                match_decision=_text(group.get("match_decision_summary") or "—"),
+                decision_prob=_text(group.get("match_decision_p_hit_safe") or "—"),
             )
         )
         detail_panels.append(
             '<section class="workbench-detail{active}" id="{detail_id}" data-workbench-detail="{detail_id}" {hidden}>'
-            '<div class="detail-title-row"><h2>{title} · 信号明细</h2></div>'
+            '<div class="detail-title-row"><h2>{title} · 价值分歧明细</h2></div>'
             '<div class="detail-metrics">'
-            '<div><span>最强等级</span><strong><span class="grade-pill {grade_class}">{grade}</span></strong></div>'
-            '<div><span>最高 EDGE</span><strong>{top_edge}</strong></div>'
+            '<div><span>本场首选</span><strong>{match_decision}</strong></div>'
+            '<div><span>价值分歧</span><strong><span class="grade-pill {grade_class}">{grade}</span></strong></div>'
+            '<div><span>分歧 EDGE</span><strong>{top_edge}</strong></div>'
             '<div><span>更新时间</span><strong>{updated}</strong></div>'
             '<div><span>下一次更新</span><strong>{next_update}</strong></div>'
             '</div>'
             '{tabs}'
             '<div class="workbench-table-wrap"><table class="workbench-signal-table">'
-            '<thead><tr><th>市场 / 盘口</th><th>等级</th><th>预测</th><th>模型概率</th>'
-            '<th>市场概率</th><th>EV / EDGE</th><th>新鲜度</th><th>信号原因</th></tr></thead>'
+            '<thead><tr><th>市场 / 盘口</th><th>分歧等级</th><th>预测</th><th>模型概率</th>'
+            '<th>市场概率</th><th>EV / EDGE</th><th>新鲜度</th><th>分歧原因</th></tr></thead>'
             '<tbody>{signal_rows}</tbody></table></div>'
             '{warning}'
-            '<p class="workbench-market-empty" hidden>当前分类下没有信号。</p>'
+            '<p class="workbench-market-empty" hidden>当前分类下没有价值分歧。</p>'
             '</section>'.format(
                 active=active_class,
                 detail_id=_text(detail_id),
                 hidden="" if index == 0 else "hidden",
                 title=title_html,
+                match_decision=_text(group.get("match_decision_summary") or "—"),
                 grade_class=_text(grade_class),
                 grade=_text(grade),
                 top_edge=_text(top.get("edge") or _signal_display_value(top)),
@@ -1024,7 +1030,7 @@ def _render_workbench_ledger(
           <div class="match-list-scroll">
             <table class="match-list-table">
               <thead>
-                <tr><th>开赛时间</th><th>对阵</th><th>最强等级</th><th>组别</th><th>信号数</th><th>最高 EDGE</th></tr>
+                <tr><th>开赛时间</th><th>对阵</th><th>本场首选</th><th>组别</th><th>价值分歧</th><th>安全概率</th></tr>
               </thead>
               <tbody>{list_rows}</tbody>
             </table>
@@ -1050,8 +1056,8 @@ def _render_match_grouped_table(rows: list[dict[str, Any]]) -> str:
         return """
         <section class="ledger-table-wrap match-ledger-wrap" data-mode-panel="match">
           <div class="empty-state">
-            <h2>暂无研究信号</h2>
-            <p>当前快照没有达到阈值的信号行。</p>
+            <h2>暂无价值分歧</h2>
+            <p>当前快照没有达到阈值的价值分歧行。</p>
           </div>
         </section>
         """
@@ -1117,7 +1123,7 @@ def _render_match_grouped_table(rows: list[dict[str, Any]]) -> str:
                 "<td>{kickoff}</td>"
                 "<td><strong>{updated}</strong><span>{updated_label}</span></td>"
                 "<td><strong>{next_update}</strong><span>{next_update_label}</span></td>"
-                "<td><strong>{signal_count}条信号</strong><span>{markets}</span></td>"
+                "<td><strong>{signal_count}条分歧</strong><span>{markets}</span></td>"
                 "<td><span class=\"grade-pill {grade_class}\">{grade}</span></td>"
                 "<td><strong>{top_value}</strong><span>{top_market}</span></td>"
                 "<td>{freshness}</td>"
@@ -1155,11 +1161,11 @@ def _render_match_grouped_table(rows: list[dict[str, Any]]) -> str:
             table_rows.append(
                 '<tr class="match-detail-row" id="{detail_id}" hidden>'
                 '<td colspan="9"><div class="match-detail">'
-                '<div class="match-detail-heading"><strong>{matchup} · {signal_count}条信号</strong>'
-                '<span>按盘口拆开查看，仍不构成投注建议。</span></div>'
+                '<div class="match-detail-heading"><strong>{matchup} · {signal_count}条价值分歧</strong>'
+                '<span>按盘口拆开查看研究分歧，仍不构成投注建议。</span></div>'
                 '<div class="table-scroll"><table class="match-signal-table">'
                 "<thead><tr><th>盘口</th><th>预测结果</th><th>模型概率</th><th>市场概率</th>"
-                "<th>EV / Edge</th><th>等级</th><th>新鲜度</th><th>信号原因</th></tr></thead>"
+                "<th>EV / Edge</th><th>分歧等级</th><th>新鲜度</th><th>分歧原因</th></tr></thead>"
                 "<tbody>{child_rows}</tbody></table></div>"
                 "</div></td></tr>".format(
                     detail_id=_text(detail_id),
@@ -1175,7 +1181,7 @@ def _render_match_grouped_table(rows: list[dict[str, Any]]) -> str:
       <table class="match-ledger-table">
         <caption>
           <span>按比赛查看</span>
-          <small>本日比赛：{match_count} 场 / {signal_count} 条信号</small>
+          <small>本日比赛：{match_count} 场 / {signal_count} 条价值分歧</small>
         </caption>
         <thead>
           <tr>
@@ -1183,9 +1189,9 @@ def _render_match_grouped_table(rows: list[dict[str, Any]]) -> str:
             <th scope="col">开赛 (北京时间)</th>
             <th scope="col">更新</th>
             <th scope="col">下次更新</th>
-            <th scope="col">信号概览</th>
-            <th scope="col">最强等级</th>
-            <th scope="col">最高 EV / Edge</th>
+            <th scope="col">价值分歧</th>
+            <th scope="col">分歧等级</th>
+            <th scope="col">分歧 EV / Edge</th>
             <th scope="col">新鲜度</th>
             <th scope="col">明细</th>
           </tr>
@@ -1208,8 +1214,8 @@ def _render_signal_table(rows: list[dict[str, Any]]) -> str:
         return """
         <section class="ledger-table-wrap signal-ledger-wrap" data-mode-panel="signal" hidden>
           <div class="empty-state">
-            <h2>暂无研究信号</h2>
-            <p>当前快照没有达到阈值的信号行。</p>
+          <h2>暂无价值分歧</h2>
+          <p>当前快照没有达到阈值的价值分歧行。</p>
           </div>
         </section>
         """
@@ -1297,7 +1303,7 @@ def _render_signal_table(rows: list[dict[str, Any]]) -> str:
     return """
     <section class="ledger-table-wrap signal-ledger-wrap" data-mode-panel="signal" hidden>
       <table class="ledger-table">
-        <caption>研究信号台账</caption>
+        <caption>价值分歧台账</caption>
         <thead>
           <tr>
             <th scope="col">对阵</th>
@@ -1331,8 +1337,8 @@ def _render_live_ledger(
     <section class="live-ledger">
       <div class="ledger-mode-bar legacy-mode-bar" aria-hidden="true">
         <div>
-          <h2>实时信号</h2>
-          <p class="muted">默认按比赛聚合，展开后查看每场的盘口信号。</p>
+          <h2>实时方向</h2>
+          <p class="muted">默认按比赛聚合，先看每场首选方向，展开后查看价值分歧。</p>
         </div>
         <div class="mode-tabs" aria-label="信号展示方式">
           <button type="button" class="mode-tab active" data-mode-filter="match" aria-pressed="true">按比赛</button>
@@ -1532,7 +1538,7 @@ def _render_right_rail(snapshot: dict[str, Any]) -> str:
       <section class="rail-card">
         <h2>注意事项</h2>
         <ul>
-          <li>模型输出只作为研究信号，可能出错。</li>
+          <li>模型输出只作为研究分析，可能出错。</li>
           <li>数据过期、输入缺失或开赛时间不一致都会降低可信度。</li>
           <li>页面可能滞后于最新数据源。</li>
         </ul>

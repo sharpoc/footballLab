@@ -129,6 +129,19 @@ def test_build_snapshot_from_probe_serializes_match_analysis():
         assert snapshot["matches"][0]["market"]["1x2"]["last_update_at"] == "2026-06-08T02:00:00+00:00"
         assert snapshot["matches"][0]["market"]["ou_2_5"]["last_update_at"] == "2026-06-08T03:00:00+00:00"
         assert snapshot["matches"][0]["model"]["combined_1x2"]["home"] > 0
+        decision = snapshot["matches"][0]["match_decision"]
+        assert decision["schema_version"] == 1
+        assert decision["label"] in {
+            "STRONG_VALUE",
+            "VALUE_CANDIDATE",
+            "HIGH_CONFIDENCE_LEAN",
+            "LOW_CONFIDENCE_LEAN",
+            "NO_CLEAN_MARKET",
+        }
+        assert "p_hit_safe" in decision
+        assert "p_no_loss_safe" in decision
+        assert "reasons" in decision
+        assert "risks" in decision
         assert snapshot["matches"][0]["signals"]
         ah_signal = next(
             signal

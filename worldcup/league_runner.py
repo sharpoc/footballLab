@@ -11,6 +11,7 @@ from worldcup.collectors.league_odds import parse_league_odds_events
 from worldcup.collectors.models import EloRating, Fixture, ParsedOddsEvent
 from worldcup.competitions import get_competition
 from worldcup.config import load_config
+from worldcup.match_decision import decide_match
 from worldcup.local_runner import (
     _analysis_to_dict,
     cap_signals_for_pending_club_rating,
@@ -129,11 +130,13 @@ def build_league_snapshot_from_cache(
         signals = generate_value_signals(analysis, cfg, observed_at=observed_at)
         if club_rating_pending:
             signals = cap_signals_for_pending_club_rating(signals)
+        match_decision = decide_match(analysis, signals, cfg, observed_at=observed_at)
         matches.append(
             _analysis_to_dict(
                 analysis,
                 signals,
                 competition_id=competition_id,
+                match_decision=match_decision,
             )
         )
 

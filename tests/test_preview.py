@@ -48,6 +48,21 @@ def _snapshot():
                         "market_probs": {"home": 0.57, "draw": 0.25, "away": 0.18},
                     }
                 },
+                "match_decision": {
+                    "schema_version": 1,
+                    "label": "HIGH_CONFIDENCE_LEAN",
+                    "market": "DNB",
+                    "selection": "home",
+                    "line": 0.0,
+                    "odds": 1.55,
+                    "p_hit_safe": 0.59,
+                    "p_no_loss_safe": 0.73,
+                    "edge_safe": 0.01,
+                    "ev_safe": 0.02,
+                    "signal_source": "lean",
+                    "reasons": ["highest_safe_probability"],
+                    "risks": ["no_official_edge"],
+                },
                 "signals": [
                     {
                         "market_type": "1X2_90min",
@@ -86,6 +101,8 @@ def test_build_preview_html_renders_research_ledger_surface():
     assert "T-1小时30分" in html
     assert "阵容/伤停预热" in html
     assert "胜平负 - 主队" in html
+    assert "本场首选" in html
+    assert "高胜率倾向 · 平手盘 - 主队 · 安全胜率 59.0% · 不亏概率 73.0%" in html
     assert "+4.1%" in html
     assert 'class="grade-pill grade-a"' in html
     assert "grade-priority" not in html
@@ -197,7 +214,7 @@ def test_build_preview_html_renders_empty_signal_state():
 
     html = build_preview_html(snapshot)
 
-    assert "暂无研究信号" in html
+    assert "暂无价值分歧" in html
 
 
 def test_build_preview_html_includes_filter_dom_accessibility_contract():
@@ -207,7 +224,7 @@ def test_build_preview_html_includes_filter_dom_accessibility_contract():
     assert 'aria-label="视图切换"' in html
     assert 'data-view-filter="live"' in html
     assert 'data-view-filter="history"' in html
-    assert ">实时信号</button>" in html
+    assert ">实时方向</button>" in html
     assert ">历史回顾</button>" in html
     assert 'data-view-panel="live"' in html
     assert 'data-view-panel="history"' in html
@@ -224,7 +241,7 @@ def test_build_preview_html_includes_filter_dom_accessibility_contract():
     assert ">未来7天</button>" in html
     assert ">选择日期</button>" in html
     assert 'id="date-picker"' in html
-    assert '<option value="2026-06-12">6/12 周五 · 1场 · 1信号</option>' in html
+    assert '<option value="2026-06-12">6/12 周五 · 1场 · 1分歧</option>' in html
     assert 'data-date="2026 年 6 月 12 日 星期五"' in html
     assert 'data-date-iso="2026-06-12"' in html
     assert 'id="league-filter"' in html
@@ -234,12 +251,13 @@ def test_build_preview_html_includes_filter_dom_accessibility_contract():
     assert "function getSelectedLeague()" in html
     assert "var selectedLeague = getSelectedLeague();" in html
     assert 'data-filter="strong"' in html
-    assert ">强信号 (S/A)</button>" in html
-    assert ">弱信号 (C/D)</button>" in html
+    assert ">价值分歧 (S/A)</button>" in html
+    assert ">低价值分歧 (C/D)</button>" in html
+    assert ">强信号 (S/A)</button>" not in html
     assert 'id="ledger-search"' in html
     assert 'aria-pressed="true"' in html
     assert 'aria-pressed="false"' in html
-    assert "<caption>研究信号台账</caption>" in html
+    assert "<caption>价值分歧台账</caption>" in html
     assert '<th scope="col">对阵</th>' in html
 
 
@@ -302,7 +320,7 @@ def test_build_preview_html_defaults_to_match_grouped_ledger():
     assert 'data-mode-panel="match"' in html
     assert 'data-mode-panel="signal" hidden' in html
     assert "<span>按比赛查看</span>" in html
-    assert "本日比赛：2 场 / 14 条信号" in html
+    assert "本日比赛：2 场 / 14 条价值分歧" in html
     assert html.count('class="match-row"') == 2
     assert html.count('class="match-detail-row"') == 2
     assert 'data-signal-count="7"' in html
@@ -320,7 +338,7 @@ def test_build_preview_html_uses_workbench_signal_layout():
     assert 'class="date-card active" data-date-filter="all"' in html
     assert 'class="date-card" data-date-filter="2026-06-13"' in html
     assert "全部 日期" in html
-    assert "2场 · 14信号" in html
+    assert "2场 · 14分歧" in html
     assert 'class="ledger-workbench"' in html
     assert 'class="match-list-panel"' in html
     assert 'class="signal-detail-panel"' in html
@@ -328,11 +346,12 @@ def test_build_preview_html_uses_workbench_signal_layout():
     assert 'data-workbench-match-target="workbench-match-0"' in html
     assert 'class="workbench-detail active" id="workbench-match-0"' in html
     assert "加拿大 vs 波黑" in html
-    assert "最强等级" in html
-    assert "最高 EDGE" in html
+    assert "价值分歧" in html
+    assert "分歧 EDGE" in html
+    assert "<span>本场首选</span><strong>高胜率倾向 · 平手盘 - 主队 · 安全胜率 59.0% · 不亏概率 73.0%</strong>" in html
     assert (
-        "<tr><th>开赛时间</th><th>对阵</th><th>最强等级</th>"
-        "<th>组别</th><th>信号数</th><th>最高 EDGE</th></tr>"
+        "<tr><th>开赛时间</th><th>对阵</th><th>本场首选</th>"
+        "<th>组别</th><th>价值分歧</th><th>安全概率</th></tr>"
     ) in html
     match_list_row = html[
         html.index('<tr class="match-list-row active"') : html.index(
@@ -346,11 +365,11 @@ def test_build_preview_html_uses_workbench_signal_layout():
     assert match_list_row.index('<td class="match-kickoff-cell"') < match_list_row.index(
         '<td><strong><span class="team-matchup"'
     ) < match_list_row.index(
-        '<td><span class="grade-pill grade-s">S</span></td>'
+        "<td><strong>高胜率倾向 · 平手盘 - 主队"
     )
     assert (
-        "<th>市场 / 盘口</th><th>等级</th><th>预测</th><th>模型概率</th>"
-        "<th>市场概率</th><th>EV / EDGE</th><th>新鲜度</th><th>信号原因</th>"
+        "<th>市场 / 盘口</th><th>分歧等级</th><th>预测</th><th>模型概率</th>"
+        "<th>市场概率</th><th>EV / EDGE</th><th>新鲜度</th><th>分歧原因</th>"
     ) in html
     assert (
         "<td>胜平负 - 主队</td>"

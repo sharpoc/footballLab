@@ -97,6 +97,7 @@ worldcup/
   pipeline.py                   # collector 输出对齐 + 兼容 facade
   pipeline_analysis.py          # 单场概率族、OU total shadow、lineup shadow 与分析输出
   pipeline_signals.py           # 价值信号、质量护栏、AH validation shadow 与候选等级
+  match_decision.py             # 每场 top1 首选方向：强价值优先，否则输出安全胜率倾向或脏盘口状态
   local_runner.py               # 本地样例/缓存 → 分析快照 JSON
   refresh_runner.py             # source refresh → cache → analysis snapshot
   scheduler.py                  # 免费额度调度策略与 run metadata

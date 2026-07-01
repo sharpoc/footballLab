@@ -14,7 +14,8 @@ from worldcup.collectors.openfootball import parse_openfootball_fixtures, parse_
 from worldcup.collectors.theoddsapi import parse_theoddsapi_events
 from worldcup.competitions import competition_block
 from worldcup.config import load_config
-from worldcup.models import Grade, Signal
+from worldcup.match_decision import decide_match
+from worldcup.models import Grade, MarketType, Signal
 from worldcup.pipeline import analyze_match_input, build_match_inputs, generate_value_signals
 from worldcup.scheduler import build_match_refresh_decision, build_run_metadata, make_run_id
 
@@ -115,6 +116,7 @@ def _analysis_to_dict(
     signals: list[Signal],
     result_index: dict[tuple[str, str | None, str | None], MatchResult] | None = None,
     competition_id: str = "fifa_world_cup_2026",
+    match_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     match_input = analysis.match_input
     fixture = match_input.fixture
@@ -163,6 +165,8 @@ def _analysis_to_dict(
         "market": market,
         "signals": [_signal_to_dict(signal) for signal in signals],
     }
+    if match_decision is not None:
+        match["match_decision"] = match_decision
     if analysis.ou_total_shadow is not None:
         match["model"]["ou_total_shadow"] = analysis.ou_total_shadow
     if analysis.lineup_shadow is not None:
@@ -300,7 +304,15 @@ def build_snapshot_from_probe(
             observed_at=observed_at,
             stale_sources=stale_source_list,
         )
-        matches.append(_analysis_to_dict(analysis, signals, result_index=result_index))
+        match_decision = decide_match(analysis, signals, cfg, observed_at=observed_at)
+        matches.append(
+            _analysis_to_dict(
+                analysis,
+                signals,
+                result_index=result_index,
+                match_decision=match_decision,
+            )
+        )
 
     data_quality = {
         "missing_odds": build_result.missing_odds,

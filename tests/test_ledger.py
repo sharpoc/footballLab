@@ -47,6 +47,21 @@ def _snapshot():
                 },
                 "model": {"combined_1x2": {"home": 0.61, "draw": 0.23, "away": 0.16}},
                 "market": {"1x2": {"market_probs": {"home": 0.57, "draw": 0.25, "away": 0.18}}},
+                "match_decision": {
+                    "schema_version": 1,
+                    "label": "HIGH_CONFIDENCE_LEAN",
+                    "market": "DNB",
+                    "selection": "home",
+                    "line": 0.0,
+                    "odds": 1.55,
+                    "p_hit_safe": 0.59,
+                    "p_no_loss_safe": 0.73,
+                    "edge_safe": 0.01,
+                    "ev_safe": 0.02,
+                    "signal_source": "lean",
+                    "reasons": ["highest_safe_probability"],
+                    "risks": ["no_official_edge"],
+                },
                 "signals": [
                     {
                         "market_type": "1X2_90min",
@@ -177,6 +192,12 @@ def test_project_signal_rows_expands_signals_without_money_fields():
     assert rows[0]["edge"] == "+4.1%"
     assert rows[0]["ev"] == "+5.2%"
     assert rows[0]["grade"] == "A"
+    assert rows[0]["match_decision_label"] == "HIGH_CONFIDENCE_LEAN"
+    assert rows[0]["match_decision_label_text"] == "高胜率倾向"
+    assert rows[0]["match_decision_market_label"] == "平手盘 - 主队"
+    assert rows[0]["match_decision_summary"] == "高胜率倾向 · 平手盘 - 主队 · 安全胜率 59.0% · 不亏概率 73.0%"
+    details = {item["label"]: item["value"] for item in rows[0]["detail_items"]}
+    assert details["本场首选方向"] == rows[0]["match_decision_summary"]
     for row in rows:
         assert "stake" not in row
         assert "bet_amount" not in row
@@ -395,8 +416,8 @@ def test_project_signal_rows_explains_x12_candidate_only_reasons():
         item for item in rows[0]["detail_items"] if item["label"] == "风险提示"
     )
 
-    assert "平局强信号暂列研究候选" in risk_item["value"]
-    assert "赔率高于正式强信号上限" in risk_item["value"]
+    assert "平局价值分歧暂列研究候选" in risk_item["value"]
+    assert "赔率高于正式价值分歧上限" in risk_item["value"]
 
 
 def test_project_signal_rows_reads_realistic_over_under_probabilities():

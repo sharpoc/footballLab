@@ -24,6 +24,13 @@ TREND_MARKET_KEYS = {
     "OverUnder_90min": "ou_2_5",
     "AsianHandicap_90min": "ah_main",
 }
+MATCH_DECISION_LABELS = {
+    "STRONG_VALUE": "强价值",
+    "VALUE_CANDIDATE": "候选价值",
+    "HIGH_CONFIDENCE_LEAN": "高胜率倾向",
+    "LOW_CONFIDENCE_LEAN": "低置信倾向",
+    "NO_CLEAN_MARKET": "无干净盘口",
+}
 TEAM_LABELS_ZH = {
     "Algeria": "阿尔及利亚",
     "Argentina": "阿根廷",
@@ -231,6 +238,48 @@ def format_market_label(market_type: str | None, selection: str | None, line: fl
     return f"{market_type or '盘口'} - {selection_label}"
 
 
+def format_match_decision_market_label(decision: dict[str, Any] | None) -> str:
+    decision = decision or {}
+    market = decision.get("market")
+    selection = decision.get("selection")
+    line = decision.get("line")
+    selection_label = _selection_label(selection)
+    if market == "1X2":
+        return f"胜平负 - {selection_label}"
+    if market == "DNB":
+        return f"平手盘 - {selection_label}"
+    if market == "AH":
+        return f"亚洲让球{_line_label(line, signed_positive=True)} - {selection_label}"
+    if market == "OU":
+        return f"大小球{_line_label(line)} - {selection_label}"
+    if market:
+        return f"{market} - {selection_label}"
+    return EM_DASH
+
+
+def format_match_decision_summary(decision: dict[str, Any] | None) -> dict[str, str | None]:
+    decision = decision or {}
+    raw_label = str(decision.get("label") or "")
+    label_text = MATCH_DECISION_LABELS.get(raw_label, raw_label or EM_DASH)
+    market_label = format_match_decision_market_label(decision)
+    if raw_label == "NO_CLEAN_MARKET" or market_label == EM_DASH:
+        summary = label_text
+    else:
+        summary = (
+            f"{label_text} · {market_label} · "
+            f"安全胜率 {format_probability(_as_float(decision.get('p_hit_safe')))} · "
+            f"不亏概率 {format_probability(_as_float(decision.get('p_no_loss_safe')))}"
+        )
+    return {
+        "match_decision_label": raw_label or None,
+        "match_decision_label_text": label_text,
+        "match_decision_market_label": market_label,
+        "match_decision_p_hit_safe": format_probability(_as_float(decision.get("p_hit_safe"))),
+        "match_decision_p_no_loss_safe": format_probability(_as_float(decision.get("p_no_loss_safe"))),
+        "match_decision_summary": summary,
+    }
+
+
 def format_team_label(team: str | None) -> str:
     if not team:
         return ""
@@ -358,8 +407,8 @@ def _signal_risk_note(signal: dict[str, Any], stale: bool) -> str:
         "line_changed_unknown": "盘口线变动未完全确认",
         "model_disagreement": "Elo 与 Poisson 模型分歧，等级已压低",
         "market_dispersion": "多家赔率报价分歧较大，等级已压低",
-        "x12_draw_candidate_only": "世界杯 1X2 平局强信号暂列研究候选，不计入正式 S/A",
-        "x12_long_odds_candidate_only": "世界杯 1X2 赔率高于正式强信号上限，暂列研究候选",
+        "x12_draw_candidate_only": "世界杯 1X2 平局价值分歧暂列研究候选，不计入正式 S/A",
+        "x12_long_odds_candidate_only": "世界杯 1X2 赔率高于正式价值分歧上限，暂列研究候选",
     }
     for reason in _as_list(signal.get("reasons")):
         label = reason_labels.get(str(reason))
@@ -827,6 +876,7 @@ def project_signal_rows(
         away_team = match.get("away_team", "")
         competition_id = competition_id_for_match(match)
         competition_label = competition_label_for_match(match)
+        match_decision_view = format_match_decision_summary(match.get("match_decision"))
         for signal in match.get("signals") or []:
             signal_key = _signal_identity(signal)
             market_type = signal.get("market_type")
@@ -876,6 +926,7 @@ def project_signal_rows(
                 "grade": grade,
                 "candidate_grade": signal.get("candidate_grade"),
                 "candidate_reasons": list(signal.get("candidate_reasons") or []),
+                **match_decision_view,
                 "status": status,
                 "freshness": freshness,
                 "stale": stale,
@@ -902,6 +953,10 @@ def project_signal_rows(
             row["detail_items"].append(
                 {"label": "下次更新", "value": row["next_update_detail"]}
             )
+            if row.get("match_decision_summary"):
+                row["detail_items"].append(
+                    {"label": "本场首选方向", "value": row["match_decision_summary"]}
+                )
             if row.get("candidate_grade"):
                 row["detail_items"].append(
                     {
@@ -952,15 +1007,15 @@ def build_summary_metrics(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]
     metrics = {
         "upcoming_matches": {"label": "即将比赛", "value": len(upcoming)},
         "strong_signals": {
-            "label": "强信号",
+            "label": "价值分歧 S/A",
             "value": sum(grade_counts[grade] for grade in STRONG_GRADES),
         },
         "watch_signals": {
-            "label": "观察信号",
+            "label": "观察分歧 B",
             "value": sum(grade_counts[grade] for grade in WATCH_GRADES),
         },
         "weak_signals": {
-            "label": "弱信号",
+            "label": "低价值分歧 C/D",
             "value": sum(grade_counts[grade] for grade in WEAK_GRADES),
         },
         "grade_counts": {
