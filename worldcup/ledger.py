@@ -1084,6 +1084,9 @@ def build_finished_view(snapshot: dict[str, Any]) -> dict[str, Any]:
                 sa_badges.append(item)
         home_score = result.get("home_score", EM_DASH)
         away_score = result.get("away_score", EM_DASH)
+        closing_match_decision_view = format_match_decision_summary(
+            record.get("closing_match_decision")
+        )
         day["matches"].append(
             {
                 "kickoff_at_utc": record.get("kickoff_at_utc"),
@@ -1100,6 +1103,7 @@ def build_finished_view(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "stage_group": _format_stage_group(record.get("stage"), record.get("group")),
                 "kickoff_time": kickoff.strftime("%H:%M") if kickoff else "",
                 "closing_snapshot_at": record.get("closing_snapshot_at"),
+                **closing_match_decision_view,
                 "sa_badges": sa_badges,
                 "detail_signals": detail_signals,
             }

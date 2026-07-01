@@ -131,6 +131,32 @@ def test_build_finished_block_freezes_closing_and_tallies_sa():
         assert by_grade["S"]["odds"] == 1.78
 
 
+def test_build_finished_block_freezes_closing_match_decision():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        history = root / "history"
+        history.mkdir()
+        closing = _closing_snapshot("2026-06-11T18:00:00+00:00")
+        closing["matches"][0]["match_decision"] = {
+            "schema_version": 1,
+            "label": "HIGH_CONFIDENCE_LEAN",
+            "market": "DNB",
+            "selection": "home",
+            "line": 0.0,
+            "odds": 1.74,
+            "p_hit_safe": 0.59,
+            "p_no_loss_safe": 0.73,
+            "signal_source": "lean",
+        }
+        (history / "snapshot_20260611T180000Z-live.json").write_text(json.dumps(closing))
+        results = root / "results.csv"
+        _write_results(results, [MEXICO_ROW])
+
+        block = build_finished_block(history, results, root / "store.json")
+
+        assert block["matches"][0]["closing_match_decision"] == closing["matches"][0]["match_decision"]
+
+
 def test_build_finished_block_freezes_v2_diagnostic_fields():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)

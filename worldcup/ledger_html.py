@@ -1574,6 +1574,7 @@ def _finished_search_text(match: dict[str, Any]) -> str:
     parts = [
         match.get("matchup", ""),
         match.get("score_label", ""),
+        match.get("match_decision_summary", ""),
         match.get("competition_label", ""),
         match.get("stage_group", ""),
     ]
@@ -1680,6 +1681,7 @@ def _history_workbench_groups(view: dict[str, Any]) -> list[dict[str, Any]]:
                     "kickoff_date_iso": day.get("date_iso"),
                     "kickoff_time": match.get("kickoff_time"),
                     "closing_snapshot_at": match.get("closing_snapshot_at"),
+                    "match_decision_summary": match.get("match_decision_summary"),
                     "score_label": match.get("score_label"),
                     "grade_buckets": grade_buckets or ["all"],
                     "search_text": _finished_search_text(match),
@@ -1807,6 +1809,7 @@ def _render_history_workbench(
             '<div class="detail-metrics">'
             '<div><span>最强等级</span><strong><span class="grade-pill {grade_class}">{grade}</span></strong></div>'
             "<div><span>赛果</span><strong>{score}</strong></div>"
+            "<div><span>收盘首选</span><strong>{closing_decision}</strong></div>"
             "<div><span>收盘快照</span><strong>{closing}</strong></div>"
             "<div><span>信号数</span><strong>{signal_count}</strong></div>"
             "</div>"
@@ -1824,6 +1827,7 @@ def _render_history_workbench(
                 grade_class=_text(grade_class),
                 grade=_text(grade or "—"),
                 score=_text(group.get("score_label")),
+                closing_decision=_text(group.get("match_decision_summary") or "—"),
                 closing=_text(_format_snapshot_time(group.get("closing_snapshot_at")) or "未记录"),
                 signal_count=_text(signal_count),
                 tabs=_render_workbench_market_tabs(signals),

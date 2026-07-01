@@ -225,10 +225,22 @@ def test_load_recent_snapshots_falls_back_to_latest_for_minimal_store():
 
 
 def test_project_match_rows_returns_preview_safe_rows():
-    rows = project_match_rows(_snapshot())
+    snapshot = _snapshot()
+    snapshot["matches"][0]["match_decision"] = {
+        "schema_version": 1,
+        "label": "HIGH_CONFIDENCE_LEAN",
+        "market": "DNB",
+        "selection": "home",
+        "line": 0.0,
+        "p_hit_safe": 0.59,
+        "p_no_loss_safe": 0.73,
+    }
+
+    rows = project_match_rows(snapshot)
 
     assert len(rows) == 2
     assert rows[0]["match_label"] == "Mexico vs South Africa"
+    assert rows[0]["match_decision"]["label"] == "HIGH_CONFIDENCE_LEAN"
     assert rows[0]["top_grade"] == "A"
     assert rows[0]["signal_count"] == 2
     assert rows[0]["next_update_at"] == "2026-06-11T17:30:00+00:00"
@@ -289,7 +301,18 @@ def test_project_match_rows_ignores_probability_families_for_public_summary():
 
 
 def test_project_finished_rows_returns_public_safe_review_projection():
-    finished = project_finished_rows(_snapshot_with_finished())
+    snapshot = _snapshot_with_finished()
+    snapshot["finished"]["matches"][0]["closing_match_decision"] = {
+        "schema_version": 1,
+        "label": "HIGH_CONFIDENCE_LEAN",
+        "market": "DNB",
+        "selection": "home",
+        "line": 0.0,
+        "p_hit_safe": 0.59,
+        "p_no_loss_safe": 0.73,
+    }
+
+    finished = project_finished_rows(snapshot)
 
     assert finished["schema_version"] == 1
     assert finished["summary"]["match_count"] == 1
@@ -300,6 +323,7 @@ def test_project_finished_rows_returns_public_safe_review_projection():
     assert finished["summary"]["tally"]["S"] == {"hit": 1, "miss": 0, "push": 0}
     assert finished["matches"][0]["match_label"] == "Mexico vs South Africa"
     assert finished["matches"][0]["score_label"] == "2 - 0"
+    assert finished["matches"][0]["closing_match_decision"]["label"] == "HIGH_CONFIDENCE_LEAN"
     assert finished["matches"][0]["signals"][0]["outcome"] == "命中"
     assert finished["matches"][0]["signals"][0]["prediction_status"] == "hit"
 

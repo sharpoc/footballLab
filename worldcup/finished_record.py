@@ -173,7 +173,7 @@ def _freeze_record(entry: dict, row: dict, history: list[dict]) -> dict:
     for signal in entry.get("signals") or []:
         prediction = _prediction_result(settled_match, signal)
         closing_signals.append(_freeze_signal(entry, signal, prediction))
-    return {
+    record = {
         "kickoff_at_utc": row["kickoff_at_utc"],
         "home_team": row["home_team"],
         "away_team": row["away_team"],
@@ -186,6 +186,10 @@ def _freeze_record(entry: dict, row: dict, history: list[dict]) -> dict:
         "closing_signals": closing_signals,
         "odds_trend": extract_match_trend(history, row["home_canonical"], row["away_canonical"]),
     }
+    match_decision = entry.get("match_decision")
+    if isinstance(match_decision, dict):
+        record["closing_match_decision"] = dict(match_decision)
+    return record
 
 
 def _empty_tally() -> dict[str, dict[str, int]]:

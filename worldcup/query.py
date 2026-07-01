@@ -149,6 +149,9 @@ def project_finished_rows(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "signals": signals,
             }
         )
+        closing_match_decision = record.get("closing_match_decision")
+        if isinstance(closing_match_decision, dict):
+            matches[-1]["closing_match_decision"] = dict(closing_match_decision)
     return {
         "schema_version": 1,
         "snapshot_at": snapshot.get("snapshot_at"),
@@ -182,4 +185,7 @@ def project_match_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "stale": stale,
             }
         )
+        match_decision = match.get("match_decision")
+        if isinstance(match_decision, dict):
+            rows[-1]["match_decision"] = dict(match_decision)
     return rows

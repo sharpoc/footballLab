@@ -601,6 +601,24 @@ def test_preview_renders_history_with_workbench_interaction_contract():
     assert 'class="finished-row"' not in html
 
 
+def test_preview_renders_finished_closing_match_decision():
+    snapshot = _snapshot_with_finished_for_preview()
+    snapshot["finished"]["matches"][0]["closing_match_decision"] = {
+        "schema_version": 1,
+        "label": "HIGH_CONFIDENCE_LEAN",
+        "market": "DNB",
+        "selection": "home",
+        "line": 0.0,
+        "p_hit_safe": 0.59,
+        "p_no_loss_safe": 0.73,
+    }
+
+    html = build_preview_html(snapshot)
+
+    assert "收盘首选" in html
+    assert "高胜率倾向 · 平手盘 - 主队 · 安全胜率 59.0% · 不亏概率 73.0%" in html
+
+
 def test_preview_surfaces_missing_closing_review_count():
     snapshot = _snapshot_with_finished_for_preview()
     snapshot["finished"]["skipped_no_closing"] = 1
