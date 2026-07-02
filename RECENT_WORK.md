@@ -2,6 +2,12 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-02 下一次更新时间显示日期
+
+- 研究台账 workbench 详情卡中的“下一次更新”由仅显示北京时间 `HH:MM` 改为显示完整北京时间日期，例如 `2026 年 6 月 12 日 星期五 01:30`，避免跨比赛日时误读。
+- 改动限定在 `worldcup.ledger_html` 渲染层和 `tests/test_preview.py` 回归断言；未改调度策略、refresh plan 计算、采集、The Odds API 调用、snapshot schema 或线上写入逻辑。
+- 验证：新增红灯断言先确认详情卡旧逻辑缺少日期；实现后 `25/25 preview tests passed`，`py_compile worldcup/ledger_html.py` 和 `git diff --check` 通过。
+
 ## 2026-07-02 MatchDecision 安全胜率优先修正
 
 - 修正 `worldcup.match_decision` 决策顺序：正式 S/A 仍作为 `STRONG_VALUE` 优先；没有正式强价值时，先按 `lean_score` 选择最高安全胜率方向，不再让低安全胜率的 `VALUE_CANDIDATE` 抢占“本场首选”。
