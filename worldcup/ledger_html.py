@@ -658,6 +658,7 @@ def _group_signal_rows_by_match(rows: list[dict[str, Any]]) -> list[dict[str, An
                 "updated_label": row.get("updated_label"),
                 "next_update_time": row.get("next_update_time"),
                 "next_update_full": row.get("next_update_full"),
+                "next_update_compact": row.get("next_update_compact"),
                 "next_update_label": row.get("next_update_label"),
                 "match_decision_summary": row.get("match_decision_summary") or "—",
                 "match_decision_p_hit_safe": row.get("match_decision_p_hit_safe") or "—",
@@ -1003,7 +1004,7 @@ def _render_workbench_ledger(
             '<div><span>价值分歧</span><strong><span class="grade-pill {grade_class}">{grade}</span></strong></div>'
             '<div><span>分歧 EDGE</span><strong>{top_edge}</strong></div>'
             '<div><span>更新时间</span><strong>{updated}</strong></div>'
-            '<div><span>下一次更新</span><strong>{next_update}</strong></div>'
+            '<div class="detail-metric-next-update"><span>下一次更新</span><strong>{next_update}</strong></div>'
             '</div>'
             '{tabs}'
             '<div class="workbench-table-wrap"><table class="workbench-signal-table">'
@@ -1022,7 +1023,11 @@ def _render_workbench_ledger(
                 grade=_text(grade),
                 top_edge=_text(top.get("edge") or _signal_display_value(top)),
                 updated=_text(group.get("updated_time")),
-                next_update=_text(group.get("next_update_full") or group.get("next_update_time")),
+                next_update=_text(
+                    group.get("next_update_compact")
+                    or group.get("next_update_full")
+                    or group.get("next_update_time")
+                ),
                 tabs=_render_workbench_market_tabs(signals),
                 signal_rows=_render_workbench_signal_rows(signals, index),
                 warning=_render_workbench_warning(signals),
@@ -2545,6 +2550,7 @@ def build_research_ledger_html(
       font-size: 17px;
       line-height: 1.2;
     }}
+    .detail-metric-next-update strong {{ white-space: nowrap; }}
     .detail-metrics div:nth-child(2) strong {{ color: var(--accent-strong); }}
     .market-tabs {{
       display: flex;

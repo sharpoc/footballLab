@@ -349,7 +349,8 @@ def test_build_preview_html_uses_workbench_signal_layout():
     assert "价值分歧" in html
     assert "分歧 EDGE" in html
     assert "<span>本场首选</span><strong>高胜率倾向 · 平手盘 - 主队 · 安全胜率 59.0% · 不亏概率 73.0%</strong>" in html
-    assert "<span>下一次更新</span><strong>2026 年 6 月 12 日 星期五 01:30</strong>" in html
+    assert "<span>下一次更新</span><strong>6/12 周五 01:30</strong>" in html
+    assert "<span>下一次更新</span><strong>2026 年 6 月 12 日 星期五 01:30</strong>" not in html
     assert (
         "<tr><th>开赛时间</th><th>对阵</th><th>组别</th>"
         "<th>价值分歧</th><th>安全概率</th></tr>"

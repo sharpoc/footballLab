@@ -10,6 +10,7 @@ from worldcup.query import summarize_finished_block
 EM_DASH = "\u2014"
 BEIJING_TZ = timezone(timedelta(hours=8))
 WEEKDAY_LABELS = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+WEEKDAY_SHORT_LABELS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 GRADE_ORDER = {"S": 5, "A": 4, "B": 3, "C": 2, "D": 1}
 STRONG_GRADES = {"S", "A"}
 WATCH_GRADES = {"B"}
@@ -469,6 +470,13 @@ def _format_datetime_full(value: datetime | None) -> str:
     return f"{value.year} 年 {value.month} 月 {value.day} 日 {weekday} {value:%H:%M}"
 
 
+def _format_datetime_compact(value: datetime | None) -> str:
+    if value is None:
+        return EM_DASH
+    weekday = WEEKDAY_SHORT_LABELS[value.weekday()]
+    return f"{value.month}/{value.day} {weekday} {value:%H:%M}"
+
+
 def _format_refresh_plan(plan: dict[str, Any] | None) -> dict[str, str]:
     plan = plan or {}
     label = str(plan.get("label") or "待调度")
@@ -478,9 +486,11 @@ def _format_refresh_plan(plan: dict[str, Any] | None) -> dict[str, str]:
     if display_next is None:
         next_time = label
         next_full = label
+        next_compact = label
     else:
         next_time = display_next.strftime("%H:%M")
         next_full = _format_datetime_full(display_next)
+        next_compact = _format_datetime_compact(display_next)
     prefix = " ".join(part for part in (label, description) if part)
     detail = f"{prefix}：{next_full}" if prefix else next_full
     return {
@@ -489,6 +499,7 @@ def _format_refresh_plan(plan: dict[str, Any] | None) -> dict[str, str]:
         "next_update_label": label,
         "next_update_description": description,
         "next_update_full": next_full,
+        "next_update_compact": next_compact,
         "next_update_detail": detail,
     }
 

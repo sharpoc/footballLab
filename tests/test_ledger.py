@@ -185,6 +185,7 @@ def test_project_signal_rows_expands_signals_without_money_fields():
     assert rows[0]["next_update_label"] == "T-1小时30分"
     assert rows[0]["next_update_description"] == "阵容/伤停预热"
     assert rows[0]["next_update_full"] == "2026 年 6 月 12 日 星期五 01:30"
+    assert rows[0]["next_update_compact"] == "6/12 周五 01:30"
     assert rows[0]["stage_group"] == "小组赛第 1 轮 | A 组"
     assert rows[0]["market_label"] == "胜平负 - 主队"
     assert rows[0]["model_prob"] == "61.0%"
