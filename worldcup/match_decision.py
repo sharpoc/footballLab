@@ -83,6 +83,10 @@ def _decision_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
         "low_conf_min_odds": float(user_cfg.get("low_conf_min_odds", 1.25)),
         "low_conf_max_odds": float(user_cfg.get("low_conf_max_odds", 2.80)),
         "strong_value_max_odds": float(user_cfg.get("strong_value_max_odds", 4.00)),
+        "value_candidate_min_p_hit_safe": float(user_cfg.get("value_candidate_min_p_hit_safe", 0.52)),
+        "value_candidate_min_p_no_loss_safe": float(
+            user_cfg.get("value_candidate_min_p_no_loss_safe", 0.58)
+        ),
     }
 
 
@@ -471,6 +475,25 @@ def _best_lean(options: list[_Option]) -> _Option:
     return max(options, key=lambda option: (option.lean_score, option.p_no_loss_safe or 0.0))
 
 
+def _is_value_candidate(option: _Option) -> bool:
+    return option.signal is not None and option.signal.candidate_grade in _CANDIDATE_TIERS
+
+
+def _passes_high_confidence_lean(option: _Option, decision_cfg: dict[str, Any]) -> bool:
+    return (
+        decision_cfg["high_conf_min_odds"] <= option.odds <= decision_cfg["high_conf_max_odds"]
+        and (option.p_hit_safe or 0.0) >= decision_cfg["high_conf_min_p_hit_safe"]
+        and (option.p_no_loss_safe or 0.0) >= decision_cfg["high_conf_min_p_no_loss_safe"]
+    )
+
+
+def _passes_value_candidate_safety(option: _Option, decision_cfg: dict[str, Any]) -> bool:
+    return (
+        (option.p_hit_safe or 0.0) >= decision_cfg["value_candidate_min_p_hit_safe"]
+        and (option.p_no_loss_safe or 0.0) >= decision_cfg["value_candidate_min_p_no_loss_safe"]
+    )
+
+
 def _base_decision(label: str, option: _Option | None = None) -> dict[str, Any]:
     if option is None:
         return {
@@ -585,14 +608,6 @@ def decide_match(
     if official:
         return _make_decision("STRONG_VALUE", _best_value(official), "official")
 
-    candidates = [
-        option
-        for option in clean_options
-        if option.signal is not None and option.signal.candidate_grade in _CANDIDATE_TIERS
-    ]
-    if candidates:
-        return _make_decision("VALUE_CANDIDATE", _best_value(candidates), "candidate")
-
     lean_pool = [
         option
         for option in clean_options
@@ -604,12 +619,9 @@ def decide_match(
         return _make_decision("LOW_CONFIDENCE_LEAN", best, "lean")
 
     best = _best_lean(lean_pool)
-    high_odds_ok = decision_cfg["high_conf_min_odds"] <= best.odds <= decision_cfg["high_conf_max_odds"]
-    high_prob_ok = (
-        (best.p_hit_safe or 0.0) >= decision_cfg["high_conf_min_p_hit_safe"]
-        and (best.p_no_loss_safe or 0.0) >= decision_cfg["high_conf_min_p_no_loss_safe"]
-    )
-    if high_odds_ok and high_prob_ok:
+    if _passes_high_confidence_lean(best, decision_cfg):
         return _make_decision("HIGH_CONFIDENCE_LEAN", best, "lean")
+    if _is_value_candidate(best) and _passes_value_candidate_safety(best, decision_cfg):
+        return _make_decision("VALUE_CANDIDATE", best, "candidate")
     _decorate_risk(best, "below_high_confidence_threshold")
     return _make_decision("LOW_CONFIDENCE_LEAN", best, "lean")

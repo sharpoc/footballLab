@@ -15,6 +15,7 @@ def _priced_analysis(
     h2h_odds: dict[str, float] | None = None,
     ah_home_line: float | None = None,
     ah_odds: dict[str, float] | None = None,
+    extra_ah_markets: tuple[tuple[float, dict[str, float]], ...] = (),
     ou_line: float | None = None,
     ou_odds: dict[str, float] | None = None,
 ):
@@ -34,6 +35,13 @@ def _priced_analysis(
                 [
                     OddsQuote(book, MarketType.AH, "home", ah_odds["home"], line=ah_home_line),
                     OddsQuote(book, MarketType.AH, "away", ah_odds["away"], line=-ah_home_line),
+                ]
+            )
+        for extra_home_line, extra_ah_odds in extra_ah_markets:
+            quotes.extend(
+                [
+                    OddsQuote(book, MarketType.AH, "home", extra_ah_odds["home"], line=extra_home_line),
+                    OddsQuote(book, MarketType.AH, "away", extra_ah_odds["away"], line=-extra_home_line),
                 ]
             )
         if ou_line is not None and ou_odds is not None:
@@ -122,6 +130,75 @@ def test_decide_match_uses_validated_candidate_before_lean():
     assert decision["selection"] == "home"
     assert decision["line"] == 0.0
     assert decision["signal_source"] == "candidate"
+
+
+def test_decide_match_prefers_high_confidence_lean_over_low_safe_candidate():
+    analysis = _priced_analysis(
+        home_elo=2050,
+        away_elo=1600,
+        h2h_odds={"home": 1.34, "draw": 5.8, "away": 9.5},
+        ah_home_line=0.0,
+        ah_odds={"home": 1.38, "away": 3.1},
+        extra_ah_markets=(
+            (-1.5, {"home": 2.55, "away": 1.48}),
+        ),
+    )
+    low_safe_candidate = Signal(
+        MarketType.AH,
+        "away_1.5",
+        Grade.B,
+        0.08,
+        None,
+        "OK",
+        ["ah_market_edge_missing"],
+        line=1.5,
+        raw_grade=Grade.S,
+        candidate_grade="S-candidate",
+        candidate_reasons=["ah_validation_shadow_candidate_validated"],
+    )
+
+    decision = decide_match(analysis, [low_safe_candidate], load_config())
+
+    assert decision["label"] == "HIGH_CONFIDENCE_LEAN"
+    assert decision["market"] == "DNB"
+    assert decision["selection"] == "home"
+    assert decision["line"] == 0.0
+    assert decision["signal_source"] == "lean"
+    assert decision["p_hit_safe"] >= 0.58
+    assert decision["p_no_loss_safe"] >= 0.62
+
+
+def test_decide_match_demotes_low_safe_candidate_to_low_confidence_lean():
+    analysis = _priced_analysis(
+        home_elo=2050,
+        away_elo=1600,
+        h2h_odds={"home": 1.18, "draw": 7.0, "away": 14.0},
+        ah_home_line=-1.5,
+        ah_odds={"home": 2.55, "away": 1.48},
+    )
+    low_safe_candidate = Signal(
+        MarketType.AH,
+        "away_1.5",
+        Grade.B,
+        0.08,
+        None,
+        "OK",
+        ["ah_market_edge_missing"],
+        line=1.5,
+        raw_grade=Grade.S,
+        candidate_grade="S-candidate",
+        candidate_reasons=["ah_validation_shadow_candidate_validated"],
+    )
+
+    decision = decide_match(analysis, [low_safe_candidate], load_config())
+
+    assert decision["label"] == "LOW_CONFIDENCE_LEAN"
+    assert decision["signal_source"] == "lean"
+    assert decision["market"] != "1X2"
+    assert (
+        decision["p_hit_safe"] < 0.58
+        or decision["p_no_loss_safe"] < 0.62
+    )
 
 
 def test_decide_match_selects_high_confidence_lean_when_no_value_signal():

@@ -2,6 +2,13 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-02 MatchDecision 安全胜率优先修正
+
+- 修正 `worldcup.match_decision` 决策顺序：正式 S/A 仍作为 `STRONG_VALUE` 优先；没有正式强价值时，先按 `lean_score` 选择最高安全胜率方向，不再让低安全胜率的 `VALUE_CANDIDATE` 抢占“本场首选”。
+- `VALUE_CANDIDATE` 现在只能在它本身已经是同场最高安全倾向、且达到最低 `p_hit_safe` / `p_no_loss_safe` 安全门槛时输出；安全不达标的 raw/candidate 信号降级为 `LOW_CONFIDENCE_LEAN`。
+- 改动限定在 `worldcup.match_decision` 和 `tests/test_match_decision.py`；未改模型参数、赔率采集、snapshot schema、调度、The Odds API 调用或线上写入策略。
+- 验证：新增两个红灯用例分别覆盖“高胜率 lean 压过低安全候选价值”和“低安全候选价值降级为低置信倾向”；实现后 `84/84 selected tests passed`，`py_compile worldcup/match_decision.py` 和 `git diff --check` 通过。
+
 ## 2026-07-02 MatchDecision 列表布局修复
 
 - 修复研究台账比赛列表中“本场首选”长文本被窄列挤成竖排的问题：主比赛行只保留开赛时间、对阵、组别、价值分歧和安全概率；完整首选方向改为紧跟该场比赛的单独副行横向展示。
