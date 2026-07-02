@@ -949,6 +949,17 @@ def _render_workbench_ledger(
             inline=True,
             fallback=matchup,
         )
+        decision_row = (
+            '<tr class="match-list-decision-row{active}" '
+            'data-workbench-decision-for="{detail_id}">'
+            '<td colspan="5"><div class="match-decision-line">'
+            '<span>本场首选</span><strong>{match_decision}</strong>'
+            "</div></td></tr>"
+        ).format(
+            active=active_class,
+            detail_id=_text(detail_id),
+            match_decision=_text(group.get("match_decision_summary") or "—"),
+        )
         list_rows.append(
             '<tr class="match-list-row{active}" role="button" tabindex="0" aria-expanded="{expanded}" '
             'data-workbench-match-target="{detail_id}" data-signal-count="{signal_count}" '
@@ -956,11 +967,10 @@ def _render_workbench_ledger(
             'data-date="{date}" data-date-iso="{date_iso}" data-league="{competition_id}" data-search="{search}">'
             "{kickoff_cell}"
             "<td><strong>{matchup}</strong></td>"
-            "<td><strong>{match_decision}</strong></td>"
             "<td>{stage_group}</td>"
             "<td><strong>{signal_count}条分歧</strong></td>"
             "<td><strong>{decision_prob}</strong><span>安全胜率</span></td>"
-            "</tr>".format(
+            "</tr>{decision_row}".format(
                 active=active_class,
                 expanded="true" if index == 0 else "false",
                 detail_id=_text(detail_id),
@@ -980,8 +990,8 @@ def _render_workbench_ledger(
                         if part
                     )
                 ),
-                match_decision=_text(group.get("match_decision_summary") or "—"),
                 decision_prob=_text(group.get("match_decision_p_hit_safe") or "—"),
+                decision_row=decision_row,
             )
         )
         detail_panels.append(
@@ -1030,7 +1040,7 @@ def _render_workbench_ledger(
           <div class="match-list-scroll">
             <table class="match-list-table">
               <thead>
-                <tr><th>开赛时间</th><th>对阵</th><th>本场首选</th><th>组别</th><th>价值分歧</th><th>安全概率</th></tr>
+                <tr><th>开赛时间</th><th>对阵</th><th>组别</th><th>价值分歧</th><th>安全概率</th></tr>
               </thead>
               <tbody>{list_rows}</tbody>
             </table>
@@ -2297,13 +2307,11 @@ def build_research_ledger_html(
     .match-list-table th:nth-child(2),
     .match-list-table td:nth-child(2) {{ width: 22%; }}
     .match-list-table th:nth-child(3),
-    .match-list-table td:nth-child(3) {{ width: 10%; text-align: center; }}
+    .match-list-table td:nth-child(3) {{ width: 32%; }}
     .match-list-table th:nth-child(4),
-    .match-list-table td:nth-child(4) {{ width: 29%; }}
+    .match-list-table td:nth-child(4) {{ width: 16%; }}
     .match-list-table th:nth-child(5),
-    .match-list-table td:nth-child(5) {{ width: 12%; }}
-    .match-list-table th:nth-child(6),
-    .match-list-table td:nth-child(6) {{ width: 15%; text-align: right; }}
+    .match-list-table td:nth-child(5) {{ width: 18%; text-align: right; }}
     .match-list-table th {{
       position: sticky;
       top: 0;
@@ -2323,6 +2331,39 @@ def build_research_ledger_html(
     .match-list-row {{
       cursor: pointer;
       background: #ffffff;
+    }}
+    .match-list-decision-row {{
+      background: #ffffff;
+    }}
+    .match-list-decision-row td {{
+      padding: 0 10px 10px 10px;
+      border-top: 0;
+    }}
+    .match-decision-line {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 8px 10px;
+      border: 1px solid #dbeee9;
+      border-radius: 8px;
+      background: #f8fffd;
+      color: var(--text);
+      line-height: 1.35;
+    }}
+    .match-decision-line span {{
+      flex: 0 0 auto;
+      margin-top: 0;
+      color: #64748b;
+      font-size: 11px;
+      font-weight: 850;
+    }}
+    .match-decision-line strong {{
+      min-width: 0;
+      font-size: 12px;
+      font-weight: 850;
+      overflow-wrap: normal;
+      word-break: keep-all;
     }}
     .match-list-row td:first-child {{
       border-left: 3px solid transparent;
@@ -2439,6 +2480,14 @@ def build_research_ledger_html(
     .match-list-row.active td {{
       background: #effbf8;
       border-bottom-color: #cae8e3;
+    }}
+    .match-list-decision-row.active td {{
+      background: #effbf8;
+      border-bottom-color: #cae8e3;
+    }}
+    .match-list-decision-row.active .match-decision-line {{
+      background: #ffffff;
+      border-color: #b9dfd8;
     }}
     .match-list-row.active td:first-child {{ border-left-color: var(--accent); }}
     .match-list-row:focus {{
@@ -3197,6 +3246,7 @@ def build_research_ledger_html(
       var matchDateRows = Array.prototype.slice.call(document.querySelectorAll('.match-date-row'));
       var matchSignalRows = Array.prototype.slice.call(document.querySelectorAll('.match-signal-row'));
       var workbenchRows = Array.prototype.slice.call(document.querySelectorAll('.match-list-row'));
+      var workbenchDecisionRows = Array.prototype.slice.call(document.querySelectorAll('.match-list-decision-row'));
       var workbenchDetails = Array.prototype.slice.call(document.querySelectorAll('.workbench-detail'));
       var workbenchMarketButtons = Array.prototype.slice.call(document.querySelectorAll('[data-workbench-market-filter]'));
       var workbenchSignalRows = Array.prototype.slice.call(document.querySelectorAll('.workbench-signal-row'));
@@ -3422,6 +3472,7 @@ def build_research_ledger_html(
           candidate.classList.toggle('active', active);
           candidate.setAttribute('aria-expanded', active ? 'true' : 'false');
         }});
+        syncWorkbenchDecisionRows();
         workbenchDetails.forEach(function (detail) {{
           if (workbenchView(detail) !== targetView) return;
           var active = !!activeWorkbenchId && detail.dataset.workbenchDetail === activeWorkbenchId;
@@ -3452,6 +3503,18 @@ def build_research_ledger_html(
         setWorkbenchMatch(activeRow);
       }}
 
+      function syncWorkbenchDecisionRows() {{
+        workbenchDecisionRows.forEach(function (decisionRow) {{
+          var targetId = decisionRow.dataset.workbenchDecisionFor || '';
+          var matchRow = workbenchRows.filter(function (row) {{
+            return row.dataset.workbenchMatchTarget === targetId && workbenchView(row) === workbenchView(decisionRow);
+          }})[0];
+          var visible = !!matchRow && !matchRow.hidden;
+          decisionRow.hidden = !visible;
+          decisionRow.classList.toggle('active', visible && matchRow.classList.contains('active'));
+        }});
+      }}
+
       function applyFilters() {{
         var term = getSearchTerm();
         var workbenchVisible = 0;
@@ -3462,6 +3525,7 @@ def build_research_ledger_html(
             workbenchVisible += 1;
           }}
         }});
+        syncWorkbenchDecisionRows();
         workbenchNoResults.forEach(function (empty) {{
           if (workbenchView(empty) !== activeView) return;
           empty.hidden = workbenchVisible !== 0;

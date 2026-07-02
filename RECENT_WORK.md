@@ -2,6 +2,13 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-02 MatchDecision 列表布局修复
+
+- 修复研究台账比赛列表中“本场首选”长文本被窄列挤成竖排的问题：主比赛行只保留开赛时间、对阵、组别、价值分歧和安全概率；完整首选方向改为紧跟该场比赛的单独副行横向展示。
+- 改动限定在 `worldcup.ledger_html` 渲染层和 `tests/test_preview.py` 回归断言；未改模型、snapshot schema、采集、调度、发布策略或 The Odds API 行为。
+- 本轮部署仍只做代码上线和服务重启；不执行 `worldcup.scheduled_publish --live --force`，不刷新赔率、不消耗 quota、不写新 snapshot、不改 LaunchAgent。
+- 验证：TDD 红灯先确认旧结构没有 `match-list-decision-row`；实现后 `25/25 preview tests passed`，`py_compile worldcup/ledger_html.py` 和 `git diff --check` 通过；本地浏览器桌面与 390px 移动视口均确认主行不再包含长首选文本，副行正常显示。
+
 ## 2026-06-30 研究台账左侧比赛日期显示
 
 - 研究台账 workbench 左侧比赛列表的“开赛时间”列改为紧凑日期 + 时间两行显示，例如 `6/13` / `03:00`；缺少日期时仍回退到原单行时间，兼容旧 snapshot。

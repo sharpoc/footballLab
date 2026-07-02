@@ -350,12 +350,18 @@ def test_build_preview_html_uses_workbench_signal_layout():
     assert "分歧 EDGE" in html
     assert "<span>本场首选</span><strong>高胜率倾向 · 平手盘 - 主队 · 安全胜率 59.0% · 不亏概率 73.0%</strong>" in html
     assert (
-        "<tr><th>开赛时间</th><th>对阵</th><th>本场首选</th>"
-        "<th>组别</th><th>价值分歧</th><th>安全概率</th></tr>"
+        "<tr><th>开赛时间</th><th>对阵</th><th>组别</th>"
+        "<th>价值分歧</th><th>安全概率</th></tr>"
     ) in html
     match_list_row = html[
         html.index('<tr class="match-list-row active"') : html.index(
             "</tr>", html.index('<tr class="match-list-row active"')
+        )
+    ]
+    visible_match_list_row = match_list_row[match_list_row.index('"><td') :]
+    decision_row = html[
+        html.index('<tr class="match-list-decision-row active"') : html.index(
+            "</tr>", html.index('<tr class="match-list-decision-row active"')
         )
     ]
     assert (
@@ -365,8 +371,13 @@ def test_build_preview_html_uses_workbench_signal_layout():
     assert match_list_row.index('<td class="match-kickoff-cell"') < match_list_row.index(
         '<td><strong><span class="team-matchup"'
     ) < match_list_row.index(
-        "<td><strong>高胜率倾向 · 平手盘 - 主队"
+        "<td>2026 世界杯 · 小组赛第 2 轮 | B 组</td>"
     )
+    assert "高胜率倾向 · 平手盘 - 主队" not in visible_match_list_row
+    assert 'data-workbench-decision-for="workbench-match-0"' in decision_row
+    assert '<td colspan="5">' in decision_row
+    assert '<span>本场首选</span>' in decision_row
+    assert "高胜率倾向 · 平手盘 - 主队 · 安全胜率 59.0% · 不亏概率 73.0%" in decision_row
     assert (
         "<th>市场 / 盘口</th><th>分歧等级</th><th>预测</th><th>模型概率</th>"
         "<th>市场概率</th><th>EV / EDGE</th><th>新鲜度</th><th>分歧原因</th>"
