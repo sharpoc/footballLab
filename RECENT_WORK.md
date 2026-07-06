@@ -2,6 +2,18 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-06 SSH 一键代码部署工具与 public view 缓存
+
+- 新增 `worldcup.ssh_deploy`：默认 dry-run，检查 git ref 和工作区 clean 状态，输出将部署的 `/opt/worldcup/releases/<commit>`；`--live` 才通过 `git archive` + SSH stdin 上传 release、远端 `py_compile` 关键 HTTP/query 文件、原子切换 `/opt/worldcup/current`、重启 `worldcup.service` 并 smoke 公网 `/healthz`、`/api/matches`、`/preview`。
+- 新增 `worldcup.http_app.SnapshotViewCache`：`ThreadingHTTPServer` 进程内缓存 `/api/matches`、`/api/finished` 和 `/preview` 依赖的多赛事 public view，避免每次请求重复扫描 SQLite 和解析历史大 snapshot；签名 ingest 成功后自动清空缓存。
+- 支持 `--rollback-on-fail`：部署后 smoke 失败时尝试 relink 上一 release 并重启服务；支持 `--bind-address`，用于本机 TUN/代理把 ECS IP 路由到 fake-ip 网段时绑定 Wi-Fi 源地址；输出 JSON 只包含状态、路径、服务状态和 smoke 摘要，不输出 raw body、密钥、`.env`、HMAC、API key 或原始日志。
+- 安全边界：该工具不读取 `.env`、不调用 The Odds API、不消耗 quota、不发布中超或世界杯 snapshot、不改 LaunchAgent、不推送 git；它只处理代码部署链路。
+- 当前线上恢复状态：用户再次重启 ECS 后，发现默认本机路由经 `utun4`/fake-ip 干扰 SSH；绑定 Wi-Fi 地址 `-b 192.168.31.152` 后成功部署本地热修 commit `00158fa` 到 `/opt/worldcup/releases/00158faef75b5fd5b3e3f39366bf1a2932bd25d9`，远端 `/opt/worldcup/current` 已从 `d246206` 切换到该 release，`worldcup.service` 与 `nginx` 均为 active。
+- 部署后 smoke：公网 HTTPS `/healthz` 返回 200，`/api/matches` 返回 200、约 5.24 秒、6 场、赛事为 `fifa_world_cup_2026`，`/preview` 返回 200、约 15.29 秒并保留“仅用于研究分析，不构成投注建议。”免责声明；资金/下注禁词扫描为空，部署后 SSH 仍可返回 `ok`。本次只部署代码热修，未发布中超 snapshot、未刷新赔率、未读取 `.env`、未调用 The Odds API。
+- public view 缓存优化上线后，公网 HTTPS `/api/matches` 首次构建仍约 5.7 秒；缓存命中后连续 4 次顺序请求降到约 0.04-0.06 秒，均返回 200、6 场、赛事为 `fifa_world_cup_2026`。并发 `/preview` 首次构建大 HTML 时仍可能占用 public view 锁，后续可单独优化 preview HTML 缓存或拆锁。
+- 已同步更新项目偏好 `AGENTS.md` / `CLAUDE.md`：记录 ECS SSH/部署时优先使用 `--bind-address 192.168.31.152`，网络变化时先确认 Wi-Fi 地址和路由，重启旧 release 后不要先压测 `/api/matches`。
+- 验证：TDD 红灯先因 `worldcup.ssh_deploy` / `SnapshotViewCache` 缺失失败；实现后新增 `tests/test_ssh_deploy.py` 覆盖 dry-run、脏工作区阻断、live 上传/重启/smoke、smoke 失败回滚、SSH bind address 和 CLI JSON 输出，新增 `tests/test_http_app.py` 覆盖连续 `/api/matches` 复用缓存、ingest 成功后清缓存；当前新增测试 `6/6` 和 HTTP 测试 `17/17` 通过。
+
 ## 2026-07-06 多赛事 latest 合并展示接线
 
 - 新增查询层多赛事 latest 合并视图：`worldcup.query.load_latest_snapshot_view` / `load_recent_snapshot_views` 会从同一 store 里按 `competition_id` 取各赛事最新 snapshot，并为缺失 match-level competition block 的旧世界杯 snapshot 补默认赛事标签。

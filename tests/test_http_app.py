@@ -3,7 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from worldcup.http_app import handle_request
+from worldcup.http_app import SnapshotViewCache, handle_request
 from worldcup.ingest import build_ingest_request
 from worldcup.store import SQLiteSnapshotStore
 
@@ -39,6 +39,28 @@ class MemorySnapshotStore:
 
     def latest_snapshot(self):
         return self.latest
+
+
+class CountingRecentSnapshotStore(MemorySnapshotStore):
+    def __init__(self, records=None):
+        super().__init__(latest=records[0] if records else None)
+        self.records = list(records or [])
+        self.list_recent_calls = 0
+
+    def put_snapshot(self, idempotency_key, payload, stored_at=None):
+        result = super().put_snapshot(idempotency_key, payload, stored_at)
+        self.records.insert(0, self.latest)
+        return result
+
+    def count_snapshots(self):
+        return len(self.records)
+
+    def latest_snapshot(self):
+        return self.records[0] if self.records else None
+
+    def list_recent_snapshots(self, limit=2):
+        self.list_recent_calls += 1
+        return self.records[:limit]
 
 
 def _snapshot(run_id="20260608T000000Z-live"):
@@ -225,6 +247,88 @@ def test_http_get_matches_uses_injected_store():
     body = json.loads(response["body"])
     assert response["status"] == 200
     assert body["matches"][0]["match_label"] == "Mexico vs South Africa"
+
+
+def test_http_get_matches_reuses_cached_latest_view():
+    store = CountingRecentSnapshotStore(records=[{"snapshot": _snapshot("run-cache")}])
+    cache = SnapshotViewCache()
+
+    first = handle_request(
+        method="GET",
+        path="/api/matches",
+        headers={},
+        body="",
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        store=store,
+        view_cache=cache,
+    )
+    second = handle_request(
+        method="GET",
+        path="/api/matches",
+        headers={},
+        body="",
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        store=store,
+        view_cache=cache,
+    )
+
+    assert first["status"] == 200
+    assert second["status"] == 200
+    assert store.list_recent_calls == 1
+
+
+def test_http_post_ingest_snapshot_clears_latest_view_cache():
+    old_snapshot = _snapshot("run-old")
+    new_snapshot = _snapshot("run-new")
+    new_snapshot["matches"][0]["home_team"] = "Canada"
+    new_snapshot["matches"][0]["away_team"] = "Qatar"
+    store = CountingRecentSnapshotStore(records=[{"snapshot": old_snapshot}])
+    cache = SnapshotViewCache()
+
+    cached = handle_request(
+        method="GET",
+        path="/api/matches",
+        headers={},
+        body="",
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        store=store,
+        view_cache=cache,
+    )
+    request = build_ingest_request(
+        snapshot=new_snapshot,
+        endpoint="https://example.com/api/ingest/snapshot",
+        secret="test-hmac-secret",
+        timestamp="2026-06-08T00:02:00+00:00",
+    )
+    ingest = handle_request(
+        method=request["method"],
+        path=request["path"],
+        headers=request["headers"],
+        body=request["body"],
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        now="2026-06-08T00:03:00+00:00",
+        store=store,
+        view_cache=cache,
+    )
+    refreshed = handle_request(
+        method="GET",
+        path="/api/matches",
+        headers={},
+        body="",
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        store=store,
+        view_cache=cache,
+    )
+
+    assert json.loads(cached["body"])["matches"][0]["match_label"] == "Mexico vs South Africa"
+    assert ingest["status"] == 200
+    assert json.loads(refreshed["body"])["matches"][0]["match_label"] == "Canada vs Qatar"
+    assert store.list_recent_calls == 2
 
 
 def test_http_get_finished_returns_safe_projection():

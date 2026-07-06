@@ -121,6 +121,7 @@ worldcup/
   asgi_app.py                   # 无依赖 ASGI 适配层
   export.py                     # 静态站点/API 导出
   readiness.py                  # 本地上线前 readiness check
+  ssh_deploy.py                 # git archive + SSH 一键代码部署（默认 dry-run）
   secrets.py                    # 本地 HMAC secret 生成助手，不写 .env
   quota.py                      # 本地 API quota ledger
   theoddsapi_keys.py            # The Odds API key slot 选择与 quota 轮换辅助
@@ -190,7 +191,7 @@ python3 -m worldcup.league_runner --competition csl_2026 --cache-dir data/cache 
 
 `--competition` 与 `--competition-id` 等价，默认 competition id 为 `csl_2026`。
 
-HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store 里同时存在世界杯和中超 snapshot 时，`/preview` 与 `/api/matches` 会展示各赛事最新一份，并复用页面赛事筛选显示“中超 2026”。该查询只读本地/线上 SQLite 或 PostgreSQL store，不刷新赔率、不读取 `.env`、不调用 The Odds API。
+HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store 里同时存在世界杯和中超 snapshot 时，`/preview` 与 `/api/matches` 会展示各赛事最新一份，并复用页面赛事筛选显示“中超 2026”。该查询只读本地/线上 SQLite 或 PostgreSQL store，不刷新赔率、不读取 `.env`、不调用 The Odds API。线上标准库 HTTP 进程会缓存这份 public view，避免每次请求重复扫描和解析历史大 snapshot；签名 ingest 成功后会自动清空缓存。
 
 中超初期 `rating_policy=club_rating_pending` 时，强信号会降级或仅作为观察；不得把国家队 Elo 套用于俱乐部联赛。任何 live odds 探测、scheduled publish、ECS ingest 或 LaunchAgent 更新都需要单独确认。
 
@@ -464,6 +465,26 @@ python3 -m worldcup.ops_daily_report
 ```bash
 python3 -m worldcup.ops_daily_report --format json
 ```
+
+代码部署可用 SSH 一键部署工具，默认只做 dry-run：检查 git ref、工作区是否干净，并输出将要发布的 release 路径，不连接 ECS、不切换服务、不发布 snapshot。
+
+```bash
+python3 -m worldcup.ssh_deploy
+```
+
+真实部署必须显式加 `--live`；部署使用本地 `git archive` 通过 SSH stdin 上传到 `/opt/worldcup/releases/<commit>`，远端 `py_compile` 关键 HTTP/query 文件后原子切换 `/opt/worldcup/current`，重启 `worldcup.service`，并 smoke `/healthz`、`/api/matches` 和 `/preview`。如需 smoke 失败自动回滚到上一 release：
+
+```bash
+python3 -m worldcup.ssh_deploy --live --rollback-on-fail
+```
+
+如果本机 TUN/代理把 ECS IP 路由到 fake-ip 网段，使用本机 Wi-Fi 地址绑定 SSH 源地址：
+
+```bash
+python3 -m worldcup.ssh_deploy --live --rollback-on-fail --bind-address 192.168.31.152
+```
+
+该工具不读取 `.env`、不调用 The Odds API、不发布中超或世界杯 snapshot、不改 LaunchAgent、不推送 git；SSH 连接异常、工作区脏或 smoke 失败都会在 JSON 摘要中标记为 blocked/failed/rolled_back。
 
 Elo 基线与本地重放可用只读命令检查；该命令只读 `data/cache/elo_baseline_*` 与 openfootball 缓存，不联网、不打印 secret：
 

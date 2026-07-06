@@ -6,6 +6,7 @@ import re
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Lock
 from typing import Any, Mapping
 
 from worldcup.ingest_app import process_local_ingest
@@ -27,6 +28,40 @@ _AUTH_REJECTION_REASONS = {
     "signature_format_invalid",
     "signature_mismatch",
 }
+
+
+class SnapshotViewCache:
+    """Small process-local cache for expensive multi-snapshot public views."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._recent: dict[tuple[str, int | None, int], list[dict[str, Any]]] = {}
+
+    def clear(self) -> None:
+        with self._lock:
+            self._recent.clear()
+
+    def recent_views(
+        self,
+        db_path: str | Path,
+        store: SnapshotStore | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        key = (str(db_path), id(store) if store is not None else None, int(limit))
+        with self._lock:
+            cached = self._recent.get(key)
+            if cached is None:
+                cached = load_recent_snapshot_views(db_path, store=store, limit=limit)
+                self._recent[key] = cached
+            return cached
+
+    def latest_view(
+        self,
+        db_path: str | Path,
+        store: SnapshotStore | None,
+    ) -> dict[str, Any] | None:
+        recent = self.recent_views(db_path, store, limit=1)
+        return recent[0] if recent else None
 
 
 def _json_response(
@@ -54,6 +89,27 @@ def _html_response(status: int, body: str) -> dict[str, Any]:
 
 def _latest_or_404(db_path: str | Path, store: SnapshotStore | None = None) -> dict[str, Any] | None:
     return load_latest_snapshot(db_path, store=store)
+
+
+def _latest_view(
+    db_path: str | Path,
+    store: SnapshotStore | None,
+    view_cache: SnapshotViewCache | None,
+) -> dict[str, Any] | None:
+    if view_cache is not None:
+        return view_cache.latest_view(db_path, store)
+    return load_latest_snapshot_view(db_path, store=store)
+
+
+def _recent_views(
+    db_path: str | Path,
+    store: SnapshotStore | None,
+    view_cache: SnapshotViewCache | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if view_cache is not None:
+        return view_cache.recent_views(db_path, store, limit=limit)
+    return load_recent_snapshot_views(db_path, store=store, limit=limit)
 
 
 def _normalize_headers(headers: Mapping[str, str]) -> dict[str, str]:
@@ -124,6 +180,7 @@ def handle_request(
     now: str | None = None,
     store: SnapshotStore | None = None,
     max_ingest_body_bytes: int = DEFAULT_MAX_INGEST_BODY_BYTES,
+    view_cache: SnapshotViewCache | None = None,
 ) -> dict[str, Any]:
     route = path.split("?", 1)[0]
     method_upper = method.upper()
@@ -168,6 +225,8 @@ def handle_request(
                 result["reason"],
                 request_id,
             )
+        if view_cache is not None:
+            view_cache.clear()
         response_body = dict(result)
         response_body["request_id"] = request_id
         return _json_response(200, response_body, extra_headers=_ingest_headers(request_id))
@@ -179,19 +238,19 @@ def handle_request(
         return _json_response(200, {"snapshot": snapshot})
 
     if method_upper == "GET" and route == "/api/matches":
-        snapshot = load_latest_snapshot_view(db_path, store=store)
+        snapshot = _latest_view(db_path, store, view_cache)
         if snapshot is None:
             return _json_response(404, {"error": "snapshot_not_found"})
         return _json_response(200, {"matches": project_match_rows(snapshot)})
 
     if method_upper == "GET" and route == "/api/finished":
-        snapshot = load_latest_snapshot_view(db_path, store=store)
+        snapshot = _latest_view(db_path, store, view_cache)
         if snapshot is None:
             return _json_response(404, {"error": "snapshot_not_found"})
         return _json_response(200, {"finished": project_finished_rows(snapshot)})
 
     if method_upper == "GET" and route == "/preview":
-        recent = load_recent_snapshot_views(db_path, store=store, limit=2)
+        recent = _recent_views(db_path, store, view_cache, limit=2)
         if not recent:
             return _html_response(404, "<!doctype html><title>Not Found</title><p>snapshot_not_found</p>")
         previous = recent[1] if len(recent) > 1 else None
@@ -201,6 +260,8 @@ def handle_request(
 
 
 def make_handler(db_path: str | Path, secret: str):
+    view_cache = SnapshotViewCache()
+
     class Handler(BaseHTTPRequestHandler):
         def _send(self, response: dict[str, Any]) -> None:
             body_bytes = response["body"].encode("utf-8")
@@ -220,6 +281,7 @@ def make_handler(db_path: str | Path, secret: str):
                     body="",
                     db_path=db_path,
                     secret=secret,
+                    view_cache=view_cache,
                 )
             )
 
@@ -247,6 +309,7 @@ def make_handler(db_path: str | Path, secret: str):
                     body=body,
                     db_path=db_path,
                     secret=secret,
+                    view_cache=view_cache,
                 )
             )
 

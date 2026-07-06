@@ -81,6 +81,13 @@ python3 -m pytest -v
 - 本地提交可以做；推送远端、部署、改云资源前必须单独确认。
 - 不要使用破坏性 git 命令，例如 `git reset --hard` 或 `git checkout --` 覆盖用户改动。
 
+## ECS SSH / 部署注意事项
+
+- 本机可能启用 TUN / fake-ip 代理，导致 `39.102.50.205` 默认路由走 `utun4 -> 198.18.0.1`，从而出现 SSH `Connection timed out during banner exchange` 或 `Connection closed by remote host`。
+- 连接 ECS 或执行部署时，优先绑定本机 Wi-Fi 源地址：`ssh -b 192.168.31.152 strategy-lab-ecs ...`；使用一键部署工具时加 `--bind-address 192.168.31.152`。
+- 如果本机网络变化，先用 `ipconfig getifaddr en1` 或 `route -n get 39.102.50.205` 确认当前 Wi-Fi 地址和路由，再更新 `--bind-address` 参数。
+- 线上旧 release 曾因 `/api/matches` 慢查询拖住服务；重启 ECS 后不要先压测 `/api/matches`，应先抢 SSH 窗口部署已验证热修或重启服务，再做公网 smoke。
+
 ## 近期重点
 
 1. The Odds API key 已在聊天截图暴露过；用户已确认不充值，后续按免费额度和缓存兜底设计；赛期留意 quota，低额度时降频。
