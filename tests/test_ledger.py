@@ -732,6 +732,71 @@ def test_summary_metrics_include_sa_record_when_finished_present():
     assert metrics["upcoming_matches"]["value"] == 1
 
 
+def test_summary_metrics_include_match_decision_record():
+    snapshot = _snapshot_with_finished()
+    base = deepcopy(snapshot["finished"]["matches"][0])
+    snapshot["finished"]["matches"] = [
+        {
+            **deepcopy(base),
+            "closing_match_decision": {
+                "label": "HIGH_CONFIDENCE_LEAN",
+                "market": "1X2",
+                "selection": "home",
+            },
+        },
+        {
+            **deepcopy(base),
+            "kickoff_at_utc": "2026-06-12T19:00:00+00:00",
+            "home_team": "Canada",
+            "away_team": "Qatar",
+            "result": {"home_score": 1, "away_score": 1},
+            "closing_match_decision": {
+                "label": "VALUE_CANDIDATE",
+                "market": "OU",
+                "selection": "over",
+                "line": 2.5,
+            },
+        },
+        {
+            **deepcopy(base),
+            "kickoff_at_utc": "2026-06-13T19:00:00+00:00",
+            "home_team": "Brazil",
+            "away_team": "Japan",
+            "result": {"home_score": 1, "away_score": 0},
+            "closing_match_decision": {
+                "label": "HIGH_CONFIDENCE_LEAN",
+                "market": "AH",
+                "selection": "away",
+                "line": 1.0,
+            },
+        },
+        {
+            **deepcopy(base),
+            "kickoff_at_utc": "2026-06-14T19:00:00+00:00",
+            "home_team": "England",
+            "away_team": "Wales",
+            "result": {"home_score": 0, "away_score": 0},
+            "closing_match_decision": {"label": "NO_CLEAN_MARKET"},
+        },
+    ]
+
+    metrics = build_summary_metrics(snapshot)
+
+    assert metrics["match_decision_record"]["label"] == "本场首选战绩"
+    assert (
+        metrics["match_decision_record"]["value"]
+        == "命中 1 · 未中 1 · 走水 1 · 命中率 50%"
+    )
+    assert metrics["match_decision_record"]["detail"] == {
+        "hit": 1,
+        "miss": 1,
+        "push": 1,
+        "no_pick": 1,
+        "actionable": 3,
+        "decided": 2,
+    }
+
+
 def test_build_finished_view_groups_by_beijing_day():
     view = build_finished_view(_snapshot_with_finished())
 

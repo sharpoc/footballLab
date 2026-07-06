@@ -23,6 +23,8 @@ from worldcup.sources.fifa_lineups import (
 )
 
 DEFAULT_OUT_PATH = "data/local/diagnostics/lineup_source_probe.json"
+DEFAULT_HISTORY_PATH = "data/local/diagnostics/lineup_source_probe_history.jsonl"
+DEFAULT_REPORT_PATH = "data/local/diagnostics/lineup_source_probe_report.md"
 FOTMOB_BASE_URL = "https://www.fotmob.com/api"
 FOTMOB_WORLD_CUP_LEAGUE_ID = 77
 
@@ -52,6 +54,32 @@ def _write_json(path: str | Path, payload: Any) -> None:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _append_jsonl(path: str | Path, rows: list[dict[str, Any]]) -> None:
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("a", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True))
+            fh.write("\n")
+
+
+def _read_jsonl(path: str | Path) -> list[dict[str, Any]]:
+    source = Path(path)
+    if not source.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in source.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            rows.append(parsed)
+    return rows
 
 
 def _read_json_response(response: Any) -> Any:
@@ -428,6 +456,89 @@ def _summary(observations: list[dict[str, Any]], errors: list[dict[str, Any]]) -
     }
 
 
+def _source_label(source: Any) -> str:
+    return {
+        "fifa_public_api": "FIFA public API",
+        "fotmob": "FotMob",
+    }.get(str(source or ""), str(source or "unknown"))
+
+
+def _match_label(row: dict[str, Any]) -> str:
+    home = str(row.get("home_team") or "").strip()
+    away = str(row.get("away_team") or "").strip()
+    if home or away:
+        return f"{home} vs {away}".strip()
+    return str(row.get("source_match_id") or "unknown")
+
+
+def _format_probe_minutes(value: Any) -> str:
+    try:
+        minutes = float(value)
+    except (TypeError, ValueError):
+        return "时间未知"
+    prefix = "T-" if minutes >= 0 else "T+"
+    return f"{prefix}{abs(minutes):.1f} 分钟"
+
+
+def build_lineup_source_report(rows: list[dict[str, Any]]) -> str:
+    counts: dict[str, dict[str, int]] = {}
+    for row in rows:
+        source = str(row.get("source") or "unknown")
+        status = str(row.get("lineup_status") or "unknown")
+        bucket = counts.setdefault(
+            source,
+            {"observations": 0, "confirmed": 0, "predicted": 0, "missing": 0, "unknown": 0},
+        )
+        bucket["observations"] += 1
+        bucket[status if status in bucket else "unknown"] += 1
+
+    lines = [
+        "# 首发源观测报告",
+        "",
+        "仅用于数据源可用性研究，不进入模型，不构成投注建议。",
+        "",
+        "## Source Summary",
+        "",
+    ]
+    if not counts:
+        lines.append("- 暂无观测记录。")
+    for source in sorted(counts):
+        bucket = counts[source]
+        lines.append(
+            "- {source}: observations: {observations}, confirmed: {confirmed}, "
+            "predicted: {predicted}, missing: {missing}, unknown: {unknown}".format(
+                source=_source_label(source),
+                observations=bucket["observations"],
+                confirmed=bucket["confirmed"],
+                predicted=bucket["predicted"],
+                missing=bucket["missing"],
+                unknown=bucket["unknown"],
+            )
+        )
+
+    lines.extend(["", "## Match Observations", ""])
+    for row in sorted(
+        rows,
+        key=lambda item: (
+            str(item.get("kickoff_at_utc") or ""),
+            str(item.get("source") or ""),
+            str(item.get("observed_at") or ""),
+        ),
+    ):
+        lines.append(
+            "- {match} | {source} | {status} | {minutes} | {home_count}-{away_count}".format(
+                match=_match_label(row),
+                source=_source_label(row.get("source")),
+                status=str(row.get("lineup_status") or "unknown"),
+                minutes=_format_probe_minutes(row.get("minutes_to_kickoff")),
+                home_count=row.get("home_starting_count", 0),
+                away_count=row.get("away_starting_count", 0),
+            )
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def run_lineup_source_probe(
     *,
     live: bool,
@@ -435,9 +546,13 @@ def run_lineup_source_probe(
     sources: Iterable[str] | str | None = None,
     now: str | datetime | None = None,
     out_path: str | Path = DEFAULT_OUT_PATH,
+    history_path: str | Path = DEFAULT_HISTORY_PATH,
+    report_path: str | Path = DEFAULT_REPORT_PATH,
     lookahead_hours: int = 24,
     transport: Callable[[str], Any] | None = None,
     fotmob_league_ids: Iterable[int] = (FOTMOB_WORLD_CUP_LEAGUE_ID,),
+    append_history: bool = False,
+    write_report: bool = False,
 ) -> dict[str, Any]:
     selected_sources = _normalise_sources(sources)
     observed = _parse_utc(now)
@@ -449,6 +564,8 @@ def run_lineup_source_probe(
             "sources": list(selected_sources),
             "note": "pass --live to request candidate lineup sources",
             "would_write": str(out_path) if write else None,
+            "would_append_history": str(history_path) if append_history else None,
+            "would_write_report": str(report_path) if write_report else None,
         }
 
     observations: list[dict[str, Any]] = []
@@ -483,6 +600,26 @@ def run_lineup_source_probe(
     }
     if write:
         _write_json(out_path, payload)
+    if append_history:
+        history_rows = [
+            {
+                **observation,
+                "run_observed_at": observed.isoformat(),
+                "run_generated_at": observed.isoformat(),
+            }
+            for observation in observations
+        ]
+        _append_jsonl(history_path, history_rows)
+        payload["history"] = {"out": str(history_path), "appended": len(history_rows)}
+    if write_report:
+        report_rows = _read_jsonl(history_path) if append_history or Path(history_path).exists() else observations
+        if not report_rows:
+            report_rows = observations
+        report_body = build_lineup_source_report(report_rows)
+        report_out = Path(report_path)
+        report_out.parent.mkdir(parents=True, exist_ok=True)
+        report_out.write_text(report_body, encoding="utf-8")
+        payload["report"] = {"out": str(report_path), "observations": len(report_rows)}
     return payload
 
 
@@ -491,9 +628,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--live", action="store_true", help="Fetch candidate sources for real.")
     parser.add_argument("--dry-run", action="store_true", help="Do not fetch sources; this is the default.")
     parser.add_argument("--write", action="store_true", help=f"Write JSON diagnostics to {DEFAULT_OUT_PATH}.")
+    parser.add_argument("--append-history", action="store_true", help=f"Append observations to {DEFAULT_HISTORY_PATH}.")
+    parser.add_argument("--write-report", action="store_true", help=f"Write Markdown report to {DEFAULT_REPORT_PATH}.")
     parser.add_argument("--sources", default="fifa,fotmob", help="Comma-separated source list: fifa,fotmob.")
     parser.add_argument("--now", default=None)
     parser.add_argument("--out", default=DEFAULT_OUT_PATH)
+    parser.add_argument("--history", default=DEFAULT_HISTORY_PATH)
+    parser.add_argument("--report", default=DEFAULT_REPORT_PATH)
     parser.add_argument("--lookahead-hours", type=int, default=24)
     args = parser.parse_args(argv)
 
@@ -503,7 +644,11 @@ def main(argv: list[str] | None = None) -> int:
         sources=args.sources,
         now=args.now,
         out_path=args.out,
+        history_path=args.history,
+        report_path=args.report,
         lookahead_hours=args.lookahead_hours,
+        append_history=args.append_history,
+        write_report=args.write_report,
     )
     print(json.dumps(result, ensure_ascii=False))
     return 0

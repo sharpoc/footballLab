@@ -576,6 +576,29 @@ def test_preview_renders_record_card_and_finished_section():
     assert "仅作为观察" in html
 
 
+def test_preview_renders_match_decision_record_card():
+    snapshot = _snapshot_with_finished_for_preview()
+    snapshot["finished"]["tally"] = {
+        "S": {"hit": 0, "miss": 0, "push": 0},
+        "A": {"hit": 0, "miss": 0, "push": 0},
+    }
+    snapshot["finished"]["matches"][0]["closing_match_decision"] = {
+        "schema_version": 1,
+        "label": "HIGH_CONFIDENCE_LEAN",
+        "market": "DNB",
+        "selection": "home",
+        "line": 0.0,
+        "p_hit_safe": 0.59,
+        "p_no_loss_safe": 0.73,
+    }
+
+    html = build_preview_html(snapshot)
+
+    assert "本场首选战绩" in html
+    assert "命中 1 · 未中 0 · 走水 0 · 命中率 100%" in html
+    assert html.index("本场首选战绩") < html.index("S 级战绩")
+
+
 def test_preview_renders_trend_sparkline_in_detail():
     html = build_preview_html(_snapshot_with_finished_for_preview())
 

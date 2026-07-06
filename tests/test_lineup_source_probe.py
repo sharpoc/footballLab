@@ -153,3 +153,63 @@ def test_lineup_source_probe_records_fifa_confirmed_and_fotmob_predicted():
         assert by_source["fotmob"]["lineup_status"] == "predicted"
         assert by_source["fotmob"]["home_starting_count"] == 11
         assert by_source["fotmob"]["away_formation"] == "4-2-3-1"
+
+
+def test_lineup_source_probe_appends_history_and_writes_report():
+    calendar = {
+        "Results": [
+            {
+                "IdCompetition": "17",
+                "IdSeason": "285023",
+                "IdStage": "289273",
+                "IdMatch": "400021504",
+                "Date": "2026-06-18T16:00:00Z",
+            }
+        ]
+    }
+
+    def fake_transport(url):
+        if "api.fifa.com/api/v3/calendar/matches" in url:
+            return FakeResponse(calendar)
+        if "api.fifa.com/api/v3/live/football" in url:
+            return FakeResponse(_fifa_confirmed_live())
+        if "www.fotmob.com/api/matches" in url:
+            return FakeResponse(_fotmob_matches())
+        if "www.fotmob.com/api/matchDetails" in url:
+            return FakeResponse(_fotmob_predicted_details())
+        raise AssertionError(f"unexpected url: {url}")
+
+    with TemporaryDirectory() as tmp:
+        out = Path(tmp) / "lineup_source_probe.json"
+        history = Path(tmp) / "lineup_source_probe_history.jsonl"
+        report = Path(tmp) / "lineup_source_probe_report.md"
+
+        result = run_lineup_source_probe(
+            live=True,
+            write=True,
+            append_history=True,
+            write_report=True,
+            sources=("fifa", "fotmob"),
+            now="2026-06-18T14:45:00+00:00",
+            out_path=out,
+            history_path=history,
+            report_path=report,
+            transport=fake_transport,
+        )
+
+        history_rows = [json.loads(line) for line in history.read_text().splitlines()]
+        markdown = report.read_text()
+
+        assert result["history"]["appended"] == 2
+        assert result["history"]["out"] == str(history)
+        assert result["report"]["out"] == str(report)
+        assert len(history_rows) == 2
+        assert {row["source"] for row in history_rows} == {"fifa_public_api", "fotmob"}
+        assert all(row["run_observed_at"] == "2026-06-18T14:45:00+00:00" for row in history_rows)
+        assert "# 首发源观测报告" in markdown
+        assert "FIFA public API" in markdown
+        assert "FotMob" in markdown
+        assert "confirmed: 1" in markdown
+        assert "predicted: 1" in markdown
+        assert "Czechia vs South Africa" in markdown
+        assert "T-75.0 分钟" in markdown

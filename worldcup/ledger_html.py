@@ -194,6 +194,7 @@ def _render_summary(snapshot: dict[str, Any]) -> str:
     metrics = build_summary_metrics(snapshot)
     preferred = [
         "upcoming_matches",
+        "match_decision_record",
         "record_s",
         "record_a",
         "strong_signals",

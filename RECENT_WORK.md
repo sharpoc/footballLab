@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-06 首发源报告与本场首选战绩卡
+
+- `worldcup.lineup_source_probe` 新增 `--append-history` / `--write-report`：live probe 可把 FIFA public API 与 FotMob 的 confirmed / predicted / missing 观测追加到 ignored JSONL 历史，并生成 Markdown 首发源观测报告；默认 dry-run 仍不联网、不写盘，报告链路不进入模型、不刷新赔率、不发布线上状态。
+- 研究台账摘要区新增“本场首选战绩”卡：基于 `finished.matches[*].closing_match_decision` 按每场首选结算，覆盖 `1X2`、`DNB`、`AH`、`OU`，走水单独显示且不进命中率分母；`NO_CLEAN_MARKET` 只计入 `no_pick`，不混入命中率。该口径与 S/A 信号战绩分开，避免一场多信号和每场 top1 首选混算。
+- README 同步首发源 probe 报告命令和完赛/页面统计口径；研究边界保持不变：不构成投注建议，不输出下注金额或资金相关字段。
+- 验证：首发源 probe / ledger / preview 聚焦测试 `8/8` 通过；`py_compile worldcup/lineup_source_probe.py worldcup/ledger.py worldcup/ledger_html.py` 通过；`python3 -m worldcup.lineup_source_probe --dry-run` 正常返回 dry-run 摘要；自定义全量 runner `675/675` 通过，仅跳过当前 runtime 缺少可选依赖的 `tests/test_fastapi_app.py` 和两个需要 fixture 的用例；`git diff --check` 通过。
+- 本轮实现阶段未执行 live 首发源 probe、未读取 `.env`、未调用 The Odds API、未消耗 quota、未写线上 SQLite、未推送远端。
+
 ## 2026-07-06 首发源候选探测器
 
 - 新增 `worldcup.lineup_source_probe`：默认 `--dry-run` 不联网、不写盘；显式 `--live` 时只读探测 FIFA public API 与 FotMob match details，并把每个 source/match 的 `confirmed` / `predicted` / `missing`、两队首发人数、阵型、是否早于开球和 source error 统一输出为 diagnostics。

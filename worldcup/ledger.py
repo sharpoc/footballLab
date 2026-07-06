@@ -709,6 +709,98 @@ def _prediction_result(match: dict[str, Any], signal: dict[str, Any]) -> dict[st
     }
 
 
+def _finished_record_score(record: dict[str, Any]) -> tuple[int, int] | None:
+    result = record.get("result") or {}
+    try:
+        return int(result["home_score"]), int(result["away_score"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _handicap_settlement_status(margin: int, line: float) -> str | None:
+    try:
+        realized = ev_handicap({margin: 1.0}, line, 2.0)
+    except ValueError:
+        return None
+    if realized > 1e-9:
+        return "hit"
+    if realized < -1e-9:
+        return "miss"
+    return "push"
+
+
+def _match_decision_record_status(record: dict[str, Any]) -> str | None:
+    decision = record.get("closing_match_decision")
+    if not isinstance(decision, dict):
+        return None
+    raw_label = str(decision.get("label") or "")
+    market = str(decision.get("market") or "")
+    selection = _selection_key(decision.get("selection"))
+    if raw_label == "NO_CLEAN_MARKET" or not market or selection is None:
+        return "no_pick"
+    score = _finished_record_score(record)
+    if score is None:
+        return None
+    home_score, away_score = score
+    if market == "1X2":
+        if selection not in {"home", "draw", "away"}:
+            return None
+        actual = "home" if home_score > away_score else "away" if away_score > home_score else "draw"
+        return "hit" if selection == actual else "miss"
+    if market in {"DNB", "AH"}:
+        if selection not in {"home", "away"}:
+            return None
+        line = _as_float(decision.get("line"))
+        if line is None:
+            line = 0.0 if market == "DNB" else None
+        if line is None:
+            return None
+        margin = home_score - away_score if selection == "home" else away_score - home_score
+        return _handicap_settlement_status(margin, line)
+    if market == "OU":
+        if selection not in {"over", "under"}:
+            return None
+        line = _as_float(decision.get("line"))
+        if line is None:
+            return None
+        total_goals = home_score + away_score
+        if selection == "under":
+            return _handicap_settlement_status(-total_goals, line)
+        return _handicap_settlement_status(total_goals, -line)
+    return None
+
+
+def _record_metric_value(hit: int, miss: int, push: int) -> str:
+    decided = hit + miss
+    rate = f"{round(hit * 100 / decided)}%" if decided else EM_DASH
+    return f"命中 {hit} · 未中 {miss} · 走水 {push} · 命中率 {rate}"
+
+
+def _match_decision_record_metric(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    counts: Counter[str] = Counter()
+    for record in ((snapshot.get("finished") or {}).get("matches")) or []:
+        status = _match_decision_record_status(record)
+        if status:
+            counts[status] += 1
+    actionable = counts["hit"] + counts["miss"] + counts["push"]
+    if actionable == 0 and counts["no_pick"] == 0:
+        return None
+    detail = {
+        "hit": counts["hit"],
+        "miss": counts["miss"],
+        "push": counts["push"],
+        "no_pick": counts["no_pick"],
+        "actionable": actionable,
+        "decided": counts["hit"] + counts["miss"],
+    }
+    return {
+        "label": "本场首选战绩",
+        "value": _record_metric_value(counts["hit"], counts["miss"], counts["push"]),
+        "tone": "neutral",
+        "detail": detail,
+    }
+
+
 def _snapshot_signal_index(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
     indexed: dict[str, dict[str, Any]] = {}
     for match in snapshot.get("matches") or []:
@@ -1095,10 +1187,11 @@ def build_summary_metrics(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]
         hit = entry.get("hit", 0)
         miss = entry.get("miss", 0)
         push = entry.get("push", 0)
-        decided = hit + miss
-        rate = f"{round(hit * 100 / decided)}%" if decided else EM_DASH
-        return f"命中 {hit} · 未中 {miss} · 走水 {push} · 命中率 {rate}"
+        return _record_metric_value(hit, miss, push)
 
+    match_decision_record = _match_decision_record_metric(snapshot)
+    if match_decision_record:
+        metrics["match_decision_record"] = match_decision_record
     if tally:
         metrics["record_s"] = {"label": "S 级战绩", "value": _record_value("S")}
         metrics["record_a"] = {"label": "A 级战绩", "value": _record_value("A")}
