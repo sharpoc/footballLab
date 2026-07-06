@@ -90,6 +90,7 @@ worldcup/
   lineup_audit.py               # 官方首发抓取 × snapshot/post-information odds 本地审计
   scores_capture.py             # The Odds API scores → 本地 results CSV（默认 dry-run）
   lineups_refresh.py            # FIFA public API 官方首发 → 本地 lineup cache（默认 dry-run）
+  lineup_source_probe.py        # FIFA/FotMob 首发源可用性只读探测（默认 dry-run，不进模型）
   pre_match_runner.py           # 首发轮询 → 新 confirmed lineup → post-lineup refresh guard → 首发后 odds refresh 编排（默认 dry-run）
   pre_match_launch_agent.py     # 赛前首发轮询 LaunchAgent plist 生成器（不加载 launchd）
   odds_trend.py                 # 从 history 归档提取每场赔率走势点
@@ -384,6 +385,12 @@ python3 -m worldcup.lineups_refresh --live --write
 
 # 临赛窗口内官方首发仍缺失时，通过 WxPusher 只提醒一次
 python3 -m worldcup.lineups_refresh --live --write --notify
+
+# 首发源候选探测 dry-run：不联网、不写盘、不进入模型
+python3 -m worldcup.lineup_source_probe --dry-run
+
+# 只读探测 FIFA/FotMob 是否在观察时刻给出 confirmed/predicted/missing 11 人，写本地诊断
+python3 -m worldcup.lineup_source_probe --live --write
 
 # 赛前编排 dry-run：不联网、不写盘、不发通知、不刷新 odds
 python3 -m worldcup.pre_match_runner

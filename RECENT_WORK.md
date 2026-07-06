@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-06 首发源候选探测器
+
+- 新增 `worldcup.lineup_source_probe`：默认 `--dry-run` 不联网、不写盘；显式 `--live` 时只读探测 FIFA public API 与 FotMob match details，并把每个 source/match 的 `confirmed` / `predicted` / `missing`、两队首发人数、阵型、是否早于开球和 source error 统一输出为 diagnostics。
+- `--write` 只写被忽略的 `data/local/diagnostics/lineup_source_probe.json`；该 probe 不进入 `lineup_shadow`、不改变 AH candidate 晋级、不刷新 The Odds API、不部署、不发通知、不写线上状态。
+- FotMob 侧按日期取 match id，再拉 match details；跨自然日 lookahead 会按 `match_id` 去重，避免同一场重复计入 observation。
+- 验证：TDD 红灯先因 `worldcup.lineup_source_probe` 缺失失败；实现后新增测试覆盖 dry-run 不触网不写盘、FIFA confirmed 与 FotMob predicted 统一记录，新增测试函数单独执行通过。
+- 已部署首发源 probe 代码到 ECS；`worldcup.service` 与 `nginx` 为 active，远端 `python3 -m worldcup.lineup_source_probe --dry-run` 可执行；正式域名 `https://football.celab.xin/healthz`、`/api/matches`、`/preview` 均返回 200，页面保留研究免责声明且资金/下注禁词扫描为空。裸 IP HTTPS 会命中另一 Nginx server，不作为足球站点 smoke 入口。
+
 ## 2026-07-06 多赛事页面显示口径修复
 
 - 修复多赛事上线后的实时列表口径：`project_signal_rows()` / summary metrics 会隐藏“北京时间比赛日期早于当前最新 snapshot 日期、且未进入 finished/result 的未结算比赛”，避免 7 月 3-5 日中超旧赛程继续占据实时方向首屏；该逻辑只影响页面投影，不删除线上 SQLite snapshot，也不写入赛果。
