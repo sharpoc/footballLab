@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,9 @@ from worldcup.store_contract import SnapshotStore
 
 GRADE_ORDER = {"S": 5, "A": 4, "B": 3, "C": 2, "D": 1}
 FINISHED_MIN_SAMPLE = 20
+DEFAULT_COMPETITION_ID = "fifa_world_cup_2026"
+DEFAULT_COMPETITION_LABEL = "2026 世界杯"
+SNAPSHOT_VIEW_SCAN_LIMIT = 200
 
 
 def load_latest_snapshot(
@@ -33,6 +37,205 @@ def load_recent_snapshots(
         latest = snapshot_store.latest_snapshot()
         records = [latest] if latest is not None else []
     return [record["snapshot"] for record in records if record is not None]
+
+
+def _competition_from_mapping(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    competition = value.get("competition")
+    if not isinstance(competition, dict):
+        return None
+    competition_id = str(competition.get("id") or "").strip()
+    if not competition_id:
+        return None
+    return dict(competition)
+
+
+def _competition_block_for_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    competition = _competition_from_mapping(snapshot)
+    if competition is not None:
+        return competition
+    for match in snapshot.get("matches") or []:
+        competition = _competition_from_mapping(match)
+        if competition is not None:
+            return competition
+    for match in (snapshot.get("finished") or {}).get("matches") or []:
+        competition = _competition_from_mapping(match)
+        if competition is not None:
+            return competition
+    return {"id": DEFAULT_COMPETITION_ID, "name": DEFAULT_COMPETITION_LABEL}
+
+
+def _competition_id_for_snapshot(snapshot: dict[str, Any]) -> str:
+    return str(_competition_block_for_snapshot(snapshot).get("id") or DEFAULT_COMPETITION_ID)
+
+
+def _with_competition(value: dict[str, Any], competition: dict[str, Any]) -> dict[str, Any]:
+    item = deepcopy(value)
+    if not isinstance(item.get("competition"), dict):
+        item["competition"] = dict(competition)
+    return item
+
+
+def _sum_counts(snapshots: list[dict[str, Any]], matches: list[dict[str, Any]]) -> dict[str, Any]:
+    counts: dict[str, Any] = {}
+    for snapshot in snapshots:
+        for key, value in (snapshot.get("counts") or {}).items():
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                counts[key] = counts.get(key, 0) + value
+    counts["matches"] = len(matches)
+    return counts
+
+
+def _merge_data_quality(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for snapshot in snapshots:
+        for key, value in (snapshot.get("data_quality") or {}).items():
+            if isinstance(value, list):
+                target = merged.setdefault(key, [])
+                for item in value:
+                    if item not in target:
+                        target.append(deepcopy(item))
+            elif value and key not in merged:
+                merged[key] = deepcopy(value)
+    return merged
+
+
+def _merge_tally(tallies: list[dict[str, Any]]) -> dict[str, Any]:
+    merged: dict[str, dict[str, int]] = {}
+    for tally in tallies:
+        for grade, entry in tally.items():
+            if not isinstance(entry, dict):
+                continue
+            target = merged.setdefault(str(grade), {})
+            for status, value in entry.items():
+                target[str(status)] = target.get(str(status), 0) + _as_int(value)
+    return merged
+
+
+def _merge_finished_blocks(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+    matches: list[dict[str, Any]] = []
+    tallies: list[dict[str, Any]] = []
+    skipped = 0
+    match_level_tallies: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        competition = _competition_block_for_snapshot(snapshot)
+        finished = snapshot.get("finished") or {}
+        for match in finished.get("matches") or []:
+            matches.append(_with_competition(match, competition))
+        if isinstance(finished.get("tally"), dict):
+            tallies.append(finished["tally"])
+        if isinstance(finished.get("match_level_tally"), dict):
+            match_level_tallies.append(finished["match_level_tally"])
+        skipped += _as_int(finished.get("skipped_no_closing"))
+    if not matches and not tallies and skipped == 0:
+        return {}
+    finished: dict[str, Any] = {
+        "matches": matches,
+        "tally": _merge_tally(tallies),
+        "skipped_no_closing": skipped,
+    }
+    if match_level_tallies:
+        finished["match_level_tally"] = _merge_tally(match_level_tallies)
+    return finished
+
+
+def _merge_snapshots(snapshots: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not snapshots:
+        return None
+    if len(snapshots) == 1:
+        return deepcopy(snapshots[0])
+
+    competitions = [_competition_block_for_snapshot(snapshot) for snapshot in snapshots]
+    matches: list[dict[str, Any]] = []
+    for snapshot, competition in zip(snapshots, competitions):
+        for match in snapshot.get("matches") or []:
+            matches.append(_with_competition(match, competition))
+
+    snapshot_at_values = [str(snapshot.get("snapshot_at") or "") for snapshot in snapshots]
+    merged: dict[str, Any] = {
+        "snapshot_at": max(snapshot_at_values) if snapshot_at_values else None,
+        "run": {
+            "run_id": "multi_competition_latest",
+            "competitions": [competition.get("id") for competition in competitions],
+            "snapshot_count": len(snapshots),
+        },
+        "competition": {
+            "id": "multi_competition",
+            "name": "全部赛事",
+        },
+        "counts": _sum_counts(snapshots, matches),
+        "data_quality": _merge_data_quality(snapshots),
+        "matches": matches,
+    }
+    finished = _merge_finished_blocks(snapshots)
+    if finished:
+        merged["finished"] = finished
+    return merged
+
+
+def _snapshot_records(
+    db_path: str | Path,
+    store: SnapshotStore | None,
+    scan_limit: int,
+) -> list[dict[str, Any]]:
+    snapshot_store = store or SQLiteSnapshotStore(db_path)
+    if hasattr(snapshot_store, "list_recent_snapshots"):
+        return [
+            record
+            for record in snapshot_store.list_recent_snapshots(limit=scan_limit)
+            if record is not None
+        ]
+    latest = snapshot_store.latest_snapshot()
+    return [latest] if latest is not None else []
+
+
+def load_recent_snapshot_views(
+    db_path: str | Path = "data/local/worldcup.db",
+    store: SnapshotStore | None = None,
+    limit: int = 2,
+    scan_limit: int = SNAPSHOT_VIEW_SCAN_LIMIT,
+) -> list[dict[str, Any]]:
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    competition_order: list[str] = []
+    for record in _snapshot_records(db_path, store, scan_limit):
+        snapshot = record.get("snapshot")
+        if not isinstance(snapshot, dict):
+            continue
+        competition_id = _competition_id_for_snapshot(snapshot)
+        if competition_id not in buckets:
+            buckets[competition_id] = []
+            competition_order.append(competition_id)
+        if len(buckets[competition_id]) < limit:
+            buckets[competition_id].append(snapshot)
+
+    views: list[dict[str, Any]] = []
+    for index in range(max(1, int(limit))):
+        component_snapshots = [
+            buckets[competition_id][index]
+            for competition_id in competition_order
+            if index < len(buckets[competition_id])
+        ]
+        merged = _merge_snapshots(component_snapshots)
+        if merged is not None:
+            views.append(merged)
+    return views
+
+
+def load_latest_snapshot_view(
+    db_path: str | Path = "data/local/worldcup.db",
+    store: SnapshotStore | None = None,
+    scan_limit: int = SNAPSHOT_VIEW_SCAN_LIMIT,
+) -> dict[str, Any] | None:
+    snapshots = load_recent_snapshot_views(
+        db_path=db_path,
+        store=store,
+        limit=1,
+        scan_limit=scan_limit,
+    )
+    return snapshots[0] if snapshots else None
 
 
 def _top_grade(signals: list[dict[str, Any]]) -> str:
@@ -130,6 +333,7 @@ def project_finished_rows(snapshot: dict[str, Any]) -> dict[str, Any]:
             )
         home = record.get("home_team", "")
         away = record.get("away_team", "")
+        competition = _competition_block_for_snapshot({"matches": [record]})
         matches.append(
             {
                 "kickoff_at_utc": record.get("kickoff_at_utc", ""),
@@ -138,6 +342,8 @@ def project_finished_rows(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "home_team": home,
                 "away_team": away,
                 "match_label": f"{home} vs {away}".strip(),
+                "competition_id": competition.get("id"),
+                "competition_label": competition.get("name") or competition.get("label"),
                 "score": {
                     "home": result.get("home_score"),
                     "away": result.get("away_score"),
@@ -169,6 +375,7 @@ def project_match_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         away = match.get("away_team", "")
         signals = match.get("signals") or []
         refresh_plan = match.get("refresh_plan") or {}
+        competition = _competition_block_for_snapshot({"matches": [match]})
         rows.append(
             {
                 "kickoff_at_utc": match.get("kickoff_at_utc", ""),
@@ -177,6 +384,8 @@ def project_match_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "home_team": home,
                 "away_team": away,
                 "match_label": f"{home} vs {away}".strip(),
+                "competition_id": competition.get("id"),
+                "competition_label": competition.get("name") or competition.get("label"),
                 "signal_count": len(signals),
                 "top_grade": _top_grade(signals),
                 "next_update_at": refresh_plan.get("next_update_at"),

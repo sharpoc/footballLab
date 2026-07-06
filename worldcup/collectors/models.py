@@ -157,9 +157,11 @@ class InvalidOddsQuote:
     away_team: str
     commence_time: str
     last_update: str | None
+    competition_id: str | None = None
+    source_path: str | None = None
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "reason": self.reason,
             "odds": self.odds,
             "bookmaker": self.bookmaker,
@@ -175,6 +177,11 @@ class InvalidOddsQuote:
             "commence_time": self.commence_time,
             "last_update": self.last_update,
         }
+        if self.competition_id is not None:
+            out["competition_id"] = self.competition_id
+        if self.source_path is not None:
+            out["source_path"] = self.source_path
+        return out
 
 
 @dataclass(frozen=True)

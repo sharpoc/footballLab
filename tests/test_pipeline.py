@@ -527,6 +527,40 @@ def test_analyze_match_input_outputs_raw_and_market_total_probability_families()
     assert raw["combined_1x2"] != market_total["combined_1x2"]
 
 
+def test_analyze_match_input_outputs_1x2_market_relative_edge_shadow():
+    match_input = _priced_match_input(
+        home_team="Team A",
+        away_team="Team B",
+        home_canonical="team_a",
+        away_canonical="team_b",
+        venue_name="Neutral Venue",
+        home_elo=1900,
+        away_elo=1780,
+        home_advantage_elo=0.0,
+        h2h_odds={"home": 2.0, "draw": 3.5, "away": 3.8},
+        ah_home_line=-0.5,
+        ah_odds={"home": 1.9, "away": 1.9},
+        ou_odds={"over": 1.9, "under": 2.0},
+    )
+    cfg = {**load_config(), "odds": {**load_config()["odds"], "min_books": 1}}
+
+    analysis = analyze_match_input(match_input, cfg)
+    shadow = analysis.probability_families["x12_diagnostics"]
+
+    assert shadow["schema_version"] == 1
+    assert shadow["activation"] == "shadow_only"
+    assert shadow["model_family"] == analysis.probability_families["active_signal_family"]
+    assert set(shadow["market_relative_residuals"]) == {"home", "draw", "away"}
+    assert shadow["edge_safe_by_selection"]["home"]["status"] in {
+        "needs_backtest_support",
+        "not_edge_safe",
+    }
+    assert shadow["notes"] == [
+        "diagnostic_only_not_official_signal",
+        "requires_bucket_level_backtest_before_threshold_changes",
+    ]
+
+
 def test_analyze_match_input_outputs_independent_ou_total_shadow_without_changing_active_ou():
     match_input = _priced_match_input(
         home_team="Team A",
@@ -752,6 +786,9 @@ def test_generate_value_signals_adds_ah_validation_shadow_without_upgrading_grad
         "market_line": -1.0,
         "model_fair_line": -2.0,
         "fair_line_delta": 1.0,
+        "push_probability": 0.0,
+        "break_even_odds_push_aware": 1.0,
+        "market_ev_push_aware": 0.743333,
         "line_consensus": True,
         "dispersion_ok": True,
         "candidate_validated": True,

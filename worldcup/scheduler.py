@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from worldcup.competitions import get_competition
 from worldcup.quota import load_quota_ledger
 from worldcup.theoddsapi_keys import quota_remaining_for_scheduler
 
@@ -87,6 +88,30 @@ def _match_id(match: dict[str, Any]) -> str:
     )
 
 
+def _competition_id_for_match(match: dict[str, Any]) -> str:
+    competition = match.get("competition") if isinstance(match.get("competition"), dict) else {}
+    competition_id = str(competition.get("id") or "").strip()
+    return competition_id or "fifa_world_cup_2026"
+
+
+def _competition_refresh_meta(competition_id: str) -> dict[str, Any]:
+    try:
+        competition = get_competition(competition_id)
+    except KeyError:
+        return {
+            "competition_id": competition_id,
+            "refresh_priority": 0,
+            "quota_budget": "unknown",
+            "refresh_policy": "unknown",
+        }
+    return {
+        "competition_id": competition.id,
+        "refresh_priority": competition.refresh_priority,
+        "quota_budget": competition.quota_budget,
+        "refresh_policy": competition.refresh_policy,
+    }
+
+
 def _cadence_label(policy_reason: str, interval_seconds: int) -> tuple[str, str]:
     labels = {
         "default": "常规",
@@ -164,9 +189,12 @@ def build_match_refresh_plan(
     kickoff_raw = str(match.get("kickoff_at_utc") or "").strip()
     kickoff_dt = _parse_utc(kickoff_raw) if kickoff_raw else None
     last_dt = _parse_utc(last_refresh_at) if last_refresh_at else None
+    competition_id = _competition_id_for_match(match)
+    competition_meta = _competition_refresh_meta(competition_id)
     base = {
         "match_id": _match_id(match),
         "match_label": _match_label(match),
+        **competition_meta,
         "kickoff_at_utc": _iso_utc(kickoff_dt) if kickoff_dt else None,
         "quota_remaining": quota_remaining,
     }
@@ -291,6 +319,7 @@ def build_match_refresh_plans(
         key=lambda plan: (
             plan.get("next_update_at") is None,
             str(plan.get("next_update_at") or ""),
+            -int(plan.get("refresh_priority") or 0),
             str(plan.get("kickoff_at_utc") or ""),
             str(plan.get("match_label") or ""),
         ),
@@ -445,6 +474,28 @@ def _next_kickoff_at_from_snapshot(snapshot: dict[str, Any], observed_at: str) -
     return _iso_utc(min(upcoming))
 
 
+def _competition_refresh_summary(plans: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {}
+    for plan in plans:
+        competition_id = str(plan.get("competition_id") or "fifa_world_cup_2026")
+        item = summary.setdefault(
+            competition_id,
+            {
+                "matches": 0,
+                "refresh_priority": int(plan.get("refresh_priority") or 0),
+                "quota_budget": str(plan.get("quota_budget") or "unknown"),
+                "next_update_at": None,
+            },
+        )
+        item["matches"] += 1
+        next_update_at = plan.get("next_update_at")
+        if next_update_at and (
+            item["next_update_at"] is None or str(next_update_at) < str(item["next_update_at"])
+        ):
+            item["next_update_at"] = next_update_at
+    return summary
+
+
 def build_scheduler_report(
     now: str,
     snapshot_path: str | Path = "data/cache/analysis_snapshot.json",
@@ -481,6 +532,7 @@ def build_scheduler_report(
         "next_kickoff_at": decision.next_kickoff_at,
         "quota": quota,
         "decision": decision.to_dict(),
+        "competition_refresh": _competition_refresh_summary(decision.match_plans),
     }
 
 

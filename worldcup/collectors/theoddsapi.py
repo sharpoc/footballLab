@@ -94,6 +94,7 @@ def parse_theoddsapi_events(raw: list[dict[str, Any]]) -> list[ParsedOddsEvent]:
                                 away_team=away,
                                 commence_time=commence_time,
                                 last_update=str(fetched_at_raw) if fetched_at_raw else None,
+                                competition_id="fifa_world_cup_2026",
                             )
                         )
                         continue

@@ -11,9 +11,11 @@ def _match(
     kickoff_at_utc: str,
     home_team: str = "Mexico",
     away_team: str = "South Africa",
+    competition_id: str = "fifa_world_cup_2026",
 ) -> dict:
     return {
         "source_event_id": f"{home_team}-{away_team}",
+        "competition": {"id": competition_id},
         "kickoff_at_utc": kickoff_at_utc,
         "home_team": home_team,
         "away_team": away_team,
@@ -226,6 +228,62 @@ def test_match_refresh_decision_uses_earliest_match_plan():
     assert decision.policy_reason == "pre_90m_lineup_warmup"
     assert len(decision.match_plans) == 2
     assert decision.match_plans[0]["next_update_at"] == "2026-06-11T17:30:00+00:00"
+
+
+def test_match_plan_includes_competition_refresh_budget_metadata():
+    plan = scheduler.build_match_refresh_plan(
+        now="2026-06-11T17:25:00+00:00",
+        last_refresh_at="2026-06-11T16:45:00+00:00",
+        match=_match("2026-06-11T19:00:00+00:00", competition_id="csl_2026"),
+        quota_remaining=24,
+    )
+
+    assert plan["competition_id"] == "csl_2026"
+    assert plan["refresh_priority"] == 70
+    assert plan["quota_budget"] == "csl_free_tier"
+    assert plan["refresh_policy"] == "local_daily"
+
+
+def test_scheduler_report_groups_match_plans_by_competition():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot = {
+            "snapshot_at": "2026-06-11T16:45:00+00:00",
+            "matches": [
+                _match("2026-06-11T19:00:00+00:00", competition_id="fifa_world_cup_2026"),
+                _match(
+                    "2026-06-11T20:00:00+00:00",
+                    home_team="Shanghai Port",
+                    away_team="Beijing Guoan",
+                    competition_id="csl_2026",
+                ),
+            ],
+        }
+        snapshot_path = root / "snapshot.json"
+        quota_path = root / "quota.json"
+        snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+        quota_path.write_text(json.dumps({"providers": {"theoddsapi": {"remaining": 24}}}), encoding="utf-8")
+
+        report = build_scheduler_report(
+            now="2026-06-11T17:25:00+00:00",
+            snapshot_path=snapshot_path,
+            quota_path=quota_path,
+        )
+
+    assert report["competition_refresh"] == {
+        "fifa_world_cup_2026": {
+            "matches": 1,
+            "refresh_priority": 100,
+            "quota_budget": "worldcup_free_tier",
+            "next_update_at": "2026-06-11T17:30:00+00:00",
+        },
+        "csl_2026": {
+            "matches": 1,
+            "refresh_priority": 70,
+            "quota_budget": "csl_free_tier",
+            "next_update_at": "2026-06-11T18:30:00+00:00",
+        },
+    }
 
 
 def test_scheduler_slows_down_when_free_tier_quota_is_low():

@@ -128,7 +128,7 @@ class SQLiteSnapshotStore(SnapshotStore):
 
     def list_recent_snapshots(self, limit: int = 2) -> list[dict[str, Any]]:
         self.initialize()
-        bounded_limit = max(1, min(int(limit), 20))
+        bounded_limit = max(1, min(int(limit), 500))
         with sqlite3.connect(self.path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(

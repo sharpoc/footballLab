@@ -69,6 +69,16 @@ def _snapshot(run_id="20260608T000000Z-live"):
     }
 
 
+def _competition_snapshot(competition_id, competition_label, home_team, away_team, run_id):
+    snapshot = _snapshot(run_id)
+    snapshot["competition"] = {"id": competition_id, "name": competition_label}
+    snapshot["counts"] = {"matches": 1}
+    snapshot["matches"][0]["home_team"] = home_team
+    snapshot["matches"][0]["away_team"] = away_team
+    snapshot["matches"][0]["competition"] = {"id": competition_id, "name": competition_label}
+    return snapshot
+
+
 def _snapshot_with_finished(run_id="20260608T000000Z-live"):
     snapshot = _snapshot(run_id)
     snapshot["run"] = {
@@ -138,6 +148,61 @@ def test_http_get_matches_returns_projected_rows():
         assert response["headers"]["Content-Type"] == "application/json"
         assert body["matches"][0]["match_label"] == "Mexico vs South Africa"
         assert "stake" not in body["matches"][0]
+
+
+def test_http_get_matches_returns_latest_rows_for_all_competitions():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        store = SQLiteSnapshotStore(db_path)
+        store.put_snapshot(
+            idempotency_key="csl-live:csl-live-snapshot",
+            payload={
+                "run_id": "csl-live",
+                "snapshot_id": "csl-live-snapshot",
+                "snapshot_at": "2026-06-08T01:00:00+00:00",
+                "snapshot": _competition_snapshot(
+                    "csl_2026",
+                    "中超 2026",
+                    "Shanghai Port",
+                    "Beijing Guoan",
+                    "csl-live",
+                ),
+            },
+            stored_at="2026-06-08T01:02:00+00:00",
+        )
+        store.put_snapshot(
+            idempotency_key="wc-live:wc-live-snapshot",
+            payload={
+                "run_id": "wc-live",
+                "snapshot_id": "wc-live-snapshot",
+                "snapshot_at": "2026-06-08T02:00:00+00:00",
+                "snapshot": _competition_snapshot(
+                    "fifa_world_cup_2026",
+                    "2026 世界杯",
+                    "Canada",
+                    "Qatar",
+                    "wc-live",
+                ),
+            },
+            stored_at="2026-06-08T02:02:00+00:00",
+        )
+
+        response = handle_request(
+            method="GET",
+            path="/api/matches",
+            headers={},
+            body="",
+            db_path=db_path,
+            secret="test-hmac-secret",
+        )
+
+        body = json.loads(response["body"])
+        assert response["status"] == 200
+        assert [match["competition_id"] for match in body["matches"]] == [
+            "fifa_world_cup_2026",
+            "csl_2026",
+        ]
+        assert body["matches"][1]["match_label"] == "Shanghai Port vs Beijing Guoan"
 
 
 def test_http_get_matches_uses_injected_store():
@@ -223,6 +288,57 @@ def test_http_get_preview_returns_html():
         assert response["headers"]["Content-Type"] == "text/html; charset=utf-8"
         assert "仅用于研究分析，不构成投注建议" in response["body"]
         assert "墨西哥 对 南非" in response["body"]
+
+
+def test_http_get_preview_renders_latest_rows_for_all_competitions():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        store = SQLiteSnapshotStore(db_path)
+        store.put_snapshot(
+            idempotency_key="csl-live:csl-live-snapshot",
+            payload={
+                "run_id": "csl-live",
+                "snapshot_id": "csl-live-snapshot",
+                "snapshot_at": "2026-06-08T01:00:00+00:00",
+                "snapshot": _competition_snapshot(
+                    "csl_2026",
+                    "中超 2026",
+                    "Shanghai Port",
+                    "Beijing Guoan",
+                    "csl-live",
+                ),
+            },
+            stored_at="2026-06-08T01:02:00+00:00",
+        )
+        store.put_snapshot(
+            idempotency_key="wc-live:wc-live-snapshot",
+            payload={
+                "run_id": "wc-live",
+                "snapshot_id": "wc-live-snapshot",
+                "snapshot_at": "2026-06-08T02:00:00+00:00",
+                "snapshot": _competition_snapshot(
+                    "fifa_world_cup_2026",
+                    "2026 世界杯",
+                    "Canada",
+                    "Qatar",
+                    "wc-live",
+                ),
+            },
+            stored_at="2026-06-08T02:02:00+00:00",
+        )
+
+        response = handle_request(
+            method="GET",
+            path="/preview",
+            headers={},
+            body="",
+            db_path=db_path,
+            secret="test-hmac-secret",
+        )
+
+        assert response["status"] == 200
+        assert '<option value="csl_2026">中超 2026</option>' in response["body"]
+        assert "Shanghai Port 对 Beijing Guoan" in response["body"]
 
 
 def test_http_get_preview_compares_latest_two_snapshots():

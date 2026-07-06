@@ -327,6 +327,8 @@ def test_build_league_snapshot_reports_invalid_league_odds_quality():
         assert example["market"] == "totals"
         assert example["selection"] == "over"
         assert example["odds"] == 1.0
+        assert example["competition_id"] == "csl_2026"
+        assert example["source_path"] == str(odds_path)
 
         match = snapshot["matches"][0]
         assert match["signals"]

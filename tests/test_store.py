@@ -90,3 +90,21 @@ def test_sqlite_snapshot_store_list_recent_snapshots_returns_newest_first():
         assert [item["run_id"] for item in recent] == ["run-3", "run-2"]
         assert [item["snapshot_id"] for item in recent] == ["snapshot-3", "snapshot-2"]
         assert recent[0]["snapshot"]["run"]["run_id"] == "run-3"
+
+
+def test_sqlite_snapshot_store_list_recent_snapshots_allows_snapshot_view_scan_limit():
+    with TemporaryDirectory() as tmp:
+        store = SQLiteSnapshotStore(Path(tmp) / "worldcup.db")
+        store.initialize()
+        for index in range(25):
+            store.put_snapshot(
+                idempotency_key=f"run-{index}:snapshot-{index}",
+                payload=_payload(run_id=f"run-{index}", snapshot_id=f"snapshot-{index}"),
+                stored_at=f"2026-06-08T00:{index:02d}:00+00:00",
+            )
+
+        recent = store.list_recent_snapshots(limit=25)
+
+        assert len(recent) == 25
+        assert recent[0]["run_id"] == "run-24"
+        assert recent[-1]["run_id"] == "run-0"

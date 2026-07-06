@@ -44,4 +44,26 @@ def test_competition_block_is_snapshot_safe_and_serializable():
         "source": "openfootball + theoddsapi",
         "fixture_source": "openfootball",
         "rating_policy": "national_team_elo",
+        "settlement_rule": "football_90min",
+        "identity_policy": "national_team_alias",
+        "model_family": "worldcup_elo_poisson_v1",
+        "refresh_priority": 100,
+        "quota_budget": "worldcup_free_tier",
+        "market_quality_profile": "worldcup_main",
     }
+
+
+def test_competition_profile_declares_league_specific_boundaries():
+    csl = get_competition("csl_2026")
+    epl = get_competition("epl_2026_27")
+
+    assert csl.settlement_rule == "football_90min"
+    assert csl.identity_policy == "club_identity_registry"
+    assert csl.model_family == "club_elo_poisson_pending_v1"
+    assert csl.refresh_priority < get_competition("fifa_world_cup_2026").refresh_priority
+    assert csl.quota_budget == "csl_free_tier"
+    assert csl.market_quality_profile == "domestic_league_pending"
+
+    assert epl.identity_policy == "club_identity_registry"
+    assert epl.model_family == "club_elo_poisson_probe_v1"
+    assert epl.refresh_priority < csl.refresh_priority

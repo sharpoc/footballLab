@@ -42,6 +42,7 @@ def _invalid_odds_quality(
         for quote in event.invalid_odds:
             item = quote.to_dict()
             item["raw_payload_path"] = str(raw_payload_path)
+            item["source_path"] = str(raw_payload_path)
             invalid.append(item)
     return {
         "invalid_odds_count": len(invalid),

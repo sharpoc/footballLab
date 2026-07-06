@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-06 多赛事 latest 合并展示接线
+
+- 新增查询层多赛事 latest 合并视图：`worldcup.query.load_latest_snapshot_view` / `load_recent_snapshot_views` 会从同一 store 里按 `competition_id` 取各赛事最新 snapshot，并为缺失 match-level competition block 的旧世界杯 snapshot 补默认赛事标签。
+- `/api/matches`、`/api/finished` 和 `/preview` 改为读取合并视图；页面可在同一个研究台账里同时展示世界杯和中超，并复用“全部赛事 / 中超 2026”筛选，不再因发布中超 snapshot 而替换世界杯 latest 页面。
+- SQLite/PostgreSQL store 的 `list_recent_snapshots` 安全上限从 20 放宽到 500，支持查询层扫描最近记录寻找各赛事 latest；不改表结构、不改 ingest HMAC、不改 snapshot schema、不改模型或信号等级。
+- 本轮未读取 `.env`、未刷新 The Odds API、未消耗 quota、未发布、未部署、未改 LaunchAgent、未提交、未 push；中超现有本地 snapshot 仍是观察模式，`club_rating_pending` 未解除。
+- 验证：TDD 红灯覆盖多赛事 latest 合并、HTTP `/api/matches` / `/preview` 多赛事展示、store scan limit；实现后新增聚焦测试通过，真实本地世界杯 snapshot + 中超 `csl_live_league_snapshot.json` 写入临时 SQLite smoke 后 `/api/matches` 返回 `csl_2026` 与 `fifa_world_cup_2026`、`/preview` 出现“中超 2026”筛选；跳过当前 runtime 缺少可选依赖 `fastapi` 的自定义全量 runner 返回 `656/656 tests passed`，`py_compile` 和 `git diff --check` 通过。标准 `tests/run_tests.py` 仍在导入 `tests/test_fastapi_app.py` 时因缺少 `fastapi` 中断。
+
 ## 2026-07-02 下一次更新时间紧凑日期
 
 - 研究台账 workbench 详情卡中的“下一次更新”由仅显示北京时间 `HH:MM` 改为紧凑日期时间，例如 `6/12 周五 01:30`，既避免跨比赛日误读，也避免完整年月日撑开换行。
@@ -21,6 +29,34 @@
 - 改动限定在 `worldcup.ledger_html` 渲染层和 `tests/test_preview.py` 回归断言；未改模型、snapshot schema、采集、调度、发布策略或 The Odds API 行为。
 - 本轮部署仍只做代码上线和服务重启；不执行 `worldcup.scheduled_publish --live --force`，不刷新赔率、不消耗 quota、不写新 snapshot、不改 LaunchAgent。
 - 验证：TDD 红灯先确认旧结构没有 `match-list-decision-row`；实现后 `25/25 preview tests passed`，`py_compile worldcup/ledger_html.py` 和 `git diff --check` 通过；本地浏览器桌面与 390px 移动视口均确认主行不再包含长首选文本，副行正常显示。
+
+## 2026-07-01 MatchDecision 收盘定格与线上发布
+
+- 已提交并推送 `89b497e fix: freeze finished match decisions` 和 `6c1bcfb fix: dedupe finished records for ingest` 到 `origin/main`，并部署到 ECS `/opt/worldcup/releases/6c1bcfb`；`worldcup.service` 与 `nginx` 均为 active。
+- 修复 finished record 只定格 `closing_signals`、不定格 `closing_match_decision` 的问题；`/api/matches` 和 `/api/finished` 投影补充 match decision 字段，历史详情增加“收盘首选”展示位。该字段不改变 S/A 统计、模型参数或信号等级语义。
+- 发布时发现本地 `finished_record_store.json` 存在历史 key 与 competition-aware key 双份记录，导致 finished 从 79 条膨胀到 158 条、snapshot body 超过旧 1MB ingest 上限。已在 `build_finished_block` 加兼容去重并把签名 ingest app 上限提高到 5MB（Nginx 仍为 10m），避免裁剪 snapshot 绕过根因。
+- 已执行一次受控 live refresh（`--force` / `--no-notify` 等价路径）：run_id `20260701T122614Z-live`，The Odds API 使用 secondary 槽位，刷新后 remaining `479`。首轮 ingest 因旧 release 返回 HTTP 413；部署 `6c1bcfb` 后未再次调用 The Odds API，只用同一轮本地 snapshot 去重重签并发布，ECS ingest 返回 HTTP 200 / `ingest_status=stored`，snapshot_id `882713f4dbfc9dbc1dae9298660891a401e930dea9d618eec058061288822566`。
+- 部署后公网 smoke：`/healthz` 返回 ok；`/api/matches` 返回 12 场且 12 场都有 `match_decision`；首页和 `/preview` 均保留研究免责声明，“本场首选”不再出现 `—`，`stake` / `下注金额` / `资金` 禁词扫描为空；`/api/finished` 结构为 `finished.matches`，去重后 79 条。荷兰 vs 摩洛哥的历史完赛仍没有 `closing_match_decision`，原因是其收盘快照生成时尚无该字段，后续完赛会开始定格。
+- 验证：新增 TDD 红灯覆盖 finished 收盘首选定格、历史 duplicate key 去重、默认 ingest 上限允许 1MB+ 签名 snapshot；实现后相关集合 `54/54` 通过，`git diff --check` 通过，自定义全量无 fixture runner 跑过 642 个测试、`failures=0`，仅跳过当前 runtime 缺少可选依赖的 `tests/test_fastapi_app.py` 和需 fixture 的用例。研究边界不变：不构成投注建议，不输出资金或执行建议。
+
+## 2026-07-01 MatchDecision v1 每场首选方向
+
+- 新增 `worldcup.match_decision`：在现有 S/A 信号之后增加每场 top1 首选方向层，按 `STRONG_VALUE`、`VALUE_CANDIDATE`、`HIGH_CONFIDENCE_LEAN`、`LOW_CONFIDENCE_LEAN`、`NO_CLEAN_MARKET` 优先级输出；不改原有 S/A 阈值、模型参数或信号等级语义。
+- 决策层只使用真实可用、可结算盘口生成 option：当前覆盖 1X2、OU 已报价盘口和 AH/DNB 已报价盘口；不会凭空合成 AH0/+0.25/+0.5 或 OU 相邻盘口。胜率型 lean 使用模型概率与市场概率混合，并扣除基础不确定性、盘口分歧、边缘书商数和模型/市场分歧。
+- `local_runner` / `league_runner` 的每场 match 已挂载 `match_decision`，研究台账投影与预览页工作台顶部显示“本场首选”；该字段不计入 S/A 统计，不输出下注金额或资金建议。
+- 后续展示口径已调整：实时页改为“实时方向”，比赛列表优先展示每场 `match_decision` 首选方向和安全胜率；S/A 改称价值分歧/研究分歧，退到明细与复盘，不再作为主列表列头或首屏主叙事。
+- 本轮未联网、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布、未部署、未改 LaunchAgent、未提交、未 push；研究边界不变：不构成投注建议，不输出资金或执行建议。
+- 验证：新增 TDD 红灯覆盖缺失 `worldcup.match_decision`、runner 缺少 `match_decision`、ledger 投影缺少首选字段和 workbench 顶部未显示首选；展示口径调整补充覆盖“实时方向 / 本场首选 / 价值分歧”文案。实现后受影响测试集合 `84/84 tests passed`，`git diff --check` 通过。项目标准 `tests/run_tests.py` 本轮在导入 `tests/test_fastapi_app.py` 时因当前 runtime 缺少可选依赖 `fastapi` 中断，未得到全量通过结果。
+
+## 2026-06-30 多赛事平台化护栏与 shadow 诊断
+
+- 补齐多赛事基础护栏：`CompetitionConfig` 增加 `settlement_rule`、`identity_policy`、`model_family`、`refresh_priority`、`quota_budget` 和 `market_quality_profile`，snapshot / scheduler dry-run 输出同步带上赛事 profile；新增 `worldcup.team_identity`，为 CSL 2026 建立本地 team identity / alias / provider id 映射。
+- closing / eval / finished 链路改为按 `competition_id` 隔离：eval `match_id` 增加赛事前缀，finished record key 包含赛事，closing snapshot lookup 避免跨赛事误 join；`finished` 继续保留 signal-level `tally`，并新增 match-level `match_level_tally` / `match_level_sample` 供复盘对照。
+- 信号 schema 制度化：snapshot signals 输出 `official_grade`、`raw_grade`、`signal_status`、`hard_vetoes`、`soft_caps`、`uses_market_*`、`uses_closing`、`uses_result` 和 `same_market_ev_allowed`，把 official / candidate / pending / invalid / diagnostic 边界显式化。
+- 脏赔率隔离补充审计字段：invalid odds 记录增加 `competition_id` 和 `source_path`，local / league runner 的 `data_quality.invalid_odds` 可追溯来源；仍按 quarantine 处理，不静默当作可用赔率。
+- AH / OU / 1X2 增强均保持 shadow / diagnostic：AH validation shadow 新增 push probability、push-aware break-even 和 push-aware market EV；1X2 概率族新增 market-relative diagnostics 与 edge-safe 标记；OU independent total 仍是 shadow-only。以上字段不升级 official grade、不解除 `club_rating_pending`、不放宽阈值。
+- 本轮未联网、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布、未部署、未改 LaunchAgent、未提交、未 push；研究边界不变：不构成投注建议，不输出资金或执行建议。
+- 验证：TDD 红灯先覆盖 `worldcup.team_identity` 缺失、`x12_diagnostics` 缺失和 AH push-aware shadow 缺失；实现后项目标准 `tests/run_tests.py` 返回 `656/656 tests passed`。
 
 ## 2026-06-30 研究台账左侧比赛日期显示
 

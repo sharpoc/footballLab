@@ -50,6 +50,7 @@ def closing_match_entry(
     kickoff_at_utc: str,
     home_canonical: str,
     away_canonical: str,
+    competition_id: str | None = None,
 ) -> dict | None:
     kickoff = _parse_at(kickoff_at_utc)
     best: dict | None = None
@@ -62,6 +63,15 @@ def closing_match_entry(
         if at >= kickoff:
             continue
         for entry in snapshot.get("matches", []):
+            entry_competition_id = str(
+                ((entry.get("competition") or {}).get("id"))
+                or ((snapshot.get("competition") or {}).get("id"))
+                or ""
+            )
+            if not entry_competition_id and competition_id == "fifa_world_cup_2026":
+                entry_competition_id = "fifa_world_cup_2026"
+            if competition_id is not None and entry_competition_id != competition_id:
+                continue
             if (
                 entry.get("home_canonical") == home_canonical
                 and entry.get("away_canonical") == away_canonical
@@ -113,6 +123,7 @@ def build_rows(snapshots: list[dict], results_rows: list[dict]) -> tuple[list[di
             result["kickoff_at_utc"],
             result["home_canonical"],
             result["away_canonical"],
+            competition_id=result.get("competition_id") or "fifa_world_cup_2026",
         )
         if entry is None:
             skipped += 1
@@ -121,7 +132,8 @@ def build_rows(snapshots: list[dict], results_rows: list[dict]) -> tuple[list[di
         rows.append(
             {
                 "match_id": (
-                    f"{result['kickoff_at_utc'][:10]}_"
+                    f"{result.get('competition_id') or 'fifa_world_cup_2026'}:"
+                    f"{result['kickoff_at_utc'][:10]}:"
                     f"{result['home_canonical']}_{result['away_canonical']}"
                 ),
                 "kickoff_at_utc": result["kickoff_at_utc"],

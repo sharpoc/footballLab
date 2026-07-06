@@ -422,6 +422,8 @@ def test_invalid_odds_do_not_enter_market_aggregation_and_are_reported():
         assert first["away_team"] == "South Africa"
         assert first["commence_time"] == "2026-06-11T19:00:00Z"
         assert first["last_update"] == "2026-06-08T05:01:00Z"
+        assert first["competition_id"] == "fifa_world_cup_2026"
+        assert first["source_path"] == str(odds_path)
         assert first["raw_payload_path"] == str(odds_path)
 
         market_1x2 = snapshot["matches"][0]["market"]["1x2"]
@@ -454,6 +456,10 @@ def test_signal_to_dict_serializes_candidate_grade_when_present():
 
     assert out["grade"] == "B"
     assert out["raw_grade"] == "S"
+    assert out["official_grade"] == "B"
+    assert out["signal_status"] == "candidate"
+    assert out["same_market_ev_allowed"] is True
+    assert out["soft_caps"] == ["ah_market_edge_missing"]
     assert out["candidate_grade"] == "S-candidate"
     assert out["candidate_reasons"] == [
         "official_grade_capped_by_ah_market_edge_missing",
@@ -468,6 +474,8 @@ def test_signal_to_dict_omits_candidate_fields_when_absent():
 
     assert "candidate_grade" not in out
     assert "candidate_reasons" not in out
+    assert out["official_grade"] == "S"
+    assert out["signal_status"] == "official"
 
 
 def test_build_snapshot_from_probe_includes_main_ah_market():

@@ -198,3 +198,23 @@ def test_postgres_snapshot_store_list_recent_snapshots_returns_newest_first():
 
     assert [item["run_id"] for item in recent] == ["run-3", "run-2"]
     assert any("LIMIT %s" in sql for sql, _ in factory.statements)
+
+
+def test_postgres_snapshot_store_list_recent_snapshots_allows_snapshot_view_scan_limit():
+    factory = FakePostgresFactory()
+    store = PostgresSnapshotStore(
+        dsn="postgresql://example.invalid/worldcup",
+        connection_factory=factory,
+    )
+    for index in range(25):
+        store.put_snapshot(
+            idempotency_key=f"run-{index}:snapshot-{index}",
+            payload=_payload(run_id=f"run-{index}", snapshot_id=f"snapshot-{index}"),
+            stored_at=f"2026-06-08T00:{index:02d}:00+00:00",
+        )
+
+    recent = store.list_recent_snapshots(limit=25)
+
+    assert len(recent) == 25
+    assert recent[0]["run_id"] == "run-24"
+    assert recent[-1]["run_id"] == "run-0"

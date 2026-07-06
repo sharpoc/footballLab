@@ -52,6 +52,7 @@ def _quotes_for_event(
     item: dict[str, Any],
     home: str,
     away: str,
+    competition_id: str,
 ) -> tuple[list[OddsQuote], list[InvalidOddsQuote]]:
     event_id = str(item.get("id", ""))
     commence_time = str(item["commence_time"])
@@ -97,6 +98,7 @@ def _quotes_for_event(
                             away_team=away,
                             commence_time=commence_time,
                             last_update=str(fetched_at_raw) if fetched_at_raw else None,
+                            competition_id=competition_id,
                         )
                     )
                     continue
@@ -147,7 +149,7 @@ def parse_league_odds_events(
                 has_placeholder_team=False,
             )
         )
-        quotes, invalid_odds = _quotes_for_event(item, home, away)
+        quotes, invalid_odds = _quotes_for_event(item, home, away, competition_id)
         odds_events.append(
             ParsedOddsEvent(
                 source_event_id=str(item.get("id", "")),

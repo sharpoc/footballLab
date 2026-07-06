@@ -2,8 +2,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from worldcup.query import (
+    load_latest_snapshot_view,
     load_latest_snapshot,
     load_recent_snapshots,
+    load_recent_snapshot_views,
     project_finished_rows,
     project_match_rows,
 )
@@ -143,6 +145,32 @@ def _snapshot_with_finished():
     return snapshot
 
 
+def _competition_snapshot(
+    competition_id: str,
+    competition_label: str,
+    home_team: str,
+    away_team: str,
+    run_id: str,
+) -> dict:
+    snapshot = _snapshot()
+    snapshot["snapshot_at"] = f"2026-06-08T0{len(run_id)}:00:00+00:00"
+    snapshot["run"] = {"run_id": run_id}
+    snapshot["counts"] = {"matches": 1}
+    snapshot["competition"] = {"id": competition_id, "name": competition_label}
+    snapshot["matches"] = [
+        {
+            "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+            "stage": "Matchday 1",
+            "group": "",
+            "home_team": home_team,
+            "away_team": away_team,
+            "competition": {"id": competition_id, "name": competition_label},
+            "signals": [],
+        }
+    ]
+    return snapshot
+
+
 def test_load_latest_snapshot_reads_latest_from_sqlite_store():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "worldcup.db"
@@ -172,6 +200,98 @@ def test_load_latest_snapshot_reads_latest_from_sqlite_store():
 
         assert snapshot["counts"]["matches"] == 2
         assert snapshot["run"]["run_id"] == "20260608T000000Z-live"
+
+
+def test_load_latest_snapshot_view_merges_latest_snapshot_per_competition():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        store = SQLiteSnapshotStore(db_path)
+        store.put_snapshot(
+            idempotency_key="wc-old:wc-old-snapshot",
+            payload={
+                "run_id": "wc-old",
+                "snapshot_id": "wc-old-snapshot",
+                "snapshot_at": "2026-06-08T00:00:00+00:00",
+                "snapshot": _competition_snapshot(
+                    "fifa_world_cup_2026",
+                    "2026 世界杯",
+                    "Mexico",
+                    "South Africa",
+                    "wc-old",
+                ),
+            },
+            stored_at="2026-06-08T00:02:00+00:00",
+        )
+        store.put_snapshot(
+            idempotency_key="csl-new:csl-new-snapshot",
+            payload={
+                "run_id": "csl-new",
+                "snapshot_id": "csl-new-snapshot",
+                "snapshot_at": "2026-06-08T01:00:00+00:00",
+                "snapshot": _competition_snapshot(
+                    "csl_2026",
+                    "中超 2026",
+                    "Shanghai Port",
+                    "Beijing Guoan",
+                    "csl-new",
+                ),
+            },
+            stored_at="2026-06-08T01:02:00+00:00",
+        )
+        store.put_snapshot(
+            idempotency_key="wc-new:wc-new-snapshot",
+            payload={
+                "run_id": "wc-new",
+                "snapshot_id": "wc-new-snapshot",
+                "snapshot_at": "2026-06-08T02:00:00+00:00",
+                "snapshot": _competition_snapshot(
+                    "fifa_world_cup_2026",
+                    "2026 世界杯",
+                    "Canada",
+                    "Qatar",
+                    "wc-new",
+                ),
+            },
+            stored_at="2026-06-08T02:02:00+00:00",
+        )
+
+        snapshot = load_latest_snapshot_view(db_path)
+
+        assert snapshot["counts"]["matches"] == 2
+        assert snapshot["competition"]["id"] == "multi_competition"
+        assert [match["home_team"] for match in snapshot["matches"]] == ["Canada", "Shanghai Port"]
+        assert [match["competition"]["id"] for match in snapshot["matches"]] == [
+            "fifa_world_cup_2026",
+            "csl_2026",
+        ]
+        assert project_match_rows(snapshot)[1]["competition_id"] == "csl_2026"
+
+
+def test_load_recent_snapshot_views_compares_each_competition_with_own_previous_snapshot():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        store = SQLiteSnapshotStore(db_path)
+        for run_id, competition_id, label, home, away, stored_at in [
+            ("wc-old", "fifa_world_cup_2026", "2026 世界杯", "Mexico", "South Africa", "2026-06-08T00:02:00+00:00"),
+            ("csl-old", "csl_2026", "中超 2026", "Shanghai Shenhua", "Shandong Taishan", "2026-06-08T00:03:00+00:00"),
+            ("csl-new", "csl_2026", "中超 2026", "Shanghai Port", "Beijing Guoan", "2026-06-08T01:02:00+00:00"),
+            ("wc-new", "fifa_world_cup_2026", "2026 世界杯", "Canada", "Qatar", "2026-06-08T02:02:00+00:00"),
+        ]:
+            store.put_snapshot(
+                idempotency_key=f"{run_id}:{run_id}-snapshot",
+                payload={
+                    "run_id": run_id,
+                    "snapshot_id": f"{run_id}-snapshot",
+                    "snapshot_at": stored_at.replace("02:00", "00:00"),
+                    "snapshot": _competition_snapshot(competition_id, label, home, away, run_id),
+                },
+                stored_at=stored_at,
+            )
+
+        current, previous = load_recent_snapshot_views(db_path, limit=2)
+
+        assert [match["home_team"] for match in current["matches"]] == ["Canada", "Shanghai Port"]
+        assert [match["home_team"] for match in previous["matches"]] == ["Mexico", "Shanghai Shenhua"]
 
 
 def test_load_latest_snapshot_reads_from_injected_store():
@@ -247,6 +367,8 @@ def test_project_match_rows_returns_preview_safe_rows():
     assert rows[0]["next_update_label"] == "T-1小时30分"
     assert rows[0]["next_update_description"] == "阵容/伤停预热"
     assert rows[0]["stale"] is True
+    assert rows[0]["competition_id"] == "fifa_world_cup_2026"
+    assert rows[0]["competition_label"] == "2026 世界杯"
     assert rows[1]["top_grade"] == ""
     assert rows[1]["signal_count"] == 0
     assert "stake" not in rows[0]
@@ -290,6 +412,8 @@ def test_project_match_rows_ignores_probability_families_for_public_summary():
             "home_team": "Mexico",
             "away_team": "South Africa",
             "match_label": "Mexico vs South Africa",
+            "competition_id": "fifa_world_cup_2026",
+            "competition_label": "2026 世界杯",
             "signal_count": 1,
             "top_grade": "A",
             "next_update_at": "2026-06-09T00:00:00+00:00",

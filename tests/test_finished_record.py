@@ -9,9 +9,11 @@ from worldcup.finished_record import build_finished_block
 def _closing_snapshot(at: str) -> dict:
     return {
         "snapshot_at": at,
+        "competition": {"id": "fifa_world_cup_2026", "name": "2026 世界杯"},
         "matches": [
             {
                 "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "competition": {"id": "fifa_world_cup_2026", "name": "2026 世界杯"},
                 "home_team": "Mexico",
                 "away_team": "South Africa",
                 "home_canonical": "mexico",
@@ -125,6 +127,9 @@ def test_build_finished_block_freezes_closing_and_tallies_sa():
         assert by_grade["A"]["prediction"]["label"] == "走水"
         assert block["tally"]["S"] == {"hit": 1, "miss": 0, "push": 0}
         assert block["tally"]["A"] == {"hit": 0, "miss": 0, "push": 1}
+        assert block["match_level_tally"]["S"] == {"hit": 1, "miss": 0, "push": 0}
+        assert block["match_level_tally"]["A"] == {"hit": 0, "miss": 0, "push": 0}
+        assert block["match_level_sample"] == {"matches": 1, "selected_signals": 1}
         # C 级信号保留在明细但不进 tally
         assert any(s["grade"] == "C" for s in record["closing_signals"])
         # closing 赔率从 market 块解析
@@ -200,6 +205,32 @@ def test_build_finished_block_freezes_v2_diagnostic_fields():
             "line_changed",
             "raw_active_gap_ge_5pp",
         ]
+        assert signal["official_grade"] == "S"
+        assert signal["signal_status"] == "official"
+
+
+def test_build_finished_block_keeps_competitions_separate_when_history_is_mixed():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        history = root / "history"
+        history.mkdir()
+        csl = _closing_snapshot("2026-06-11T18:00:00+00:00")
+        csl["competition"] = {"id": "csl_2026", "name": "中超 2026"}
+        csl["matches"][0]["competition"] = {"id": "csl_2026", "name": "中超 2026"}
+        csl["matches"][0]["market"]["1x2"]["odds"]["home"] = 9.99
+        (history / "snapshot_20260611T180000Z-csl.json").write_text(json.dumps(csl))
+        wc = _closing_snapshot("2026-06-11T17:50:00+00:00")
+        (history / "snapshot_20260611T175000Z-wc.json").write_text(json.dumps(wc))
+        results = root / "results.csv"
+        _write_results(results, [MEXICO_ROW])
+
+        block = build_finished_block(history, results, root / "store.json")
+
+        assert len(block["matches"]) == 1
+        record = block["matches"][0]
+        assert record["competition_id"] == "fifa_world_cup_2026"
+        by_grade = {s["grade"]: s for s in record["closing_signals"] if s["grade"] == "S"}
+        assert by_grade["S"]["odds"] == 1.78
 
 
 def test_build_finished_block_is_incremental_via_store():

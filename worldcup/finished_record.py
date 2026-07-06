@@ -25,8 +25,20 @@ def _parse_at(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
+def _row_competition_id(row: dict) -> str:
+    return str(row.get("competition_id") or "fifa_world_cup_2026")
+
+
+def _entry_competition(entry: dict) -> dict[str, Any]:
+    block = entry.get("competition")
+    return block if isinstance(block, dict) else {}
+
+
 def _record_key(row: dict) -> str:
-    return f"{row['kickoff_at_utc'][:10]}_{row['home_canonical']}_{row['away_canonical']}"
+    return (
+        f"{_row_competition_id(row)}_{row['kickoff_at_utc'][:10]}_"
+        f"{row['home_canonical']}_{row['away_canonical']}"
+    )
 
 
 def _row_identity(row: dict) -> tuple[str, str, str]:
@@ -198,13 +210,27 @@ def _diagnostic_flags(prediction: dict, movement: dict, deltas: dict) -> list[st
 def _freeze_signal(entry: dict, signal: dict, prediction: dict) -> dict[str, Any]:
     probs, deltas = _probability_diagnostics(entry, signal)
     movement = _movement_quality(entry)
+    grade = signal.get("grade")
+    if grade in TRACKED_GRADES:
+        signal_status = "official"
+    elif signal.get("candidate_grade"):
+        signal_status = "candidate"
+    elif grade in ("NO_MARKET_YET", "ODDS_PENDING"):
+        signal_status = "pending"
+    elif grade == "D":
+        signal_status = "invalid"
+    else:
+        signal_status = "diagnostic"
     return {
         "diagnostic_schema_version": DIAGNOSTIC_SCHEMA_VERSION,
         "market_type": signal.get("market_type"),
         "selection": signal.get("selection"),
         "line": signal.get("line"),
         "grade": signal.get("grade"),
+        "official_grade": signal.get("grade"),
         "raw_grade": signal.get("raw_grade") or signal.get("grade"),
+        "candidate_grade": signal.get("candidate_grade"),
+        "signal_status": signal_status,
         "odds": _closing_odds(entry, signal),
         "ev": signal.get("ev"),
         "edge": signal.get("edge"),
@@ -224,7 +250,12 @@ def _freeze_record(entry: dict, row: dict, history: list[dict]) -> dict:
     for signal in entry.get("signals") or []:
         prediction = _prediction_result(settled_match, signal)
         closing_signals.append(_freeze_signal(entry, signal, prediction))
+    competition = _entry_competition(entry)
+    competition_id = str(competition.get("id") or _row_competition_id(row))
     record = {
+        "competition_id": competition_id,
+        "competition_label": competition.get("name") or competition_id,
+        "competition": competition or {"id": competition_id},
         "kickoff_at_utc": row["kickoff_at_utc"],
         "home_team": row["home_team"],
         "away_team": row["away_team"],
@@ -259,6 +290,37 @@ def _tally(records: list[dict]) -> dict[str, dict[str, int]]:
             if key:
                 tally[grade][key] += 1
     return tally
+
+
+def _canonical_signal(signals: list[dict]) -> dict | None:
+    grade_order = {"S": 0, "A": 1}
+    candidates = [signal for signal in signals if signal.get("grade") in grade_order]
+    if not candidates:
+        return None
+    return sorted(
+        candidates,
+        key=lambda signal: (
+            grade_order[str(signal.get("grade"))],
+            str(signal.get("market_type") or ""),
+            str(signal.get("selection") or ""),
+        ),
+    )[0]
+
+
+def _match_level_tally(records: list[dict]) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
+    tally = _empty_tally()
+    selected = 0
+    for record in records:
+        signal = _canonical_signal(list(record.get("closing_signals") or []))
+        if signal is None:
+            continue
+        selected += 1
+        grade = signal.get("grade")
+        label = ((signal.get("prediction") or {}).get("label")) or ""
+        key = _LABEL_TO_KEY.get(label)
+        if grade in tally and key:
+            tally[grade][key] += 1
+    return tally, {"matches": len(records), "selected_signals": selected}
 
 
 def _load_store(store_file: Path) -> dict[str, dict]:
@@ -298,6 +360,15 @@ def _closing_snapshot_at(window: list[dict], row: dict) -> str | None:
         if not snapshot_at or _parse_at(snapshot_at) >= kickoff:
             continue
         for match in snapshot.get("matches", []):
+            match_competition_id = str(
+                ((match.get("competition") or {}).get("id"))
+                or ((snapshot.get("competition") or {}).get("id"))
+                or ""
+            )
+            if not match_competition_id and _row_competition_id(row) == "fifa_world_cup_2026":
+                match_competition_id = "fifa_world_cup_2026"
+            if match_competition_id != _row_competition_id(row):
+                continue
             if (
                 match.get("home_canonical") == row["home_canonical"]
                 and match.get("away_canonical") == row["away_canonical"]
@@ -331,6 +402,7 @@ def build_finished_block(
             row["kickoff_at_utc"],
             row["home_canonical"],
             row["away_canonical"],
+            competition_id=_row_competition_id(row),
         )
         if entry is None:
             skipped += 1
@@ -348,8 +420,11 @@ def build_finished_block(
             pass
 
     records = sorted(store.values(), key=lambda record: record.get("kickoff_at_utc") or "")
+    match_level_tally, match_level_sample = _match_level_tally(records)
     return {
         "matches": records,
         "tally": _tally(records),
+        "match_level_tally": match_level_tally,
+        "match_level_sample": match_level_sample,
         "skipped_no_closing": skipped,
     }

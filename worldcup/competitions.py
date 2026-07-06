@@ -18,6 +18,12 @@ class CompetitionConfig:
     rating_policy: str = "club_rating_pending"
     refresh_policy: str = "local_daily"
     window_days: int = 14
+    settlement_rule: str = "football_90min"
+    identity_policy: str = "club_identity_registry"
+    model_family: str = "club_elo_poisson_pending_v1"
+    refresh_priority: int = 50
+    quota_budget: str = "shared_free_tier"
+    market_quality_profile: str = "domestic_league_pending"
     theoddsapi_sport_key: str | None = None
     theoddsapi_candidate_keys: tuple[str, ...] = ()
     theoddsapi_search_terms: tuple[str, ...] = ()
@@ -34,6 +40,12 @@ class CompetitionConfig:
             "source": self.source,
             "fixture_source": self.fixture_source,
             "rating_policy": self.rating_policy,
+            "settlement_rule": self.settlement_rule,
+            "identity_policy": self.identity_policy,
+            "model_family": self.model_family,
+            "refresh_priority": self.refresh_priority,
+            "quota_budget": self.quota_budget,
+            "market_quality_profile": self.market_quality_profile,
         }
 
 
@@ -50,6 +62,11 @@ _REGISTRY: dict[str, CompetitionConfig] = {
         rating_policy="national_team_elo",
         refresh_policy="worldcup_free_tier",
         window_days=60,
+        identity_policy="national_team_alias",
+        model_family="worldcup_elo_poisson_v1",
+        refresh_priority=100,
+        quota_budget="worldcup_free_tier",
+        market_quality_profile="worldcup_main",
         theoddsapi_sport_key="soccer_fifa_world_cup",
         theoddsapi_candidate_keys=("soccer_fifa_world_cup",),
         theoddsapi_search_terms=("FIFA World Cup", "World Cup"),
@@ -67,6 +84,8 @@ _REGISTRY: dict[str, CompetitionConfig] = {
         rating_policy="club_rating_pending",
         refresh_policy="local_daily",
         window_days=14,
+        refresh_priority=70,
+        quota_budget="csl_free_tier",
         theoddsapi_sport_key=None,
         theoddsapi_candidate_keys=("soccer_china_superleague", "soccer_china_super_league"),
         theoddsapi_search_terms=("Chinese Super League", "China Super League", "CSL"),
@@ -80,6 +99,9 @@ _REGISTRY: dict[str, CompetitionConfig] = {
         timezone="Europe/London",
         fixture_policy="dry_run_probe",
         refresh_policy="dry_run_probe",
+        model_family="club_elo_poisson_probe_v1",
+        refresh_priority=40,
+        quota_budget="big_five_probe",
         theoddsapi_candidate_keys=("soccer_epl",),
         theoddsapi_search_terms=("English Premier League", "EPL", "Premier League"),
     ),
@@ -92,6 +114,9 @@ _REGISTRY: dict[str, CompetitionConfig] = {
         timezone="Europe/Madrid",
         fixture_policy="dry_run_probe",
         refresh_policy="dry_run_probe",
+        model_family="club_elo_poisson_probe_v1",
+        refresh_priority=40,
+        quota_budget="big_five_probe",
         theoddsapi_candidate_keys=("soccer_spain_la_liga",),
         theoddsapi_search_terms=("La Liga", "Spanish La Liga"),
     ),
@@ -104,6 +129,9 @@ _REGISTRY: dict[str, CompetitionConfig] = {
         timezone="Europe/Berlin",
         fixture_policy="dry_run_probe",
         refresh_policy="dry_run_probe",
+        model_family="club_elo_poisson_probe_v1",
+        refresh_priority=40,
+        quota_budget="big_five_probe",
         theoddsapi_candidate_keys=("soccer_germany_bundesliga",),
         theoddsapi_search_terms=("Bundesliga", "German Bundesliga"),
     ),
@@ -116,6 +144,9 @@ _REGISTRY: dict[str, CompetitionConfig] = {
         timezone="Europe/Rome",
         fixture_policy="dry_run_probe",
         refresh_policy="dry_run_probe",
+        model_family="club_elo_poisson_probe_v1",
+        refresh_priority=40,
+        quota_budget="big_five_probe",
         theoddsapi_candidate_keys=("soccer_italy_serie_a",),
         theoddsapi_search_terms=("Serie A", "Italian Serie A"),
     ),
@@ -128,6 +159,9 @@ _REGISTRY: dict[str, CompetitionConfig] = {
         timezone="Europe/Paris",
         fixture_policy="dry_run_probe",
         refresh_policy="dry_run_probe",
+        model_family="club_elo_poisson_probe_v1",
+        refresh_priority=40,
+        quota_budget="big_five_probe",
         theoddsapi_candidate_keys=("soccer_france_ligue_one",),
         theoddsapi_search_terms=("Ligue 1", "French Ligue 1"),
     ),

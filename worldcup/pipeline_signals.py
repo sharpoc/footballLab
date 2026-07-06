@@ -87,6 +87,19 @@ def _model_fair_ah_line(dist: dict[int, float]) -> float | None:
     return min(viable) if viable else None
 
 
+def _push_probability(dist: dict[int, float], line: float) -> float:
+    return sum(prob for diff, prob in dist.items() if abs(diff + line) < 1e-9)
+
+
+def _break_even_odds_push_aware(dist: dict[int, float], line: float) -> float | None:
+    ev_at_one = handicap.ev_handicap(dist, line, 1.0)
+    ev_at_two = handicap.ev_handicap(dist, line, 2.0)
+    slope = ev_at_two - ev_at_one
+    if slope <= 1e-12:
+        return None
+    return 1.0 - (ev_at_one / slope)
+
+
 def _ah_validation_shadow(
     analysis: MatchAnalysis,
     side: str,
@@ -94,6 +107,7 @@ def _ah_validation_shadow(
     side_dist: dict[int, float],
     dispersion_ratio: float | None,
     cfg: dict,
+    market_odds: float | None = None,
 ) -> dict:
     model_fair_line = _model_fair_ah_line(side_dist)
     fair_line_delta = market_line - model_fair_line if model_fair_line is not None else None
@@ -112,6 +126,15 @@ def _ah_validation_shadow(
         "market_line": _round_metric(market_line),
         "model_fair_line": _round_metric(model_fair_line),
         "fair_line_delta": _round_metric(fair_line_delta),
+        "push_probability": _round_metric(_push_probability(side_dist, market_line)),
+        "break_even_odds_push_aware": _round_metric(
+            _break_even_odds_push_aware(side_dist, market_line)
+        ),
+        "market_ev_push_aware": _round_metric(
+            handicap.ev_handicap(side_dist, market_line, market_odds)
+            if market_odds is not None
+            else None
+        ),
         "line_consensus": line_consensus,
         "dispersion_ok": dispersion_ok,
         "candidate_validated": candidate_validated,
@@ -532,6 +555,7 @@ def _ah_signals(
             analysis.handicap_dist,
             home_agg["dispersion_ratio"],
             cfg,
+            market_odds=home_agg["odds"],
         )
         out.append(
             value.grade_signal(
@@ -576,6 +600,7 @@ def _ah_signals(
             away_dist,
             away_agg["dispersion_ratio"],
             cfg,
+            market_odds=away_agg["odds"],
         )
         out.append(
             value.grade_signal(

@@ -100,6 +100,59 @@ def _market_only_probability_block(market_1x2: dict, market_ou: dict, market_ah:
     }
 
 
+def _x12_diagnostics_block(
+    *,
+    model_probs: dict[str, float],
+    elo_probs: dict[str, float],
+    poisson_probs: dict[str, float],
+    market_1x2: dict,
+    active_family: str,
+) -> dict:
+    market_probs = market_1x2.get("market_probs") or {}
+    residuals: dict[str, float | None] = {}
+    edge_safe: dict[str, dict[str, float | str | None]] = {}
+    for selection in ("home", "draw", "away"):
+        model_prob = model_probs.get(selection)
+        market_prob = market_probs.get(selection)
+        residual = (
+            round(model_prob - market_prob, 6)
+            if model_prob is not None and market_prob is not None
+            else None
+        )
+        residuals[selection] = residual
+        elo_prob = elo_probs.get(selection)
+        poisson_prob = poisson_probs.get(selection)
+        disagreement = (
+            round(abs(elo_prob - poisson_prob), 6)
+            if elo_prob is not None and poisson_prob is not None
+            else None
+        )
+        if residual is None:
+            status = "missing_market_probability"
+        elif residual <= 0:
+            status = "not_edge_safe"
+        else:
+            status = "needs_backtest_support"
+        edge_safe[selection] = {
+            "status": status,
+            "model_probability": _round_metric(model_prob),
+            "market_probability": _round_metric(market_prob),
+            "market_relative_residual": residual,
+            "elo_poisson_disagreement": disagreement,
+        }
+    return {
+        "schema_version": 1,
+        "activation": "shadow_only",
+        "model_family": active_family,
+        "market_relative_residuals": residuals,
+        "edge_safe_by_selection": edge_safe,
+        "notes": [
+            "diagnostic_only_not_official_signal",
+            "requires_bucket_level_backtest_before_threshold_changes",
+        ],
+    }
+
+
 def _probability_families(
     *,
     dr: float,
@@ -154,15 +207,23 @@ def _probability_families(
         mu_market_weight=mu_market_weight,
         same_market_total_anchor=same_market_total_anchor,
     )
+    active_family = "model_market_total"
     return {
         "schema_version": 1,
-        "active_signal_family": "model_market_total",
+        "active_signal_family": active_family,
         "recommended_future_signal_family": "model_raw",
         "families": {
             "model_raw": raw_family,
             "model_market_total": market_total_family,
             "market_only": _market_only_probability_block(market_1x2, market_ou, market_ah),
         },
+        "x12_diagnostics": _x12_diagnostics_block(
+            model_probs=market_total_family["combined_1x2"],
+            elo_probs=market_total_family["elo_1x2"],
+            poisson_probs=market_total_family["poisson_1x2"],
+            market_1x2=market_1x2,
+            active_family=active_family,
+        ),
     }
 
 

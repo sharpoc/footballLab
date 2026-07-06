@@ -12,7 +12,8 @@ from worldcup.ingest_app import process_local_ingest
 from worldcup.preview import build_preview_html
 from worldcup.query import (
     load_latest_snapshot,
-    load_recent_snapshots,
+    load_latest_snapshot_view,
+    load_recent_snapshot_views,
     project_finished_rows,
     project_match_rows,
 )
@@ -178,19 +179,19 @@ def handle_request(
         return _json_response(200, {"snapshot": snapshot})
 
     if method_upper == "GET" and route == "/api/matches":
-        snapshot = _latest_or_404(db_path, store=store)
+        snapshot = load_latest_snapshot_view(db_path, store=store)
         if snapshot is None:
             return _json_response(404, {"error": "snapshot_not_found"})
         return _json_response(200, {"matches": project_match_rows(snapshot)})
 
     if method_upper == "GET" and route == "/api/finished":
-        snapshot = _latest_or_404(db_path, store=store)
+        snapshot = load_latest_snapshot_view(db_path, store=store)
         if snapshot is None:
             return _json_response(404, {"error": "snapshot_not_found"})
         return _json_response(200, {"finished": project_finished_rows(snapshot)})
 
     if method_upper == "GET" and route == "/preview":
-        recent = load_recent_snapshots(db_path, store=store, limit=2)
+        recent = load_recent_snapshot_views(db_path, store=store, limit=2)
         if not recent:
             return _html_response(404, "<!doctype html><title>Not Found</title><p>snapshot_not_found</p>")
         previous = recent[1] if len(recent) > 1 else None

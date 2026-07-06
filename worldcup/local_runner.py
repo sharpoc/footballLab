@@ -19,6 +19,32 @@ from worldcup.models import Grade, MarketType, Signal
 from worldcup.pipeline import analyze_match_input, build_match_inputs, generate_value_signals
 from worldcup.scheduler import build_match_refresh_decision, build_run_metadata, make_run_id
 
+_SOFT_CAP_REASONS = {
+    "ah_market_edge_missing",
+    "market_informed_total",
+    "reverse_market",
+    "ah_cross_check_missing",
+    "ah_not_supporting_1x2",
+    "host_market_confirmation",
+    "x12_draw_candidate_only",
+    "x12_long_odds_candidate_only",
+    "under_vs_big_handicap",
+    "ah_zero_line_confirmation",
+    "host_handicap_confirmation",
+    "club_rating_pending",
+}
+
+_HARD_VETO_REASONS = {
+    "stale_odds",
+    "few_books",
+    "market_dispersion",
+    "longshot_uncertainty",
+    "unconfirmed_backup",
+    "line_changed_unknown",
+    "model_disagreement",
+    "extreme_favorite_handicap",
+}
+
 
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -45,16 +71,40 @@ def _now_utc_iso() -> str:
 
 def _signal_to_dict(signal: Signal) -> dict[str, Any]:
     raw_grade = signal.raw_grade or signal.grade
+    soft_caps = [reason for reason in signal.reasons if reason in _SOFT_CAP_REASONS]
+    hard_vetoes = [reason for reason in signal.reasons if reason in _HARD_VETO_REASONS]
+    if signal.grade in (Grade.S, Grade.A):
+        signal_status = "official"
+    elif signal.candidate_grade is not None:
+        signal_status = "candidate"
+    elif signal.grade in (Grade.NO_MARKET_YET, Grade.ODDS_PENDING):
+        signal_status = "pending"
+    elif signal.grade == Grade.D:
+        signal_status = "invalid"
+    else:
+        signal_status = "diagnostic"
     out = {
         "market_type": signal.market_type.value,
         "selection": signal.selection,
         "grade": signal.grade.value,
+        "official_grade": signal.grade.value,
         "raw_grade": raw_grade.value,
+        "signal_status": signal_status,
         "ev": signal.ev,
         "edge": signal.edge,
         "status": signal.status,
         "reasons": signal.reasons,
+        "hard_vetoes": hard_vetoes,
+        "soft_caps": soft_caps,
         "line": signal.line,
+        "uses_market_1x2": signal.market_type == MarketType.X12,
+        "uses_market_ou": signal.market_type == MarketType.OU,
+        "uses_market_ah": signal.market_type == MarketType.AH,
+        "uses_closing": False,
+        "uses_result": False,
+        "same_market_ev_allowed": not (
+            signal.market_type == MarketType.OU and signal.same_market_total_anchor is True
+        ),
     }
     if signal.total_mu_source is not None:
         out["total_mu_source"] = signal.total_mu_source
@@ -259,6 +309,7 @@ def _invalid_odds_quality(odds_events, raw_payload_path: Path, max_examples: int
         for quote in event.invalid_odds:
             item = quote.to_dict()
             item["raw_payload_path"] = str(raw_payload_path)
+            item["source_path"] = str(raw_payload_path)
             invalid.append(item)
     return {
         "invalid_odds_count": len(invalid),

@@ -40,6 +40,7 @@ def closing_match_entry(
     match_date: str,
     home_canonical: str,
     away_canonical: str,
+    competition_id: str | None = None,
 ) -> dict[str, Any] | None:
     best: dict[str, Any] | None = None
     best_at: datetime | None = None
@@ -50,6 +51,13 @@ def closing_match_entry(
         at = _parse_utc(str(snapshot_at))
         for entry in snapshot.get("matches") or []:
             if not isinstance(entry, dict):
+                continue
+            entry_competition_id = str(
+                ((entry.get("competition") or {}).get("id"))
+                or ((snapshot.get("competition") or {}).get("id"))
+                or ""
+            )
+            if competition_id is not None and entry_competition_id != competition_id:
                 continue
             kickoff_at = entry.get("kickoff_at_utc")
             if not kickoff_at or str(kickoff_at)[:10] != match_date:
@@ -115,6 +123,7 @@ def build_rows(
             result.date,
             result.home_canonical,
             result.away_canonical,
+            competition_id=result.competition_id,
         )
         if entry is None:
             skipped += 1
