@@ -35,8 +35,9 @@ def _entry_competition(entry: dict) -> dict[str, Any]:
 
 
 def _record_key(row: dict) -> str:
+    prefix = f"{row['competition_id']}_" if row.get("competition_id") else ""
     return (
-        f"{_row_competition_id(row)}_{row['kickoff_at_utc'][:10]}_"
+        f"{prefix}{row['kickoff_at_utc'][:10]}_"
         f"{row['home_canonical']}_{row['away_canonical']}"
     )
 
