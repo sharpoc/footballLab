@@ -6,7 +6,7 @@
 
 - 新增 `SnapshotViewCache.preview_html()`：`ThreadingHTTPServer` 进程内缓存 `/preview` 渲染后的 HTML，缓存 key 按 DB path 和注入 store 隔离；签名 ingest 成功后与 public view 缓存一起清空，避免发布中超 snapshot 后继续显示旧页面。
 - `recent_views()` 不再在加载 SQLite / 解析大 snapshot 期间持有缓存锁，避免 `/preview` 首次构建大页面时拖住已经命中的 `/api/matches` / `/api/finished` 请求；并发冷启动最多重复构建，不输出未验签或未入库数据。
-- 已部署 commit `8f4969f` 到 ECS `/opt/worldcup/releases/8f4969f1496983f51f84a472a968d390567185fc`；`worldcup.service` 与 `nginx` 均为 active。部署后公网 `/api/matches` 冷启动约 `5.28s`、命中约 `0.04s`；公网 `/preview` 冷启动约 `15.59s`，ECS 本机缓存命中约 `0.023s`，公网后续仍主要受 4MB+ HTML 下载影响。
+- 已先部署 commit `8f4969f` 到 ECS `/opt/worldcup/releases/8f4969f1496983f51f84a472a968d390567185fc`；rebase 合并远端 `origin/main` 后，最终以当前 `main` HEAD 重新部署到 `/opt/worldcup/current`，`worldcup.service` 与 `nginx` 均为 active。首次部署后公网 `/api/matches` 冷启动约 `5.28s`、命中约 `0.04s`；公网 `/preview` 冷启动约 `15.59s`，ECS 本机缓存命中约 `0.023s`，公网后续仍主要受 4MB+ HTML 下载影响。
 - 已发布现有中超 snapshot 副本 `data/cache/csl_publish_snapshot.json`，只补确定性 `run_id=20260629T120500Z-csl-existing-snapshot`，未刷新赔率；ECS ingest 返回 HTTP 200 / `ingest_status=stored`，snapshot_id `a826b9df740aa31d89c6ddc8087b6fb09942ce0e7c143b48de404e502edfa595`。
 - 发布后公网 `/api/matches` 返回 14 场：`csl_2026=8`、`fifa_world_cup_2026=6`；`/preview` 出现“中超 2026”筛选并保留研究免责声明，资金/下注禁词扫描为空。发布后首次 `/api/matches` 重新构建约 `5.12s`，命中约 `0.045s`；ECS 本机 `/preview` 命中约 `0.026s`。
 - 范围保持收窄：不改 snapshot schema、不改模型参数或信号等级、不调用 The Odds API、不改 LaunchAgent、不输出资金/下注字段；中超仍是 `club_rating_pending` 观察模式。
