@@ -3,6 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import worldcup.http_app as http_app
 from worldcup.http_app import SnapshotViewCache, handle_request
 from worldcup.ingest import build_ingest_request
 from worldcup.store import SQLiteSnapshotStore
@@ -490,6 +491,110 @@ def test_http_get_preview_compares_latest_two_snapshots():
         assert "本轮变化" in response["body"]
         assert "等级 A → S" in response["body"]
         assert "赔率 2.00 → 1.85" in response["body"]
+
+
+def test_http_get_preview_reuses_cached_html_response():
+    store = CountingRecentSnapshotStore(records=[{"snapshot": _snapshot("run-cache")}])
+    cache = SnapshotViewCache()
+    calls = []
+    original_renderer = http_app.build_preview_html
+
+    def fake_renderer(snapshot, previous_snapshot=None):
+        calls.append((snapshot, previous_snapshot))
+        return f"<html>preview-{len(calls)}</html>"
+
+    try:
+        http_app.build_preview_html = fake_renderer
+        first = handle_request(
+            method="GET",
+            path="/preview",
+            headers={},
+            body="",
+            db_path="unused.db",
+            secret="test-hmac-secret",
+            store=store,
+            view_cache=cache,
+        )
+        second = handle_request(
+            method="GET",
+            path="/preview",
+            headers={},
+            body="",
+            db_path="unused.db",
+            secret="test-hmac-secret",
+            store=store,
+            view_cache=cache,
+        )
+    finally:
+        http_app.build_preview_html = original_renderer
+
+    assert first["status"] == 200
+    assert second["status"] == 200
+    assert first["body"] == "<html>preview-1</html>"
+    assert second["body"] == "<html>preview-1</html>"
+    assert len(calls) == 1
+
+
+def test_http_post_ingest_snapshot_clears_preview_html_cache():
+    old_snapshot = _snapshot("run-old")
+    new_snapshot = _snapshot("run-new")
+    new_snapshot["matches"][0]["home_team"] = "Canada"
+    new_snapshot["matches"][0]["away_team"] = "Qatar"
+    store = CountingRecentSnapshotStore(records=[{"snapshot": old_snapshot}])
+    cache = SnapshotViewCache()
+    labels = []
+    original_renderer = http_app.build_preview_html
+
+    def fake_renderer(snapshot, previous_snapshot=None):
+        labels.append(snapshot["matches"][0]["home_team"])
+        return f"<html>{snapshot['matches'][0]['home_team']}</html>"
+
+    try:
+        http_app.build_preview_html = fake_renderer
+        cached = handle_request(
+            method="GET",
+            path="/preview",
+            headers={},
+            body="",
+            db_path="unused.db",
+            secret="test-hmac-secret",
+            store=store,
+            view_cache=cache,
+        )
+        request = build_ingest_request(
+            snapshot=new_snapshot,
+            endpoint="https://example.com/api/ingest/snapshot",
+            secret="test-hmac-secret",
+            timestamp="2026-06-08T00:02:00+00:00",
+        )
+        ingest = handle_request(
+            method=request["method"],
+            path=request["path"],
+            headers=request["headers"],
+            body=request["body"],
+            db_path="unused.db",
+            secret="test-hmac-secret",
+            now="2026-06-08T00:03:00+00:00",
+            store=store,
+            view_cache=cache,
+        )
+        refreshed = handle_request(
+            method="GET",
+            path="/preview",
+            headers={},
+            body="",
+            db_path="unused.db",
+            secret="test-hmac-secret",
+            store=store,
+            view_cache=cache,
+        )
+    finally:
+        http_app.build_preview_html = original_renderer
+
+    assert cached["body"] == "<html>Mexico</html>"
+    assert ingest["status"] == 200
+    assert refreshed["body"] == "<html>Canada</html>"
+    assert labels == ["Mexico", "Canada"]
 
 
 def test_http_post_ingest_snapshot_stores_signed_request():

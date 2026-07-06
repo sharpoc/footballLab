@@ -2,6 +2,13 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-06 /preview HTML 缓存优化与中超发布准备
+
+- 新增 `SnapshotViewCache.preview_html()`：`ThreadingHTTPServer` 进程内缓存 `/preview` 渲染后的 HTML，缓存 key 按 DB path 和注入 store 隔离；签名 ingest 成功后与 public view 缓存一起清空，避免发布中超 snapshot 后继续显示旧页面。
+- `recent_views()` 不再在加载 SQLite / 解析大 snapshot 期间持有缓存锁，避免 `/preview` 首次构建大页面时拖住已经命中的 `/api/matches` / `/api/finished` 请求；并发冷启动最多重复构建，不输出未验签或未入库数据。
+- 范围保持收窄：不改 snapshot schema、不改模型参数或信号等级、不刷新 The Odds API、不改 LaunchAgent、不输出资金/下注字段；现有中超 snapshot 发布后仍是 `club_rating_pending` 观察模式。
+- 验证：TDD 红灯先确认 `/preview` 连续请求会重复渲染；实现后新增两条 HTTP 回归覆盖 HTML 复用和 ingest 后清缓存，聚焦测试通过；自定义全量 runner 跑过 `666` 个测试、`failures=0`，仅跳过当前 runtime 缺少可选依赖的 `tests/test_fastapi_app.py`，`py_compile` 和 `git diff --check` 通过。
+
 ## 2026-07-06 SSH 一键代码部署工具与 public view 缓存
 
 - 新增 `worldcup.ssh_deploy`：默认 dry-run，检查 git ref 和工作区 clean 状态，输出将部署的 `/opt/worldcup/releases/<commit>`；`--live` 才通过 `git archive` + SSH stdin 上传 release、远端 `py_compile` 关键 HTTP/query 文件、原子切换 `/opt/worldcup/current`、重启 `worldcup.service` 并 smoke 公网 `/healthz`、`/api/matches`、`/preview`。

@@ -36,10 +36,12 @@ class SnapshotViewCache:
     def __init__(self) -> None:
         self._lock = Lock()
         self._recent: dict[tuple[str, int | None, int], list[dict[str, Any]]] = {}
+        self._preview_html: dict[tuple[str, int | None], str] = {}
 
     def clear(self) -> None:
         with self._lock:
             self._recent.clear()
+            self._preview_html.clear()
 
     def recent_views(
         self,
@@ -50,9 +52,14 @@ class SnapshotViewCache:
         key = (str(db_path), id(store) if store is not None else None, int(limit))
         with self._lock:
             cached = self._recent.get(key)
+            if cached is not None:
+                return cached
+        computed = load_recent_snapshot_views(db_path, store=store, limit=limit)
+        with self._lock:
+            cached = self._recent.get(key)
             if cached is None:
-                cached = load_recent_snapshot_views(db_path, store=store, limit=limit)
-                self._recent[key] = cached
+                self._recent[key] = computed
+                cached = computed
             return cached
 
     def latest_view(
@@ -62,6 +69,28 @@ class SnapshotViewCache:
     ) -> dict[str, Any] | None:
         recent = self.recent_views(db_path, store, limit=1)
         return recent[0] if recent else None
+
+    def preview_html(
+        self,
+        db_path: str | Path,
+        store: SnapshotStore | None,
+    ) -> str | None:
+        key = (str(db_path), id(store) if store is not None else None)
+        with self._lock:
+            cached = self._preview_html.get(key)
+            if cached is not None:
+                return cached
+        recent = self.recent_views(db_path, store, limit=2)
+        if not recent:
+            return None
+        previous = recent[1] if len(recent) > 1 else None
+        rendered = build_preview_html(recent[0], previous_snapshot=previous)
+        with self._lock:
+            cached = self._preview_html.get(key)
+            if cached is None:
+                self._preview_html[key] = rendered
+                cached = rendered
+            return cached
 
 
 def _json_response(
@@ -110,6 +139,20 @@ def _recent_views(
     if view_cache is not None:
         return view_cache.recent_views(db_path, store, limit=limit)
     return load_recent_snapshot_views(db_path, store=store, limit=limit)
+
+
+def _preview_html(
+    db_path: str | Path,
+    store: SnapshotStore | None,
+    view_cache: SnapshotViewCache | None,
+) -> str | None:
+    if view_cache is not None:
+        return view_cache.preview_html(db_path, store)
+    recent = load_recent_snapshot_views(db_path, store=store, limit=2)
+    if not recent:
+        return None
+    previous = recent[1] if len(recent) > 1 else None
+    return build_preview_html(recent[0], previous_snapshot=previous)
 
 
 def _normalize_headers(headers: Mapping[str, str]) -> dict[str, str]:
@@ -250,11 +293,10 @@ def handle_request(
         return _json_response(200, {"finished": project_finished_rows(snapshot)})
 
     if method_upper == "GET" and route == "/preview":
-        recent = _recent_views(db_path, store, view_cache, limit=2)
-        if not recent:
+        html = _preview_html(db_path, store, view_cache)
+        if html is None:
             return _html_response(404, "<!doctype html><title>Not Found</title><p>snapshot_not_found</p>")
-        previous = recent[1] if len(recent) > 1 else None
-        return _html_response(200, build_preview_html(recent[0], previous_snapshot=previous))
+        return _html_response(200, html)
 
     return _json_response(404, {"error": "not_found"})
 
