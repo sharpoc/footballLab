@@ -443,7 +443,7 @@ def test_http_get_preview_renders_latest_rows_for_all_competitions():
 
         assert response["status"] == 200
         assert '<option value="csl_2026">中超 2026</option>' in response["body"]
-        assert "Shanghai Port 对 Beijing Guoan" in response["body"]
+        assert "上海海港 对 北京国安" in response["body"]
 
 
 def test_http_get_preview_compares_latest_two_snapshots():

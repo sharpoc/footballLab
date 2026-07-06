@@ -93,6 +93,27 @@ TEAM_LABELS_ZH = {
     "USA": "美国",
     "Uzbekistan": "乌兹别克斯坦",
     "Wales": "威尔士",
+    "Beijing FC": "北京国安",
+    "Beijing Guoan": "北京国安",
+    "Beijing Guoan FC": "北京国安",
+    "Chengdu Rongcheng FC": "成都蓉城",
+    "Chongqing Tonglianglong FC": "重庆铜梁龙",
+    "Dalian Yingbo": "大连英博",
+    "Henan": "河南队",
+    "Henan FC": "河南队",
+    "Liaoning Tieren FC": "辽宁铁人",
+    "Qingdao Hainiu FC": "青岛海牛",
+    "Qingdao West Coast FC": "青岛西海岸",
+    "Shandong Luneng Taishan FC": "山东泰山",
+    "Shandong Taishan": "山东泰山",
+    "Shanghai Port": "上海海港",
+    "Shanghai SIPG FC": "上海海港",
+    "Shanghai Shenhua FC": "上海申花",
+    "Shenzhen Peng City FC": "深圳新鹏城",
+    "Tianjin Jinmen Tiger FC": "天津津门虎",
+    "Wuhan Three Towns": "武汉三镇",
+    "Yunnan Yukun": "云南玉昆",
+    "Zhejiang": "浙江队",
 }
 
 
@@ -554,6 +575,28 @@ def _match_finished_identity(match: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _snapshot_reference_date(snapshot: dict[str, Any]) -> Any | None:
+    run = snapshot.get("run") or {}
+    raw = run.get("observed_at") or snapshot.get("snapshot_at")
+    display = _to_beijing_time(_parse_datetime(raw))
+    return display.date() if display is not None else None
+
+
+def _has_finished_result(match: dict[str, Any]) -> bool:
+    result = match.get("result")
+    return isinstance(result, dict) and result.get("status") == "finished"
+
+
+def _is_stale_unfinished_match(snapshot: dict[str, Any], match: dict[str, Any]) -> bool:
+    if _has_finished_result(match):
+        return False
+    reference_date = _snapshot_reference_date(snapshot)
+    kickoff = _to_beijing_time(_parse_datetime(match.get("kickoff_at_utc")))
+    if reference_date is None or kickoff is None:
+        return False
+    return kickoff.date() < reference_date
+
+
 def _line_key(line: Any) -> str:
     if line is None:
         return ""
@@ -874,6 +917,8 @@ def project_signal_rows(
     for match in snapshot.get("matches", []):
         if _match_finished_identity(match) in finished_ids:
             continue
+        if _is_stale_unfinished_match(snapshot, match):
+            continue
         match_id = _match_identity(match)
         kickoff_at_utc = match.get("kickoff_at_utc", "")
         parsed_kickoff = _parse_datetime(kickoff_at_utc)
@@ -1014,6 +1059,7 @@ def build_summary_metrics(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]
         match
         for match in (snapshot.get("matches") or [])
         if _match_finished_identity(match) not in finished_ids
+        and not _is_stale_unfinished_match(snapshot, match)
     ]
     metrics = {
         "upcoming_matches": {"label": "即将比赛", "value": len(upcoming)},

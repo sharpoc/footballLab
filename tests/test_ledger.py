@@ -9,6 +9,7 @@ from worldcup.ledger import (
     competition_label_for_match,
     competition_options,
     derive_quality_status,
+    format_team_label,
     format_market_label,
     format_percent,
     format_probability,
@@ -168,6 +169,43 @@ def test_build_summary_metrics_counts_signal_grades():
     assert metrics["stale_sources"]["value"] == 1
     assert metrics["overall_quality"]["value"] == "预警"
     assert metrics["grade_counts"]["value"] == {"A": 1}
+
+
+def test_project_signal_rows_hides_stale_unfinished_matches_from_live_view():
+    snapshot = _snapshot()
+    snapshot["snapshot_at"] = "2026-07-05T23:42:38+00:00"
+    stale = deepcopy(snapshot["matches"][0])
+    stale.update(
+        {
+            "competition": {"id": "csl_2026", "name": "中超 2026"},
+            "kickoff_at_utc": "2026-07-03T12:00:00+00:00",
+            "home_team": "Yunnan Yukun",
+            "away_team": "Henan FC",
+        }
+    )
+    upcoming = deepcopy(stale)
+    upcoming.update(
+        {
+            "kickoff_at_utc": "2026-07-06T12:00:00+00:00",
+            "home_team": "Beijing FC",
+            "away_team": "Shandong Luneng Taishan FC",
+        }
+    )
+    snapshot["matches"] = [stale, upcoming]
+
+    rows = project_signal_rows(snapshot)
+    metrics = build_summary_metrics(snapshot)
+
+    assert [row["matchup"] for row in rows] == ["北京国安 对 山东泰山"]
+    assert metrics["upcoming_matches"]["value"] == 1
+
+
+def test_format_team_label_uses_csl_chinese_names():
+    assert format_team_label("Yunnan Yukun") == "云南玉昆"
+    assert format_team_label("Henan FC") == "河南队"
+    assert format_team_label("Shanghai SIPG FC") == "上海海港"
+    assert format_team_label("Beijing FC") == "北京国安"
+    assert format_team_label("Shandong Luneng Taishan FC") == "山东泰山"
 
 
 def test_project_signal_rows_expands_signals_without_money_fields():

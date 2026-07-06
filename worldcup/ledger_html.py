@@ -1921,7 +1921,7 @@ def build_research_ledger_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>2026 世界杯 | 研究台账</title>
+  <title>足球研究台账</title>
   <link rel="icon" href="data:,">
   <style>
     :root {{
@@ -3205,7 +3205,7 @@ def build_research_ledger_html(
     <header>
       <div>
         <div class="brand-row">
-          <div class="brand-title">2026 世界杯</div>
+          <div class="brand-title">足球研究台账</div>
           {primary_nav}
         </div>
         <h1 class="screen-title">研究台账</h1>

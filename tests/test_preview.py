@@ -81,6 +81,9 @@ def _snapshot():
 def test_build_preview_html_renders_research_ledger_surface():
     html = build_preview_html(_snapshot())
 
+    assert "<title>足球研究台账</title>" in html
+    assert '<div class="brand-title">足球研究台账</div>' in html
+    assert '<div class="brand-title">2026 世界杯</div>' not in html
     assert "2026 世界杯" in html
     assert "研究台账" in html
     assert "仅用于研究分析，不构成投注建议" in html
