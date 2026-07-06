@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-06 多赛事页面显示口径修复
+
+- 修复多赛事上线后的实时列表口径：`project_signal_rows()` / summary metrics 会隐藏“北京时间比赛日期早于当前最新 snapshot 日期、且未进入 finished/result 的未结算比赛”，避免 7 月 3-5 日中超旧赛程继续占据实时方向首屏；该逻辑只影响页面投影，不删除线上 SQLite snapshot，也不写入赛果。
+- 补充中超俱乐部中文展示映射：云南玉昆、河南队、上海海港、北京国安、山东泰山、辽宁铁人、重庆铜梁龙、青岛西海岸、大连英博、武汉三镇、天津津门虎、深圳新鹏城、青岛海牛、成都蓉城、上海申花、浙江队等；原始 API / snapshot 字段不变。
+- 页面品牌标题从 `2026 世界杯` 改为 `足球研究台账`，赛事仍通过筛选显示 `2026 世界杯` / `中超 2026`；研究免责声明和资金/下注禁词边界保持不变。
+- 验证：新增 TDD 回归覆盖过期未结算比赛隐藏、中超队名中文化和页面标题；`ledger + preview` 聚焦测试 `56/56` 通过，HTTP 测试 `20/20` 通过，自定义全量 runner `672` 个测试、`failures=0`，仅跳过当前 runtime 缺少可选依赖的 `tests/test_fastapi_app.py`，`py_compile` 和 `git diff --check` 通过。
+- 已部署代码 commit `84b4767` 到 ECS `/opt/worldcup/releases/84b4767f3f28bda9dcf5daa5cb97c09325fa99d9`；公网 smoke：`/healthz` 200，`/api/matches` 仍返回 `csl_2026=8`、`fifa_world_cup_2026=6`，`/preview` 可见实时列表只显示世界杯 6 场；标题为“足球研究台账”，7/3 中超旧赛程和中超英文队名不再出现在可见比赛行，免责声明保留，资金/下注禁词扫描为空。
+
 ## 2026-07-06 /preview HTML 缓存优化与中超发布
 
 - 新增 `SnapshotViewCache.preview_html()`：`ThreadingHTTPServer` 进程内缓存 `/preview` 渲染后的 HTML，缓存 key 按 DB path 和注入 store 隔离；签名 ingest 成功后与 public view 缓存一起清空，避免发布中超 snapshot 后继续显示旧页面。
