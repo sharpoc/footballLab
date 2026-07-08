@@ -39,14 +39,14 @@
 - 当前 ingest 默认 dry-run；只构造请求体、HMAC 签名头和 body hash，不发送线上请求
 - 当前 ingest server 是纯本地验签/幂等模块；FastAPI adapter 已复用它，ECS 部署另行确认
 - 当前 HTTP ingest 入口会拒绝非 JSON 请求、超限 body、非法 Content-Length 和非法 UTF-8；ingest 响应统一携带 `X-Request-Id`，错误体只暴露结构化 `error.code` / `error.request_id`，不回显 raw body、签名、secret 或 payload
-- 当前 SQLite store / preview 都是本地低风险链路；默认输出在已忽略的 `data/local/` 或 `data/cache/`；公开 `/api/matches`、`/api/finished` 和 `/preview` 会按 `competition_id` 合并各赛事最新 snapshot 形成只读展示视图，避免中超 snapshot 发布后把世界杯 latest 页面顶掉；线上 HTTP 进程会缓存 public view 和 `/preview` 渲染 HTML，签名 ingest 成功后清空缓存
+- 当前 SQLite store / preview 都是本地低风险链路；默认输出在已忽略的 `data/local/` 或 `data/cache/`；公开 `/api/matches`、`/api/finished` 和 `/preview` 会按 `competition_id` 合并各赛事最新 snapshot 形成只读展示视图，避免中超 snapshot 发布后把世界杯 latest 页面顶掉；线上 HTTP 进程会缓存 public view 和 `/preview` 渲染 HTML，并用 DB 同目录的 `*.preview.html` / `*.preview.html.meta.json` 做重启后可复用的签名校验磁盘缓存，签名 ingest 成功后清空进程缓存且磁盘缓存会因 snapshot 签名变化自动失效
 - 当前 PostgreSQL store adapter 可用于后续 ECS/RDS 接入；`psycopg` 只作为可选依赖声明，本轮未安装、未连接真实数据库
 - 当前 store selection 默认 `sqlite`；单服务器 MVP 首发推荐 SQLite，只有显式 `--store postgres` 或 `.env` 中 `WORLDCUP_STORE=postgres` 时才要求 `DATABASE_URL`
 - 当前 PostgreSQL smoke guard 默认只做 dry-run；SQLite 首发路线下返回 `blocked / expected_postgres` 是安全结果，且不打印 DSN、secret、签名或请求 body
 - 当前 HTTP 适配层已用于 ECS 正式公网入口；服务只监听服务器本机 `127.0.0.1:8788`，由 Nginx 对 `football.celab.xin` 提供 HTTPS 反代
 - 当前 ASGI 适配层无外部依赖，只包装本地 HTTP 路由契约；正式 ASGI server / ECS 部署需单独确认
 - 当前 FastAPI app 仍作为可选适配层；Gate B 服务器 smoke 采用无额外依赖的标准库 HTTP app
-- 当前 `/healthz` 不读 DB、不依赖 secret，只用于本地和后续云端健康检查契约
+- 当前 `/healthz` 不读 DB、不依赖 secret，只用于本地和后续云端健康检查契约；`/readyz` 会读取最新 public view 并返回轻量 ready 摘要，用于部署/重启后的 warmup，不输出 secret、quota 或完整 snapshot
 - 当前静态导出默认写入已忽略的 `data/cache/site/`
 - 当前 refresh runner 在写盘和 history 归档前做本地富化：每场 match 可附加 `odds_trend` 走势点，顶层可附加 `finished` 完赛定格块；富化失败只输出 warning，不阻断 snapshot 生成或发布
 - 当前 `worldcup.lineups_refresh` 可用 FIFA public API 抓取官方首发；默认 dry-run，不联网写盘，只有显式 `--live` 才请求 FIFA 公网，只有再传 `--write` 才写入被忽略的 `data/cache/lineups_wc2026.json`。当临赛窗口内 FIFA 仍未返回两队 11 人首发时，可显式 `--notify` 通过 WxPusher 发一次缺失通知，去重状态写入被忽略的 `data/local/lineups_missing_notifications.json`。`worldcup.pre_match_runner` 可编排“首发轮询 → 新 confirmed lineup → post-lineup refresh guard → 首发后 odds refresh”，默认仍是 dry-run；`--refresh-guard` 只调用 scheduled refresh 的 dry-run 决策并返回 quota / policy 摘要，不刷新 odds、不消耗 The Odds API quota；如果同时打开 `--refresh-after-lineups --live-refresh`，guard 在 quota 未知或低于 `--min-refresh-quota` 时会阻断 live odds refresh。只有显式打开 `--live-lineups` / `--write-lineups` / `--refresh-after-lineups` / `--live-refresh` 才会逐步触发公网抓取、写本地 cache 和 The Odds API 刷新。`xin.celab.football.pre-match` LaunchAgent 已安装为 lineups-only + audit-notify 模式，每 300 秒运行 `worldcup.pre_match_runner --live-lineups --write-lineups --notify-missing --notify-audit`，不带 `--live-refresh`，所以不会自动消耗 The Odds API 刷 odds；生成未来 live-refresh plist 草案时会自动包含 `--refresh-guard`。本地 runner 会可选读取同一输入目录下的 `lineups_wc2026.json`，把已确认首发、替补、缺阵、阵型和球员影响 delta 接入 `lineup_context`；绑定首发上下文时，`source_match_no` 只能作为候选，必须同时校验双方 canonical team 和 UTC 开球时间，避免 FIFA 编号与本地赛程编号不一致时错挂；当前未接入付费首发 API。
@@ -192,7 +192,7 @@ python3 -m worldcup.league_runner --competition csl_2026 --cache-dir data/cache 
 
 `--competition` 与 `--competition-id` 等价，默认 competition id 为 `csl_2026`。
 
-HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store 里同时存在世界杯和中超 snapshot 时，`/preview` 与 `/api/matches` 会展示各赛事最新一份，并复用页面赛事筛选显示“中超 2026”。该查询只读本地/线上 SQLite 或 PostgreSQL store，不刷新赔率、不读取 `.env`、不调用 The Odds API。线上标准库 HTTP 进程会缓存 public view 和 `/preview` 渲染 HTML，避免每次请求重复扫描、解析历史大 snapshot 和重建大页面；签名 ingest 成功后会自动清空缓存。
+HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store 里同时存在世界杯和中超 snapshot 时，`/preview` 与 `/api/matches` 会展示各赛事最新一份，并复用页面赛事筛选显示“中超 2026”。该查询只读本地/线上 SQLite 或 PostgreSQL store，不刷新赔率、不读取 `.env`、不调用 The Odds API。线上标准库 HTTP 进程会缓存 public view 和 `/preview` 渲染 HTML，避免每次请求重复扫描、解析历史大 snapshot 和重建大页面；`/preview` 还会把已渲染 HTML 写入 DB 同目录的签名校验磁盘缓存，服务重启后如果 snapshot 未变化可直接复用；签名 ingest 成功后会自动清空进程缓存，磁盘缓存会因 snapshot 签名变化自动失效。
 
 中超初期 `rating_policy=club_rating_pending` 时，强信号会降级或仅作为观察；不得把国家队 Elo 套用于俱乐部联赛。任何 live odds 探测、scheduled publish、ECS ingest 或 LaunchAgent 更新都需要单独确认。
 
@@ -482,7 +482,7 @@ python3 -m worldcup.ops_daily_report --format json
 python3 -m worldcup.ssh_deploy
 ```
 
-真实部署必须显式加 `--live`；部署使用本地 `git archive` 通过 SSH stdin 上传到 `/opt/worldcup/releases/<commit>`，远端 `py_compile` 关键 HTTP/query 文件后原子切换 `/opt/worldcup/current`，重启 `worldcup.service`，并 smoke `/healthz`、`/api/matches` 和 `/preview`。如需 smoke 失败自动回滚到上一 release：
+真实部署必须显式加 `--live`；部署使用本地 `git archive` 通过 SSH stdin 上传到 `/opt/worldcup/releases/<commit>`，远端 `py_compile` 关键 HTTP/query 文件后原子切换 `/opt/worldcup/current`，重启 `worldcup.service`，并按 `/healthz`、`/readyz`、`/api/matches`、`/preview` 顺序 smoke；`/readyz` 会先 warmup 最新 public view，降低重启后第一波重页面请求风险。如需 smoke 失败自动回滚到上一 release：
 
 ```bash
 python3 -m worldcup.ssh_deploy --live --rollback-on-fail
@@ -581,7 +581,7 @@ DATABASE_URL=
 ## 下一步
 
 1. Gate C HTTPS 已完成：`https://football.celab.xin/` 对外展示研究台账。
-2. 公网开放 `/`、`/preview`、`/api/matches`、`/healthz`、`/api/ingest/snapshot`；`/api/snapshot/latest` 返回 404。
+2. 公网开放 `/`、`/preview`、`/api/matches`、`/readyz`、`/healthz`、`/api/ingest/snapshot`；`/api/snapshot/latest` 返回 404。
 3. 本机 `launchd` 已启用 `xin.celab.football.scheduled-publish`，每 15 分钟唤醒一次；真正刷新/发布仍由 scheduler due 判断控制。
 4. 本机 `launchd` 已启用 `xin.celab.football.pre-match`，每 300 秒运行 lineups-only 赛前首发轮询和首发链路审计通知；不带 `--live-refresh`，不会自动刷新 odds。
 5. 下一步观察首轮 due 后的刷新、线上 ingest、Nginx/systemd 日志、certbot 自动续期和赛前首发轮询日志。
@@ -597,7 +597,7 @@ DATABASE_URL=
 - FIFA public API 首发抓取不消耗 The Odds API quota，也不需要 key；它是公开源，不是付费 SLA 数据源。`worldcup.lineups_refresh` 抓不到官方首发时只能记录 missing 或发缺失通知，不能伪造 confirmed；默认只在开赛前 35 分钟内发缺首发通知，避免过早提醒。`--write` 合并保留旧 confirmed cache，避免未公布轮询清空已确认首发。FIFA `source_match_no` 与 openfootball/本地 snapshot 编号可能不是同一套编号，首发绑定不得只依赖编号，必须通过双方 canonical team + UTC kickoff 校验。`worldcup.pre_match_runner` 只有在 `newly_confirmed > 0` 时才会允许触发首发后 odds refresh；`--refresh-guard` 会先 dry-run 检查调度决策和 quota，`--live-refresh` 会消耗 The Odds API quota，当前已安装的 `xin.celab.football.pre-match` 不包含该参数。如需改为自动首发后 odds refresh，必须单独确认后更新 plist 并重新加载 launchd。
 - ingest 必须绑定 `timestamp`、`run_id`、`snapshot_id` 和 body hash 做 HMAC；dry-run 不发送请求，也不能打印 secret。
 - ingest server 默认防重放窗口为 300 秒；服务端必须用 `X-Worldcup-Idempotency-Key` 做幂等。
-- `/healthz` 只能报告服务存活，不得输出环境变量、密钥、quota 或 snapshot 内容。
+- `/healthz` 只能报告服务存活，不得输出环境变量、密钥、quota 或 snapshot 内容；`/readyz` 只能输出轻量 ready 状态和 match_count，不得输出完整 snapshot、secret、quota 或 provider 原始信息。
 - 本地预览页必须保留研究免责声明，不显示资金相关字段。
 - readiness check 只报告变量名、文件状态和内容完整性，不能输出密钥值；`.env.example` 必须只含变量名和空值。
 - 所有公开输出都必须保留免责声明。

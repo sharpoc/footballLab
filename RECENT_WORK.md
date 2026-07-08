@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-08 重启后预览缓存与 warmup 硬化
+
+- 新增 `/readyz` 轻量 readiness / warmup 路由：会读取并缓存最新 public view，返回 `status=ready` 与 `match_count`，不输出完整 snapshot、secret、quota 或 provider 原始信息；`ssh_deploy` smoke 顺序改为 `/healthz` → `/readyz` → `/api/matches` → `/preview`，先预热轻量查询再碰重页面。
+- `SnapshotViewCache` 支持可选磁盘 HTML 缓存：`/preview` 渲染后可写入 DB 同目录 `*.preview.html` 与 `*.preview.html.meta.json`，服务进程重启后如果 recent snapshot 签名未变化，可直接复用已渲染页面，避免每次重启都重新构建大 HTML；snapshot 变化时签名不匹配会自动重新渲染。
+- README 与 `docs/superpowers/data-contract.md` 已同步 `/readyz`、部署 smoke 顺序和预览磁盘缓存语义；研究边界保持不变，不输出资金/下注字段。
+- 验证：新增 TDD 回归先红后绿；`tests/test_http_app.py` 全文件 `23/23` 通过，`tests/test_asgi_app.py` 全文件 `5/5` 通过，`tests/test_ssh_deploy.py` 全文件 `6/6` 通过；`py_compile worldcup/http_app.py worldcup/ssh_deploy.py worldcup/asgi_app.py worldcup/fastapi_app.py tests/test_http_app.py tests/test_ssh_deploy.py tests/test_asgi_app.py tests/test_fastapi_app.py` 和 `git diff --check` 通过。标准 `tests/run_tests.py` 仍在导入 `tests/test_fastapi_app.py` 时因当前 runtime 缺少可选依赖 `fastapi` 中断。
+- 本轮未部署、未重启 ECS、未重启线上 `worldcup.service`、未读取 `.env`、未调用 The Odds API、未发布 snapshot、未改 LaunchAgent。
+
 ## 2026-07-08 多赛事扫描窗口修复
 
 - 修复中超在多轮世界杯刷新后从 `/api/matches` / `/preview` 合并视图中消失的问题：不再依赖“最近 N 条 snapshot”窗口凑齐赛事，而是让 `SQLiteSnapshotStore` 按 `competition_id` 直接取每个活跃赛事最新 snapshot；`worldcup.query.SNAPSHOT_VIEW_SCAN_LIMIT=50` 仅保留给不支持该轻量方法的 fallback store。

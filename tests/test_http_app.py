@@ -535,6 +535,130 @@ def test_http_get_preview_reuses_cached_html_response():
     assert len(calls) == 1
 
 
+def test_http_get_preview_reuses_disk_cache_after_process_restart():
+    with TemporaryDirectory() as tmp:
+        store = CountingRecentSnapshotStore(records=[{"snapshot": _snapshot("run-cache")}])
+        cache_path = Path(tmp) / "preview.html"
+        first_cache = SnapshotViewCache(preview_cache_path=cache_path)
+        original_renderer = http_app.build_preview_html
+        calls = []
+
+        def first_renderer(snapshot, previous_snapshot=None):
+            calls.append(snapshot["run"]["run_id"])
+            return "<html>persisted-preview</html>"
+
+        def failing_renderer(snapshot, previous_snapshot=None):
+            raise AssertionError("disk cache should avoid rendering after restart")
+
+        try:
+            http_app.build_preview_html = first_renderer
+            first = handle_request(
+                method="GET",
+                path="/preview",
+                headers={},
+                body="",
+                db_path="unused.db",
+                secret="test-hmac-secret",
+                store=store,
+                view_cache=first_cache,
+            )
+            restarted_cache = SnapshotViewCache(preview_cache_path=cache_path)
+            http_app.build_preview_html = failing_renderer
+            second = handle_request(
+                method="GET",
+                path="/preview",
+                headers={},
+                body="",
+                db_path="unused.db",
+                secret="test-hmac-secret",
+                store=store,
+                view_cache=restarted_cache,
+            )
+        finally:
+            http_app.build_preview_html = original_renderer
+
+        assert first["status"] == 200
+        assert second["status"] == 200
+        assert first["body"] == "<html>persisted-preview</html>"
+        assert second["body"] == "<html>persisted-preview</html>"
+        assert calls == ["run-cache"]
+
+
+def test_http_get_preview_ignores_disk_cache_when_snapshot_changes():
+    with TemporaryDirectory() as tmp:
+        old_store = CountingRecentSnapshotStore(records=[{"snapshot": _snapshot("run-old")}])
+        new_store = CountingRecentSnapshotStore(records=[{"snapshot": _snapshot("run-new")}])
+        cache_path = Path(tmp) / "preview.html"
+        original_renderer = http_app.build_preview_html
+
+        def renderer(snapshot, previous_snapshot=None):
+            return f"<html>{snapshot['run']['run_id']}</html>"
+
+        try:
+            http_app.build_preview_html = renderer
+            old = handle_request(
+                method="GET",
+                path="/preview",
+                headers={},
+                body="",
+                db_path="unused.db",
+                secret="test-hmac-secret",
+                store=old_store,
+                view_cache=SnapshotViewCache(preview_cache_path=cache_path),
+            )
+            new = handle_request(
+                method="GET",
+                path="/preview",
+                headers={},
+                body="",
+                db_path="unused.db",
+                secret="test-hmac-secret",
+                store=new_store,
+                view_cache=SnapshotViewCache(preview_cache_path=cache_path),
+            )
+        finally:
+            http_app.build_preview_html = original_renderer
+
+        assert old["body"] == "<html>run-old</html>"
+        assert new["body"] == "<html>run-new</html>"
+
+
+def test_http_readyz_primes_latest_view_cache_without_rendering_preview():
+    store = CountingRecentSnapshotStore(records=[{"snapshot": _snapshot("run-ready")}])
+    cache = SnapshotViewCache()
+
+    ready = handle_request(
+        method="GET",
+        path="/readyz",
+        headers={},
+        body="",
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        store=store,
+        view_cache=cache,
+    )
+    matches = handle_request(
+        method="GET",
+        path="/api/matches",
+        headers={},
+        body="",
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        store=store,
+        view_cache=cache,
+    )
+
+    assert ready["status"] == 200
+    assert json.loads(ready["body"]) == {
+        "match_count": 1,
+        "schema_version": 1,
+        "service": "worldcup-analysis",
+        "status": "ready",
+    }
+    assert matches["status"] == 200
+    assert store.list_recent_calls == 1
+
+
 def test_http_post_ingest_snapshot_clears_preview_html_cache():
     old_snapshot = _snapshot("run-old")
     new_snapshot = _snapshot("run-new")

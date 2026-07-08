@@ -56,6 +56,8 @@ class FakeRunner:
 def ok_fetcher(url: str, timeout: int) -> FetchResult:
     if url.endswith("/healthz"):
         return FetchResult(ok=True, status_code=200, body='{"status":"ok"}', error=None)
+    if url.endswith("/readyz"):
+        return FetchResult(ok=True, status_code=200, body='{"status":"ready"}', error=None)
     if url.endswith("/api/matches"):
         return FetchResult(ok=True, status_code=200, body='{"matches":[]}', error=None)
     if url.endswith("/preview"):
@@ -129,6 +131,12 @@ def test_live_deploy_uploads_archive_restarts_and_smokes_public_routes() -> None
     assert result["remote"]["nginx_status"] == "active"
     assert result["smoke"]["status"] == "ok"
     assert result["safety"]["deployed"] is True
+    assert [check["path"] for check in result["smoke"]["checks"]] == [
+        "/healthz",
+        "/readyz",
+        "/api/matches",
+        "/preview",
+    ]
     ssh_calls = [call for call in runner.calls if call["args"][0] == "ssh"]
     assert len(ssh_calls) == 1
     deploy_call = ssh_calls[0]

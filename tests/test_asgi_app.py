@@ -149,6 +149,24 @@ def test_asgi_app_healthz_returns_ok_without_snapshot():
         assert json.loads(body)["status"] == "ok"
 
 
+def test_asgi_app_readyz_returns_lightweight_ready_summary():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        _store_snapshot(db_path)
+        app = create_asgi_app(db_path=db_path, secret="test-secret")
+
+        status, body = _call_asgi(app, "GET", "/readyz")
+
+        payload = json.loads(body)
+        assert status == 200
+        assert payload == {
+            "match_count": 1,
+            "schema_version": 1,
+            "service": "worldcup-analysis",
+            "status": "ready",
+        }
+
+
 def test_asgi_app_get_preview_returns_html():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "worldcup.db"

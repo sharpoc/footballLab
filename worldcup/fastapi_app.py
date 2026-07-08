@@ -71,6 +71,10 @@ def create_fastapi_app(
     async def healthz(request: Request) -> Response:
         return await _dispatch(request, "GET", "/healthz", db_path, secret, store=store)
 
+    @app.get("/readyz")
+    async def readyz(request: Request) -> Response:
+        return await _dispatch(request, "GET", "/readyz", db_path, secret, store=store)
+
     @app.get("/api/snapshot/latest")
     async def latest_snapshot(request: Request) -> Response:
         return await _dispatch(request, "GET", "/api/snapshot/latest", db_path, secret, store=store)

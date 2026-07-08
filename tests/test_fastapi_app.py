@@ -159,6 +159,24 @@ def test_fastapi_healthz_does_not_require_db_or_secret():
         }
 
 
+def test_fastapi_readyz_returns_lightweight_ready_summary():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        _store_snapshot(db_path)
+        app = create_fastapi_app(db_path=db_path, secret="test-hmac-secret")
+        client = TestClient(app)
+
+        response = client.get("/readyz")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "match_count": 1,
+            "schema_version": 1,
+            "service": "worldcup-analysis",
+            "status": "ready",
+        }
+
+
 def test_fastapi_get_matches_returns_safe_projection():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "worldcup.db"

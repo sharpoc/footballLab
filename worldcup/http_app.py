@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import uuid
@@ -33,10 +34,11 @@ _AUTH_REJECTION_REASONS = {
 class SnapshotViewCache:
     """Small process-local cache for expensive multi-snapshot public views."""
 
-    def __init__(self) -> None:
+    def __init__(self, preview_cache_path: str | Path | None = None) -> None:
         self._lock = Lock()
         self._recent: dict[tuple[str, int | None, int], list[dict[str, Any]]] = {}
         self._preview_html: dict[tuple[str, int | None], str] = {}
+        self._preview_cache_path = Path(preview_cache_path) if preview_cache_path else None
 
     def clear(self) -> None:
         with self._lock:
@@ -70,6 +72,54 @@ class SnapshotViewCache:
         recent = self.recent_views(db_path, store, limit=1)
         return recent[0] if recent else None
 
+    def _preview_meta_path(self) -> Path | None:
+        if self._preview_cache_path is None:
+            return None
+        return self._preview_cache_path.with_suffix(self._preview_cache_path.suffix + ".meta.json")
+
+    def _preview_signature(self, recent: list[dict[str, Any]]) -> str:
+        payload = json.dumps(recent, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _read_preview_disk_cache(self, signature: str) -> str | None:
+        html_path = self._preview_cache_path
+        meta_path = self._preview_meta_path()
+        if html_path is None or meta_path is None:
+            return None
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if meta.get("signature") != signature:
+                return None
+            return html_path.read_text(encoding="utf-8")
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _write_preview_disk_cache(self, signature: str, html: str) -> None:
+        html_path = self._preview_cache_path
+        meta_path = self._preview_meta_path()
+        if html_path is None or meta_path is None:
+            return
+        try:
+            html_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_html = html_path.with_suffix(html_path.suffix + ".tmp")
+            tmp_meta = meta_path.with_suffix(meta_path.suffix + ".tmp")
+            tmp_html.write_text(html, encoding="utf-8")
+            tmp_meta.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "signature": signature,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            tmp_html.replace(html_path)
+            tmp_meta.replace(meta_path)
+        except OSError:
+            return
+
     def preview_html(
         self,
         db_path: str | Path,
@@ -83,8 +133,15 @@ class SnapshotViewCache:
         recent = self.recent_views(db_path, store, limit=2)
         if not recent:
             return None
+        signature = self._preview_signature(recent)
+        disk_cached = self._read_preview_disk_cache(signature)
+        if disk_cached is not None:
+            with self._lock:
+                self._preview_html[key] = disk_cached
+            return disk_cached
         previous = recent[1] if len(recent) > 1 else None
         rendered = build_preview_html(recent[0], previous_snapshot=previous)
+        self._write_preview_disk_cache(signature, rendered)
         with self._lock:
             cached = self._preview_html.get(key)
             if cached is None:
@@ -114,6 +171,10 @@ def _html_response(status: int, body: str) -> dict[str, Any]:
         "headers": {"Content-Type": "text/html; charset=utf-8"},
         "body": body,
     }
+
+
+def _default_preview_cache_path(db_path: str | Path) -> Path:
+    return Path(db_path).with_suffix(".preview.html")
 
 
 def _latest_or_404(db_path: str | Path, store: SnapshotStore | None = None) -> dict[str, Any] | None:
@@ -238,6 +299,27 @@ def handle_request(
             },
         )
 
+    if method_upper == "GET" and route == "/readyz":
+        snapshot = _latest_view(db_path, store, view_cache)
+        if snapshot is None:
+            return _json_response(
+                503,
+                {
+                    "schema_version": 1,
+                    "service": "worldcup-analysis",
+                    "status": "not_ready",
+                },
+            )
+        return _json_response(
+            200,
+            {
+                "match_count": len(snapshot.get("matches") or []),
+                "schema_version": 1,
+                "service": "worldcup-analysis",
+                "status": "ready",
+            },
+        )
+
     if method_upper == "POST" and route == "/api/ingest/snapshot":
         request_id = _request_id(headers)
         normalized_headers = _normalize_headers(headers)
@@ -302,7 +384,7 @@ def handle_request(
 
 
 def make_handler(db_path: str | Path, secret: str):
-    view_cache = SnapshotViewCache()
+    view_cache = SnapshotViewCache(preview_cache_path=_default_preview_cache_path(db_path))
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, response: dict[str, Any]) -> None:

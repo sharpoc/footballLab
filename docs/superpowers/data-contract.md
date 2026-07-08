@@ -692,6 +692,7 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 | `GET` | `/api/finished` | 返回 `project_finished_rows(snapshot)` 的公开安全复盘投影 |
 | `GET` | `/preview` | 返回静态 HTML 预览页 |
 | `GET` | `/healthz` | 返回服务存活状态；不读 DB、不依赖 secret |
+| `GET` | `/readyz` | 读取最新 public view 并返回轻量 ready 摘要，用于重启/部署 warmup；不输出完整 snapshot、secret、quota 或 provider 原始信息 |
 
 ### Local ASGI adapter
 
@@ -703,6 +704,7 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 - `GET /api/finished`
 - `GET /preview`
 - `GET /healthz`
+- `GET /readyz`
 
 正式 ASGI server / FastAPI 依赖安装、启动常驻服务、ECS 部署和云端写入必须单独确认。
 

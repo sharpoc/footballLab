@@ -260,7 +260,7 @@ def _smoke_public(base_url: str, fetcher: Fetcher, timeout: int) -> dict[str, ob
     base = base_url.rstrip("/")
     checks: list[dict[str, object]] = []
     failed = False
-    for path in ("/healthz", "/api/matches", "/preview"):
+    for path in ("/healthz", "/readyz", "/api/matches", "/preview"):
         fetched = fetcher(f"{base}{path}", timeout)
         check: dict[str, object] = {
             "path": path,
