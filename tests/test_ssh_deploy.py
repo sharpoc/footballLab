@@ -145,6 +145,8 @@ def test_live_deploy_uploads_archive_restarts_and_smokes_public_routes() -> None
     assert "/opt/worldcup/releases/00158faef75b" in remote_script
     assert '"$tmp/worldcup/query.py"' in remote_script
     assert "http://127.0.0.1:8788/readyz" in remote_script
+    assert "time.monotonic() + 30" in remote_script
+    assert "time.sleep(1)" in remote_script
     assert "systemctl restart" in remote_script
 
 
