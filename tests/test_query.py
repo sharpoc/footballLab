@@ -267,6 +267,58 @@ def test_load_latest_snapshot_view_merges_latest_snapshot_per_competition():
         assert project_match_rows(snapshot)[1]["competition_id"] == "csl_2026"
 
 
+def test_load_latest_snapshot_view_keeps_competition_after_many_newer_snapshots():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        store = SQLiteSnapshotStore(db_path)
+        store.put_snapshot(
+            idempotency_key="csl-live:csl-live-snapshot",
+            payload={
+                "run_id": "csl-live",
+                "snapshot_id": "csl-live-snapshot",
+                "snapshot_at": "2026-06-08T00:00:00+00:00",
+                "snapshot": _competition_snapshot(
+                    "csl_2026",
+                    "中超 2026",
+                    "Shanghai Port",
+                    "Beijing Guoan",
+                    "csl-live",
+                ),
+            },
+            stored_at="2026-06-08T00:01:00+00:00",
+        )
+        for index in range(25):
+            run_id = f"wc-live-{index}"
+            store.put_snapshot(
+                idempotency_key=f"{run_id}:{run_id}-snapshot",
+                payload={
+                    "run_id": run_id,
+                    "snapshot_id": f"{run_id}-snapshot",
+                    "snapshot_at": f"2026-06-08T01:{index:02d}:00+00:00",
+                    "snapshot": _competition_snapshot(
+                        "fifa_world_cup_2026",
+                        "2026 世界杯",
+                        f"World Cup Home {index}",
+                        f"World Cup Away {index}",
+                        run_id,
+                    ),
+                },
+                stored_at=f"2026-06-08T01:{index:02d}:00+00:00",
+            )
+
+        snapshot = load_latest_snapshot_view(db_path)
+
+        assert snapshot["competition"]["id"] == "multi_competition"
+        assert [match["competition"]["id"] for match in snapshot["matches"]] == [
+            "fifa_world_cup_2026",
+            "csl_2026",
+        ]
+        assert [match["home_team"] for match in snapshot["matches"]] == [
+            "World Cup Home 24",
+            "Shanghai Port",
+        ]
+
+
 def test_load_recent_snapshot_views_compares_each_competition_with_own_previous_snapshot():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "worldcup.db"

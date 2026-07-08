@@ -2,6 +2,13 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-08 多赛事扫描窗口修复
+
+- 修复中超在多轮世界杯刷新后从 `/api/matches` / `/preview` 合并视图中消失的问题：`worldcup.query.SNAPSHOT_VIEW_SCAN_LIMIT` 从 20 调整为 500，和 SQLite/PostgreSQL store 的安全上限一致，避免旧的 `csl_2026` 最新快照被最近 20 条世界杯快照挤出扫描窗口。
+- 新增回归测试覆盖“先发布中超，再连续写入 25 条世界杯 snapshot”时，默认 `load_latest_snapshot_view()` 仍应输出 `multi_competition`，且包含 `fifa_world_cup_2026` 和 `csl_2026`。
+- 本轮只改本地查询层与测试；未刷新中超赔率，未读取 `.env`，未调用 The Odds API，未发布线上 snapshot，未部署，未改 LaunchAgent。
+- 验证：新增回归测试先红后绿；`tests/test_query.py` 全文件 `10/10` 通过；HTTP 多赛事相关用例 `2/2` 通过；`py_compile worldcup/query.py tests/test_query.py` 和 `git diff --check` 通过。标准 `tests/run_tests.py` 仍在导入 `tests/test_fastapi_app.py` 时因当前 runtime 缺少可选依赖 `fastapi` 中断。
+
 ## 2026-07-06 首发源报告与本场首选战绩卡
 
 - `worldcup.lineup_source_probe` 新增 `--append-history` / `--write-report`：live probe 可把 FIFA public API 与 FotMob 的 confirmed / predicted / missing 观测追加到 ignored JSONL 历史，并生成 Markdown 首发源观测报告；默认 dry-run 仍不联网、不写盘，报告链路不进入模型、不刷新赔率、不发布线上状态。
