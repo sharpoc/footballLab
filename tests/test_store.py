@@ -108,3 +108,47 @@ def test_sqlite_snapshot_store_list_recent_snapshots_allows_snapshot_view_scan_l
         assert len(recent) == 25
         assert recent[0]["run_id"] == "run-24"
         assert recent[-1]["run_id"] == "run-0"
+
+
+def test_sqlite_snapshot_store_lists_latest_snapshots_by_competition_without_recent_window():
+    with TemporaryDirectory() as tmp:
+        store = SQLiteSnapshotStore(Path(tmp) / "worldcup.db")
+        store.initialize()
+        csl_payload = _payload(run_id="csl-live", snapshot_id="csl-live-snapshot")
+        csl_payload["snapshot"]["competition"] = {"id": "csl_2026", "name": "中超 2026"}
+        csl_payload["snapshot"]["matches"][0]["competition"] = {
+            "id": "csl_2026",
+            "name": "中超 2026",
+        }
+        store.put_snapshot(
+            idempotency_key="csl-live:csl-live-snapshot",
+            payload=csl_payload,
+            stored_at="2026-06-08T00:01:00+00:00",
+        )
+        for index in range(75):
+            run_id = f"wc-live-{index}"
+            payload = _payload(run_id=run_id, snapshot_id=f"{run_id}-snapshot")
+            payload["snapshot"]["competition"] = {
+                "id": "fifa_world_cup_2026",
+                "name": "2026 世界杯",
+            }
+            payload["snapshot"]["matches"][0]["competition"] = {
+                "id": "fifa_world_cup_2026",
+                "name": "2026 世界杯",
+            }
+            store.put_snapshot(
+                idempotency_key=f"{run_id}:{run_id}-snapshot",
+                payload=payload,
+                stored_at=f"2026-06-08T01:{index:02d}:00+00:00",
+            )
+
+        records = store.list_latest_snapshots_by_competition(
+            ["fifa_world_cup_2026", "csl_2026"],
+            per_competition_limit=1,
+        )
+
+        assert [record["run_id"] for record in records] == ["wc-live-74", "csl-live"]
+        assert [record["snapshot"]["competition"]["id"] for record in records] == [
+            "fifa_world_cup_2026",
+            "csl_2026",
+        ]

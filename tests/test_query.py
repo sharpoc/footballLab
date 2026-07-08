@@ -287,7 +287,7 @@ def test_load_latest_snapshot_view_keeps_competition_after_many_newer_snapshots(
             },
             stored_at="2026-06-08T00:01:00+00:00",
         )
-        for index in range(25):
+        for index in range(75):
             run_id = f"wc-live-{index}"
             store.put_snapshot(
                 idempotency_key=f"{run_id}:{run_id}-snapshot",
@@ -314,7 +314,7 @@ def test_load_latest_snapshot_view_keeps_competition_after_many_newer_snapshots(
             "csl_2026",
         ]
         assert [match["home_team"] for match in snapshot["matches"]] == [
-            "World Cup Home 24",
+            "World Cup Home 74",
             "Shanghai Port",
         ]
 

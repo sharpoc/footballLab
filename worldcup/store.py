@@ -29,6 +29,15 @@ def _row_to_snapshot_record(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _competition_id_like_patterns(competition_id: str) -> tuple[str, str]:
+    encoded_id = _escape_like(json.dumps(competition_id, ensure_ascii=False))
+    return (f'%"id": {encoded_id}%', f'%"id":{encoded_id}%')
+
+
 class SQLiteSnapshotStore(SnapshotStore):
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -148,3 +157,48 @@ class SQLiteSnapshotStore(SnapshotStore):
                 (bounded_limit,),
             ).fetchall()
         return [_row_to_snapshot_record(row) for row in rows]
+
+    def list_latest_snapshots_by_competition(
+        self,
+        competition_ids: list[str],
+        per_competition_limit: int = 1,
+    ) -> list[dict[str, Any]]:
+        self.initialize()
+        bounded_limit = max(1, min(int(per_competition_limit), 500))
+        requested_ids: list[str] = []
+        for competition_id in competition_ids:
+            normalized = str(competition_id or "").strip()
+            if normalized and normalized not in requested_ids:
+                requested_ids.append(normalized)
+
+        records: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
+        with sqlite3.connect(self.path) as conn:
+            conn.row_factory = sqlite3.Row
+            for competition_id in requested_ids:
+                spaced_pattern, compact_pattern = _competition_id_like_patterns(competition_id)
+                rows = conn.execute(
+                    """
+                    SELECT
+                      idempotency_key,
+                      run_id,
+                      snapshot_id,
+                      snapshot_at,
+                      stored_at,
+                      payload_json,
+                      snapshot_json
+                    FROM snapshots
+                    WHERE snapshot_json LIKE ? ESCAPE '\\'
+                       OR snapshot_json LIKE ? ESCAPE '\\'
+                    ORDER BY stored_at DESC, rowid DESC
+                    LIMIT ?
+                    """,
+                    (spaced_pattern, compact_pattern, bounded_limit),
+                ).fetchall()
+                for row in rows:
+                    idempotency_key = str(row["idempotency_key"])
+                    if idempotency_key in seen_keys:
+                        continue
+                    seen_keys.add(idempotency_key)
+                    records.append(_row_to_snapshot_record(row))
+        return records

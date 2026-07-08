@@ -4,6 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from worldcup.competitions import list_competitions
 from worldcup.store import SQLiteSnapshotStore
 from worldcup.store_contract import SnapshotStore
 
@@ -12,6 +13,15 @@ FINISHED_MIN_SAMPLE = 20
 DEFAULT_COMPETITION_ID = "fifa_world_cup_2026"
 DEFAULT_COMPETITION_LABEL = "2026 世界杯"
 SNAPSHOT_VIEW_SCAN_LIMIT = 50
+
+
+def _active_competition_ids() -> list[str]:
+    ids = [
+        competition.id
+        for competition in list_competitions()
+        if competition.fixture_policy != "dry_run_probe"
+    ]
+    return ids or [DEFAULT_COMPETITION_ID]
 
 
 def load_latest_snapshot(
@@ -180,8 +190,21 @@ def _snapshot_records(
     db_path: str | Path,
     store: SnapshotStore | None,
     scan_limit: int,
+    per_competition_limit: int = 1,
 ) -> list[dict[str, Any]]:
     snapshot_store = store or SQLiteSnapshotStore(db_path)
+    latest_by_competition = getattr(
+        snapshot_store,
+        "list_latest_snapshots_by_competition",
+        None,
+    )
+    if callable(latest_by_competition):
+        records = latest_by_competition(
+            _active_competition_ids(),
+            per_competition_limit=max(1, int(per_competition_limit)),
+        )
+        if records:
+            return [record for record in records if record is not None]
     if hasattr(snapshot_store, "list_recent_snapshots"):
         return [
             record
@@ -200,7 +223,12 @@ def load_recent_snapshot_views(
 ) -> list[dict[str, Any]]:
     buckets: dict[str, list[dict[str, Any]]] = {}
     competition_order: list[str] = []
-    for record in _snapshot_records(db_path, store, scan_limit):
+    for record in _snapshot_records(
+        db_path,
+        store,
+        scan_limit,
+        per_competition_limit=limit,
+    ):
         snapshot = record.get("snapshot")
         if not isinstance(snapshot, dict):
             continue

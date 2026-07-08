@@ -4,10 +4,11 @@
 
 ## 2026-07-08 多赛事扫描窗口修复
 
-- 修复中超在多轮世界杯刷新后从 `/api/matches` / `/preview` 合并视图中消失的问题：`worldcup.query.SNAPSHOT_VIEW_SCAN_LIMIT` 从 20 调整为 50，避免旧的 `csl_2026` 最新快照被最近 20 条世界杯快照挤出扫描窗口，同时避免远端冷构建一次解析 500 个大 snapshot。
-- 新增回归测试覆盖“先发布中超，再连续写入 25 条世界杯 snapshot”时，默认 `load_latest_snapshot_view()` 仍应输出 `multi_competition`，且包含 `fifa_world_cup_2026` 和 `csl_2026`。
-- 本轮只改本地查询层与测试；未刷新中超赔率，未读取 `.env`，未调用 The Odds API，未发布线上 snapshot，未部署，未改 LaunchAgent。
-- 验证：新增回归测试先红后绿；`tests/test_query.py` 全文件 `10/10` 通过；HTTP 多赛事相关用例 `2/2` 通过；`py_compile worldcup/query.py tests/test_query.py` 和 `git diff --check` 通过。标准 `tests/run_tests.py` 仍在导入 `tests/test_fastapi_app.py` 时因当前 runtime 缺少可选依赖 `fastapi` 中断。
+- 修复中超在多轮世界杯刷新后从 `/api/matches` / `/preview` 合并视图中消失的问题：不再依赖“最近 N 条 snapshot”窗口凑齐赛事，而是让 `SQLiteSnapshotStore` 按 `competition_id` 直接取每个活跃赛事最新 snapshot；`worldcup.query.SNAPSHOT_VIEW_SCAN_LIMIT=50` 仅保留给不支持该轻量方法的 fallback store。
+- 根因补充：从 20 扩到 500 会在 ECS 冷启动时解析大量 3MB+ snapshot，导致 `/api/matches` timeout 并拖住 SSH；降到 50 仍可能在当前线上数据量下过重。本轮改为数据库层筛选后，只解析每个赛事需要的最新记录。
+- 新增回归测试覆盖“先发布中超，再连续写入 75 条世界杯 snapshot”时，默认 `load_latest_snapshot_view()` 仍应输出 `multi_competition`，且包含 `fifa_world_cup_2026` 和 `csl_2026`；新增 store 测试覆盖按赛事取最新时不会受 recent window 影响。
+- 本轮只改本地 SQLite 查询层、public view 查询层与测试；未刷新中超赔率，未读取 `.env`，未调用 The Odds API，未发布线上 snapshot，未改 LaunchAgent。
+- 验证：新增回归测试先红后绿；`tests/test_query.py` 全文件 `10/10` 通过；`tests/test_store.py` 全文件 `5/5` 通过；HTTP 多赛事相关用例 `2/2` 通过；`py_compile worldcup/query.py worldcup/store.py tests/test_query.py tests/test_store.py` 和 `git diff --check` 通过。标准 `tests/run_tests.py` 仍在导入 `tests/test_fastapi_app.py` 时因当前 runtime 缺少可选依赖 `fastapi` 中断。
 
 ## 2026-07-06 首发源报告与本场首选战绩卡
 
