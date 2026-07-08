@@ -9,6 +9,8 @@
 - 新增回归测试覆盖“先发布中超，再连续写入 75 条世界杯 snapshot”时，默认 `load_latest_snapshot_view()` 仍应输出 `multi_competition`，且包含 `fifa_world_cup_2026` 和 `csl_2026`；新增 store 测试覆盖按赛事取最新时不会受 recent window 影响。
 - 本轮只改本地 SQLite 查询层、public view 查询层与测试；未刷新中超赔率，未读取 `.env`，未调用 The Odds API，未发布线上 snapshot，未改 LaunchAgent。
 - 验证：新增回归测试先红后绿；`tests/test_query.py` 全文件 `10/10` 通过；`tests/test_store.py` 全文件 `5/5` 通过；HTTP 多赛事相关用例 `2/2` 通过；`py_compile worldcup/query.py worldcup/store.py tests/test_query.py tests/test_store.py` 和 `git diff --check` 通过。标准 `tests/run_tests.py` 仍在导入 `tests/test_fastapi_app.py` 时因当前 runtime 缺少可选依赖 `fastapi` 中断。
+- 已部署 commit `5094511` 到 ECS `/opt/worldcup/releases/5094511f8410ed7e363b6e5016db94f3be871acf`，替换会在冷查询时拖死服务的 `e23c71a` release。部署后 smoke：`/healthz` 200、`/api/matches` 200、`/preview` 200，且资金/下注禁词扫描为空。
+- 为验证“重启后不再死机”，已重启 `worldcup.service`（未重启整台 ECS）：服务重新指向 `5094511`，冷启动后公网 `/healthz` 0.036s、`/api/matches` 0.675s 返回 12 场（`fifa_world_cup_2026=4`、`csl_2026=8`），`/preview` 14.86s 返回且包含“中超 2026”和研究免责声明，SSH 仍可正常进入。
 
 ## 2026-07-06 首发源报告与本场首选战绩卡
 
