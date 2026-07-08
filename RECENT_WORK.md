@@ -8,7 +8,9 @@
 - `SnapshotViewCache` 支持可选磁盘 HTML 缓存：`/preview` 渲染后可写入 DB 同目录 `*.preview.html` 与 `*.preview.html.meta.json`，服务进程重启后如果 recent snapshot 签名未变化，可直接复用已渲染页面，避免每次重启都重新构建大 HTML；snapshot 变化时签名不匹配会自动重新渲染。
 - README 与 `docs/superpowers/data-contract.md` 已同步 `/readyz`、部署 warmup 顺序和预览磁盘缓存语义；研究边界保持不变，不输出资金/下注字段。
 - 验证：新增 TDD 回归先红后绿；`tests/test_http_app.py` 全文件 `23/23` 通过，`tests/test_asgi_app.py` 全文件 `5/5` 通过，`tests/test_ssh_deploy.py` 全文件 `7/7` 通过；`py_compile worldcup/http_app.py worldcup/ssh_deploy.py worldcup/asgi_app.py worldcup/fastapi_app.py tests/test_http_app.py tests/test_ssh_deploy.py tests/test_asgi_app.py tests/test_fastapi_app.py` 和 `git diff --check` 通过。标准 `tests/run_tests.py` 仍在导入 `tests/test_fastapi_app.py` 时因当前 runtime 缺少可选依赖 `fastapi` 中断。
-- 本轮未部署、未重启 ECS、未重启线上 `worldcup.service`、未读取 `.env`、未调用 The Odds API、未发布 snapshot、未改 LaunchAgent。
+- 已部署 commit `e505cc0` 到 ECS `/opt/worldcup/releases/e505cc05cdb372d2a15e43c90565ef8691961bf2`；部署中先尝试的 `ef211dd` 因公网 `/readyz` 未经 Nginx 放行返回 404 自动回滚，随后改为 ECS 本机 `/readyz` 条件等待 warmup 后部署成功。公网 smoke：`/healthz` 200、`/api/matches` 200、`/preview` 200；远端 `readyz_warmup=ok`。
+- 部署后已重启线上 `worldcup.service` 验证重启路径：内部 `/readyz` 返回 `match_count=12`，公网 `/api/matches` 0.045s 返回 12 场（`fifa_world_cup_2026=4`、`csl_2026=8`），SSH 仍可进入；ECS 本机 `/preview` 0.024s 命中 2.4MB 磁盘缓存，公网 `/preview` 约 15s 主要受 HTML 下载体积影响但不拖死服务。
+- 本轮未重启整台 ECS、未读取 `.env`、未调用 The Odds API、未发布 snapshot、未改 LaunchAgent、未改 Nginx 配置。
 
 ## 2026-07-08 多赛事扫描窗口修复
 
