@@ -4,10 +4,10 @@
 
 ## 2026-07-08 重启后预览缓存与 warmup 硬化
 
-- 新增 `/readyz` 轻量 readiness / warmup 路由：会读取并缓存最新 public view，返回 `status=ready` 与 `match_count`，不输出完整 snapshot、secret、quota 或 provider 原始信息；`ssh_deploy` smoke 顺序改为 `/healthz` → `/readyz` → `/api/matches` → `/preview`，先预热轻量查询再碰重页面。
+- 新增 `/readyz` 轻量 readiness / warmup 路由：会读取并缓存最新 public view，返回 `status=ready` 与 `match_count`，不输出完整 snapshot、secret、quota 或 provider 原始信息；`ssh_deploy` 在重启 `worldcup.service` 后先通过 ECS 本机 `http://127.0.0.1:8788/readyz` warmup，再公网 smoke `/healthz`、`/api/matches`、`/preview`，不要求 Nginx 公网放行 `/readyz`。
 - `SnapshotViewCache` 支持可选磁盘 HTML 缓存：`/preview` 渲染后可写入 DB 同目录 `*.preview.html` 与 `*.preview.html.meta.json`，服务进程重启后如果 recent snapshot 签名未变化，可直接复用已渲染页面，避免每次重启都重新构建大 HTML；snapshot 变化时签名不匹配会自动重新渲染。
-- README 与 `docs/superpowers/data-contract.md` 已同步 `/readyz`、部署 smoke 顺序和预览磁盘缓存语义；研究边界保持不变，不输出资金/下注字段。
-- 验证：新增 TDD 回归先红后绿；`tests/test_http_app.py` 全文件 `23/23` 通过，`tests/test_asgi_app.py` 全文件 `5/5` 通过，`tests/test_ssh_deploy.py` 全文件 `6/6` 通过；`py_compile worldcup/http_app.py worldcup/ssh_deploy.py worldcup/asgi_app.py worldcup/fastapi_app.py tests/test_http_app.py tests/test_ssh_deploy.py tests/test_asgi_app.py tests/test_fastapi_app.py` 和 `git diff --check` 通过。标准 `tests/run_tests.py` 仍在导入 `tests/test_fastapi_app.py` 时因当前 runtime 缺少可选依赖 `fastapi` 中断。
+- README 与 `docs/superpowers/data-contract.md` 已同步 `/readyz`、部署 warmup 顺序和预览磁盘缓存语义；研究边界保持不变，不输出资金/下注字段。
+- 验证：新增 TDD 回归先红后绿；`tests/test_http_app.py` 全文件 `23/23` 通过，`tests/test_asgi_app.py` 全文件 `5/5` 通过，`tests/test_ssh_deploy.py` 全文件 `7/7` 通过；`py_compile worldcup/http_app.py worldcup/ssh_deploy.py worldcup/asgi_app.py worldcup/fastapi_app.py tests/test_http_app.py tests/test_ssh_deploy.py tests/test_asgi_app.py tests/test_fastapi_app.py` 和 `git diff --check` 通过。标准 `tests/run_tests.py` 仍在导入 `tests/test_fastapi_app.py` 时因当前 runtime 缺少可选依赖 `fastapi` 中断。
 - 本轮未部署、未重启 ECS、未重启线上 `worldcup.service`、未读取 `.env`、未调用 The Odds API、未发布 snapshot、未改 LaunchAgent。
 
 ## 2026-07-08 多赛事扫描窗口修复

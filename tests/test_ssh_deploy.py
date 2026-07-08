@@ -38,6 +38,7 @@ class FakeRunner:
                             "previous_release=/opt/worldcup/releases/old",
                             "release=/opt/worldcup/releases/00158faef75b",
                             "service_status=active",
+                            "readyz_warmup=ok",
                             "nginx_status=active",
                             "current_target=/opt/worldcup/releases/00158faef75b",
                         ]
@@ -133,7 +134,6 @@ def test_live_deploy_uploads_archive_restarts_and_smokes_public_routes() -> None
     assert result["safety"]["deployed"] is True
     assert [check["path"] for check in result["smoke"]["checks"]] == [
         "/healthz",
-        "/readyz",
         "/api/matches",
         "/preview",
     ]
@@ -144,7 +144,27 @@ def test_live_deploy_uploads_archive_restarts_and_smokes_public_routes() -> None
     remote_script = deploy_call["args"][-1]
     assert "/opt/worldcup/releases/00158faef75b" in remote_script
     assert '"$tmp/worldcup/query.py"' in remote_script
+    assert "http://127.0.0.1:8788/readyz" in remote_script
     assert "systemctl restart" in remote_script
+
+
+def test_live_deploy_does_not_require_public_readyz_route() -> None:
+    def no_public_readyz_fetcher(url: str, timeout: int) -> FetchResult:
+        if url.endswith("/readyz"):
+            raise AssertionError("readyz warmup must run over SSH, not public Nginx")
+        return ok_fetcher(url, timeout)
+
+    runner = FakeRunner()
+
+    result = run_ssh_deploy(
+        root=".",
+        live=True,
+        command_runner=runner,
+        fetcher=no_public_readyz_fetcher,
+    )
+
+    assert result["status"] == "deployed"
+    assert result["remote"]["readyz_warmup"] == "ok"
 
 
 def test_live_deploy_can_bind_ssh_source_address() -> None:
