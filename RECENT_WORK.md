@@ -7,6 +7,7 @@
 - 定位赛事筛选后左栏仍显示“比赛列表 12场”的原因：前端 `applyFilters()` 只隐藏不匹配的行并切换详情，标题仍是服务端首次渲染的静态总数。
 - 实时与历史工作台标题新增稳定计数契约；每次赛事、日期或搜索筛选后，都使用当前视图可见行数更新“比赛列表 / 历史比赛 N场”，不改数据、首选方向或页面布局。
 - TDD 先补 HTML/JS 契约并确认红灯；预览层 `15/15`、配置运行时排除可选 FastAPI 的完整回归 `720/720`、系统 Python FastAPI `13/13`、`py_compile` 和 `git diff --check` 通过。本地浏览器验收确认搜索筛选计数 `3 → 1 → 0 → 3`，世界杯筛选显示 3 场；桌面端与 390px 移动端无 warning/error，临时本地服务已停止。
+- 代码提交为 `fb0461e fix: restore published picks and filtered counts`，已发布到 ECS `/opt/worldcup/releases/fb0461e39233d4cfb17b340ceacd1bc137644c6f`；`worldcup.service` / Nginx active，内部 `/readyz` warmup 和公网 `/healthz`、`/api/matches`、`/preview` smoke 通过，自动回滚未触发。公网浏览器筛选“2026 世界杯”后标题为“比赛列表 3场”，实际 3 条世界杯、0 条中超，桌面端与 390px 移动端无 warning/error。部署未读取 `.env`、未调用 The Odds API、未发布 snapshot、未修改 LaunchAgent。
 
 ## 2026-07-10 世界杯首选发布回归修复
 
