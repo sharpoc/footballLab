@@ -9,6 +9,9 @@
 - 新首选写入 `policy_version=match_pick_v2`、赔率时间和 `valid_until`；旧 v1 待赛决策不会被重新包装成当前首选，过期首选自动降为暂无可靠首选。完赛 v1 记录可明确标为“旧算法记录”，但不计入 v2 `decision_tally`；未知 decision label 归为无效记录。当前本地 96 条 finished 记录中有 17 条 v1、79 条缺 decision，v2 已结算样本为 0，因此旧算法命中率不能作为 v2 成绩。
 - 文档已同步 `README.md`、项目 `AGENTS.md` / `CLAUDE.md` 和 `docs/superpowers/data-contract.md`；新正式契约使用 `decision_tally`、`decision_sample` / `decision_coverage`，不再使用等级 tally。
 - 验证：配置 runtime 排除未安装可选依赖 `fastapi` 的全量函数式回归 `694/694` 通过；系统 Python 的 FastAPI 适配测试 `13/13` 通过；核心首选链聚焦回归 `135/135`、运维去等级化回归 `70/70` 通过。真实旧快照与离线 v2 重算的公开 JSON/HTML 递归扫描均未发现 `signals`、grade、旧 decision label 或等级页面标记。实现与离线验证阶段未联网、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布 snapshot 或改 LaunchAgent；代码部署本身也不刷新赔率或发布新 snapshot，最终提交与部署结果在完成后追加。
+- 提交按范围拆分为 `dd40f3b feat: add csl scheduled publishing` 和 `9db9373 feat: make match picks decision only`；未 push。MatchPick v2 已通过绑定当前 Wi-Fi 地址 `192.168.31.46` 部署到 ECS `/opt/worldcup/releases/9db93736aff97e801258a7eba7d727eef3bfea9d`，服务与 Nginx 均为 active，内部 `/readyz` warmup 成功，自动回滚未触发。
+- 公网部署验证：`/healthz`、`/api/matches`、`/preview` 均为 HTTP 200；`/api/matches` 共 12 场，全部投影为 `policy_version=match_pick_v2` / `NO_CLEAN_MARKET`，无等级/信号字段；`/api/finished` 为 schema v2，当前策略 `decision_tally` 全 0、`legacy_decision_count=17`、`missing_decision_count=79`；`/preview` 已缩至约 49.8KB，包含“本场首选”和免责声明，无 S/A、价值分歧或 grade 标记。Nginx 继续按既有规则对公网 `/api/snapshot/latest` 返回 404。
+- 本次发布只部署代码并重启 `worldcup.service`，未读取 `.env`、未调用 The Odds API、未消耗 quota、未生成或发布新 snapshot、未改 LaunchAgent、未 push。由于线上仍是旧快照，当前 12 场均安全归一为“暂无可靠首选”；后续新鲜 v2 snapshot 需按刷新调度自然产生，若要强制刷新/发布必须再次单独确认。
 
 ## 2026-07-09 CSL scheduled publish LaunchAgent 安装
 
