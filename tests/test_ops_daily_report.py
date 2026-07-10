@@ -63,7 +63,9 @@ def _minimal_ops_result() -> dict:
                 "runner_matches": 8,
                 "runner_warnings": ["club_rating_pending", "odds_event_only"],
                 "runner_errors_count": 0,
-                "runner_strong_grades": [],
+                "runner_match_picks": 0,
+                "runner_no_pick": 8,
+                "runner_missing_decisions": 0,
                 "rating_policy": "club_rating_pending",
                 "club_rating_mode": "sample_replay",
                 "club_rating_matches_replayed": 840,
@@ -133,7 +135,7 @@ def test_format_daily_ops_markdown_is_reviewable_and_safe():
     assert "delivery: skipped (dry_run_no_notification)" in markdown
     assert "仅用于研究分析，不构成投注建议。" in markdown
     assert "CSL live odds: ok events=8 fixtures=8 odds_events=8" in markdown
-    assert "warnings=club_rating_pending,odds_event_only strong_grades=none" in markdown
+    assert "warnings=club_rating_pending,odds_event_only picks=0 no_pick=8 missing_decisions=0" in markdown
     assert "must-not-leak" not in markdown
     assert "2.05" not in markdown
     assert "api_key" not in markdown

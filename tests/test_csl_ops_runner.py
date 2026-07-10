@@ -431,6 +431,9 @@ def test_run_local_writes_snapshot_archive_observation_and_summary():
         assert summary["steps"]["snapshot"]["matches"] == 1
         assert summary["steps"]["archive"]["status"] in {"created", "duplicate"}
         assert summary["steps"]["observation"]["matches"] == 1
+        assert summary["steps"]["observation"]["match_picks"] == 0
+        assert summary["steps"]["observation"]["no_pick"] == 1
+        assert summary["steps"]["observation"]["missing_decisions"] == 0
         assert summary["paths"]["snapshot"] == str(snapshot)
         assert summary["paths"]["archive"] == str(archive)
         assert summary["paths"]["observation"] == str(observation)
@@ -441,6 +444,9 @@ def test_run_local_writes_snapshot_archive_observation_and_summary():
         serialized = json.dumps(summary, ensure_ascii=False, sort_keys=True)
         for forbidden in ("must-not-leak", "bookmaker", "api_key", "secret", "下注金额"):
             assert forbidden.lower() not in serialized.lower()
+        observation_text = observation.read_text(encoding="utf-8").lower()
+        assert "signals" not in observation_text
+        assert "grade" not in observation_text
 
 
 def test_cli_run_local_writes_artifacts_and_prints_safe_summary():

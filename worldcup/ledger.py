@@ -26,11 +26,12 @@ TREND_MARKET_KEYS = {
     "AsianHandicap_90min": "ah_main",
 }
 MATCH_DECISION_LABELS = {
+    "MATCH_PICK": "本场首选",
     "STRONG_VALUE": "强价值",
     "VALUE_CANDIDATE": "候选价值",
     "HIGH_CONFIDENCE_LEAN": "高胜率倾向",
     "LOW_CONFIDENCE_LEAN": "低置信倾向",
-    "NO_CLEAN_MARKET": "无干净盘口",
+    "NO_CLEAN_MARKET": "暂无可靠首选",
 }
 TEAM_LABELS_ZH = {
     "Algeria": "阿尔及利亚",

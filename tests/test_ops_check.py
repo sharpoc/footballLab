@@ -65,19 +65,30 @@ def _fake_fetcher(url: str, timeout: int) -> dict:
     path = url.split("football.celab.xin", 1)[1]
     bodies = {
         "/healthz": '{"status":"ok"}',
-        "/api/matches": '{"matches":[{"home_team":"Mexico","away_team":"South Africa","signal_count":7,"top_grade":"S"}]}',
+        "/api/matches": json.dumps(
+            {
+                "matches": [
+                    {
+                        "home_team": "Mexico",
+                        "away_team": "South Africa",
+                        "match_decision": {
+                            "schema_version": 2,
+                            "label": "MATCH_PICK",
+                            "market": "1X2",
+                            "selection": "home",
+                        },
+                    }
+                ]
+            }
+        ),
         "/api/finished": json.dumps(
             {
                 "finished": {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "summary": {
                         "match_count": 1,
-                        "signal_count": 2,
                         "skipped_no_closing": 0,
-                        "tally": {
-                            "S": {"hit": 1, "miss": 0, "push": 0},
-                            "A": {"hit": 0, "miss": 0, "push": 1},
-                        },
+                        "decision_tally": {"hit": 1, "miss": 0, "push": 0, "no_pick": 0},
                         "coverage": {
                             "finished_result_count": 1,
                             "closing_available_count": 1,
@@ -86,7 +97,7 @@ def _fake_fetcher(url: str, timeout: int) -> dict:
                         },
                         "sample": {
                             "min_sample": 20,
-                            "decided_strong_signal_count": 1,
+                            "decided": 1,
                             "sample_too_small": True,
                         },
                     },
@@ -288,6 +299,50 @@ def test_run_ops_check_summarizes_local_and_public_state_without_secrets():
     assert "super-secret" not in str(result)
 
 
+def test_run_ops_check_flags_legacy_public_projection_without_echoing_payload():
+    def fetcher(url: str, timeout: int) -> dict:
+        response = _fake_fetcher(url, timeout)
+        if url.endswith("/api/matches"):
+            response = {
+                **response,
+                "body": json.dumps(
+                    {
+                        "matches": [
+                            {
+                                "home_team": "Mexico",
+                                "away_team": "South Africa",
+                                "signal_count": 1,
+                                "top_grade": "S",
+                            }
+                        ]
+                    }
+                ),
+            }
+        return response
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs_dir = root / "logs"
+        launch_agent = logs_dir / "xin.celab.football.scheduled-publish.plist"
+        _write_minimal_ops_inputs(root, launch_agent)
+        result = run_ops_check(
+            root=root,
+            public_base_url="https://football.celab.xin",
+            fetcher=fetcher,
+            remote_host=None,
+            launch_agent_path=launch_agent,
+            local_log_paths=[],
+            pre_match_launch_agent_path=None,
+            pre_match_log_paths=[],
+        )
+
+    assert result["ok"] is False
+    assert result["public"]["matches"]["legacy_output_detected"] is True
+    rendered = json.dumps(result, ensure_ascii=False).lower()
+    assert "top_grade" not in rendered
+    assert "signal_count" not in rendered
+
+
 def test_run_ops_check_summarizes_csl_live_odds_without_raw_prices_or_secrets():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -338,8 +393,9 @@ def test_run_ops_check_summarizes_csl_live_odds_without_raw_prices_or_secrets():
                         "sample_too_small": False,
                         "errors": [],
                     },
-                    "signals": 7,
-                    "strong_grades": [],
+                    "match_picks": 0,
+                    "no_pick": 1,
+                    "missing_decisions": 0,
                     "raw_market_should_not_leak": [{"price": 1.91}],
                     "secret": "must-not-leak",
                 }
@@ -374,7 +430,9 @@ def test_run_ops_check_summarizes_csl_live_odds_without_raw_prices_or_secrets():
     assert csl["runner_check"]["counts"]["matches"] == 1
     assert csl["runner_check"]["warnings"] == ["club_rating_pending", "odds_event_only"]
     assert csl["runner_check"]["club_rating"]["mode"] == "sample_replay"
-    assert csl["runner_check"]["strong_grades"] == []
+    assert csl["runner_check"]["match_picks"] == 0
+    assert csl["runner_check"]["no_pick"] == 1
+    assert csl["runner_check"]["missing_decisions"] == 0
     rendered = str(result)
     assert "must-not-leak" not in rendered
     assert "raw_market_should_not_leak" not in rendered
@@ -434,8 +492,9 @@ def test_run_ops_check_adds_csl_live_odds_report_digest_without_raw_payload():
                         "sample_too_small": False,
                         "errors": [],
                     },
-                    "signals": 7,
-                    "strong_grades": [],
+                    "match_picks": 0,
+                    "no_pick": 1,
+                    "missing_decisions": 0,
                 }
             ),
         )
@@ -470,7 +529,9 @@ def test_run_ops_check_adds_csl_live_odds_report_digest_without_raw_payload():
         "runner_matches": 1,
         "runner_warnings": ["club_rating_pending", "odds_event_only"],
         "runner_errors_count": 0,
-        "runner_strong_grades": [],
+        "runner_match_picks": 0,
+        "runner_no_pick": 1,
+        "runner_missing_decisions": 0,
         "rating_policy": "club_rating_pending",
         "club_rating_mode": "sample_replay",
         "club_rating_matches_replayed": 840,
@@ -559,7 +620,9 @@ def test_csl_live_odds_report_marks_runner_blockers_as_error():
                         "sample_too_small": True,
                         "errors": ["missing"],
                     },
-                    "strong_grades": [],
+                    "match_picks": 0,
+                    "no_pick": 1,
+                    "missing_decisions": 0,
                 }
             ),
         )
@@ -625,7 +688,9 @@ def test_ops_check_summary_format_prints_daily_csl_digest_without_raw_payload():
                         "sample_too_small": False,
                         "errors": [],
                     },
-                    "strong_grades": [],
+                    "match_picks": 0,
+                    "no_pick": 1,
+                    "missing_decisions": 0,
                 }
             ),
         )
@@ -663,7 +728,7 @@ def test_ops_check_summary_format_prints_daily_csl_digest_without_raw_payload():
     assert "guards: synthetic=false alias_unmatched=0 invalid_odds=0 issues=none" in text
     assert "runner: ok matches=1 rating_policy=club_rating_pending" in text
     assert "club_rating=sample_replay replayed=840 teams=22" in text
-    assert "warnings=club_rating_pending,odds_event_only strong_grades=none" in text
+    assert "warnings=club_rating_pending,odds_event_only picks=0 no_pick=1 missing_decisions=0" in text
     assert "bookmakers" not in text
     assert "safe_book" not in text
     assert "2.05" not in text
@@ -746,7 +811,9 @@ def test_run_ops_check_sanitizes_csl_live_whitelisted_values():
                         "sample_too_small": False,
                         "errors": ["missing", "opaqueLiveKeyABC123", "token=must-not-leak"],
                     },
-                    "strong_grades": [],
+                    "match_picks": 0,
+                    "no_pick": 1,
+                    "missing_decisions": 0,
                 }
             ),
         )
@@ -988,7 +1055,9 @@ def test_run_ops_check_flags_csl_live_runner_blockers_as_error():
                         "sample_too_small": True,
                         "errors": ["missing"],
                     },
-                    "strong_grades": [],
+                    "match_picks": 0,
+                    "no_pick": 1,
+                    "missing_decisions": 0,
                 }
             ),
         )
@@ -1007,7 +1076,9 @@ def test_run_ops_check_flags_csl_live_runner_blockers_as_error():
     assert result["summary"]["errors"] == 1
     runner = result["local"]["csl_live_odds"]["runner_check"]
     assert runner["warnings"] == ["club_rating_missing"]
-    assert runner["strong_grades"] == []
+    assert runner["match_picks"] == 0
+    assert runner["no_pick"] == 1
+    assert runner["missing_decisions"] == 0
 
 
 def test_run_ops_check_flags_csl_live_runner_errors_as_error():
@@ -1042,7 +1113,9 @@ def test_run_ops_check_flags_csl_live_runner_errors_as_error():
                         "sample_too_small": False,
                         "errors": [],
                     },
-                    "strong_grades": [],
+                    "match_picks": 0,
+                    "no_pick": 1,
+                    "missing_decisions": 0,
                 }
             ),
         )
@@ -1096,7 +1169,9 @@ def test_run_ops_check_counts_csl_live_runner_sensitive_alias_without_leaking():
                         "sample_too_small": False,
                         "errors": [],
                     },
-                    "strong_grades": [],
+                    "match_picks": 0,
+                    "no_pick": 1,
+                    "missing_decisions": 0,
                 }
             ),
         )
@@ -1152,7 +1227,9 @@ def test_run_ops_check_counts_csl_live_club_rating_sensitive_errors_without_leak
                         "sample_too_small": False,
                         "errors": ["token=must-not-leak"],
                     },
-                    "strong_grades": [],
+                    "match_picks": 0,
+                    "no_pick": 1,
+                    "missing_decisions": 0,
                 }
             ),
         )
@@ -1175,7 +1252,7 @@ def test_run_ops_check_counts_csl_live_club_rating_sensitive_errors_without_leak
     assert club_rating["errors_count"] == 1
 
 
-def test_run_ops_check_flags_csl_live_strong_grades_as_error():
+def test_run_ops_check_flags_pick_while_club_rating_is_pending_as_error():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         logs_dir = root / "logs"
@@ -1206,7 +1283,10 @@ def test_run_ops_check_flags_csl_live_strong_grades_as_error():
                         "sample_too_small": False,
                         "errors": [],
                     },
-                    "strong_grades": ["S"],
+                    "rating_policy": "club_rating_pending",
+                    "match_picks": 1,
+                    "no_pick": 0,
+                    "missing_decisions": 0,
                 }
             ),
         )
@@ -1225,7 +1305,9 @@ def test_run_ops_check_flags_csl_live_strong_grades_as_error():
     assert result["summary"]["errors"] == 1
     runner = result["local"]["csl_live_odds"]["runner_check"]
     assert runner["warnings"] == ["club_rating_pending", "odds_event_only"]
-    assert runner["strong_grades"] == ["S"]
+    assert runner["match_picks"] == 1
+    assert runner["no_pick"] == 0
+    assert runner["missing_decisions"] == 0
 
 
 def test_run_ops_check_flags_pre_match_live_refresh_without_guard_as_error():
@@ -1297,7 +1379,7 @@ def test_run_ops_check_allows_pre_match_live_refresh_with_guard():
     assert wiring["has_live_refresh"] is True
 
 
-def test_run_ops_check_reports_finished_tally_and_results_consistency():
+def test_run_ops_check_reports_finished_decision_tally_and_results_consistency():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         snapshot = {
@@ -1313,22 +1395,15 @@ def test_run_ops_check_reports_finished_tally_and_results_consistency():
                         "home_team": "Mexico",
                         "away_team": "South Africa",
                         "result": {"status": "finished", "home_score": 2, "away_score": 0},
-                        "closing_signals": [
-                            {
-                                "grade": "S",
-                                "prediction": {"status": "hit", "label": "命中"},
-                            },
-                            {
-                                "grade": "A",
-                                "prediction": {"status": "push", "label": "走水"},
-                            },
-                        ],
+                        "closing_match_decision": {
+                            "schema_version": 2,
+                            "label": "MATCH_PICK",
+                            "market": "1X2",
+                            "selection": "home",
+                        },
                     }
                 ],
-                "tally": {
-                    "S": {"hit": 1, "miss": 0, "push": 0},
-                    "A": {"hit": 0, "miss": 0, "push": 1},
-                },
+                "decision_tally": {"hit": 1, "miss": 0, "push": 0, "no_pick": 0},
                 "skipped_no_closing": 0,
             },
         }
@@ -1365,7 +1440,13 @@ def test_run_ops_check_reports_finished_tally_and_results_consistency():
     assert result["ok"] is True
     assert result["local"]["finished"]["status"] == "ok"
     assert result["local"]["finished"]["summary"]["match_count"] == 1
-    assert result["local"]["finished"]["tally_matches"] is True
+    assert result["local"]["finished"]["decision_tally_matches"] is True
+    assert result["local"]["finished"]["declared_decision_tally"] == {
+        "hit": 1,
+        "miss": 0,
+        "push": 0,
+        "no_pick": 0,
+    }
     assert result["local"]["finished"]["results"]["count"] == 1
     assert result["local"]["finished"]["results"]["matches_finished_result_count"] is True
 

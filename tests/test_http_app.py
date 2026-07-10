@@ -72,7 +72,7 @@ def _snapshot(run_id="20260608T000000Z-live"):
         "data_quality": {"stale_sources": [], "source_errors": []},
         "matches": [
             {
-                "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "kickoff_at_utc": "2099-06-11T19:00:00+00:00",
                 "stage": "Matchday 1",
                 "home_team": "Mexico",
                 "away_team": "South Africa",
@@ -87,6 +87,17 @@ def _snapshot(run_id="20260608T000000Z-live"):
                         "edge": 0.041,
                     }
                 ],
+                "match_decision": {
+                    "schema_version": 2,
+                    "label": "MATCH_PICK",
+                    "market": "1X2",
+                    "selection": "home",
+                    "odds": 2.0,
+                    "p_hit_safe": 0.59,
+                    "p_no_loss_safe": 0.59,
+                    "valid_until": "2099-06-11T19:00:00+00:00",
+                    "selected_option_id": "internal-only",
+                },
             }
         ],
     }
@@ -130,6 +141,15 @@ def _snapshot_with_finished(run_id="20260608T000000Z-live"):
                         "prediction": {"status": "hit", "label": "命中", "detail": "全场 2-0"},
                     }
                 ],
+                "closing_match_decision": {
+                    "schema_version": 2,
+                    "label": "MATCH_PICK",
+                    "market": "1X2",
+                    "selection": "home",
+                    "odds": 1.78,
+                    "p_hit_safe": 0.61,
+                    "p_no_loss_safe": 0.61,
+                },
             }
         ],
         "tally": {"S": {"hit": 1, "miss": 0, "push": 0}},
@@ -171,6 +191,33 @@ def test_http_get_matches_returns_projected_rows():
         assert response["headers"]["Content-Type"] == "application/json"
         assert body["matches"][0]["match_label"] == "Mexico vs South Africa"
         assert "stake" not in body["matches"][0]
+        assert body["matches"][0]["match_decision"]["label"] == "MATCH_PICK"
+        assert "signals" not in response["body"]
+        assert "grade" not in response["body"].lower()
+
+
+def test_http_latest_snapshot_returns_decision_only_public_projection():
+    store = MemorySnapshotStore(latest={"snapshot": _snapshot("private-run")})
+
+    response = handle_request(
+        method="GET",
+        path="/api/snapshot/latest",
+        headers={},
+        body="",
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        store=store,
+    )
+
+    payload = json.loads(response["body"])["snapshot"]
+    serialized = json.dumps(payload)
+    assert response["status"] == 200
+    assert payload["schema_version"] == 2
+    assert payload["matches"][0]["match_decision"]["label"] == "MATCH_PICK"
+    assert "signals" not in serialized
+    assert "grade" not in serialized.lower()
+    assert "private-run" not in serialized
+    assert "selected_option_id" not in serialized
 
 
 def test_http_get_matches_returns_latest_rows_for_all_competitions():
@@ -446,7 +493,7 @@ def test_http_get_preview_renders_latest_rows_for_all_competitions():
         assert "上海海港 对 北京国安" in response["body"]
 
 
-def test_http_get_preview_compares_latest_two_snapshots():
+def test_http_get_preview_does_not_reintroduce_legacy_grade_diffs():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "worldcup.db"
         store = SQLiteSnapshotStore(db_path)
@@ -488,9 +535,10 @@ def test_http_get_preview_compares_latest_two_snapshots():
 
         assert response["status"] == 200
         assert 'class="change-summary"' not in response["body"]
-        assert "本轮变化" in response["body"]
-        assert "等级 A → S" in response["body"]
-        assert "赔率 2.00 → 1.85" in response["body"]
+        assert "本场首选" in response["body"]
+        assert "本轮变化" not in response["body"]
+        assert "等级 A → S" not in response["body"]
+        assert "赔率 2.00 → 1.85" not in response["body"]
 
 
 def test_http_get_preview_reuses_cached_html_response():

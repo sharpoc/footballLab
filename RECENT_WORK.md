@@ -2,6 +2,41 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-10 MatchPick v2：产品只保留本场首选
+
+- 经用户确认，产品链路移除 S/A/B/C 分类：世界杯与联赛 runner 新快照只生成每场唯一 `match_decision`，标签仅允许 `MATCH_PICK` / `NO_CLEAN_MARKET`；公开 API、静态导出、预览页、通知、完赛战绩、日报、中超观察报告、巡检和首发审计统一为“本场首选 / 暂无可靠首选”。旧 `signals` / grade 数据只留在原始历史存储和 legacy 离线工具中只读兼容，不进入新决策或公开投影。
+- MatchPick v2 改为命中率优先：只比较完整、新鲜的 1X2、OU 主线和 AH 主线；去重 bookmaker，过滤未来/缺时间/过期报价，在离群清洗后重新执行完整市场书商门槛，归一模型/市场权重，并按 `p_hit_safe`、`p_no_loss_safe`、预期损失、全输风险和盘口质量排序。赔率源陈旧、评级 pending/missing/invalid、严重分歧、盘口质量不合格、四分之一盘概率未完成交叉校准或未过保守阈值时主动输出 `NO_CLEAN_MARKET`。
+- 新首选写入 `policy_version=match_pick_v2`、赔率时间和 `valid_until`；旧 v1 待赛决策不会被重新包装成当前首选，过期首选自动降为暂无可靠首选。完赛 v1 记录可明确标为“旧算法记录”，但不计入 v2 `decision_tally`；未知 decision label 归为无效记录。当前本地 96 条 finished 记录中有 17 条 v1、79 条缺 decision，v2 已结算样本为 0，因此旧算法命中率不能作为 v2 成绩。
+- 文档已同步 `README.md`、项目 `AGENTS.md` / `CLAUDE.md` 和 `docs/superpowers/data-contract.md`；新正式契约使用 `decision_tally`、`decision_sample` / `decision_coverage`，不再使用等级 tally。
+- 验证：配置 runtime 排除未安装可选依赖 `fastapi` 的全量函数式回归 `694/694` 通过；系统 Python 的 FastAPI 适配测试 `13/13` 通过；核心首选链聚焦回归 `135/135`、运维去等级化回归 `70/70` 通过。真实旧快照与离线 v2 重算的公开 JSON/HTML 递归扫描均未发现 `signals`、grade、旧 decision label 或等级页面标记。实现与离线验证阶段未联网、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布 snapshot 或改 LaunchAgent；代码部署本身也不刷新赔率或发布新 snapshot，最终提交与部署结果在完成后追加。
+
+## 2026-07-09 CSL scheduled publish LaunchAgent 安装
+
+- 经用户确认，已写入并加载 `~/Library/LaunchAgents/xin.celab.football.csl-scheduled-publish.plist`；launchd 当前注册为 `gui/501/xin.celab.football.csl-scheduled-publish`，`run interval = 1800 seconds`，`RunAtLoad=false`，加载后没有立即执行。
+- LaunchAgent 会每 30 分钟唤醒 `worldcup.csl_scheduled_publish --live`，但 runner 内部仍按 due 决策执行：固定锚点 `T-90` / `T-25`、任一场 due 时全中超统一刷新、全局最短间隔 30 分钟、quota 低于 30 时只保留 `T-25`、无未来比赛时最多每 24 小时 discovery refresh。
+- 安装验证：`plutil -lint` 通过，`launchctl print` 确认 label、参数、工作目录和日志路径；手动 dry-run 返回 `status=dry_run`、`reason=not_due`、`quota_remaining=200`、`next_due_at=2026-07-10T10:05:00+00:00`。
+- 本次安装验证未读取 `.env`、未联网、未调用 The Odds API、未发布线上 snapshot、未部署代码、未推送 git；后续只有 LaunchAgent 唤醒且 due / throttle / quota 检查通过时才会刷新与线上 ingest。
+
+## 2026-07-09 CSL scheduled publish 代码实现
+
+- 新增 `worldcup.csl_scheduled_publish`：默认 dry-run 只读取本地 snapshot / quota 并输出中超刷新决策；live 模式仅在 due 或 `--force` 时读取 `.env`、调用 The Odds API、生成 `csl_2026` 预测 snapshot 并 HMAC ingest 线上。刷新策略为“单场 due 触发、全中超统一刷新”，默认锚点 `T-90` / `T-25`、全局最短间隔 30 分钟、quota 低于 30 时只保留 `T-25`、无未来比赛时最多每 24 小时 discovery refresh。
+- 新增 `worldcup.csl_scheduled_launch_agent`：生成 `xin.celab.football.csl-scheduled-publish` plist，默认每 1800 秒唤醒一次 runner；生成器只写/打印 plist，不加载 launchd。实际写入 `~/Library/LaunchAgents/` 和 `launchctl bootstrap` 仍需单独确认。
+- README 已记录 CSL scheduled publish 语义、dry-run/live 命令、quota 节流和 LaunchAgent 安装边界；实现阶段未读取 `.env`、未联网、未调用 The Odds API、未发布线上 snapshot、未安装或加载 LaunchAgent、未推送 git。
+- 验证：新增函数式测试已被项目 runner 收集，`test_csl_scheduled_*` 8 个用例通过；`py_compile` 与 `git diff --check` 通过；`worldcup.csl_scheduled_publish` 当前 dry-run 返回 `not_due` 且下一次 due 为 `2026-07-10T10:05:00+00:00`，固定模拟该时刻返回 `match_anchor_due` / `T-90`。标准 `tests/run_tests.py` 仍因当前 runtime 缺少可选依赖 `fastapi` 在 `tests/test_fastapi_app.py` 中断；排除该文件后同款收集脚本返回 `692/692` 通过。
+
+## 2026-07-09 CSL live refresh 与线上预测发布
+
+- 经用户确认，执行 `csl_2026` live odds refresh：读取本地 `.env`，调用 The Odds API `soccer_china_superleague`，覆盖 ignored cache `data/cache/theoddsapi_csl_2026_odds.json`；本轮使用 secondary 槽位，返回 `events=8`、`quota_last=3`、`quota_remaining=200`、`used=300`，未打印 API key、secret、raw odds、bookmaker 或 price 明细。
+- 基于最新 cache 生成中超预测 snapshot，并写入 ignored 本地产物 `data/local/diagnostics/csl_live_league_snapshot.json` 与 `data/cache/csl_publish_snapshot.json`；run_id 为 `20260709T060102Z-csl-live`，8 场赛程为 `2026-07-10` 至 `2026-07-12`，8 场均有 `match_decision`，共 56 条信号；中超仍保持 `club_rating_pending` / `odds_event_only` 观察模式。
+- 已通过 HMAC ingest 发布到 `https://football.celab.xin/api/ingest/snapshot`，返回 HTTP 200 / `ingest_status=stored`，snapshot_id 为 `e84fcdff6c604b9308e59b8876309cac4c6d996691172d1b471b8e37fceaec2d`；本轮未部署代码、未改 LaunchAgent、未推送 git。
+- 线上验证：`/api/matches` 返回 HTTP 200、共 12 场，其中 `fifa_world_cup_2026=4`、`csl_2026=8`，8 条中超行均带 `match_decision`；`/preview` 返回 HTTP 200，包含“中超 2026”、最新中超日期和研究免责声明，资金/下注类禁词扫描为空。
+
+## 2026-07-09 本地 CSL ingest 验证
+
+- 经用户确认，将现有 `data/cache/csl_publish_snapshot.json` 通过本地 HMAC ingest 写入 `data/local/worldcup.db`；仅修改本地 ignored SQLite store，未联网、未发布线上、未部署、未调用 The Odds API、未改 LaunchAgent，未打印 `.env`、HMAC secret、raw odds、bookmaker 或资金相关字段。
+- 写入结果：本地 ingest 返回 `status=stored`，run_id 为 `20260629T120500Z-csl-existing-snapshot`，snapshot_id 为 `a826b9df740aa31d89c6ddc8087b6fb09942ce0e7c143b48de404e502edfa595`；`data/local/worldcup.db` 记录数从 1 增至 2。
+- 验证：`worldcup.query.load_latest_snapshot_view('data/local/worldcup.db')` 投影出 8 条 `csl_2026` 行；`worldcup.http_app.handle_request(GET /api/matches)` 返回 HTTP 200、`matches=8`、`competition_counts={'csl_2026': 8}`、`has_csl=True`。由于本地旧世界杯 DB 记录没有 competition block，本地 latest view 当前只选中 CSL；线上此前已通过 competition-aware release 显示多赛事合并。
+
 ## 2026-07-08 重启后预览缓存与 warmup 硬化
 
 - 新增 `/readyz` 轻量 readiness / warmup 路由：会读取并缓存最新 public view，返回 `status=ready` 与 `match_count`，不输出完整 snapshot、secret、quota 或 provider 原始信息；`ssh_deploy` 在重启 `worldcup.service` 后先通过 ECS 本机 `http://127.0.0.1:8788/readyz` 最多 30 秒条件等待 warmup，再公网 smoke `/healthz`、`/api/matches`、`/preview`，不要求 Nginx 公网放行 `/readyz`。

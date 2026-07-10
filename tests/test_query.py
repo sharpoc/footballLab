@@ -399,32 +399,80 @@ def test_load_recent_snapshots_falls_back_to_latest_for_minimal_store():
 def test_project_match_rows_returns_preview_safe_rows():
     snapshot = _snapshot()
     snapshot["matches"][0]["match_decision"] = {
-        "schema_version": 1,
-        "label": "HIGH_CONFIDENCE_LEAN",
+        "schema_version": 2,
+        "policy_version": "match_pick_v2",
+        "label": "MATCH_PICK",
         "market": "DNB",
         "selection": "home",
         "line": 0.0,
         "p_hit_safe": 0.59,
         "p_no_loss_safe": 0.73,
+        "valid_until": "2099-06-11T19:00:00+00:00",
     }
 
     rows = project_match_rows(snapshot)
 
     assert len(rows) == 2
     assert rows[0]["match_label"] == "Mexico vs South Africa"
-    assert rows[0]["match_decision"]["label"] == "HIGH_CONFIDENCE_LEAN"
-    assert rows[0]["top_grade"] == "A"
-    assert rows[0]["signal_count"] == 2
+    assert rows[0]["match_decision"]["label"] == "MATCH_PICK"
+    assert "top_grade" not in rows[0]
+    assert "signal_count" not in rows[0]
     assert rows[0]["next_update_at"] == "2026-06-11T17:30:00+00:00"
     assert rows[0]["next_update_label"] == "T-1小时30分"
     assert rows[0]["next_update_description"] == "阵容/伤停预热"
     assert rows[0]["stale"] is True
     assert rows[0]["competition_id"] == "fifa_world_cup_2026"
     assert rows[0]["competition_label"] == "2026 世界杯"
-    assert rows[1]["top_grade"] == ""
-    assert rows[1]["signal_count"] == 0
+    assert rows[1]["match_decision"] == {
+        "schema_version": 2,
+        "policy_version": "match_pick_v2",
+        "label": "NO_CLEAN_MARKET",
+    }
     assert "stake" not in rows[0]
     assert "bet_amount" not in rows[0]
+
+
+def test_live_projection_never_repackages_legacy_or_expired_pick_as_current_pick():
+    snapshot = _snapshot()
+    snapshot["data_quality"]["stale_sources"] = []
+    snapshot["matches"][0]["match_decision"] = {
+        "schema_version": 1,
+        "label": "LOW_CONFIDENCE_LEAN",
+        "market": "1X2",
+        "selection": "home",
+    }
+    snapshot["matches"][1]["match_decision"] = {
+        "schema_version": 2,
+        "label": "MATCH_PICK",
+        "market": "1X2",
+        "selection": "home",
+        "valid_until": "2000-01-01T00:00:00+00:00",
+    }
+
+    rows = project_match_rows(snapshot)
+
+    assert {row["match_decision"]["label"] for row in rows} == {"NO_CLEAN_MARKET"}
+
+
+def test_pending_club_rating_forces_public_no_pick_even_for_malformed_legacy_snapshot():
+    snapshot = _snapshot()
+    snapshot["data_quality"] = {"warnings": ["club_rating_pending"]}
+    snapshot["matches"][0]["competition"] = {
+        "id": "csl_2026",
+        "name": "中超 2026",
+        "rating_policy": "club_rating_pending",
+    }
+    snapshot["matches"][0]["match_decision"] = {
+        "schema_version": 2,
+        "label": "MATCH_PICK",
+        "market": "1X2",
+        "selection": "home",
+        "valid_until": "2099-01-01T00:00:00+00:00",
+    }
+
+    row = project_match_rows(snapshot)[0]
+
+    assert row["match_decision"]["label"] == "NO_CLEAN_MARKET"
 
 
 def test_project_match_rows_ignores_probability_families_for_public_summary():
@@ -466,12 +514,15 @@ def test_project_match_rows_ignores_probability_families_for_public_summary():
             "match_label": "Mexico vs South Africa",
             "competition_id": "fifa_world_cup_2026",
             "competition_label": "2026 世界杯",
-            "signal_count": 1,
-            "top_grade": "A",
             "next_update_at": "2026-06-09T00:00:00+00:00",
             "next_update_label": "常规",
             "next_update_description": None,
             "stale": False,
+            "match_decision": {
+                "schema_version": 2,
+                "policy_version": "match_pick_v2",
+                "label": "NO_CLEAN_MARKET",
+            },
         }
     ]
 
@@ -490,18 +541,28 @@ def test_project_finished_rows_returns_public_safe_review_projection():
 
     finished = project_finished_rows(snapshot)
 
-    assert finished["schema_version"] == 1
+    assert finished["schema_version"] == 2
     assert finished["summary"]["match_count"] == 1
-    assert finished["summary"]["signal_count"] == 2
     assert finished["summary"]["skipped_no_closing"] == 1
     assert finished["summary"]["coverage"]["missing_closing_count"] == 1
     assert finished["summary"]["sample"]["sample_too_small"] is True
-    assert finished["summary"]["tally"]["S"] == {"hit": 1, "miss": 0, "push": 0}
+    assert finished["summary"]["decision_tally"] == {
+        "hit": 0,
+        "miss": 0,
+        "push": 0,
+        "no_pick": 0,
+    }
+    assert finished["summary"]["coverage"]["legacy_decision_count"] == 1
     assert finished["matches"][0]["match_label"] == "Mexico vs South Africa"
     assert finished["matches"][0]["score_label"] == "2 - 0"
-    assert finished["matches"][0]["closing_match_decision"]["label"] == "HIGH_CONFIDENCE_LEAN"
-    assert finished["matches"][0]["signals"][0]["outcome"] == "命中"
-    assert finished["matches"][0]["signals"][0]["prediction_status"] == "hit"
+    assert finished["matches"][0]["closing_match_decision"]["label"] == "MATCH_PICK"
+    assert (
+        finished["matches"][0]["closing_match_decision"]["policy_version"]
+        == "legacy_match_decision_v1"
+    )
+    assert finished["matches"][0]["decision_outcome"]["status"] == "hit"
+    assert "signals" not in finished["matches"][0]
+    assert "grade" not in str(finished).lower()
 
     serialized = str(finished)
     assert "run_id" not in serialized

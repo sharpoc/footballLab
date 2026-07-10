@@ -13,9 +13,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from worldcup import backtest, eval_data, results_capture
-from worldcup.ledger import _prediction_result
+from worldcup.finished_record import build_finished_block
 
-TRACKED_GRADES = ("S", "A")
+
+DEFAULT_RESULTS_OUT = Path("data/local/results/wc2026_results.csv")
+DEFAULT_FINISHED_STORE = Path("data/local/finished_record_store.json")
 
 
 def _run_json_cli(fn: Callable[[list[str]], int], argv: list[str]) -> dict:
@@ -35,24 +37,6 @@ def _run_json_cli(fn: Callable[[list[str]], int], argv: list[str]) -> dict:
         return json.loads(raw)
 
 
-def signal_tally(snapshot: dict) -> dict[str, dict[str, int]]:
-    tally: dict[str, dict[str, int]] = {grade: {} for grade in TRACKED_GRADES}
-    for match in snapshot.get("matches", []):
-        if ((match.get("result") or {}).get("status")) != "finished":
-            continue
-        for signal in match.get("signals", []):
-            grade = str(signal.get("grade") or "")
-            if grade not in tally:
-                continue
-            outcome = _prediction_result(match, signal)
-            if not outcome:
-                continue
-            label = str(outcome.get("label") or "")
-            if label:
-                tally[grade][label] = tally[grade].get(label, 0) + 1
-    return tally
-
-
 def _market_summary(report: dict, market: str) -> dict:
     block = (report.get("markets") or {}).get(market) or {}
     return {
@@ -68,6 +52,7 @@ def run_daily_eval(
     results_out: str | Path = "data/local/results/wc2026_results.csv",
     eval_out: str | Path = "data/local/backtest/wc2026_eval.csv",
     report_out: str | Path = "data/local/backtest/wc2026_report.json",
+    finished_store: str | Path | None = None,
     min_sample: int = 30,
     extra_fresh: int = 0,
 ) -> dict[str, Any]:
@@ -81,7 +66,7 @@ def run_daily_eval(
         "results": results_stats,
         "eval": None,
         "backtest": None,
-        "signal_tally": {grade: {} for grade in TRACKED_GRADES},
+        "decision_tally": {"hit": 0, "miss": 0, "push": 0, "no_pick": 0},
     }
     fresh = (
         (results_stats.get("added", 0) or 0)
@@ -128,10 +113,17 @@ def run_daily_eval(
             "market_ou": _market_summary(report, "ou_2_5")["market"],
         }
 
-    snapshot_path = cache / "analysis_snapshot.json"
-    if snapshot_path.exists():
-        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-        digest["signal_tally"] = signal_tally(snapshot)
+    resolved_finished_store = (
+        Path(finished_store)
+        if finished_store is not None
+        else DEFAULT_FINISHED_STORE
+        if Path(results_out) == DEFAULT_RESULTS_OUT
+        else Path(results_out).parent / "finished_record_store.json"
+    )
+    finished = build_finished_block(history_dir, results_out, resolved_finished_store)
+    digest["decision_tally"] = dict(finished.get("decision_tally") or {})
+    digest["decision_sample"] = dict(finished.get("decision_sample") or {})
+    digest["decision_coverage"] = dict(finished.get("decision_coverage") or {})
 
     digest["status"] = "ok"
     return digest
@@ -141,12 +133,6 @@ def _fmt_metric(metrics: dict | None) -> str:
     if not metrics or not metrics.get("n"):
         return "-"
     return f"LogLoss {metrics['log_loss']:.4f} (n={metrics['n']})"
-
-
-def _fmt_tally(tally: dict[str, int]) -> str:
-    if not tally:
-        return "暂无"
-    return " ".join(f"{label}{count}" for label, count in sorted(tally.items()))
 
 
 def build_digest_message(digest: dict) -> dict[str, str]:
@@ -175,9 +161,12 @@ def build_digest_message(digest: dict) -> dict[str, str]:
         lines.append(f"AH 进评估 {backtest_stats.get('n_ah', 0)} 场")
         if backtest_stats.get("sample_too_small"):
             lines.append("样本不足（sample_too_small），指标仅记录不作结论")
-    tally = digest.get("signal_tally") or {}
-    lines.append(f"S 级信号：{_fmt_tally(tally.get('S') or {})}")
-    lines.append(f"A 级信号：{_fmt_tally(tally.get('A') or {})}")
+    tally = digest.get("decision_tally") or {}
+    lines.append(
+        "本场首选："
+        f"命中 {tally.get('hit', 0)} / 未中 {tally.get('miss', 0)} / "
+        f"走水 {tally.get('push', 0)} / 暂无可靠首选 {tally.get('no_pick', 0)}"
+    )
     lines.append("仅用于研究分析，不构成投注建议")
     return {
         "summary": f"世界杯赛后日报：完赛 {results.get('total', 0)} 场",
@@ -215,6 +204,7 @@ def main(
     parser.add_argument("--results-out", default="data/local/results/wc2026_results.csv")
     parser.add_argument("--eval-out", default="data/local/backtest/wc2026_eval.csv")
     parser.add_argument("--report-out", default="data/local/backtest/wc2026_report.json")
+    parser.add_argument("--finished-store", default=None)
     parser.add_argument("--min-sample", type=int, default=30)
     parser.add_argument("--notify", action="store_true", help="Send WxPusher digest.")
     parser.add_argument("--live-scores", action="store_true", help="Fetch The Odds API scores first.")
@@ -246,6 +236,7 @@ def main(
         results_out=args.results_out,
         eval_out=args.eval_out,
         report_out=args.report_out,
+        finished_store=args.finished_store,
         min_sample=args.min_sample,
         extra_fresh=_fresh_count(scores_stats),
     )

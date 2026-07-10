@@ -3,72 +3,44 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from worldcup.decision_settlement import settle_match_decision
 from worldcup.finished_record import build_finished_block
 
 
-def _closing_snapshot(at: str) -> dict:
+def _closing_snapshot(
+    at: str,
+    *,
+    competition_id: str = "fifa_world_cup_2026",
+    decision: dict | None = None,
+) -> dict:
+    competition_name = "2026 世界杯" if competition_id == "fifa_world_cup_2026" else "中超 2026"
+    if decision is None:
+        decision = {
+            "schema_version": 2,
+            "label": "MATCH_PICK",
+            "market": "1X2",
+            "selection": "home",
+            "line": None,
+            "odds": 1.78,
+            "p_hit_safe": 0.61,
+            "p_no_loss_safe": 0.61,
+        }
     return {
         "snapshot_at": at,
-        "competition": {"id": "fifa_world_cup_2026", "name": "2026 世界杯"},
+        "competition": {"id": competition_id, "name": competition_name},
         "matches": [
             {
                 "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
-                "competition": {"id": "fifa_world_cup_2026", "name": "2026 世界杯"},
+                "competition": {"id": competition_id, "name": competition_name},
                 "home_team": "Mexico",
                 "away_team": "South Africa",
                 "home_canonical": "mexico",
                 "away_canonical": "south_africa",
                 "stage": "Matchday 1",
                 "group": "Group A",
-                "model": {
-                    "probability_families": {
-                        "schema_version": 1,
-                        "active_signal_family": "model_market_total",
-                        "families": {
-                            "model_raw": {
-                                "combined_1x2": {"home": 0.58, "draw": 0.25, "away": 0.17},
-                            },
-                            "model_market_total": {
-                                "combined_1x2": {"home": 0.64, "draw": 0.22, "away": 0.14},
-                            },
-                            "market_only": {
-                                "1x2": {"home": 0.52, "draw": 0.28, "away": 0.20},
-                            },
-                        },
-                    }
-                },
-                "market": {
-                    "1x2": {"odds": {"home": 1.78, "draw": 3.6, "away": 4.8}},
-                    "ou_2_5": {"odds": {"over": 1.9, "under": 2.0}},
-                    "ah_main": {"line_home": -1.0, "odds": {"home": 1.74, "away": 2.12}},
-                },
-                "odds_movement": {
-                    "schema_version": 1,
-                    "quality": {"enough_points": True, "line_changed": True, "sparse": False},
-                },
-                "signals": [
-                    {
-                        "market_type": "1X2_90min",
-                        "selection": "home",
-                        "grade": "S",
-                        "raw_grade": "S",
-                        "line": None,
-                        "ev": 0.12,
-                        "edge": 0.10,
-                        "reasons": ["reverse_market", "market_dispersion"],
-                    },
-                    {
-                        "market_type": "AsianHandicap_90min",
-                        "selection": "home_-2.0",
-                        "grade": "A",
-                        "raw_grade": "S",
-                        "line": -2.0,
-                        "ev": 0.05,
-                        "edge": 0.04,
-                        "reasons": ["ah_market_edge_missing"],
-                    },
-                    {"market_type": "1X2_90min", "selection": "away", "grade": "C", "line": None},
-                ],
+                "match_decision": decision,
+                # Legacy payload proves the new record path never freezes grades.
+                "signals": [{"grade": "S", "selection": "away", "sentinel": "must-not-leak"}],
             }
         ],
     }
@@ -104,133 +76,90 @@ MEXICO_ROW = {
 }
 
 
-def test_build_finished_block_freezes_closing_and_tallies_sa():
+def _build(root: Path, snapshot: dict) -> dict:
+    history = root / "history"
+    history.mkdir()
+    (history / "snapshot_20260611T180000Z-live.json").write_text(json.dumps(snapshot))
+    results = root / "results.csv"
+    _write_results(results, [MEXICO_ROW])
+    return build_finished_block(history, results, root / "store.json")
+
+
+def test_build_finished_block_freezes_only_match_pick_and_settles_it():
     with TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        history = root / "history"
-        history.mkdir()
-        (history / "snapshot_20260611T180000Z-live.json").write_text(
-            json.dumps(_closing_snapshot("2026-06-11T18:00:00+00:00"))
-        )
-        results = root / "results.csv"
-        _write_results(results, [MEXICO_ROW])
+        block = _build(Path(tmp), _closing_snapshot("2026-06-11T18:00:00+00:00"))
 
-        block = build_finished_block(history, results, root / "store.json")
-
+        assert block["schema_version"] == 2
         assert len(block["matches"]) == 1
         record = block["matches"][0]
         assert record["result"] == {"home_score": 2, "away_score": 0}
         assert record["closing_snapshot_at"] == "2026-06-11T18:00:00+00:00"
-        # 2-0 主胜：S 级主胜命中；A 级让球 home -2.0 净胜恰好 2 球走水
-        by_grade = {s["grade"]: s for s in record["closing_signals"] if s["grade"] in ("S", "A")}
-        assert by_grade["S"]["prediction"]["label"] == "命中"
-        assert by_grade["A"]["prediction"]["label"] == "走水"
-        assert block["tally"]["S"] == {"hit": 1, "miss": 0, "push": 0}
-        assert block["tally"]["A"] == {"hit": 0, "miss": 0, "push": 1}
-        assert block["match_level_tally"]["S"] == {"hit": 1, "miss": 0, "push": 0}
-        assert block["match_level_tally"]["A"] == {"hit": 0, "miss": 0, "push": 0}
-        assert block["match_level_sample"] == {"matches": 1, "selected_signals": 1}
-        # C 级信号保留在明细但不进 tally
-        assert any(s["grade"] == "C" for s in record["closing_signals"])
-        # closing 赔率从 market 块解析
-        assert by_grade["S"]["odds"] == 1.78
+        assert record["closing_match_decision"]["label"] == "MATCH_PICK"
+        assert record["closing_match_decision_result"] == {
+            "status": "hit",
+            "label": "命中",
+            "detail": "全场 2-0",
+            "settlement_class": "full_win",
+        }
+        assert "closing_signals" not in record
+        assert "must-not-leak" not in json.dumps(block)
+        assert block["decision_tally"] == {"hit": 1, "miss": 0, "push": 0, "no_pick": 0}
 
 
-def test_build_finished_block_freezes_closing_match_decision():
+def test_explicit_no_pick_is_not_confused_with_missing_decision():
+    no_pick = {"schema_version": 2, "label": "NO_CLEAN_MARKET"}
     with TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        history = root / "history"
-        history.mkdir()
-        closing = _closing_snapshot("2026-06-11T18:00:00+00:00")
-        closing["matches"][0]["match_decision"] = {
-            "schema_version": 1,
-            "label": "HIGH_CONFIDENCE_LEAN",
-            "market": "DNB",
+        block = _build(
+            Path(tmp),
+            _closing_snapshot("2026-06-11T18:00:00+00:00", decision=no_pick),
+        )
+
+        assert block["decision_tally"] == {"hit": 0, "miss": 0, "push": 0, "no_pick": 1}
+        assert block["decision_coverage"]["missing_decision_count"] == 0
+
+    missing = settle_match_decision(None, {"home_score": 2, "away_score": 0})
+    assert missing["status"] == "missing_decision"
+
+
+def test_quarter_handicap_preserves_half_win_and_half_loss_classes():
+    result = {"home_score": 1, "away_score": 1}
+    half_win = settle_match_decision(
+        {
+            "schema_version": 2,
+            "label": "MATCH_PICK",
+            "market": "AH",
             "selection": "home",
-            "line": 0.0,
-            "odds": 1.74,
-            "p_hit_safe": 0.59,
-            "p_no_loss_safe": 0.73,
-            "signal_source": "lean",
-        }
-        (history / "snapshot_20260611T180000Z-live.json").write_text(json.dumps(closing))
-        results = root / "results.csv"
-        _write_results(results, [MEXICO_ROW])
+            "line": 0.25,
+        },
+        result,
+    )
+    half_loss = settle_match_decision(
+        {
+            "schema_version": 2,
+            "label": "MATCH_PICK",
+            "market": "AH",
+            "selection": "home",
+            "line": -0.25,
+        },
+        result,
+    )
 
-        block = build_finished_block(history, results, root / "store.json")
-
-        assert block["matches"][0]["closing_match_decision"] == closing["matches"][0]["match_decision"]
-
-
-def test_build_finished_block_freezes_v2_diagnostic_fields():
-    with TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        history = root / "history"
-        history.mkdir()
-        (history / "snapshot_20260611T180000Z-live.json").write_text(
-            json.dumps(_closing_snapshot("2026-06-11T18:00:00+00:00"))
-        )
-        results = root / "results.csv"
-        _write_results(results, [MEXICO_ROW])
-
-        block = build_finished_block(history, results, root / "store.json")
-
-        signal = next(
-            item
-            for item in block["matches"][0]["closing_signals"]
-            if item["grade"] == "S" and item["market_type"] == "1X2_90min"
-        )
-        assert signal["diagnostic_schema_version"] == 2
-        assert signal["raw_grade"] == "S"
-        assert signal["ev"] == 0.12
-        assert signal["edge"] == 0.10
-        assert signal["reasons"] == ["reverse_market", "market_dispersion"]
-        assert signal["probability_family_probs"] == {
-            "model_raw": 0.58,
-            "model_market_total": 0.64,
-            "market_only": 0.52,
-        }
-        assert signal["probability_family_deltas"] == {
-            "active_family": "model_market_total",
-            "model_raw_minus_active": -0.06,
-            "active_minus_market": 0.12,
-        }
-        assert signal["odds_movement_quality"] == {
-            "enough_points": True,
-            "line_changed": True,
-            "sparse": False,
-        }
-        assert signal["diagnostic_flags"] == [
-            "hit",
-            "line_changed",
-            "raw_active_gap_ge_5pp",
-        ]
-        assert signal["official_grade"] == "S"
-        assert signal["signal_status"] == "official"
+    assert (half_win["status"], half_win["settlement_class"]) == ("hit", "half_win")
+    assert (half_loss["status"], half_loss["settlement_class"]) == ("miss", "half_loss")
 
 
-def test_build_finished_block_keeps_competitions_separate_when_history_is_mixed():
-    with TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        history = root / "history"
-        history.mkdir()
-        csl = _closing_snapshot("2026-06-11T18:00:00+00:00")
-        csl["competition"] = {"id": "csl_2026", "name": "中超 2026"}
-        csl["matches"][0]["competition"] = {"id": "csl_2026", "name": "中超 2026"}
-        csl["matches"][0]["market"]["1x2"]["odds"]["home"] = 9.99
-        (history / "snapshot_20260611T180000Z-csl.json").write_text(json.dumps(csl))
-        wc = _closing_snapshot("2026-06-11T17:50:00+00:00")
-        (history / "snapshot_20260611T175000Z-wc.json").write_text(json.dumps(wc))
-        results = root / "results.csv"
-        _write_results(results, [MEXICO_ROW])
+def test_unknown_decision_label_is_invalid_instead_of_becoming_a_fake_hit():
+    settled = settle_match_decision(
+        {
+            "schema_version": 2,
+            "label": "TOTALLY_UNKNOWN",
+            "market": "1X2",
+            "selection": "home",
+        },
+        {"home_score": 2, "away_score": 0},
+    )
 
-        block = build_finished_block(history, results, root / "store.json")
-
-        assert len(block["matches"]) == 1
-        record = block["matches"][0]
-        assert record["competition_id"] == "fifa_world_cup_2026"
-        by_grade = {s["grade"]: s for s in record["closing_signals"] if s["grade"] == "S"}
-        assert by_grade["S"]["odds"] == 1.78
+    assert settled["status"] == "invalid_decision"
 
 
 def test_build_finished_block_is_incremental_via_store():
@@ -245,15 +174,14 @@ def test_build_finished_block_is_incremental_via_store():
         store = root / "store.json"
 
         first = build_finished_block(history, results, store)
-        # 删掉 closing 归档：若第二次重算会丢失记录；增量 store 必须保住
         closing.unlink()
         second = build_finished_block(history, results, store)
 
         assert len(second["matches"]) == 1
-        assert second["tally"] == first["tally"]
+        assert second["decision_tally"] == first["decision_tally"]
 
 
-def test_build_finished_block_dedupes_legacy_competition_keys_in_store():
+def test_legacy_store_remains_readable_but_public_block_strips_grades():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         results = root / "results.csv"
@@ -266,41 +194,57 @@ def test_build_finished_block_dedupes_legacy_competition_keys_in_store():
             "home_canonical": MEXICO_ROW["home_canonical"],
             "away_canonical": MEXICO_ROW["away_canonical"],
             "result": {"home_score": 2, "away_score": 0},
-            "closing_signals": [],
-            "odds_trend": [],
+            "closing_signals": [{"grade": "S", "sentinel": "legacy-grade"}],
+            "closing_match_decision": {
+                "schema_version": 1,
+                "label": "HIGH_CONFIDENCE_LEAN",
+                "market": "DNB",
+                "selection": "home",
+                "line": 0.0,
+            },
         }
-        richer_record = {
-            **legacy_record,
-            "competition": {"id": "fifa_world_cup_2026"},
-            "closing_match_decision": {"market": "DNB", "selection": "home"},
-        }
-        store.write_text(
-            json.dumps(
-                {
-                    "2026-06-11_mexico_south_africa": legacy_record,
-                    "fifa_world_cup_2026_2026-06-11_mexico_south_africa": richer_record,
-                }
-            ),
-            encoding="utf-8",
-        )
+        store.write_text(json.dumps({"legacy": legacy_record}), encoding="utf-8")
 
         block = build_finished_block(root / "history", results, store)
 
         assert len(block["matches"]) == 1
-        assert block["matches"][0]["competition"] == {"id": "fifa_world_cup_2026"}
-        assert block["matches"][0]["closing_match_decision"] == {
-            "market": "DNB",
-            "selection": "home",
-        }
-        persisted = json.loads(store.read_text(encoding="utf-8"))
-        assert list(persisted) == ["2026-06-11_mexico_south_africa"]
+        assert "closing_signals" not in block["matches"][0]
+        assert block["matches"][0]["closing_match_decision_result"]["status"] == "hit"
+        # No destructive migration: the persisted legacy payload is still present.
+        assert "legacy-grade" in store.read_text(encoding="utf-8")
 
 
-def test_build_finished_block_counts_missing_closing():
+def test_finished_block_filters_mixed_history_by_competition():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         history = root / "history"
-        history.mkdir()  # 没有任何归档
+        history.mkdir()
+        (history / "snapshot_20260611T180000Z-csl.json").write_text(
+            json.dumps(
+                _closing_snapshot(
+                    "2026-06-11T18:00:00+00:00",
+                    competition_id="csl_2026",
+                    decision={"label": "MATCH_PICK", "market": "1X2", "selection": "away"},
+                )
+            )
+        )
+        (history / "snapshot_20260611T175000Z-wc.json").write_text(
+            json.dumps(_closing_snapshot("2026-06-11T17:50:00+00:00"))
+        )
+        results = root / "results.csv"
+        _write_results(results, [MEXICO_ROW])
+
+        block = build_finished_block(history, results, root / "store.json")
+
+        assert block["matches"][0]["competition_id"] == "fifa_world_cup_2026"
+        assert block["matches"][0]["closing_match_decision"]["selection"] == "home"
+
+
+def test_build_finished_block_counts_missing_closing_without_fake_no_pick():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        history = root / "history"
+        history.mkdir()
         results = root / "results.csv"
         _write_results(results, [MEXICO_ROW])
 
@@ -308,4 +252,5 @@ def test_build_finished_block_counts_missing_closing():
 
         assert block["matches"] == []
         assert block["skipped_no_closing"] == 1
-        assert block["tally"]["S"] == {"hit": 0, "miss": 0, "push": 0}
+        assert block["decision_tally"] == {"hit": 0, "miss": 0, "push": 0, "no_pick": 0}
+        assert block["decision_coverage"]["missing_closing_count"] == 1

@@ -802,7 +802,14 @@ def test_build_finished_view_groups_by_beijing_day():
 
     assert len(view["days"]) == 1
     assert view["summary"]["match_count"] == 1
-    assert view["summary"]["signal_count"] == 2
+    assert "signal_count" not in view["summary"]
+    assert view["summary"]["decision_tally"] == {
+        "hit": 0,
+        "miss": 0,
+        "push": 0,
+        "no_pick": 0,
+    }
+    assert view["summary"]["coverage"]["missing_decision_count"] == 1
     assert view["summary"]["skipped_no_closing"] == 0
     assert view["summary"]["sample"]["sample_too_small"] is True
     day = view["days"][0]

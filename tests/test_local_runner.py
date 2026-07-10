@@ -116,40 +116,29 @@ def test_build_snapshot_from_probe_serializes_match_analysis():
         probe_dir = Path(tmp) / "probe"
         _write_probe_files(probe_dir)
 
-        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T00:00:00+00:00")
+        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T05:00:00+00:00")
 
-        assert snapshot["snapshot_at"] == "2026-06-08T00:00:00+00:00"
+        assert snapshot["snapshot_at"] == "2026-06-08T05:00:00+00:00"
         assert snapshot["counts"]["fixtures"] == 1
         assert snapshot["counts"]["match_inputs"] == 1
         assert snapshot["matches"][0]["home_team"] == "Mexico"
         assert snapshot["matches"][0]["odds_updated_at"] == "2026-06-08T04:00:00+00:00"
-        assert snapshot["matches"][0]["refresh_plan"]["next_update_at"] == "2026-06-09T00:00:00+00:00"
+        assert snapshot["matches"][0]["refresh_plan"]["next_update_at"] == "2026-06-09T05:00:00+00:00"
         assert snapshot["matches"][0]["refresh_plan"]["label"] == "常规"
         assert snapshot["run"]["policy"]["match_plans"][0]["match_id"] == "event-1"
         assert snapshot["matches"][0]["market"]["1x2"]["last_update_at"] == "2026-06-08T02:00:00+00:00"
         assert snapshot["matches"][0]["market"]["ou_2_5"]["last_update_at"] == "2026-06-08T03:00:00+00:00"
         assert snapshot["matches"][0]["model"]["combined_1x2"]["home"] > 0
         decision = snapshot["matches"][0]["match_decision"]
-        assert decision["schema_version"] == 1
-        assert decision["label"] in {
-            "STRONG_VALUE",
-            "VALUE_CANDIDATE",
-            "HIGH_CONFIDENCE_LEAN",
-            "LOW_CONFIDENCE_LEAN",
-            "NO_CLEAN_MARKET",
-        }
+        assert decision["schema_version"] == 2
+        assert decision["label"] in {"MATCH_PICK", "NO_CLEAN_MARKET"}
         assert "p_hit_safe" in decision
         assert "p_no_loss_safe" in decision
         assert "reasons" in decision
         assert "risks" in decision
-        assert snapshot["matches"][0]["signals"]
-        ah_signal = next(
-            signal
-            for signal in snapshot["matches"][0]["signals"]
-            if signal["market_type"] == "AsianHandicap_90min" and signal["selection"].startswith("home_")
-        )
-        assert ah_signal["ah_validation_shadow"]["activation"] == "shadow_only"
-        assert "candidate_validated" in ah_signal["ah_validation_shadow"]
+        assert "signals" not in snapshot["matches"][0]
+        assert "selected_signal_id" not in decision
+        assert "signal_source" not in decision
 
 
 def test_build_snapshot_serializes_probability_families_without_removing_legacy_model_fields():
@@ -157,7 +146,7 @@ def test_build_snapshot_serializes_probability_families_without_removing_legacy_
         probe_dir = Path(tmp) / "probe"
         _write_probe_files(probe_dir)
 
-        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T00:00:00+00:00")
+        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T05:03:00+00:00")
 
         model = snapshot["matches"][0]["model"]
         assert "combined_1x2" in model
@@ -278,17 +267,13 @@ def test_build_snapshot_from_probe_serializes_dynamic_ou_line():
         _write_probe_files(probe_dir)
         _append_totals_books(probe_dir, 1.5, ("bk2", "bk3", "bk4", "bk5"))
 
-        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T00:00:00+00:00")
+        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T05:03:00+00:00")
         match = snapshot["matches"][0]
-        ou_signal_lines = {
-            signal["line"]
-            for signal in match["signals"]
-            if signal["market_type"] == "OverUnder_90min"
-        }
-
         assert match["market"]["ou_2_5"]["line"] == 1.5
         assert match["model"]["ou_line"] == 1.5
-        assert ou_signal_lines == {1.5}
+        assert "signals" not in match
+        if match["match_decision"]["market"] == "OU":
+            assert match["match_decision"]["line"] == 1.5
 
 
 def test_build_snapshot_from_probe_attaches_finished_result_when_available():
@@ -355,7 +340,11 @@ def test_build_snapshot_caps_signals_when_odds_quotes_are_stale():
                 market["outcomes"][0]["price"] = 2.2
         odds_path.write_text(json.dumps(odds_events))
         base_cfg = load_config()
-        cfg = {**base_cfg, "odds": {**base_cfg["odds"], "min_books": 1}}
+        cfg = {
+            **base_cfg,
+            "odds": {**base_cfg["odds"], "min_books": 1},
+            "match_decision": {**base_cfg["match_decision"], "min_books": 1},
+        }
 
         snapshot = build_snapshot_from_probe(
             probe_dir,
@@ -363,13 +352,10 @@ def test_build_snapshot_caps_signals_when_odds_quotes_are_stale():
             cfg=cfg,
         )
 
-        home_signal = next(
-            signal
-            for signal in snapshot["matches"][0]["signals"]
-            if signal["market_type"] == "1X2_90min" and signal["selection"] == "home"
-        )
-        assert home_signal["grade"] == "B"
-        assert "stale_odds" in home_signal["reasons"]
+        decision = snapshot["matches"][0]["match_decision"]
+        assert decision["label"] == "NO_CLEAN_MARKET"
+        assert decision["reasons"] == ["no_clean_option"]
+        assert "signals" not in snapshot["matches"][0]
 
 
 def test_invalid_odds_do_not_enter_market_aggregation_and_are_reported():
@@ -404,7 +390,7 @@ def test_invalid_odds_do_not_enter_market_aggregation_and_are_reported():
             }
         )
         odds_path.write_text(json.dumps(events))
-        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T00:00:00+00:00")
+        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T05:00:00+00:00")
 
         data_quality = snapshot["data_quality"]
         assert data_quality["invalid_odds_count"] == 2
@@ -483,7 +469,7 @@ def test_build_snapshot_from_probe_includes_main_ah_market():
         probe_dir = Path(tmp) / "probe"
         _write_probe_files(probe_dir)
 
-        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T00:00:00+00:00")
+        snapshot = build_snapshot_from_probe(probe_dir, snapshot_at="2026-06-08T05:00:00+00:00")
 
         ah_main = snapshot["matches"][0]["market"]["ah_main"]
         assert ah_main["line_home"] == -0.5
@@ -520,4 +506,5 @@ def test_worldcup_snapshot_matches_include_competition_block():
         assert competition["fixture_source"] == "openfootball"
         assert competition["rating_policy"] == "national_team_elo"
         assert snapshot["matches"][0]["stage"] == "Matchday 1"
-        assert "signals" in snapshot["matches"][0]
+        assert "signals" not in snapshot["matches"][0]
+        assert snapshot["matches"][0]["match_decision"]["schema_version"] == 2

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from worldcup.decision_settlement import settle_match_decision, summarize_decision_records
 from worldcup.eval_data import closing_match_entry
 from worldcup.ledger import _prediction_result
 from worldcup.odds_trend import extract_match_trend, list_history_files
@@ -246,11 +247,6 @@ def _freeze_signal(entry: dict, signal: dict, prediction: dict) -> dict[str, Any
 
 def _freeze_record(entry: dict, row: dict, history: list[dict]) -> dict:
     result = {"home_score": int(row["home_score"]), "away_score": int(row["away_score"])}
-    settled_match = {**entry, "result": {"status": "finished", **result}}
-    closing_signals = []
-    for signal in entry.get("signals") or []:
-        prediction = _prediction_result(settled_match, signal)
-        closing_signals.append(_freeze_signal(entry, signal, prediction))
     competition = _entry_competition(entry)
     competition_id = str(competition.get("id") or _row_competition_id(row))
     record = {
@@ -266,13 +262,27 @@ def _freeze_record(entry: dict, row: dict, history: list[dict]) -> dict:
         "group": entry.get("group"),
         "result": result,
         "closing_snapshot_at": None,
-        "closing_signals": closing_signals,
         "odds_trend": extract_match_trend(history, row["home_canonical"], row["away_canonical"]),
     }
     match_decision = entry.get("match_decision")
     if isinstance(match_decision, dict):
         record["closing_match_decision"] = dict(match_decision)
     return record
+
+
+def _decision_record_view(record: dict[str, Any]) -> dict[str, Any]:
+    # Keep the on-disk legacy store untouched, but never leak historical grade
+    # payloads into new snapshots or public views.
+    view = {
+        key: value
+        for key, value in record.items()
+        if key not in {"closing_signals", "tally", "match_level_tally"}
+    }
+    view["closing_match_decision_result"] = settle_match_decision(
+        view.get("closing_match_decision"),
+        view.get("result"),
+    )
+    return view
 
 
 def _empty_tally() -> dict[str, dict[str, int]]:
@@ -420,12 +430,14 @@ def build_finished_block(
         except OSError:
             pass
 
-    records = sorted(store.values(), key=lambda record: record.get("kickoff_at_utc") or "")
-    match_level_tally, match_level_sample = _match_level_tally(records)
+    stored_records = sorted(store.values(), key=lambda record: record.get("kickoff_at_utc") or "")
+    records = [_decision_record_view(record) for record in stored_records]
+    summary = summarize_decision_records(records, skipped_no_closing=skipped)
     return {
+        "schema_version": 2,
         "matches": records,
-        "tally": _tally(records),
-        "match_level_tally": match_level_tally,
-        "match_level_sample": match_level_sample,
+        "decision_tally": summary["decision_tally"],
+        "decision_sample": summary["sample"],
+        "decision_coverage": summary["coverage"],
         "skipped_no_closing": skipped,
     }

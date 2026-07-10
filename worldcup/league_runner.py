@@ -11,13 +11,12 @@ from worldcup.collectors.league_odds import parse_league_odds_events
 from worldcup.collectors.models import EloRating, Fixture, ParsedOddsEvent
 from worldcup.competitions import get_competition
 from worldcup.config import load_config
-from worldcup.match_decision import decide_match
+from worldcup.match_decision import decide_match, prepare_match_input_for_pick
 from worldcup.local_runner import (
     _analysis_to_dict,
-    cap_signals_for_pending_club_rating,
     write_snapshot,
 )
-from worldcup.pipeline import MatchAnalysisInput, analyze_match_input, generate_value_signals
+from worldcup.pipeline import MatchAnalysisInput, analyze_match_input
 
 
 def _read_json(path: Path) -> Any:
@@ -124,18 +123,28 @@ def build_league_snapshot_from_cache(
     matches = []
     missing_rating_teams: set[str] = set()
     club_rating_pending = competition.rating_policy == "club_rating_pending"
+    rating_mode = club_rating_result.quality.mode
     for fixture, odds_event in zip(parse_result.fixtures, parse_result.odds_events):
         match_input, missing = _match_input_from_fixture_event(fixture, odds_event, rating_pool)
         missing_rating_teams.update(missing)
-        analysis = analyze_match_input(match_input, cfg)
-        signals = generate_value_signals(analysis, cfg, observed_at=observed_at)
+        pick_input = prepare_match_input_for_pick(match_input, cfg, observed_at)
+        analysis = analyze_match_input(pick_input, cfg)
+        decision_blockers: list[str] = []
         if club_rating_pending:
-            signals = cap_signals_for_pending_club_rating(signals)
-        match_decision = decide_match(analysis, signals, cfg, observed_at=observed_at)
+            decision_blockers.append("club_rating_pending")
+        if rating_mode != "sample_replay":
+            decision_blockers.append(f"club_rating_{rating_mode}")
+        if missing:
+            decision_blockers.append("club_rating_missing_team")
+        match_decision = decide_match(
+            analysis,
+            cfg,
+            observed_at=observed_at,
+            hard_blockers=decision_blockers,
+        )
         matches.append(
             _analysis_to_dict(
                 analysis,
-                signals,
                 competition_id=competition_id,
                 match_decision=match_decision,
             )

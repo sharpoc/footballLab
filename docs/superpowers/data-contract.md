@@ -3,6 +3,17 @@
 - 日期：2026-06-08
 - 范围：2026 世界杯 MVP 数据源探测
 - 结论状态：核心源已探测；赛程与 Elo 可用，API-Football 免费档不能访问 2026 season，The Odds API 可作为当前 MVP 赔率源；Plan 2 本地采集/分析/预览链路已按该契约落地第一版
+- 公开产品契约更新：2026-07-10 起仅保留每场唯一“本场首选”或“暂无可靠首选”；S/A/B/C 价值等级仅用于 legacy compatibility，不再是公开 API、页面或新完赛统计契约。
+
+## 当前公开产品契约
+
+- 新 snapshot 每场最多一个 `match_decision`。
+- 有效首选使用 `label=MATCH_PICK`，中文显示为“本场首选”。
+- 数据质量、赔率新鲜度或概率门槛未通过时使用 `label=NO_CLEAN_MARKET`，中文显示为“暂无可靠首选”。
+- 新决策按命中率优先排序，不读取、不优先、不降级到 S/A/B/C 价值等级。
+- 公开投影不得输出 `signals`、`grade`、`top_grade`、`signal_count`、`closing_signals`、EV/Edge 或旧 decision label。
+- 旧 snapshot/store 中的 S/A/B/C、`signals`、`closing_signals` 和旧 decision label 可由内部读取路径兼容，不做破坏性迁移；它们不得重新进入新首选、公开页面或当前策略绩效。
+- 新完赛统计以 `closing_match_decision` 为唯一结算对象，对外使用 `decision_tally`、`decision_sample` 和 `decision_coverage`。
 
 ## 1. 赛程源：openfootball/worldcup.json
 
@@ -614,7 +625,9 @@ python3 -m worldcup.ingest_app --db data/local/worldcup.db --snapshot data/cache
 | 函数 | 说明 |
 |---|---|
 | `load_latest_snapshot(db_path, store=None)` | 从默认 SQLite 或注入的 `SnapshotStore` 读取最新 snapshot |
+| `load_latest_snapshot_view(db_path, store=None)` | 按赛事合并最新 snapshot，用于多赛事公开视图 |
 | `project_match_rows(snapshot)` | 输出预览/API 可用的比赛行 |
+| `project_finished_rows(snapshot)` | 输出 closing 首选、结算结果、`decision_tally`、`sample` 和 `coverage` 的公开复盘投影 |
 
 比赛行字段：
 
@@ -625,21 +638,45 @@ group
 home_team
 away_team
 match_label
-signal_count
-top_grade
+competition_id
+competition_label
+next_update_at
+next_update_label
+next_update_description
 stale
+match_decision
 ```
+
+`match_decision` 的公开字段只包含：
+
+```text
+schema_version
+policy_version
+label
+market
+selection
+line
+odds
+p_hit_safe
+p_no_loss_safe
+computed_at
+odds_latest_at
+valid_until
+```
+
+`label` 对外只允许 `MATCH_PICK` 或 `NO_CLEAN_MARKET`。旧 decision label 必须在投影边界归一或拒绝，不得原样暴露。`signals`、`grade`、`signal_count`、`top_grade`、`selected_option_id`、内部 reason/risk 和模型详情不属于公开比赛行。
 
 不得在投影中加入 stake、bet amount、下注金额或其它资金字段。
 
-### 研究台账 UI 投影
+### 本场首选 UI 投影
 
-`worldcup.ledger` 负责把完整 `analysis_snapshot.json` 投影为公开 UI 可用的数据：
+`worldcup.query` 负责安全投影，`worldcup.match_decision_html` 负责把投影结果渲染为公开 UI：
 
 | 输出 | 说明 |
 |---|---|
-| 信号行 | 每条价值信号一行，包含对阵、开赛时间、盘口标签、模型概率、去水市场概率、EV、Edge、等级、新鲜度和确定性解释 |
-| 摘要指标 | 即将比赛、强/观察/弱信号、过期来源、整体质量、等级统计 |
+| 待赛比赛卡 | 每场一张卡，只显示本场首选或暂无可靠首选，以及安全命中率、不亏概率和参考赔率 |
+| 摘要指标 | 待开赛数、本场首选数、暂无可靠首选数和脱敏数据质量状态 |
+| 完赛记录 | closing 首选、比分、命中/未中/走水/暂无首选及小样本提示 |
 | 数据源健康 | 只展示脱敏后的可用性、计数和质量状态 |
 
 公开 UI 投影不得包含：
@@ -651,7 +688,7 @@ stale
 
 ### 静态预览
 
-`worldcup.preview` 生成单文件研究台账 HTML，并委托 `worldcup.ledger_html.build_research_ledger_html(snapshot)` 渲染：
+`worldcup.preview` 生成单文件“本场首选” HTML，并委托 `worldcup.match_decision_html.build_match_decision_html(snapshot)` 渲染：
 
 ```bash
 python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out data/cache/preview.html
@@ -660,23 +697,25 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 预览页必须包含：
 
 - `仅用于研究分析，不构成投注建议` 免责声明。
-- “研究台账”标题与“2026 世界杯”上下文。
-- 中文摘要指标。
-- 等级筛选、搜索输入和研究信号台账表格。
-- 方法说明、数据源健康、注意事项、最后更新时间。
+- “本场首选”标题、最后更新时间和研究边界说明。
+- 待开赛、本场首选、暂无可靠首选和数据质量中文摘要。
+- 球队搜索、赛事筛选和每场唯一首选卡；不得出现等级筛选或价值信号表。
+- 本场首选完赛战绩、样本是否足够的提示和 closing 明细。
 - 脱敏数据源健康计数，不展示 provider 原名、quota 明细或原始错误文本。
 - 富化异常只展示脱敏计数（`enrichment_error_count` / “富化异常”），不得展示 raw error。
-- 桌面为主表 + 右侧栏；移动端台账在右侧栏之前，表格横向滚动限制在表格容器内，页面本身不得横向溢出。
+- 移动端卡片单列排列，完赛表格横向滚动限制在表格容器内，页面本身不得横向溢出。
 - 不显示资金相关字段。
 
-### Finished review diagnostics
+### Finished match-decision contract
 
 内部 snapshot 顶层 `finished` 块由 `worldcup.finished_record` 在本地富化阶段生成，完整数据只用于本地复盘、公开安全投影和静态导出输入。
 
-- `finished.matches[].closing_signals[]` 保留原有 `market_type`、`selection`、`line`、`grade`、`odds`、`prediction` 字段，老 snapshot 缺少新增诊断字段仍有效。
-- 新定格信号写入 `diagnostic_schema_version=2`，并冻结 `raw_grade`、`ev`、`edge`、`reasons`、`probability_family_probs`、`probability_family_deltas`、`odds_movement_quality` 和 `diagnostic_flags`。
-- 这些字段只用于本地 `worldcup.postmatch_diagnostics` 和后续复盘诊断，不改变模型概率、EV、信号等级或历史结算口径。
-- `GET /api/finished` 与 `api/finished.json` 仍通过 `project_finished_rows(snapshot)` 输出公开安全复盘投影，不得暴露完整内部 snapshot、run_id、quota、provider 原名或 raw source error。
+- 新定格记录保存 `closing_match_decision`、`closing_snapshot_at`、比分与基本比赛身份；不再新写 `closing_signals`。
+- `decision_tally` 固定包含 `hit`、`miss`、`push`、`no_pick`；命中率分母只包含 `hit + miss`，走水和主动放弃不进入命中率分母。
+- `decision_sample` 记录当前策略的已结算样本、选择率和 `sample_too_small`；当前策略不得借用 legacy 结果充当新策略样本。
+- `decision_coverage` 至少记录 `finished_result_count`、`closing_available_count`、`missing_closing_count`、`decision_available_count`、`missing_decision_count`、`invalid_decision_count` 和 `unresolved_count`。
+- 存量 store 内的 `closing_signals`、grade tally 和旧 decision label 保持只读 legacy compatibility，不做破坏性迁移；新 `finished` 块和公开投影必须剔除这些字段。
+- `GET /api/finished` 与 `api/finished.json` 仍通过 `project_finished_rows(snapshot)` 输出公开安全复盘投影；公开 `summary` 使用 `decision_tally`、`sample` 和 `coverage`，不得暴露完整内部 snapshot、run_id、quota、provider 原名或 raw source error。
 
 ### Local HTTP route contract
 
@@ -687,7 +726,7 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 | Method | Path | 行为 |
 |---|---|---|
 | `POST` | `/api/ingest/snapshot` | 调用本地 ingest app，验签后写入 `SnapshotStore` |
-| `GET` | `/api/snapshot/latest` | 返回最新完整 snapshot |
+| `GET` | `/api/snapshot/latest` | 返回最新公开安全 snapshot 投影，不返回完整内部 snapshot |
 | `GET` | `/api/matches` | 返回 `project_match_rows(snapshot)` |
 | `GET` | `/api/finished` | 返回 `project_finished_rows(snapshot)` 的公开安全复盘投影 |
 | `GET` | `/preview` | 返回静态 HTML 预览页 |
@@ -742,10 +781,10 @@ python3 -m worldcup.export --snapshot data/cache/analysis_snapshot.json --out-di
 
 | 文件 | 说明 |
 |---|---|
-| `index.html` | 研究台账静态研究页 |
+| `index.html` | “本场首选”静态研究页 |
 | `api/snapshot/latest.json` | 公开安全 snapshot 投影：summary counts、脱敏 data quality 计数（含 `enrichment_error_count`）、只读比赛行与复盘投影；不得包含完整内部 snapshot |
-| `api/matches.json` | 只读比赛行投影 |
-| `api/finished.json` | 只读复盘投影：closing 场次、比分、复盘信号、S/A tally、coverage 与小样本标记 |
+| `api/matches.json` | 只读比赛行投影：每场仅本场首选或暂无可靠首选 |
+| `api/finished.json` | 只读复盘投影：closing 场次、比分、`summary.decision_tally`、`summary.sample`、`summary.coverage` 与小样本标记 |
 | `manifest.json` | 导出元数据 |
 
 `manifest.json` 不得包含 `run_id`、quota、provider 原名、raw source error 或其它内部运行细节。`data/cache/site/` 必须保持 git ignore；该输出只代表本地静态包草案，不代表已部署。

@@ -25,6 +25,20 @@ odds:
   min_books: 3
   outlier_ratio: 2.0
 
+match_decision:
+  min_books: 3
+  odds_max_age_seconds: 12600
+  future_quote_tolerance_seconds: 300
+  dispersion_ratio_max: 1.18
+  min_odds: 1.30
+  max_odds: 2.20
+  min_p_hit_safe: 0.58
+  min_p_no_loss_safe: 0.62
+  worldcup_model_weight: 0.45
+  worldcup_market_weight: 0.55
+  default_model_weight: 0.45
+  default_market_weight: 0.55
+
 quality:
   disagreement_prob_delta: 0.12
   odds_dispersion_ratio_max: 1.18

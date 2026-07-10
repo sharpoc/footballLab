@@ -134,9 +134,10 @@ def test_build_league_snapshot_from_cache_builds_local_csl_snapshot():
         assert match["home_team"] == "Shanghai Port"
         assert match["away_team"] == "Shandong Taishan"
         assert match["elo"] == {"home": 1500, "away": 1500}
-        assert match["signals"]
-        assert all(signal["grade"] not in ("S", "A") for signal in match["signals"])
-        assert any("club_rating_pending" in signal["reasons"] for signal in match["signals"])
+        assert "signals" not in match
+        assert match["match_decision"]["label"] == "NO_CLEAN_MARKET"
+        assert "club_rating_pending" in match["match_decision"]["reasons"]
+        assert "club_rating_missing" in match["match_decision"]["reasons"]
 
 
 def test_build_league_snapshot_reports_missing_club_rating_quality():
@@ -239,9 +240,9 @@ def test_build_league_snapshot_uses_sample_club_ratings_but_keeps_signal_cap():
         match = snapshot["matches"][0]
         assert match["elo"]["home"] > 1500
         assert match["elo"]["away"] < 1500
-        assert match["signals"]
-        assert all(signal["grade"] not in ("S", "A") for signal in match["signals"])
-        assert any("club_rating_pending" in signal["reasons"] for signal in match["signals"])
+        assert "signals" not in match
+        assert match["match_decision"]["label"] == "NO_CLEAN_MARKET"
+        assert match["match_decision"]["reasons"] == ["club_rating_pending"]
 
 
 def test_build_league_snapshot_falls_back_when_fixture_team_missing_rating():
@@ -277,7 +278,9 @@ def test_build_league_snapshot_falls_back_when_fixture_team_missing_rating():
 
         match = snapshot["matches"][0]
         assert match["elo"] == {"home": 1500, "away": 1500}
-        assert all(signal["grade"] not in ("S", "A") for signal in match["signals"])
+        assert "signals" not in match
+        assert match["match_decision"]["label"] == "NO_CLEAN_MARKET"
+        assert "club_rating_missing_team" in match["match_decision"]["reasons"]
 
 
 def test_ratings_for_fixture_falls_back_when_canonical_is_missing_without_recording_none():
@@ -331,7 +334,8 @@ def test_build_league_snapshot_reports_invalid_league_odds_quality():
         assert example["source_path"] == str(odds_path)
 
         match = snapshot["matches"][0]
-        assert match["signals"]
+        assert "signals" not in match
+        assert match["match_decision"]["label"] == "NO_CLEAN_MARKET"
         assert match["market"]["ou_2_5"]["n_books_by_selection"]["over"] == 2
         assert match["market"]["ou_2_5"]["n_books_by_selection"]["under"] == 3
 

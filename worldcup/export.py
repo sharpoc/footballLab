@@ -31,7 +31,7 @@ def _quality_count(snapshot: dict[str, Any], key: str) -> int:
 
 def build_public_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "snapshot_at": snapshot.get("snapshot_at"),
         "counts": dict(snapshot.get("counts") or {}),
         "data_quality": {
@@ -62,7 +62,7 @@ def export_static_site(snapshot: dict[str, Any], out_dir: str | Path) -> dict[st
     _write_json(finished_path, {"finished": project_finished_rows(snapshot)})
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "snapshot_at": snapshot.get("snapshot_at"),
         "files": [
             "index.html",

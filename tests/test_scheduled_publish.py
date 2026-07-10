@@ -212,7 +212,7 @@ def test_scheduled_publish_blocks_empty_refreshed_snapshot():
     assert publish_calls == []
 
 
-def _write_change_snapshot(path: Path, *, grade: str, ev: float, odds: float, run_id: str) -> None:
+def _write_change_snapshot(path: Path, *, p_hit_safe: float, odds: float, run_id: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
@@ -232,16 +232,15 @@ def _write_change_snapshot(path: Path, *, grade: str, ev: float, odds: float, ru
                             }
                         },
                         "model": {"combined_1x2": {"home": 0.61, "draw": 0.23, "away": 0.16}},
-                        "signals": [
-                            {
-                                "market_type": "1X2_90min",
-                                "selection": "home",
-                                "grade": grade,
-                                "ev": ev,
-                                "edge": 0.041,
-                                "status": "OK",
-                            }
-                        ],
+                        "match_decision": {
+                            "schema_version": 2,
+                            "label": "MATCH_PICK",
+                            "market": "1X2",
+                            "selection": "home",
+                            "odds": odds,
+                            "p_hit_safe": p_hit_safe,
+                            "p_no_loss_safe": p_hit_safe,
+                        },
                     }
                 ],
             },
@@ -258,8 +257,7 @@ def test_scheduled_publish_notifies_significant_changes_after_publish():
     def refresh_fn(**kwargs):
         _write_change_snapshot(
             Path(kwargs["snapshot_path"]),
-            grade="S",
-            ev=0.092,
+            p_hit_safe=0.63,
             odds=1.85,
             run_id="20260609T100000Z-live",
         )
@@ -288,8 +286,7 @@ def test_scheduled_publish_notifies_significant_changes_after_publish():
         quota_path = root / "cache" / "quota.json"
         _write_change_snapshot(
             snapshot_path,
-            grade="A",
-            ev=0.052,
+            p_hit_safe=0.59,
             odds=2.0,
             run_id="20260609T080000Z-live",
         )
@@ -315,9 +312,10 @@ def test_scheduled_publish_notifies_significant_changes_after_publish():
 
     assert result["status"] == "published"
     assert result["notification"]["status"] == "sent"
-    assert notify_calls[0]["summary"] == "世界杯信号更新：1 条变化"
-    assert "墨西哥 对 南非 | 胜平负 - 主队" in notify_calls[0]["content"]
-    assert "等级 A → S" in notify_calls[0]["content"]
+    assert notify_calls[0]["summary"] == "世界杯本场首选更新：1 场变化"
+    assert "墨西哥 对 南非" in notify_calls[0]["content"]
+    assert "安全命中率 59.0% → 63.0%" in notify_calls[0]["content"]
+    assert "等级" not in notify_calls[0]["content"]
     assert publish_calls
 
 
@@ -327,8 +325,7 @@ def test_scheduled_publish_skips_notification_without_changes():
     def refresh_fn(**kwargs):
         _write_change_snapshot(
             Path(kwargs["snapshot_path"]),
-            grade="A",
-            ev=0.052,
+            p_hit_safe=0.59,
             odds=2.0,
             run_id="20260609T100000Z-live",
         )
@@ -351,8 +348,7 @@ def test_scheduled_publish_skips_notification_without_changes():
         quota_path = root / "cache" / "quota.json"
         _write_change_snapshot(
             snapshot_path,
-            grade="A",
-            ev=0.052,
+            p_hit_safe=0.59,
             odds=2.0,
             run_id="20260609T080000Z-live",
         )

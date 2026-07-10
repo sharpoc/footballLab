@@ -372,8 +372,9 @@ def _observation_step(
             "status": report.get("status"),
             "path": str(written),
             "matches": _safe_count(counts.get("matches")) or 0,
-            "raw_strong_candidates": _safe_count(counts.get("raw_strong_candidates")) or 0,
-            "final_strong_grades": _safe_count(counts.get("final_strong_grades")) or 0,
+            "match_picks": _safe_count(counts.get("match_picks")) or 0,
+            "no_pick": _safe_count(counts.get("no_pick")) or 0,
+            "missing_decisions": _safe_count(counts.get("missing_decisions")) or 0,
         },
         written,
     )

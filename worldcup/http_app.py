@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
@@ -12,6 +13,7 @@ from typing import Any, Mapping
 
 from worldcup.ingest_app import process_local_ingest
 from worldcup.preview import build_preview_html
+from worldcup.export import build_public_snapshot
 from worldcup.query import (
     load_latest_snapshot,
     load_latest_snapshot_view,
@@ -37,7 +39,7 @@ class SnapshotViewCache:
     def __init__(self, preview_cache_path: str | Path | None = None) -> None:
         self._lock = Lock()
         self._recent: dict[tuple[str, int | None, int], list[dict[str, Any]]] = {}
-        self._preview_html: dict[tuple[str, int | None], str] = {}
+        self._preview_html: dict[tuple[str, int | None, int], str] = {}
         self._preview_cache_path = Path(preview_cache_path) if preview_cache_path else None
 
     def clear(self) -> None:
@@ -77,9 +79,20 @@ class SnapshotViewCache:
             return None
         return self._preview_cache_path.with_suffix(self._preview_cache_path.suffix + ".meta.json")
 
-    def _preview_signature(self, recent: list[dict[str, Any]]) -> str:
-        payload = json.dumps(recent, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    def _preview_signature(self, recent: list[dict[str, Any]], time_bucket: int) -> str:
+        payload = json.dumps(
+            {"recent": recent, "time_bucket": time_bucket},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _preview_time_bucket(self) -> int:
+        # A cached page may contain a pick whose odds validity expires without a
+        # new ingest. Re-render at least every five minutes so stale picks cannot
+        # survive indefinitely in process or disk cache.
+        return int(datetime.now(timezone.utc).timestamp() // 300)
 
     def _read_preview_disk_cache(self, signature: str) -> str | None:
         html_path = self._preview_cache_path
@@ -107,7 +120,7 @@ class SnapshotViewCache:
             tmp_meta.write_text(
                 json.dumps(
                     {
-                        "schema_version": 1,
+                        "schema_version": 2,
                         "signature": signature,
                     },
                     ensure_ascii=False,
@@ -125,7 +138,8 @@ class SnapshotViewCache:
         db_path: str | Path,
         store: SnapshotStore | None,
     ) -> str | None:
-        key = (str(db_path), id(store) if store is not None else None)
+        time_bucket = self._preview_time_bucket()
+        key = (str(db_path), id(store) if store is not None else None, time_bucket)
         with self._lock:
             cached = self._preview_html.get(key)
             if cached is not None:
@@ -133,7 +147,7 @@ class SnapshotViewCache:
         recent = self.recent_views(db_path, store, limit=2)
         if not recent:
             return None
-        signature = self._preview_signature(recent)
+        signature = self._preview_signature(recent, time_bucket)
         disk_cached = self._read_preview_disk_cache(signature)
         if disk_cached is not None:
             with self._lock:
@@ -360,7 +374,7 @@ def handle_request(
         snapshot = _latest_or_404(db_path, store=store)
         if snapshot is None:
             return _json_response(404, {"error": "snapshot_not_found"})
-        return _json_response(200, {"snapshot": snapshot})
+        return _json_response(200, {"snapshot": build_public_snapshot(snapshot)})
 
     if method_upper == "GET" and route == "/api/matches":
         snapshot = _latest_view(db_path, store, view_cache)

@@ -4,7 +4,7 @@
 
 1. 数据源探测
 2. Elo + Poisson + 赔率去水分析
-3. 价值信号分级
+3. 每场只输出一个“本场首选”，不够可靠时主动放弃
 4. 后续上传到阿里云网站展示
 
 项目定位是**研究/分析工具**，不构成投注建议，不显示下注金额，不做追损、重注或喊单。
@@ -13,15 +13,25 @@
 
 - Git 仓库已初始化。
 - Plan 1 引擎核心已完成第一版。
-- 本地测试执行器通过：`628/628 tests passed`。
+- 当前离线回归通过；标准测试入口仍会因本机未安装可选 `fastapi` 依赖在对应适配层测试处中断，排除该可选文件后的结果见 `RECENT_WORK.md`。
 - Plan 0 核心数据源探测已完成第一轮：openfootball 赛程、eloratings Elo、The Odds API 赔率可用；API-Football Free plan 不能访问 2026 season。
-- Plan 2 已启动：当前完成纯离线解析层、单场价值信号、每场首选方向 `match_decision`、pipeline analysis/signals 模块边界拆分、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、按每场比赛独立计算的刷新计划、post-information odds 定向刷新调度判定、post-lineup refresh guard、run metadata、调度执行包装、显著变化手机通知、完赛战绩定格、赔率走势富化、AH 验证 shadow、研究候选池 `candidate_grade`、首发/球员影响 `lineup_shadow` schema、`manual_json` 首发/球员本地入口、FIFA public API 官方首发抓取 CLI、首发源候选 probe 历史观测报告、赛前首发轮询编排 runner、赛前 LaunchAgent plist 生成器、lineups-only 赛前 LaunchAgent、官方首发链路审计与一次性通知、独立 OU total `ou_total_shadow` schema、AH candidate 正式激活规则、世界杯 1X2 平局/长赔率强信号候选化、淘汰赛 scores 90 分钟人工确认 guard、多赛事平台化护栏（competition profile、team identity、competition-aware closing/eval、match-level tally、signal status schema、competition refresh dry-run 摘要）、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照，本地 runner 生成的快照也包含 ingest 所需 run metadata。
+- Plan 2 当前产品链路已切到 MatchPick v2：本地/联赛 runner 只生成 `match_decision`，不再生成或序列化 S/A/B/C；公开 API、静态导出、预览页、变化通知、完赛战绩和日报也只使用“本场首选 / 暂无可靠首选”。采集、概率模型、quota、调度、首发、HMAC ingest、SQLite/PostgreSQL 适配和多赛事合并能力继续保留。
 - Plan 3A FastAPI 本地适配层已实现并完成测试。
 - Plan 3B PostgreSQL store 适配器已在 `SnapshotStore` 边界后实现；测试只使用 fake connection，未连接真实数据库。
 - Plan 3C store 选择接线已完成：本地 CLI 默认 SQLite，也可以通过 `WORLDCUP_STORE=postgres` 加 `DATABASE_URL` 显式选择 PostgreSQL；本轮未连接真实数据库。
 - Plan 3D PostgreSQL smoke dry-run guard 已完成：只验证 PostgreSQL smoke 前置条件并输出脱敏请求元数据，不发 HTTP、不连数据库。
-- Plan 4 研究台账 UI 已实现并部署到 `football.celab.xin`；公开页面已中文化，桌面和移动端浏览器 QA 已通过。
+- Plan 4 原研究台账 UI 已由 decision-only 页面入口替代；当前代码只展示本场首选和首选战绩，实际部署记录见 `RECENT_WORK.md`。
 - Plan 5 Gate C HTTPS 已完成：`football.celab.xin` 通过 Nginx 将公网 HTTPS 流量反代到 `127.0.0.1:8788` 上的 `worldcup.http_app`；`/api/snapshot/latest` 返回 404；Let's Encrypt 证书续期已配置；公网读取和 ingest smoke 已通过。
+
+## 当前产品契约：只保留本场首选
+
+- `worldcup.match_decision` 的 v2 输出标签只有 `MATCH_PICK` 和 `NO_CLEAN_MARKET`；不再读取 Grade/Signal，也不再区分强价值、候选、高/低置信等产品类别。
+- 每场只比较一组完整、新鲜的 1X2、OU 主线和 AH 主线；同一 bookmaker 必须具备完整对边，重复 bookmaker 不重复计数。排序以 `p_hit_safe` 为第一优先级，再比较 `p_no_loss_safe`、预期损失单位、全输风险和盘口质量。
+- 初始门槛沿用原高置信护栏：完整独立书商至少 3 家、赔率更新时间不超过 12600 秒、离散度不高于 1.18、参考赔率 1.30–2.20、`p_hit_safe >= 0.58`、`p_no_loss_safe >= 0.62`。这些值只是迁移护栏，不是用当前小样本重新拟合的参数。
+- 赔率陈旧、俱乐部评级 pending/missing/invalid、盘口不完整或概率未过门槛时，必须输出 `NO_CLEAN_MARKET`，页面显示“暂无可靠首选”；不得为了保证覆盖率强行给方向。
+- 新 snapshot 不含 `signals`；公开 `/api/snapshot/latest`、`/api/matches`、`/api/finished` 和静态 JSON 使用 schema v2 白名单，不公开 `grade`、`top_grade`、`signal_count`、`closing_signals` 或内部排序字段。
+- 完赛只冻结赛前 `closing_match_decision`，统一结算为 `hit / miss / push / no_pick`；缺失或损坏的历史 decision 单列 coverage，不能冒充主动放弃。旧 store 不做破坏性迁移，历史 `closing_signals` 只留在原始存储兼容读取，不进入新 snapshot、API、页面、日报或战绩。
+- `pipeline_signals.py`、旧 `ledger_html.py` 及历史等级诊断代码暂保留为 legacy 兼容/离线研究资产，但已从产品 runner、公开投影和页面入口断开；不得重新接回产品链路。
 
 ## 技术栈
 
@@ -39,7 +49,7 @@
 - 当前 ingest 默认 dry-run；只构造请求体、HMAC 签名头和 body hash，不发送线上请求
 - 当前 ingest server 是纯本地验签/幂等模块；FastAPI adapter 已复用它，ECS 部署另行确认
 - 当前 HTTP ingest 入口会拒绝非 JSON 请求、超限 body、非法 Content-Length 和非法 UTF-8；ingest 响应统一携带 `X-Request-Id`，错误体只暴露结构化 `error.code` / `error.request_id`，不回显 raw body、签名、secret 或 payload
-- 当前 SQLite store / preview 都是本地低风险链路；默认输出在已忽略的 `data/local/` 或 `data/cache/`；公开 `/api/matches`、`/api/finished` 和 `/preview` 会按 `competition_id` 合并各赛事最新 snapshot 形成只读展示视图，避免中超 snapshot 发布后把世界杯 latest 页面顶掉；线上 HTTP 进程会缓存 public view 和 `/preview` 渲染 HTML，并用 DB 同目录的 `*.preview.html` / `*.preview.html.meta.json` 做重启后可复用的签名校验磁盘缓存，签名 ingest 成功后清空进程缓存且磁盘缓存会因 snapshot 签名变化自动失效
+- 当前 SQLite store / preview 都是本地低风险链路；默认输出在已忽略的 `data/local/` 或 `data/cache/`；公开 `/api/snapshot/latest`、`/api/matches`、`/api/finished` 和 `/preview` 只返回 decision-only 投影，并按 `competition_id` 合并各赛事最新 snapshot 形成只读展示视图；线上 HTTP 进程会缓存 public view 和 `/preview` 渲染 HTML，并用 DB 同目录的 `*.preview.html` / `*.preview.html.meta.json` 做重启后可复用的签名校验磁盘缓存，签名 ingest 成功后清空进程缓存且磁盘缓存会因 snapshot 签名变化自动失效
 - 当前 PostgreSQL store adapter 可用于后续 ECS/RDS 接入；`psycopg` 只作为可选依赖声明，本轮未安装、未连接真实数据库
 - 当前 store selection 默认 `sqlite`；单服务器 MVP 首发推荐 SQLite，只有显式 `--store postgres` 或 `.env` 中 `WORLDCUP_STORE=postgres` 时才要求 `DATABASE_URL`
 - 当前 PostgreSQL smoke guard 默认只做 dry-run；SQLite 首发路线下返回 `blocked / expected_postgres` 是安全结果，且不打印 DSN、secret、签名或请求 body
@@ -50,8 +60,8 @@
 - 当前静态导出默认写入已忽略的 `data/cache/site/`
 - 当前 refresh runner 在写盘和 history 归档前做本地富化：每场 match 可附加 `odds_trend` 走势点，顶层可附加 `finished` 完赛定格块；富化失败只输出 warning，不阻断 snapshot 生成或发布
 - 当前 `worldcup.lineups_refresh` 可用 FIFA public API 抓取官方首发；默认 dry-run，不联网写盘，只有显式 `--live` 才请求 FIFA 公网，只有再传 `--write` 才写入被忽略的 `data/cache/lineups_wc2026.json`。当临赛窗口内 FIFA 仍未返回两队 11 人首发时，可显式 `--notify` 通过 WxPusher 发一次缺失通知，去重状态写入被忽略的 `data/local/lineups_missing_notifications.json`。`worldcup.pre_match_runner` 可编排“首发轮询 → 新 confirmed lineup → post-lineup refresh guard → 首发后 odds refresh”，默认仍是 dry-run；`--refresh-guard` 只调用 scheduled refresh 的 dry-run 决策并返回 quota / policy 摘要，不刷新 odds、不消耗 The Odds API quota；如果同时打开 `--refresh-after-lineups --live-refresh`，guard 在 quota 未知或低于 `--min-refresh-quota` 时会阻断 live odds refresh。只有显式打开 `--live-lineups` / `--write-lineups` / `--refresh-after-lineups` / `--live-refresh` 才会逐步触发公网抓取、写本地 cache 和 The Odds API 刷新。`xin.celab.football.pre-match` LaunchAgent 已安装为 lineups-only + audit-notify 模式，每 300 秒运行 `worldcup.pre_match_runner --live-lineups --write-lineups --notify-missing --notify-audit`，不带 `--live-refresh`，所以不会自动消耗 The Odds API 刷 odds；生成未来 live-refresh plist 草案时会自动包含 `--refresh-guard`。本地 runner 会可选读取同一输入目录下的 `lineups_wc2026.json`，把已确认首发、替补、缺阵、阵型和球员影响 delta 接入 `lineup_context`；绑定首发上下文时，`source_match_no` 只能作为候选，必须同时校验双方 canonical team 和 UTC 开球时间，避免 FIFA 编号与本地赛程编号不一致时错挂；当前未接入付费首发 API。
-- 当前 `odds_trend` / `odds_movement` 只读最近 10 天 history 归档并按文件名时间窗过滤；`odds_movement` 仅作为赔率/盘口移动 diagnostic，不参与模型、EV 或信号等级裁决；信号级 `movement_shadow` 标注赔率/盘口移动是否支持该条信号，并作为 AH candidate 正式激活的必要门槛之一；`candidate_grade` 默认只用于研究候选池，不计入正式 S/A 战绩，信号输出同时携带 `official_grade`、`raw_grade`、`signal_status`、`hard_vetoes`、`soft_caps` 和同市场使用标记，便于区分 official / candidate / diagnostic；只有 AH candidate 同时通过 AH shadow、movement shadow、硬质量 veto、已确认首发和 post-information odds 门槛时，才会由 `attach_trends()` 激活为正式 `grade=raw_grade`；`lineup_shadow` 仅在输入 `lineup_context` 时输出首发/球员影响前后对比，不改变 active 概率、EV/Edge 或正式等级，但若首发未确认，或首发已确认但 odds 尚未 post-information，都会阻止 AH candidate 正式激活；`ou_total_shadow` 仅对比 active market-total OU 与 independent/raw OU total，不改变正式 OU 信号等级；`probability_families.x12_diagnostics` 输出 1X2 market-relative residual / edge-safe 观察字段，AH validation shadow 输出 push-aware break-even odds 和市场 EV，但这些字段均为 shadow/diagnostic，不自动升级 official；`finished` 使用被忽略的 `data/local/finished_record_store.json` 增量缓存，已定格比赛不随每 15 分钟刷新重算
-- 当前静态预览/导出页为研究台账 UI：主视角展示每场 `match_decision` 首选方向、每场下次更新时间和安全胜率；S/A 只作为价值分歧/研究分歧在明细与复盘中保留，不再作为首屏主叙事；摘要区可基于 `finished.matches[*].closing_match_decision` 展示“本场首选战绩”，与 S/A 信号战绩分开统计；同时展示已完赛战绩区、赔率走势、方法说明、脱敏数据质量状态和免责声明，不显示下注金额或资金相关字段；老 snapshot 缺少 `finished`、`odds_trend` 或 `match_decision` 时页面会容忍缺键
+- 当前 `odds_trend` / `odds_movement` 仍可从 history 归档生成只读诊断，但不再晋升等级或改写首选；`match_decision` 在 runner 生成时一次确定，后续富化不得改变方向。`lineup_shadow` / `ou_total_shadow` / probability families 继续作为模型审计字段，不进入公开页面。
+- 当前静态预览/导出页为本场首选 UI：待开赛每场恰好显示“本场首选”或“暂无可靠首选”，摘要与历史区只统计首选；页面保留脱敏数据质量状态和免责声明，不显示 S/A/B/C、价值分歧、下注金额或资金字段。
 - 当前 readiness check 只读本地文件和变量名，会解析 snapshot/quota、检查预览免责声明，并确认 `.env.example` 只含空值模板，不联网、不打印 secret
 - 当前 HMAC secret helper 只打印 `INGEST_HMAC_SECRET=<value>`，不会写 `.env`
 - 当前公网 MVP 使用 HTTP app + SQLite + Nginx HTTPS；FastAPI、PostgreSQL/RDS、OSS/CDN 都是可选升级，不是单用户 MVP 首发必需项
@@ -82,8 +92,9 @@ worldcup/
   backtest.py                   # 离线回测、指标报告与参数扫描
   oddsportal_wc2022.py          # 2022 世界杯 OddsPortal 抓取产物标准化与回测 CSV join
   line_move_report.py           # 赔率/让球线移动分桶报告
-  daily_eval.py                 # 赛后每日 results/eval/backtest 编排与日报
-  postmatch_diagnostics.py      # 完赛 S/A 信号本地诊断报告
+  daily_eval.py                 # 赛后每日 results/eval/backtest 编排与本场首选日报
+  decision_settlement.py        # 本场首选统一结算与 decision-only 战绩汇总
+  postmatch_diagnostics.py      # legacy 完赛等级诊断；不进入当前产品链路
   csl_results_probe.py          # 中超历史赛果本地样例清洗与双源诊断 CLI
   csl_eval_data.py              # 中超本地 snapshot × 完赛赛果 join 成回测 CSV
   csl_ops_runner.py             # 中超本地实战闭环：dry-run、snapshot、归档、观察报告、postmatch
@@ -94,12 +105,12 @@ worldcup/
   pre_match_runner.py           # 首发轮询 → 新 confirmed lineup → post-lineup refresh guard → 首发后 odds refresh 编排（默认 dry-run）
   pre_match_launch_agent.py     # 赛前首发轮询 LaunchAgent plist 生成器（不加载 launchd）
   odds_trend.py                 # 从 history 归档提取每场赔率走势点
-  finished_record.py            # closing 信号 × 赛果定格，维护本地增量完赛 store
-  differ.py                     # 两轮变化检测
+  finished_record.py            # closing match_decision × 赛果定格，维护本地增量完赛 store
+  differ.py                     # legacy 等级变化检测；当前通知不再调用
   pipeline.py                   # collector 输出对齐 + 兼容 facade
   pipeline_analysis.py          # 单场概率族、OU total shadow、lineup shadow 与分析输出
-  pipeline_signals.py           # 价值信号、质量护栏、AH validation shadow 与候选等级
-  match_decision.py             # 每场 top1 首选方向：强价值优先，否则输出安全胜率倾向或脏盘口状态
+  pipeline_signals.py           # legacy 等级研究模块；当前 runner 不再调用
+  match_decision.py             # MatchPick v2：命中优先的每场唯一首选或主动放弃
   local_runner.py               # 本地样例/缓存 → 分析快照 JSON
   refresh_runner.py             # source refresh → cache → analysis snapshot
   scheduler.py                  # 免费额度调度策略与 run metadata
@@ -115,9 +126,10 @@ worldcup/
   postgres_store.py             # PostgreSQL snapshot 持久化适配器
   postgres_smoke.py             # PostgreSQL smoke dry-run guard
   query.py                      # 最新快照读取与比赛行投影
-  ledger.py                     # 研究台账 UI 安全投影与格式化
-  ledger_html.py                # 研究台账 HTML/CSS/vanilla JS 渲染器
-  preview.py                    # 静态 HTML 预览页入口，委托研究台账渲染器
+  ledger.py                     # 公共格式化兼容层；旧等级 view-model 仅供 legacy 读取
+  ledger_html.py                # legacy 研究台账渲染器；当前页面入口不再调用
+  match_decision_html.py        # decision-only 本场首选 HTML/CSS/vanilla JS 渲染器
+  preview.py                    # 静态 HTML 预览入口，委托本场首选渲染器
   http_app.py                   # 标准库 HTTP 适配层和路由契约
   asgi_app.py                   # 无依赖 ASGI 适配层
   export.py                     # 静态站点/API 导出
@@ -176,7 +188,7 @@ market_quality_profile
 
 `worldcup.team_identity` 提供第一版 season-aware team identity registry。当前先覆盖 CSL 2026 的核心 live odds / 历史赛果别名，记录 `team_id`、`competition_id`、`season_id`、`canonical_key`、`aliases`、`provider_team_ids`、`active_from` 和 `active_to`。未知俱乐部不会被当成已知 identity，只能进入 unmatched 诊断。
 
-Closing / finished / CSL eval 匹配现在按 `competition_id` 隔离；旧世界杯 history 缺少 competition block 时按 `fifa_world_cup_2026` 兼容。`finished.tally` 保持原 signal-level 统计，新增 `finished.match_level_tally` 和 `finished.match_level_sample`，每场只选择一个 canonical S/A 信号，避免一场多信号被误当独立样本。
+Closing / finished / CSL eval 匹配按 `competition_id` 隔离；旧世界杯 history 缺少 competition block 时按 `fifa_world_cup_2026` 兼容。新 `finished` schema v2 只提供 `decision_tally`、`decision_sample`、`decision_coverage` 和每场 `closing_match_decision`；旧等级 tally 不进入新快照或公开投影。
 
 本地只读 sports key 探测使用保存样例，不消耗 The Odds API quota：
 
@@ -194,7 +206,30 @@ python3 -m worldcup.league_runner --competition csl_2026 --cache-dir data/cache 
 
 HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store 里同时存在世界杯和中超 snapshot 时，`/preview` 与 `/api/matches` 会展示各赛事最新一份，并复用页面赛事筛选显示“中超 2026”。该查询只读本地/线上 SQLite 或 PostgreSQL store，不刷新赔率、不读取 `.env`、不调用 The Odds API。线上标准库 HTTP 进程会缓存 public view 和 `/preview` 渲染 HTML，避免每次请求重复扫描、解析历史大 snapshot 和重建大页面；`/preview` 还会把已渲染 HTML 写入 DB 同目录的签名校验磁盘缓存，服务重启后如果 snapshot 未变化可直接复用；签名 ingest 成功后会自动清空进程缓存，磁盘缓存会因 snapshot 签名变化自动失效。
 
-中超初期 `rating_policy=club_rating_pending` 时，强信号会降级或仅作为观察；不得把国家队 Elo 套用于俱乐部联赛。任何 live odds 探测、scheduled publish、ECS ingest 或 LaunchAgent 更新都需要单独确认。
+中超初期 `rating_policy=club_rating_pending`、评级样本不足或球队评级缺失时，MatchPick v2 必须整场输出 `NO_CLEAN_MARKET`；不得用占位 1500 或国家队 Elo 生成本场首选。任何 live odds 探测、scheduled publish、ECS ingest 或 LaunchAgent 更新都需要单独确认。
+
+### CSL Scheduled Publish
+
+`worldcup.csl_scheduled_publish` 是中超自动刷新/发布入口。默认 dry-run 只读取本地 snapshot / quota 并输出决策，不读取 `.env`、不联网、不调用 The Odds API、不发布；只有显式 `--live` 且决策 due，或同时传 `--force`，才会读取 `.env`、刷新中超 odds、生成预测 snapshot 并 HMAC ingest 到线上。
+
+中超自动刷新采用“单场 due 触发、全赛事统一刷新”的省额度策略：调度器扫描当前 `csl_2026` snapshot 里的所有未来比赛，任一比赛命中锚点就刷新整个 `soccer_china_superleague` sport key 一次，避免按每场单独调用 The Odds API。默认锚点为 `T-90` 和 `T-25`；全局最短刷新间隔为 30 分钟；当 quota remaining 低于 30 时只保留 `T-25`；没有未来比赛时最多每 24 小时做一次 discovery refresh，用于发现新的 odds event 赛程。
+
+```bash
+# dry-run：只看是否 due
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_scheduled_publish
+
+# live：仅 due 时刷新并发布
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.csl_scheduled_publish \
+  --live \
+  --cache-dir data/cache \
+  --quota-path data/cache/quota.json \
+  --snapshot-path data/cache/csl_publish_snapshot.json \
+  --diagnostics-snapshot-path data/local/diagnostics/csl_live_league_snapshot.json \
+  --env .env \
+  --endpoint https://football.celab.xin/api/ingest/snapshot
+```
+
+`worldcup.csl_scheduled_launch_agent` 可生成本机 LaunchAgent plist，默认每 1800 秒唤醒一次 runner，但 runner 自身仍会先做 due / quota / 30 分钟节流判断。生成或更新 plist 不会自动加载 launchd；实际写入 `~/Library/LaunchAgents/` 和 `launchctl bootstrap` 前必须单独确认。
 
 ### CSL Ops Runner
 
@@ -228,7 +263,7 @@ P9.23 新增一条中超本地实战命令，把本地状态检查、cache snaps
 
 ### 中超 Club Rating 本地基线
 
-P9.2 新增本地 `club_rating` 基线能力，但仍保持 `csl_2026.rating_policy=club_rating_pending`。这表示样例或本地历史赛果可以进入模型输入，强信号仍会被降级，不把中超输出包装成高置信结论。
+P9.2 新增本地 `club_rating` 基线能力，但仍保持 `csl_2026.rating_policy=club_rating_pending`。这表示样例或本地历史赛果可以进入模型输入，但当前中超场次会被硬性置为 `NO_CLEAN_MARKET`，不会包装成“本场首选”。
 
 本地历史赛果 CSV 默认路径：
 
@@ -256,7 +291,7 @@ competition_id,season,date,home_team,away_team,home_score,away_score,neutral
 python3 -m worldcup.league_runner --competition csl_2026 --cache-dir data/cache --out data/cache/league_analysis_snapshot.json
 ```
 
-缺少 CSV、样本不足、CSV 无效或 fixture 球队缺少 rating 时，snapshot 会在 `data_quality.club_rating` 和 `data_quality.warnings` 标记原因，并回退到 1500 占位。真实中超历史数据来源、清洗规则、回测和解除强信号压制需后续单独确认。
+缺少 CSV、样本不足、CSV 无效或 fixture 球队缺少 rating 时，snapshot 会在 `data_quality.club_rating` 和 `data_quality.warnings` 标记原因，并回退到 1500 占位。真实中超历史数据来源、清洗规则、回测和解除 `club_rating_pending` 首选硬阻断需后续单独确认。
 
 ### CSL Historical Results Probe
 
@@ -293,7 +328,7 @@ P9.14 新增两个中超本地诊断入口，用于中超开赛后从已保存�
   --snapshot data/local/diagnostics/csl_live_league_snapshot.json
 ```
 
-该报告只保留研究所需的比赛、计数、警告和信号摘要；会过滤 raw odds、bookmaker、provider、API key、secret、资金或执行建议等不应出现在报告里的内容，并保留“仅用于研究分析，不构成投注建议。”声明。
+该报告只保留研究所需的比赛、计数、警告和“本场首选 / 暂无可靠首选”摘要；会过滤 raw odds、bookmaker、provider、API key、secret、资金或执行建议等不应出现在报告里的内容，并保留“仅用于研究分析，不构成投注建议。”声明。
 
 Pending gate 读取本地 `data/cache/club_results_csl_2026.csv`，做无同日泄漏的 walk-forward replay 诊断：
 
@@ -336,7 +371,7 @@ P9.15 新增中超本地赛后评估闭环，用于把已归档的 CSL league sn
   --min-eval-matches 200
 ```
 
-判断“准确率”时不要只看命中率：优先看 `csl_2026_report.json` 中 `sample.sample_too_small`、`markets.1x2.model_matched` vs `markets.1x2.market`、`markets.1x2.uniform`、校准分箱，以及 `csl_pending_gate` 的 `checks.market_baseline_available`。样本不足、closing snapshot 覆盖不足或模型弱于市场/主场先验时，只能作为观察，不能调参或升级强信号。
+判断“准确率”时不要只看命中率：优先看 `csl_2026_report.json` 中 `sample.sample_too_small`、`markets.1x2.model_matched` vs `markets.1x2.market`、`markets.1x2.uniform`、校准分箱，以及 `csl_pending_gate` 的 `checks.market_baseline_available`。样本不足、closing snapshot 覆盖不足或模型弱于市场/主场先验时，只能作为观察，不能调参或解除 `club_rating_pending` 后生成正式首选。
 
 ## 本地验证
 
@@ -502,13 +537,13 @@ Elo 基线与本地重放可用只读命令检查；该命令只读 `data/cache/
 python3 -m worldcup.elo_local --check
 ```
 
-`worldcup.scheduled_publish --live` 发布成功后会复用研究台账的“本轮变化”规则：比较刷新前后的本地 snapshot，只有等级、EV、Edge、模型概率、市场概率或赔率超过展示阈值时，才调用 `/Users/eagod/ai-dev/wxpusher-reminder/bin/wxpusher-remind` 发送手机通知。通知结果只记录发送状态、摘要和条数，不记录 WxPusher UID、URL、token 或原始响应；临时禁用可加 `--no-notify`。
+`worldcup.scheduled_publish --live` 发布成功后只比较刷新前后的本场首选：新增/撤销首选、方向改变、安全命中率变化至少 2 个百分点或参考赔率变化至少 0.05 时，才调用 `/Users/eagod/ai-dev/wxpusher-reminder/bin/wxpusher-remind` 发送手机通知。通知不再包含等级、EV 或 Edge；结果只记录发送状态、摘要和场次数，不记录 WxPusher UID、URL、token 或原始响应；临时禁用可加 `--no-notify`。
 
-当 openfootball 缓存里已有完赛比分时，snapshot 会给对应比赛附加 `result`，研究信号台账会在“信号原因”栏显示赛后验证：胜平负 / 大小球显示“命中”或“未中”，亚洲让球显示“命中 / 未中 / 走水”。
+当 openfootball 缓存里已有完赛比分时，snapshot 会给对应比赛附加 `result`；完赛页只结算赛前冻结的 `closing_match_decision`，胜平负 / 大小球显示“命中”或“未中”，亚洲让球保留“命中 / 未中 / 走水”及半赢/半输 settlement class。
 
-最新 refresh 富化后的 snapshot 还会包含顶层 `finished` 块：用开球前最后一轮 closing snapshot 的信号与本地赛果定格完赛场，`tally` 只统计 S/A 级信号；走水计入 `push`，但不进入命中率分母。`match_level_tally` 每场最多选择一个 canonical S/A 信号，正式复盘优先看 match-level，signal-level `tally` 只作诊断。新定格记录的 `closing_signals` 会以 `diagnostic_schema_version=2` 冻结 reason、official/raw grade、signal status、EV/Edge、概率族差异、盘口移动质量和 diagnostic flags，供后续本地复盘诊断使用；旧记录缺少这些字段时继续兼容。页面会新增“本场首选战绩”卡、“本届信号战绩”卡和“已完赛战绩”区；“本场首选战绩”按每场 `closing_match_decision` 结算，`NO_CLEAN_MARKET` 只计入 `no_pick`，不进入命中率分母。完赛区按北京日期分组，展开明细展示 closing 盘口、赛果判定和 SVG 赔率走势。每场最新 match 也可带 `odds_trend` 字段，供主台账展开详情展示迷你折线和首末点文本；同时可带 `odds_movement`，记录 1X2、AH 主盘、OU 主线的首末赔率、相对移动、盘口线移动和质量标记，暂只供研究诊断；`model.lineup_shadow` 可记录首发确认后的球员影响调整、post-information odds 是否可用、调整前后 1X2/OU 概率和 edge 对比，当前 `activation=shadow_only`；`model.ou_total_shadow` 可记录 active market-total OU 与 independent/raw OU total 的概率和 edge 对比，当前 `activation=shadow_only`，不解除 `market_informed_total` 降级；信号字典可带 `ah_validation_shadow`，记录 AH fair-line delta、push-aware break-even odds、market EV、盘口报价一致性和候选验证结果。若 AH raw S/A 被 `ah_market_edge_missing` soft cap 压到 B，且 `candidate_grade` 存在、AH shadow 验证通过、`movement_shadow.supports_signal=true`、没有硬质量 veto，并且首发确认后已有 post-information odds，`attach_trends()` 会把该 AH candidate 激活为正式 `grade=raw_grade`，写入 `promotion` 审计块并移除候选字段；OU candidate 仍不激活为正式等级。
+最新 refresh 富化后的 snapshot 包含顶层 `finished` schema v2：用开球前最后一轮 closing snapshot 的 `match_decision` 与本地 90 分钟赛果定格完赛场。`decision_tally` 统计 `hit / miss / push / no_pick`；走水和主动放弃都不进入命中率分母。`decision_coverage` 另列缺 closing、缺 decision、损坏 decision 和未解析赛果，避免把数据缺口包装成主动放弃。新记录不写 `closing_signals`；旧 store 中已有的等级数据保持原样但只读兼容，构建新 snapshot 时会被剥离。
 
-赛后链路已由 LaunchAgent `xin.celab.football.daily-eval` 每天北京时间 16:30 自动执行 `python3 -m worldcup.daily_eval --notify --live-scores`：小组赛阶段可先调用 The Odds API scores 端点补抓赛果（每天约 2 credits，同 key 槽位轮换），再依次 `results_capture` → `eval_data` → `backtest` 并推送研究日报（完赛数、评估样本、模型 vs 市场指标、S/A 级信号命中统计）；无新增赛果不推送。淘汰赛阶段该 scores 补抓默认会被 `knockout_score_manual_review_required` 阻断，需人工确认 90 分钟比分口径后才可用 `--allow-knockout-scores` 放行。
+赛后链路已由 LaunchAgent `xin.celab.football.daily-eval` 每天北京时间 16:30 自动执行 `python3 -m worldcup.daily_eval --notify --live-scores`：小组赛阶段可先调用 The Odds API scores 端点补抓赛果（每天约 2 credits，同 key 槽位轮换），再依次 `results_capture` → `eval_data` → `backtest` → `finished_record` 并推送研究日报（完赛数、评估样本、模型 vs 市场指标、本场首选命中/未中/走水/暂无首选）；无新增赛果不推送。淘汰赛阶段该 scores 补抓默认会被 `knockout_score_manual_review_required` 阻断，需人工确认 90 分钟比分口径后才可用 `--allow-knockout-scores` 放行。
 
 比赛日之后跑：
 
@@ -528,7 +563,7 @@ python3 -m worldcup.eval_data
 # 3) 用现有回测评估真实表现（EV 分层、model_matched vs market 此时有意义）
 python3 -m worldcup.backtest --csv data/local/backtest/wc2026_eval.csv --min-sample 30 --out data/local/backtest/wc2026_report.json
 
-# 4) 生成本地完赛 S/A 信号诊断报告（只读，不调参、不联网）
+# 4) legacy 等级诊断仅供读取旧历史，不进入当前本场首选产品链路
 python3 -m worldcup.postmatch_diagnostics
 
 # 5) 回填历史 closing snapshot 的 shadow 诊断（只读，不调参、不联网）
@@ -542,7 +577,7 @@ python3 -m worldcup.lineup_audit --notify
 ```
 
 - 每次 live refresh 成功获取新赔率后，原始逐家报价会 gzip 归档到 `data/local/history/odds_raw_<run_id>.json.gz`（兜底缓存轮不归档），用于赛后赔率异动研究；该目录不进 git。
-- `worldcup.postmatch_diagnostics` 只读本地 snapshot/history/finished 数据，输出 `data/local/diagnostics/postmatch_diagnostics.json`，用于按市场、等级、原因、盘口移动和概率族差异解释 S/A 信号命中/未中；样本不足时只能作为观察，不能据此调参。
+- `worldcup.postmatch_diagnostics` 当前仅作为 legacy 历史诊断入口保留；它不参与新 snapshot、公开 API、页面、首选战绩或日报。新调优应基于 `decision_tally` 和版本化 closing decision 样本，不得再按等级结论调参。
 - `worldcup.shadow_backfill_diagnostics` 只读本地 snapshot/history/finished 数据，输出 `data/local/diagnostics/shadow_backfill_diagnostics.json`，用于给历史 closing 信号回算 `ah_validation_shadow` 和 `movement_shadow` 并按赛果分桶；该报告不改模型、不改信号等级、不回填线上数据，样本较少时只能作为观察。
 - `worldcup.lineup_audit` 只读本地 `lineups_wc2026.json`、最新 snapshot、history snapshot 和缺首发通知状态，输出 `data/local/diagnostics/lineup_audit.json`，用于确认官方首发是否在开赛前抓到、是否进入 snapshot、是否已有 post-information odds；该报告不联网、不刷新赔率、不发布线上数据。显式 `--notify` 时，只对开赛前仍存在的 `captured_without_snapshot_input` / `captured_without_post_information_odds` 发一次性 WxPusher 通知，去重状态写入同一个被忽略的通知状态文件。
 
@@ -592,7 +627,7 @@ DATABASE_URL=
 - API key、RDS 连接串、HMAC 密钥、Cookie、token 不得写入 git、文档或回复。
 - macmini 不直连 RDS/OSS，后续只调用 ECS ingest API。
 - source refresh 失败但本地缓存存在时，可以继续用上一轮缓存生成快照；必须在 `data_quality.source_errors` 和 `data_quality.stale_sources` 标记，不能静默当作新鲜数据。
-- Elo 来源为本地基线重放：`data/cache/elo_baseline_*.tsv` + openfootball 完赛比分按 eloratings 公式（K=60、中立场）增量重放生成 `elo_world.tsv`；eloratings 抓取仅用于重新锚定基线，抓取失败只记 `data_quality.source_errors`，不标 `stale_sources`、不降级信号。重放计算失败时回退沿用现有 `elo_world.tsv` 并记 `elo_local` 错误。实现见 `worldcup/elo_local.py`。
+- Elo 来源为本地基线重放：`data/cache/elo_baseline_*.tsv` + openfootball 完赛比分按 eloratings 公式（K=60、中立场）增量重放生成 `elo_world.tsv`；eloratings 抓取仅用于重新锚定基线，抓取失败只记 `data_quality.source_errors`，不标 `stale_sources`、不单独阻断本场首选。重放计算失败时回退沿用现有 `elo_world.tsv` 并记 `elo_local` 错误。实现见 `worldcup/elo_local.py`。
 - The Odds API 按免费额度使用：常规每天 1 次，每场保留 T-12小时 / T-6小时 / T-90 / T-55 / T-35 / T-25 临赛锚点；低额度（≤30）只保 T-90 / T-55 / T-35 / T-25。调度会按本地 quota ledger 保守轮换 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY`：primary 未耗尽时优先用 primary，primary 剩余额度为 0 时切到 secondary；两个配置槽都耗尽时继续暂停并报告 `quota_exhausted`。任一槽位剩余额度跌破 100 / 30 / 10 / 0 时会随当轮发布自动发 WxPusher 额度告警（每个槽位每个阈值只发一次，跨 0 即槽位耗尽/自动切换提示；`--no-notify` 可静音）。更换或新增 key 后，需经确认执行一次 `worldcup.scheduled_publish --live --force` 让新额度写回 quota ledger（耗尽状态下调度不会自行恢复）。
 - FIFA public API 首发抓取不消耗 The Odds API quota，也不需要 key；它是公开源，不是付费 SLA 数据源。`worldcup.lineups_refresh` 抓不到官方首发时只能记录 missing 或发缺失通知，不能伪造 confirmed；默认只在开赛前 35 分钟内发缺首发通知，避免过早提醒。`--write` 合并保留旧 confirmed cache，避免未公布轮询清空已确认首发。FIFA `source_match_no` 与 openfootball/本地 snapshot 编号可能不是同一套编号，首发绑定不得只依赖编号，必须通过双方 canonical team + UTC kickoff 校验。`worldcup.pre_match_runner` 只有在 `newly_confirmed > 0` 时才会允许触发首发后 odds refresh；`--refresh-guard` 会先 dry-run 检查调度决策和 quota，`--live-refresh` 会消耗 The Odds API quota，当前已安装的 `xin.celab.football.pre-match` 不包含该参数。如需改为自动首发后 odds refresh，必须单独确认后更新 plist 并重新加载 launchd。
 - ingest 必须绑定 `timestamp`、`run_id`、`snapshot_id` 和 body hash 做 HMAC；dry-run 不发送请求，也不能打印 secret。
@@ -601,6 +636,7 @@ DATABASE_URL=
 - 本地预览页必须保留研究免责声明，不显示资金相关字段。
 - readiness check 只报告变量名、文件状态和内容完整性，不能输出密钥值；`.env.example` 必须只含变量名和空值。
 - 所有公开输出都必须保留免责声明。
-- 当前 EV/Edge 阈值未经历史赔率回测验证，公开页只能显示研究价值信号。
-- S/A 强信号有只降级置信度护栏，不改模型概率、不升级 B/C：`1X2` 主/客方向若逆 closing 市场主方向、缺少主亚盘同向支持，或主办国本土场地市场确认不足，会封顶到 B；世界杯 `1X2` 平局强信号默认候选化，`1X2` 赔率高于 `quality.x12_official_odds_max`（当前 2.2）的强信号也默认候选化；主办国 AH 强信号若主亚盘让步确认不足，也会封顶到 B；极强热门/大让步场景下，受让方 AH 强信号和低大小球线 Under 强信号会封顶到 B；AH 0 盘强信号也会封顶到 B。阈值见 `config/settings.yaml` 的 `quality.*` 护栏配置。未激活的 `candidate_grade` 仍只是候选池标记，不计入排序强弱口径、finished tally 或日报 S/A 战绩；只有 AH candidate 通过 AH shadow、movement shadow、硬质量 veto、已确认首发和 post-information odds 门槛后，才会由 `promotion` 审计块激活为正式 `grade=raw_grade`；`lineup_shadow` 是首发/球员影响诊断，不改变 active 概率；`ou_total_shadow` 是 independent/raw OU total 诊断，不改变正式 OU 等级。
-- 所有 1X2 edge-safe、OU independent total、AH push-aware fair odds 相关新增字段当前均为 diagnostic / shadow；没有足够分赛事、分市场、match-level 样本和 market baseline 前，不能据此放宽阈值、解除 `club_rating_pending` 或升级 official。
+- 公开产品只能输出 `MATCH_PICK` 或 `NO_CLEAN_MARKET`；S/A/B/C、EV/Edge、旧 decision label 和 `signals` 只允许内部只读兼容历史数据，不得参与当前首选排序、公开 API、页面、通知、日报或 v2 战绩。
+- 本场首选以安全命中率优先，只允许完整且新鲜的主盘口；赔率源陈旧、赔率时间穿越、完整书商不足、离散度超限、模型内部严重分歧、四分之一盘概率尚未完成交叉校准、俱乐部评级 pending/missing/invalid 或门槛未通过时必须主动放弃。
+- 当前 `match_decision` 门槛是保守迁移护栏，不是依据旧 S/A/B/C 战绩重新拟合。v2 已完赛样本达到最低门槛前，只能报告观察结果，不能把旧算法命中率当成 v2 成绩，也不能据此放宽阈值或解除 `club_rating_pending`。
+- 所有 1X2 edge-safe、OU independent total、AH push-aware fair odds 相关字段仍可作为内部 diagnostic / shadow；它们不得绕过 MatchPick v2 的硬门槛或直接升级成公开首选。

@@ -66,6 +66,16 @@ def test_build_lineup_audit_tracks_capture_snapshot_and_post_information_odds():
                                     "post_information_odds_available": True,
                                 }
                             },
+                            "match_decision": {
+                                "schema_version": 2,
+                                "label": "MATCH_PICK",
+                                "market": "1X2",
+                                "selection": "home",
+                                "odds": 1.8,
+                                "p_hit_safe": 0.63,
+                                "p_no_loss_safe": 0.63,
+                            },
+                            # Legacy payload must not appear in the audit output.
                             "signals": [{"grade": "A"}, {"grade": "B"}],
                         }
                     ],
@@ -101,7 +111,19 @@ def test_build_lineup_audit_tracks_capture_snapshot_and_post_information_odds():
         assert tunisia["minutes_before_kickoff"] == 28
         assert tunisia["entered_snapshot"] is True
         assert tunisia["post_information_odds_available"] is True
-        assert tunisia["strong_signal_count"] == 1
+        assert tunisia["match_decision"] == {
+            "schema_version": 2,
+            "policy_version": "match_pick_v2",
+            "label": "MATCH_PICK",
+            "market": "1X2",
+            "selection": "home",
+            "odds": 1.8,
+            "p_hit_safe": 0.63,
+            "p_no_loss_safe": 0.63,
+        }
+        serialized = json.dumps(report, ensure_ascii=False).lower()
+        assert "signals" not in serialized
+        assert "grade" not in serialized
         belgium = report["matches"][1]
         assert belgium["match_label"] == "Belgium vs Iran"
         assert belgium["entered_snapshot"] is False

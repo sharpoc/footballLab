@@ -14,9 +14,9 @@ from worldcup.collectors.openfootball import parse_openfootball_fixtures, parse_
 from worldcup.collectors.theoddsapi import parse_theoddsapi_events
 from worldcup.competitions import competition_block
 from worldcup.config import load_config
-from worldcup.match_decision import decide_match
+from worldcup.match_decision import decide_match, prepare_match_input_for_pick
 from worldcup.models import Grade, MarketType, Signal
-from worldcup.pipeline import analyze_match_input, build_match_inputs, generate_value_signals
+from worldcup.pipeline import analyze_match_input, build_match_inputs
 from worldcup.scheduler import build_match_refresh_decision, build_run_metadata, make_run_id
 
 _SOFT_CAP_REASONS = {
@@ -163,7 +163,7 @@ def _result_to_dict(result: MatchResult) -> dict[str, Any]:
 
 def _analysis_to_dict(
     analysis,
-    signals: list[Signal],
+    _legacy_signals: list[Signal] | None = None,
     result_index: dict[tuple[str, str | None, str | None], MatchResult] | None = None,
     competition_id: str = "fifa_world_cup_2026",
     match_decision: dict[str, Any] | None = None,
@@ -213,7 +213,6 @@ def _analysis_to_dict(
             "probability_families": analysis.probability_families,
         },
         "market": market,
-        "signals": [_signal_to_dict(signal) for signal in signals],
     }
     if match_decision is not None:
         match["match_decision"] = match_decision
@@ -348,18 +347,17 @@ def build_snapshot_from_probe(
 
     matches = []
     for match_input in build_result.inputs:
-        analysis = analyze_match_input(match_input, cfg)
-        signals = generate_value_signals(
+        pick_input = prepare_match_input_for_pick(match_input, cfg, observed_at)
+        analysis = analyze_match_input(pick_input, cfg)
+        match_decision = decide_match(
             analysis,
             cfg,
             observed_at=observed_at,
             stale_sources=stale_source_list,
         )
-        match_decision = decide_match(analysis, signals, cfg, observed_at=observed_at)
         matches.append(
             _analysis_to_dict(
                 analysis,
-                signals,
                 result_index=result_index,
                 match_decision=match_decision,
             )

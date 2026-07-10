@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from worldcup.competitions import list_competitions
+from worldcup.decision_settlement import settle_match_decision, summarize_decision_records
 from worldcup.store import SQLiteSnapshotStore
 from worldcup.store_contract import SnapshotStore
 
@@ -127,29 +129,24 @@ def _merge_tally(tallies: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _merge_finished_blocks(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
     matches: list[dict[str, Any]] = []
-    tallies: list[dict[str, Any]] = []
     skipped = 0
-    match_level_tallies: list[dict[str, Any]] = []
     for snapshot in snapshots:
         competition = _competition_block_for_snapshot(snapshot)
         finished = snapshot.get("finished") or {}
         for match in finished.get("matches") or []:
             matches.append(_with_competition(match, competition))
-        if isinstance(finished.get("tally"), dict):
-            tallies.append(finished["tally"])
-        if isinstance(finished.get("match_level_tally"), dict):
-            match_level_tallies.append(finished["match_level_tally"])
         skipped += _as_int(finished.get("skipped_no_closing"))
-    if not matches and not tallies and skipped == 0:
+    if not matches and skipped == 0:
         return {}
-    finished: dict[str, Any] = {
+    summary = summarize_decision_records(matches, skipped_no_closing=skipped)
+    return {
+        "schema_version": 2,
         "matches": matches,
-        "tally": _merge_tally(tallies),
+        "decision_tally": summary["decision_tally"],
+        "decision_sample": summary["sample"],
+        "decision_coverage": summary["coverage"],
         "skipped_no_closing": skipped,
     }
-    if match_level_tallies:
-        finished["match_level_tally"] = _merge_tally(match_level_tallies)
-    return finished
 
 
 def _merge_snapshots(snapshots: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -310,31 +307,118 @@ def summarize_finished_block(
 ) -> dict[str, Any]:
     finished = snapshot.get("finished") or {}
     records = finished.get("matches") or []
-    tally = finished.get("tally") or {}
-    signal_count = sum(len(record.get("closing_signals") or []) for record in records)
     skipped = _as_int(finished.get("skipped_no_closing"))
-    decided = 0
-    for grade in ("S", "A"):
-        entry = tally.get(grade) or {}
-        decided += _as_int(entry.get("hit")) + _as_int(entry.get("miss"))
-    total_results = len(records) + skipped
+    decision_summary = summarize_decision_records(
+        records,
+        min_sample=min_sample,
+        skipped_no_closing=skipped,
+    )
     return {
         "match_count": len(records),
-        "signal_count": signal_count,
         "skipped_no_closing": skipped,
-        "tally": tally,
-        "coverage": {
-            "finished_result_count": total_results,
-            "closing_available_count": len(records),
-            "missing_closing_count": skipped,
-            "closing_coverage_rate": (len(records) / total_results if total_results else None),
-        },
-        "sample": {
-            "min_sample": min_sample,
-            "decided_strong_signal_count": decided,
-            "sample_too_small": decided < min_sample,
-        },
+        **decision_summary,
     }
+
+
+_DECISION_PUBLIC_FIELDS = (
+    "schema_version",
+    "policy_version",
+    "label",
+    "market",
+    "selection",
+    "line",
+    "odds",
+    "p_hit_safe",
+    "p_no_loss_safe",
+    "computed_at",
+    "odds_latest_at",
+    "valid_until",
+)
+
+
+_LEGACY_PICK_LABELS = {
+    "STRONG_VALUE",
+    "VALUE_CANDIDATE",
+    "HIGH_CONFIDENCE_LEAN",
+    "LOW_CONFIDENCE_LEAN",
+}
+
+
+def _parse_public_at(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _public_no_pick() -> dict[str, Any]:
+    return {
+        "schema_version": 2,
+        "policy_version": "match_pick_v2",
+        "label": "NO_CLEAN_MARKET",
+    }
+
+
+def project_match_decision(
+    decision: Any,
+    *,
+    allow_legacy_history: bool = False,
+    as_of: datetime | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(decision, dict):
+        return None
+    raw_label = str(decision.get("label") or "")
+    if raw_label == "NO_CLEAN_MARKET":
+        return _public_no_pick()
+    try:
+        schema_version = int(decision.get("schema_version") or 1)
+    except (TypeError, ValueError):
+        schema_version = 1
+    if schema_version != 2:
+        if not allow_legacy_history or raw_label not in _LEGACY_PICK_LABELS:
+            return _public_no_pick()
+    elif raw_label != "MATCH_PICK":
+        return _public_no_pick()
+    if not decision.get("market") or not decision.get("selection"):
+        return None
+    if schema_version == 2 and as_of is not None:
+        valid_until = _parse_public_at(decision.get("valid_until"))
+        if valid_until is None or valid_until <= as_of.astimezone(timezone.utc):
+            return _public_no_pick()
+    public = {
+        key: deepcopy(decision.get(key))
+        for key in _DECISION_PUBLIC_FIELDS
+        if key in decision
+    }
+    public["schema_version"] = 2
+    public["label"] = "MATCH_PICK"
+    public["policy_version"] = (
+        "match_pick_v2" if schema_version == 2 else "legacy_match_decision_v1"
+    )
+    return public
+
+
+def _match_pick_blocked(snapshot: dict[str, Any], match: dict[str, Any]) -> bool:
+    competition = _competition_from_mapping(match) or _competition_from_mapping(snapshot) or {}
+    rating_policy = str(competition.get("rating_policy") or "")
+    if rating_policy.endswith("_pending"):
+        return True
+    quality = snapshot.get("data_quality") or {}
+    warnings = {str(value) for value in quality.get("warnings") or []}
+    return bool(
+        warnings
+        & {
+            "club_rating_pending",
+            "club_rating_missing",
+            "club_rating_sample_too_small",
+            "club_rating_invalid",
+        }
+    )
 
 
 def project_finished_rows(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -343,22 +427,6 @@ def project_finished_rows(snapshot: dict[str, Any]) -> dict[str, Any]:
     matches: list[dict[str, Any]] = []
     for record in records:
         result = record.get("result") or {}
-        signals = []
-        for signal in record.get("closing_signals") or []:
-            prediction = signal.get("prediction") or {}
-            signals.append(
-                {
-                    "market_type": signal.get("market_type"),
-                    "selection": signal.get("selection"),
-                    "line": signal.get("line"),
-                    "grade": signal.get("grade"),
-                    "odds": signal.get("odds"),
-                    "outcome": prediction.get("label") or "",
-                    "prediction_status": prediction.get("status") or "",
-                    "detail": prediction.get("detail") or "",
-                    "trend_points": _finished_signal_trend(record, signal),
-                }
-            )
         home = record.get("home_team", "")
         away = record.get("away_team", "")
         competition = _competition_block_for_snapshot({"matches": [record]})
@@ -378,16 +446,18 @@ def project_finished_rows(snapshot: dict[str, Any]) -> dict[str, Any]:
                 },
                 "score_label": _score_label(result),
                 "closing_snapshot_at": record.get("closing_snapshot_at"),
-                "signal_count": len(signals),
-                "top_grade": _top_grade(signals),
-                "signals": signals,
+                "closing_match_decision": project_match_decision(
+                    record.get("closing_match_decision"),
+                    allow_legacy_history=True,
+                ),
+                "decision_outcome": settle_match_decision(
+                    record.get("closing_match_decision"),
+                    result,
+                ),
             }
         )
-        closing_match_decision = record.get("closing_match_decision")
-        if isinstance(closing_match_decision, dict):
-            matches[-1]["closing_match_decision"] = dict(closing_match_decision)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "snapshot_at": snapshot.get("snapshot_at"),
         "summary": summarize_finished_block(snapshot),
         "matches": matches,
@@ -398,12 +468,17 @@ def project_match_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     data_quality = snapshot.get("data_quality") or {}
     stale = bool(data_quality.get("stale_sources"))
     rows: list[dict[str, Any]] = []
+    as_of = datetime.now(timezone.utc)
     for match in snapshot.get("matches", []):
         home = match.get("home_team", "")
         away = match.get("away_team", "")
-        signals = match.get("signals") or []
         refresh_plan = match.get("refresh_plan") or {}
         competition = _competition_block_for_snapshot({"matches": [match]})
+        projected_decision = (
+            _public_no_pick()
+            if _match_pick_blocked(snapshot, match)
+            else project_match_decision(match.get("match_decision"), as_of=as_of)
+        )
         rows.append(
             {
                 "kickoff_at_utc": match.get("kickoff_at_utc", ""),
@@ -414,15 +489,11 @@ def project_match_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "match_label": f"{home} vs {away}".strip(),
                 "competition_id": competition.get("id"),
                 "competition_label": competition.get("name") or competition.get("label"),
-                "signal_count": len(signals),
-                "top_grade": _top_grade(signals),
                 "next_update_at": refresh_plan.get("next_update_at"),
                 "next_update_label": refresh_plan.get("label"),
                 "next_update_description": refresh_plan.get("description"),
                 "stale": stale,
+                "match_decision": projected_decision or _public_no_pick(),
             }
         )
-        match_decision = match.get("match_decision")
-        if isinstance(match_decision, dict):
-            rows[-1]["match_decision"] = dict(match_decision)
     return rows
