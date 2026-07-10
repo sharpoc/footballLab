@@ -10,6 +10,8 @@
 - Pending gate 新增分赛季 model/uniform/home-prior 和同样本 model-vs-market 门槛。当前 8 场可 join 小样本中，model 1X2 Brier=0.4678、market=0.5130，但 `sample_too_small=true`，只记为观察、不宣称已优于市场。运维检查也改为区分“pending 下安全市场兜底首选”与“未经兜底使用 rating”，不再把 MatchPick v3 的合法兜底首选误报为 error。
 - 对抗性收尾发现 scheduled publish 原来只覆盖最新诊断 snapshot、没有自动积累 closing 历史；已补为每次成功构建后自动归档到 ignored `csl_history/`。归档失败写 `snapshot_archive_failed` 质量警告但继续发布当前有效首选，避免观测链故障反过来造成线上无首选。
 - 不改 UI 布局；只修正与 MatchPick v3 矛盾的规则文案，明确“有有效新鲜主盘就给一个首选，概率偏低保留观察风险”。P1 聚焦回归 `94/94`、配置 runtime 排除可选 FastAPI 的最终完整回归 `716/716`、系统 Python FastAPI `13/13` 均通过；`py_compile` 和 `git diff --check` 通过。
+- P1 主实现提交 `8768f67034248097816ad843269730ff1569271c`，自动归档闭环提交 `6b00e5e49b6dca9e0b118eecd4b458869016fd5e`；生产 current 已切到后者，service/nginx/ready 与 `/healthz`、`/api/matches`、`/preview` smoke 全部通过，部署没有调用 The Odds API、没有修改 LaunchAgent。
+- 使用仍新鲜的 odds cache 重建并发布 `run_id=20260710T111715Z-csl-live`，线上 ingest HTTP 200 / `stored`；双源当前赛季 136 场再次一致，8 场方向相对 P0 为 0 变化，8/8 均为安全 market fallback、`rating_unsafe_picks=0`。本地历史归档创建成功，The Odds API quota 保持 173 未变；线上合并 `/api/matches` 为 11/11 个 MatchPick v3，原 workbench 布局与研究免责声明保持不变，无 S/A/B/C 等级 UI。
 
 ## 2026-07-10 P0：首选鲜度与发布可靠性
 
