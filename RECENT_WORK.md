@@ -10,7 +10,10 @@
 - 使用当前被忽略的本地赔率缓存离线重算：世界杯 3/3 场产生首选，中超 8/8 场产生市场兜底首选，`NO_CLEAN_MARKET=0`。这些是现有 cache 的离线重算，不代表已发布新 snapshot。
 - 历史聚合收盘价回放：2022 样本 v3 为 38/63（60.32%），2026 样本 v3 为 58/96（60.42%），合计 96/159（60.38%），覆盖率 159/159。真正纯市场基准为 100/159（62.89%）；两者只有 25 场方向不同，配对中 v3 多赢 5 场、市场多赢 9 场，差异不足以证明稳定优劣。回放只有聚合收盘价，并用 3 个相同合成书商补齐结构，无法验证真实书商离散度；因此只作观察，不宣称已提高胜率，不据此调整 Elo/Poisson 参数。
 - TDD 先新增低概率、单书商/不完整市场、高离散度、中超评级 pending、只剩四分之一/极深盘时仍需给首选，以及过期 v3 首选保留 v3 策略版本的失败用例，实现后聚焦回归 `63/63` 通过；配置 runtime 排除可选 FastAPI 文件的完整回归 `700/700` 通过，系统 Python 的 FastAPI 适配测试 `13/13` 通过。
-- 本轮只修改决策引擎、公开投影、配置、测试和契约文档；没有修改 UI 文件，没有联网、读取 `.env`、调用 The Odds API、消耗 quota、生成/发布新 snapshot、改 LaunchAgent、提交、推送或部署。生产环境仍是既有 v2 release，v3 上线需要用户再次单独确认。
+- 实现提交为 `d95aa85 feat: guarantee one match pick per valid market`；提交只包含决策引擎、公开投影、配置、测试和契约文档，没有修改 UI 文件、没有恢复 S/A/B/C，也没有改 LaunchAgent 或推送远端 Git。
+- 经用户单独确认，绑定 Wi-Fi 地址 `192.168.31.46` 部署到 ECS `/opt/worldcup/releases/d95aa858a6a00ee20d94706ea6df7a5f78912121`。首次部署因公网 `/healthz` 瞬时 `URLError` 触发自动回滚到 `662715a`，复查三个入口为 200 后重试成功；当前 `worldcup.service` / Nginx 均为 active，内部 `/readyz` 为 ready。
+- 强制刷新并发布世界杯与中超 v3 snapshot：世界杯 `run_id=20260710T083215Z-live`，3/3 场 `MATCH_PICK`；中超 `run_id=20260710T083454Z-csl-live`，8/8 场 `MATCH_PICK`且 8 场都明确使用评级 pending 的市场共识兜底。两个 ingest 均返回 HTTP 200 / `stored`；期间 TLS 瞬时中断时只重试已生成 snapshot 的发布，没有重复消耗赔率额度。The Odds API secondary 额度从 182 降到 176，两个赛事各消耗 3。
+- 线上验收：`/healthz` 正常；`/api/matches` 共 11 场（世界杯 3 + 中超 8），`match_pick_v3=11`、`MATCH_PICK=11`、`NO_CLEAN_MARKET=0`，禁止的 `signals` / grade / 内部证据 / 资金字段扫描为空；`/preview` 仍是原“足球研究台账” UI，包含“本场首选”和研究免责声明，没有独立 `.match-card` UI 或资金词。
 
 ## 2026-07-10 MatchPick v2：产品只保留本场首选
 
