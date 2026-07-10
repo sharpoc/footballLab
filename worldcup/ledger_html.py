@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any
 
@@ -17,7 +17,7 @@ from worldcup.ledger import (
     format_team_label,
     project_signal_rows,
 )
-from worldcup.query import project_finished_rows, project_match_rows
+from worldcup.query import project_finished_rows, project_match_decision, project_match_rows
 
 
 def _text(value: Any) -> str:
@@ -1991,6 +1991,14 @@ def _decision_finished_keys(snapshot: dict[str, Any]) -> set[tuple[str, str, str
 
 def _decision_live_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     finished_keys = _decision_finished_keys(snapshot)
+    source_matches = {
+        (
+            str(match.get("kickoff_at_utc") or ""),
+            str(match.get("home_team") or "").casefold(),
+            str(match.get("away_team") or "").casefold(),
+        ): match
+        for match in snapshot.get("matches") or []
+    }
     now_at = datetime.now(timezone.utc)
     rows = []
     for projected in project_match_rows(snapshot):
@@ -2000,8 +2008,17 @@ def _decision_live_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             str(projected.get("away_team") or "").casefold(),
         )
         kickoff = _decision_parse_at(projected.get("kickoff_at_utc"))
-        if key in finished_keys or (kickoff is not None and kickoff <= now_at):
+        if key in finished_keys:
             continue
+        awaiting_result = kickoff is not None and kickoff <= now_at
+        if awaiting_result:
+            source_match = source_matches.get(key) or {}
+            frozen_decision = project_match_decision(
+                source_match.get("match_decision"),
+                as_of=kickoff - timedelta(microseconds=1),
+            )
+            if frozen_decision is not None:
+                projected = {**projected, "match_decision": frozen_decision}
         date_iso, date_label, kickoff_time = _decision_date_parts(projected.get("kickoff_at_utc"))
         home_source = str(projected.get("home_team") or "")
         away_source = str(projected.get("away_team") or "")
@@ -2023,6 +2040,7 @@ def _decision_live_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 away,
                 projected.get("competition_label"),
                 stage_group,
+                "已开赛 赛果待确认 赛前首选已封盘" if awaiting_result else "待开赛",
                 view["title"],
                 view["market"],
             )
@@ -2038,6 +2056,7 @@ def _decision_live_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "kickoff_time": kickoff_time,
                 "stage_group": stage_group,
                 "search_text": search_text,
+                "match_state": "awaiting_result" if awaiting_result else "upcoming",
                 "decision_view": view,
             }
         )
@@ -2113,12 +2132,15 @@ def _render_decision_date_strip(rows: list[dict[str, Any]], *, history: bool = F
 
 def _render_decision_summary(snapshot: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     picks = sum(1 for row in rows if row["decision_view"]["state"] == "pick")
+    awaiting_result = sum(1 for row in rows if row.get("match_state") == "awaiting_result")
+    upcoming = len(rows) - awaiting_result
     stale = bool((snapshot.get("data_quality") or {}).get("stale_sources"))
     errors = bool((snapshot.get("data_quality") or {}).get("source_errors"))
     quality = "需注意" if stale or errors else "正常"
     tone = "error" if errors else "warn" if stale else "ok"
     metrics = (
-        ("待开赛", len(rows), "neutral"),
+        ("待开赛", upcoming, "neutral"),
+        ("赛果待确认", awaiting_result, "warn" if awaiting_result else "neutral"),
         ("本场首选", picks, "neutral"),
         ("暂无可靠首选", len(rows) - picks, "neutral"),
         ("数据质量", quality, tone),
@@ -2183,9 +2205,21 @@ def _render_decision_workbench(
             for part in (row.get("competition_label"), row.get("stage_group"))
             if part
         )
+        awaiting_result = row.get("match_state") == "awaiting_result"
+        status_label = "待赛果" if awaiting_result else decision["title"]
+        detail_status_label = "已开赛·赛果待确认" if awaiting_result else decision["title"]
+        badge_state = (
+            "freshness-stale"
+            if awaiting_result
+            else "freshness-fresh" if decision["state"] == "pick" else "freshness-pending"
+        )
         state_badge = '<span class="freshness-badge {state}">{label}</span>'.format(
-            state="freshness-fresh" if decision["state"] == "pick" else "freshness-pending",
-            label=_text(decision["title"]),
+            state=badge_state,
+            label=_text(status_label),
+        )
+        detail_state_badge = '<span class="freshness-badge {state}">{label}</span>'.format(
+            state=badge_state,
+            label=_text(detail_status_label),
         )
         list_rows.append(
             '<tr class="match-list-row{active}" role="button" tabindex="0" aria-expanded="{expanded}" '
@@ -2210,11 +2244,21 @@ def _render_decision_workbench(
                 probability=_text(decision["probability"]),
             )
         )
-        next_update = row.get("next_update_description") or row.get("next_update_label") or "按调度计划更新"
+        next_update = (
+            "等待赛果确认"
+            if awaiting_result
+            else row.get("next_update_description") or row.get("next_update_label") or "按调度计划更新"
+        )
+        detail_heading = "赛前首选（已封盘）" if awaiting_result else "本场首选"
+        detail_note = (
+            "比赛已开赛，赛果尚未确认；下列内容为赛前定格首选，不是滚球建议。"
+            if awaiting_result
+            else "每场只保留一个通过概率、赔率和数据质量门槛的方向；不够可靠时主动留空。"
+        )
         detail_panels.append(
             '<section class="workbench-detail{active}" id="{detail_id}" data-workbench-detail="{detail_id}" {hidden}>'
-            '<div class="detail-title-row"><h2>{title} · 本场首选</h2></div>'
-            '<p class="muted history-workbench-note">每场只保留一个通过概率、赔率和数据质量门槛的方向；不够可靠时主动留空。</p>'
+            '<div class="detail-title-row"><h2>{title} · {detail_heading}</h2></div>'
+            '<p class="muted history-workbench-note">{detail_note}</p>'
             '<div class="detail-metrics">'
             '<div><span>当前状态</span><strong>{badge}</strong></div>'
             '<div><span>安全命中率</span><strong>{probability}</strong></div>'
@@ -2230,13 +2274,19 @@ def _render_decision_workbench(
                 detail_id=_text(detail_id),
                 hidden="" if index == 0 else "hidden",
                 title=title_html,
-                badge=state_badge,
+                detail_heading=_text(detail_heading),
+                detail_note=_text(detail_note),
+                badge=detail_state_badge,
                 probability=_text(decision["probability"]),
                 no_loss=_text(decision["no_loss"]),
                 odds=_text(decision["odds"]),
                 next_update=_text(next_update),
                 market=_text(decision["market"]),
-                freshness="缓存" if row.get("stale") else "正常",
+                freshness=(
+                    "赛前首选已封盘"
+                    if awaiting_result
+                    else "缓存" if row.get("stale") else "正常"
+                ),
             )
         )
 
@@ -2245,7 +2295,7 @@ def _render_decision_workbench(
       {date_strip}{filters}
       <section class="ledger-workbench">
         <aside class="match-list-panel">
-          <div class="panel-heading"><h2>待开赛比赛 {match_count}场</h2></div>
+          <div class="panel-heading"><h2>比赛列表 {match_count}场</h2></div>
           <div class="match-list-scroll"><table class="match-list-table">
             <thead><tr><th>开赛时间</th><th>对阵</th><th>赛事 / 阶段</th><th>本场首选</th><th>安全概率</th></tr></thead>
             <tbody>{list_rows}</tbody>
@@ -2474,7 +2524,7 @@ def _render_decision_right_rail(snapshot: dict[str, Any]) -> str:
       <section class="rail-card">
         <h2>首选规则</h2>
         <p>每场有开赛前有效、新鲜、可结算的主盘口时展示一个首选。</p>
-        <p>只有主盘无效、过期、不可结算或比赛已开始时，才显示“暂无可靠首选”。</p>
+        <p>比赛开赛后保留赛前首选并标记已封盘；赛果确认后转入历史，不作为滚球建议。</p>
       </section>
       <section class="rail-card">
         <h2>注意事项</h2>

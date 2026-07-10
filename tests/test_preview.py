@@ -208,6 +208,31 @@ def test_preview_empty_upcoming_state_is_clear():
     assert "待开赛</span><strong>0</strong>" in html
 
 
+def test_preview_keeps_started_unfinished_match_with_frozen_pick():
+    snapshot = _snapshot()
+    started = snapshot["matches"][1]
+    started["kickoff_at_utc"] = "2000-06-12T01:00:00+00:00"
+    started["match_decision"] = {
+        "schema_version": 2,
+        "policy_version": "match_pick_v3",
+        "label": "MATCH_PICK",
+        "market": "OU",
+        "selection": "over",
+        "line": 2.5,
+        "odds": 1.91,
+        "p_hit_safe": 0.54,
+        "p_no_loss_safe": 0.54,
+        "valid_until": "2000-06-12T01:00:00+00:00",
+    }
+
+    html = build_preview_html(snapshot)
+
+    assert "上海海港 对 山东泰山" in html
+    assert "已开赛·赛果待确认" in html
+    assert "赛前首选已封盘" in html
+    assert "大小球 2.5 - 大球" in html
+
+
 def test_preview_keeps_responsive_layout_and_table_scroll():
     html = build_preview_html(_snapshot())
 
