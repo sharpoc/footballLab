@@ -233,6 +233,33 @@ def test_preview_keeps_started_unfinished_match_with_frozen_pick():
     assert "大小球 2.5 - 大球" in html
 
 
+def test_preview_restores_frozen_pick_from_previous_prekickoff_snapshot():
+    current = _snapshot()
+    previous = _snapshot()
+    current["matches"][1]["kickoff_at_utc"] = "2000-06-12T01:00:00+00:00"
+    previous_match = previous["matches"][1]
+    previous_match["kickoff_at_utc"] = "2000-06-12T01:00:00+00:00"
+    previous_match["match_decision"] = {
+        "schema_version": 2,
+        "policy_version": "match_pick_v3",
+        "label": "MATCH_PICK",
+        "market": "OU",
+        "selection": "over",
+        "line": 3.5,
+        "odds": 1.77,
+        "p_hit_safe": 0.45,
+        "p_no_loss_safe": 0.45,
+        "valid_until": "2000-06-12T01:00:00+00:00",
+    }
+
+    html = build_preview_html(current, previous_snapshot=previous)
+
+    assert "上海海港 对 山东泰山" in html
+    assert "赛前首选（已封盘）" in html
+    assert "大小球 3.5 - 大球" in html
+    assert "参考赔率</span><strong>1.77</strong>" in html
+
+
 def test_preview_keeps_responsive_layout_and_table_scroll():
     html = build_preview_html(_snapshot())
 

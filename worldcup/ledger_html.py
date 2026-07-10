@@ -1989,16 +1989,25 @@ def _decision_finished_keys(snapshot: dict[str, Any]) -> set[tuple[str, str, str
     }
 
 
-def _decision_live_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+def _decision_live_rows(
+    snapshot: dict[str, Any],
+    previous_snapshot: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     finished_keys = _decision_finished_keys(snapshot)
-    source_matches = {
-        (
-            str(match.get("kickoff_at_utc") or ""),
-            str(match.get("home_team") or "").casefold(),
-            str(match.get("away_team") or "").casefold(),
-        ): match
-        for match in snapshot.get("matches") or []
-    }
+    source_match_indexes = []
+    for source_snapshot in (snapshot, previous_snapshot):
+        if not isinstance(source_snapshot, dict):
+            continue
+        source_match_indexes.append(
+            {
+                (
+                    str(match.get("kickoff_at_utc") or ""),
+                    str(match.get("home_team") or "").casefold(),
+                    str(match.get("away_team") or "").casefold(),
+                ): match
+                for match in source_snapshot.get("matches") or []
+            }
+        )
     now_at = datetime.now(timezone.utc)
     rows = []
     for projected in project_match_rows(snapshot):
@@ -2012,13 +2021,15 @@ def _decision_live_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         awaiting_result = kickoff is not None and kickoff <= now_at
         if awaiting_result:
-            source_match = source_matches.get(key) or {}
-            frozen_decision = project_match_decision(
-                source_match.get("match_decision"),
-                as_of=kickoff - timedelta(microseconds=1),
-            )
-            if frozen_decision is not None:
-                projected = {**projected, "match_decision": frozen_decision}
+            for source_matches in source_match_indexes:
+                source_match = source_matches.get(key) or {}
+                frozen_decision = project_match_decision(
+                    source_match.get("match_decision"),
+                    as_of=kickoff - timedelta(microseconds=1),
+                )
+                if (frozen_decision or {}).get("label") == "MATCH_PICK":
+                    projected = {**projected, "match_decision": frozen_decision}
+                    break
         date_iso, date_label, kickoff_time = _decision_date_parts(projected.get("kickoff_at_utc"))
         home_source = str(projected.get("home_team") or "")
         away_source = str(projected.get("away_team") or "")
@@ -2544,7 +2555,7 @@ def build_research_ledger_html(
     snapshot_at = _format_snapshot_time(snapshot.get("snapshot_at"))
     competitions = competition_options(snapshot)
     if decision_only:
-        decision_rows = _decision_live_rows(snapshot)
+        decision_rows = _decision_live_rows(snapshot, previous_snapshot=previous_snapshot)
         controls = ""
         table = _render_decision_workbench(decision_rows, competitions)
         finished_section = _render_decision_history(snapshot, competitions)
