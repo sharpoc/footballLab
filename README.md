@@ -4,7 +4,7 @@
 
 1. 数据源探测
 2. Elo + Poisson + 赔率去水分析
-3. 每场只输出一个“本场首选”，不够可靠时主动放弃
+3. 每场只输出一个“本场首选”；低置信只降概率和证据分，不删除整场
 4. 后续上传到阿里云网站展示
 
 项目定位是**研究/分析工具**，不构成投注建议，不显示下注金额，不做追损、重注或喊单。
@@ -15,7 +15,7 @@
 - Plan 1 引擎核心已完成第一版。
 - 当前离线回归通过；标准测试入口仍会因本机未安装可选 `fastapi` 依赖在对应适配层测试处中断，排除该可选文件后的结果见 `RECENT_WORK.md`。
 - Plan 0 核心数据源探测已完成第一轮：openfootball 赛程、eloratings Elo、The Odds API 赔率可用；API-Football Free plan 不能访问 2026 season。
-- Plan 2 当前产品链路已切到 MatchPick v2：本地/联赛 runner 只生成 `match_decision`，不再生成或序列化 S/A/B/C；公开 API、静态导出、预览页、变化通知、完赛战绩和日报也只使用“本场首选 / 暂无可靠首选”。采集、概率模型、quota、调度、首发、HMAC ingest、SQLite/PostgreSQL 适配和多赛事合并能力继续保留。
+- Plan 2 当前产品链路已切到 MatchPick v3：本地/联赛 runner 只生成每场唯一 `match_decision`，不再生成或序列化 S/A/B/C；公开 API、静态导出、预览页、变化通知、完赛战绩和日报也只使用“本场首选 / 无法计算”。采集、概率模型、quota、调度、首发、HMAC ingest、SQLite/PostgreSQL 适配和多赛事合并能力继续保留。
 - Plan 3A FastAPI 本地适配层已实现并完成测试。
 - Plan 3B PostgreSQL store 适配器已在 `SnapshotStore` 边界后实现；测试只使用 fake connection，未连接真实数据库。
 - Plan 3C store 选择接线已完成：本地 CLI 默认 SQLite，也可以通过 `WORLDCUP_STORE=postgres` 加 `DATABASE_URL` 显式选择 PostgreSQL；本轮未连接真实数据库。
@@ -25,10 +25,10 @@
 
 ## 当前产品契约：只保留本场首选
 
-- `worldcup.match_decision` 的 v2 输出标签只有 `MATCH_PICK` 和 `NO_CLEAN_MARKET`；不再读取 Grade/Signal，也不再区分强价值、候选、高/低置信等产品类别。
-- 每场只比较一组完整、新鲜的 1X2、OU 主线和 AH 主线；同一 bookmaker 必须具备完整对边，重复 bookmaker 不重复计数。排序以 `p_hit_safe` 为第一优先级，再比较 `p_no_loss_safe`、预期损失单位、全输风险和盘口质量。
-- 初始门槛沿用原高置信护栏：完整独立书商至少 3 家、赔率更新时间不超过 12600 秒、离散度不高于 1.18、参考赔率 1.30–2.20、`p_hit_safe >= 0.58`、`p_no_loss_safe >= 0.62`。这些值只是迁移护栏，不是用当前小样本重新拟合的参数。
-- 赔率陈旧、俱乐部评级 pending/missing/invalid、盘口不完整或概率未过门槛时，必须输出 `NO_CLEAN_MARKET`，页面显示“暂无可靠首选”；不得为了保证覆盖率强行给方向。
+- `worldcup.match_decision` 的 v3 输出标签只有 `MATCH_PICK` 和 `NO_CLEAN_MARKET`；不读取 Grade/Signal，也不区分强价值、候选、高/低置信等产品类别。
+- 每场只比较新鲜、可结算的 1X2、OU 主线和 AH 主线；同一 bookmaker 去重，优先使用完整对边。世界杯用市场 0.80 / 模型 0.20 生成安全概率；安全概率相近（默认 2 个百分点内）时继续比较书商覆盖、盘口质量、模型/市场一致性、不亏概率和预期损失。
+- 原 `p_hit_safe >= 0.58`、`p_no_loss_safe >= 0.62`、3 家书商、离散度 1.18 和赔率 1.30–2.20 只保留为观察与风险扣分参考，不再作为删除整场的统一硬门槛。书商偏少、离散度偏高、模型分歧、四分之一盘、极深让球或概率偏低会降低 `p_hit_safe` / 证据分；四分之一盘和极深盘只在没有普通可比主盘时作为备用，但不再因它们删除整场。
+- 只有赔率全部无效/过期、比赛已开始或没有任何可结算盘口时才输出 `NO_CLEAN_MARKET`。俱乐部评级 pending/missing/invalid 时不得让占位 1500 参与方向选择，改用赔率去水后的市场共识兜底并附加内部风险扣分。
 - 新 snapshot 不含 `signals`；公开 `/api/snapshot/latest`、`/api/matches`、`/api/finished` 和静态 JSON 使用 schema v2 白名单，不公开 `grade`、`top_grade`、`signal_count`、`closing_signals` 或内部排序字段。
 - 完赛只冻结赛前 `closing_match_decision`，统一结算为 `hit / miss / push / no_pick`；缺失或损坏的历史 decision 单列 coverage，不能冒充主动放弃。旧 store 不做破坏性迁移，历史 `closing_signals` 只留在原始存储兼容读取，不进入新 snapshot、API、页面、日报或战绩。
 - `pipeline_signals.py`、旧 `ledger_html.py` 及历史等级诊断代码暂保留为 legacy 兼容/离线研究资产，但已从产品 runner、公开投影和页面入口断开；不得重新接回产品链路。
@@ -110,7 +110,7 @@ worldcup/
   pipeline.py                   # collector 输出对齐 + 兼容 facade
   pipeline_analysis.py          # 单场概率族、OU total shadow、lineup shadow 与分析输出
   pipeline_signals.py           # legacy 等级研究模块；当前 runner 不再调用
-  match_decision.py             # MatchPick v2：命中优先的每场唯一首选或主动放弃
+  match_decision.py             # MatchPick v3：覆盖率 + 市场证据优先的每场唯一首选
   local_runner.py               # 本地样例/缓存 → 分析快照 JSON
   refresh_runner.py             # source refresh → cache → analysis snapshot
   scheduler.py                  # 免费额度调度策略与 run metadata
@@ -206,7 +206,7 @@ python3 -m worldcup.league_runner --competition csl_2026 --cache-dir data/cache 
 
 HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store 里同时存在世界杯和中超 snapshot 时，`/preview` 与 `/api/matches` 会展示各赛事最新一份，并复用页面赛事筛选显示“中超 2026”。该查询只读本地/线上 SQLite 或 PostgreSQL store，不刷新赔率、不读取 `.env`、不调用 The Odds API。线上标准库 HTTP 进程会缓存 public view 和 `/preview` 渲染 HTML，避免每次请求重复扫描、解析历史大 snapshot 和重建大页面；`/preview` 还会把已渲染 HTML 写入 DB 同目录的签名校验磁盘缓存，服务重启后如果 snapshot 未变化可直接复用；签名 ingest 成功后会自动清空进程缓存，磁盘缓存会因 snapshot 签名变化自动失效。
 
-中超初期 `rating_policy=club_rating_pending`、评级样本不足或球队评级缺失时，MatchPick v2 必须整场输出 `NO_CLEAN_MARKET`；不得用占位 1500 或国家队 Elo 生成本场首选。任何 live odds 探测、scheduled publish、ECS ingest 或 LaunchAgent 更新都需要单独确认。
+中超初期 `rating_policy=club_rating_pending`、评级样本不足或球队评级缺失时，MatchPick v3 使用完整主盘口的去水市场共识兜底，并对安全概率和证据分做额外扣减；不得用占位 1500 或国家队 Elo 影响方向。任何 live odds 探测、scheduled publish、ECS ingest 或 LaunchAgent 更新都需要单独确认。
 
 ### CSL Scheduled Publish
 
@@ -263,7 +263,7 @@ P9.23 新增一条中超本地实战命令，把本地状态检查、cache snaps
 
 ### 中超 Club Rating 本地基线
 
-P9.2 新增本地 `club_rating` 基线能力，但仍保持 `csl_2026.rating_policy=club_rating_pending`。这表示样例或本地历史赛果可以进入模型输入，但当前中超场次会被硬性置为 `NO_CLEAN_MARKET`，不会包装成“本场首选”。
+P9.2 新增本地 `club_rating` 基线能力，当前仍保持 `csl_2026.rating_policy=club_rating_pending`。样例或本地历史赛果可以进入诊断，但评级未达到可用标准前，公开首选只使用市场共识兜底，不让占位评级影响方向。
 
 本地历史赛果 CSV 默认路径：
 
@@ -291,7 +291,7 @@ competition_id,season,date,home_team,away_team,home_score,away_score,neutral
 python3 -m worldcup.league_runner --competition csl_2026 --cache-dir data/cache --out data/cache/league_analysis_snapshot.json
 ```
 
-缺少 CSV、样本不足、CSV 无效或 fixture 球队缺少 rating 时，snapshot 会在 `data_quality.club_rating` 和 `data_quality.warnings` 标记原因，并回退到 1500 占位。真实中超历史数据来源、清洗规则、回测和解除 `club_rating_pending` 首选硬阻断需后续单独确认。
+缺少 CSV、样本不足、CSV 无效或 fixture 球队缺少 rating 时，snapshot 会在 `data_quality.club_rating` 和 `data_quality.warnings` 标记原因，并保留 1500 仅供结构兼容；MatchPick v3 不让该占位值参与方向选择，而改用市场共识兜底。真实中超历史数据来源、清洗规则、回测和解除 `club_rating_pending` 仍需后续单独确认。
 
 ### CSL Historical Results Probe
 
@@ -371,7 +371,7 @@ P9.15 新增中超本地赛后评估闭环，用于把已归档的 CSL league sn
   --min-eval-matches 200
 ```
 
-判断“准确率”时不要只看命中率：优先看 `csl_2026_report.json` 中 `sample.sample_too_small`、`markets.1x2.model_matched` vs `markets.1x2.market`、`markets.1x2.uniform`、校准分箱，以及 `csl_pending_gate` 的 `checks.market_baseline_available`。样本不足、closing snapshot 覆盖不足或模型弱于市场/主场先验时，只能作为观察，不能调参或解除 `club_rating_pending` 后生成正式首选。
+判断“准确率”时必须同时看覆盖率和命中率：优先看 `csl_2026_report.json` 中 `sample.sample_too_small`、`markets.1x2.model_matched` vs `markets.1x2.market`、`markets.1x2.uniform`、校准分箱，以及 `csl_pending_gate` 的 `checks.market_baseline_available`。样本不足、closing snapshot 覆盖不足或模型弱于市场/主场先验时，只能作为观察，不能调参或解除 `club_rating_pending`；公开首选继续使用明确标记风险的市场共识兜底。
 
 ## 本地验证
 
@@ -636,7 +636,7 @@ DATABASE_URL=
 - 本地预览页必须保留研究免责声明，不显示资金相关字段。
 - readiness check 只报告变量名、文件状态和内容完整性，不能输出密钥值；`.env.example` 必须只含变量名和空值。
 - 所有公开输出都必须保留免责声明。
-- 公开产品只能输出 `MATCH_PICK` 或 `NO_CLEAN_MARKET`；S/A/B/C、EV/Edge、旧 decision label 和 `signals` 只允许内部只读兼容历史数据，不得参与当前首选排序、公开 API、页面、通知、日报或 v2 战绩。
-- 本场首选以安全命中率优先，只允许完整且新鲜的主盘口；赔率源陈旧、赔率时间穿越、完整书商不足、离散度超限、模型内部严重分歧、四分之一盘概率尚未完成交叉校准、俱乐部评级 pending/missing/invalid 或门槛未通过时必须主动放弃。
-- 当前 `match_decision` 门槛是保守迁移护栏，不是依据旧 S/A/B/C 战绩重新拟合。v2 已完赛样本达到最低门槛前，只能报告观察结果，不能把旧算法命中率当成 v2 成绩，也不能据此放宽阈值或解除 `club_rating_pending`。
-- 所有 1X2 edge-safe、OU independent total、AH push-aware fair odds 相关字段仍可作为内部 diagnostic / shadow；它们不得绕过 MatchPick v2 的硬门槛或直接升级成公开首选。
+- 公开产品只能输出 `MATCH_PICK` 或 `NO_CLEAN_MARKET`；S/A/B/C、EV/Edge、旧 decision label 和 `signals` 只允许内部只读兼容历史数据，不得参与当前首选排序、公开 API、页面、通知、日报或 v3 战绩。
+- 本场首选以覆盖率和安全命中率共同约束：只要存在开赛前有效、可结算的主盘口就必须给出一个首选；完整书商不足、离散度超限、模型内部严重分歧、四分之一/极深盘或俱乐部评级 pending/missing/invalid 只能触发风险扣分、备用候选或市场兜底。只有赔率全部无效/过期、比赛已开始或不存在任何可结算盘口时才允许 `NO_CLEAN_MARKET`。
+- 任何回放必须同时报告覆盖率、命中/未中和市场基准，不能通过减少首选数量提高表面命中率。当前历史样本仍有限，只能报告观察结果，不据此调整 Elo/Poisson 参数或解除 `club_rating_pending`。
+- 所有 1X2 edge-safe、OU independent total、AH push-aware fair odds 相关字段仍作为内部 diagnostic / shadow；它们可参与证据排序研究，但不能绕过开赛前数据边界、赔率时效和可结算性要求。

@@ -454,6 +454,27 @@ def test_live_projection_never_repackages_legacy_or_expired_pick_as_current_pick
     assert {row["match_decision"]["label"] for row in rows} == {"NO_CLEAN_MARKET"}
 
 
+def test_expired_v3_pick_keeps_v3_policy_version_when_projected_as_no_pick():
+    snapshot = _snapshot()
+    snapshot["data_quality"]["stale_sources"] = []
+    snapshot["matches"][0]["match_decision"] = {
+        "schema_version": 2,
+        "policy_version": "match_pick_v3",
+        "label": "MATCH_PICK",
+        "market": "1X2",
+        "selection": "home",
+        "valid_until": "2000-01-01T00:00:00+00:00",
+    }
+
+    row = project_match_rows(snapshot)[0]
+
+    assert row["match_decision"] == {
+        "schema_version": 2,
+        "policy_version": "match_pick_v3",
+        "label": "NO_CLEAN_MARKET",
+    }
+
+
 def test_pending_club_rating_forces_public_no_pick_even_for_malformed_legacy_snapshot():
     snapshot = _snapshot()
     snapshot["data_quality"] = {"warnings": ["club_rating_pending"]}
@@ -473,6 +494,31 @@ def test_pending_club_rating_forces_public_no_pick_even_for_malformed_legacy_sna
     row = project_match_rows(snapshot)[0]
 
     assert row["match_decision"]["label"] == "NO_CLEAN_MARKET"
+
+
+def test_pending_club_rating_allows_explicit_v3_market_fallback_pick():
+    snapshot = _snapshot()
+    snapshot["data_quality"] = {"warnings": ["club_rating_pending"]}
+    snapshot["matches"][0]["competition"] = {
+        "id": "csl_2026",
+        "name": "中超 2026",
+        "rating_policy": "club_rating_pending",
+    }
+    snapshot["matches"][0]["match_decision"] = {
+        "schema_version": 2,
+        "policy_version": "match_pick_v3",
+        "label": "MATCH_PICK",
+        "market": "1X2",
+        "selection": "home",
+        "p_hit_safe": 0.48,
+        "p_no_loss_safe": 0.48,
+        "valid_until": "2099-01-01T00:00:00+00:00",
+    }
+
+    row = project_match_rows(snapshot)[0]
+
+    assert row["match_decision"]["label"] == "MATCH_PICK"
+    assert row["match_decision"]["policy_version"] == "match_pick_v3"
 
 
 def test_project_match_rows_ignores_probability_families_for_public_summary():

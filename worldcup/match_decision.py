@@ -13,6 +13,15 @@ if TYPE_CHECKING:
 
 PICK_LABEL = "MATCH_PICK"
 NO_PICK_LABEL = "NO_CLEAN_MARKET"
+POLICY_VERSION = "match_pick_v3"
+
+_RATING_FALLBACK_BLOCKERS = {
+    "club_rating_pending",
+    "club_rating_missing",
+    "club_rating_sample_too_small",
+    "club_rating_invalid",
+    "club_rating_missing_team",
+}
 
 
 @dataclass(frozen=True)
@@ -71,6 +80,7 @@ class _Option:
     uncertainty_penalty: float = 0.0
     market_quality: float = 0.0
     model_market_agreement: float = 0.0
+    evidence_score: float = 0.0
 
 
 def _decision_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -100,6 +110,22 @@ def _decision_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
         "medium_dispersion_min": float(user_cfg.get("medium_dispersion_min", 1.10)),
         "medium_dispersion_penalty": float(user_cfg.get("medium_dispersion_penalty", 0.02)),
         "marginal_books_penalty": float(user_cfg.get("marginal_books_penalty", 0.015)),
+        "thin_market_penalty": float(user_cfg.get("thin_market_penalty", 0.03)),
+        "dispersion_unknown_penalty": float(
+            user_cfg.get("dispersion_unknown_penalty", 0.03)
+        ),
+        "severe_dispersion_penalty": float(
+            user_cfg.get("severe_dispersion_penalty", 0.04)
+        ),
+        "internal_disagreement_penalty": float(
+            user_cfg.get("internal_disagreement_penalty", 0.03)
+        ),
+        "quarter_line_penalty": float(user_cfg.get("quarter_line_penalty", 0.03)),
+        "extreme_handicap_penalty": float(
+            user_cfg.get("extreme_handicap_penalty", 0.04)
+        ),
+        "rating_fallback_penalty": float(user_cfg.get("rating_fallback_penalty", 0.04)),
+        "near_top_hit_tolerance": float(user_cfg.get("near_top_hit_tolerance", 0.02)),
         "model_disagreement_mild_delta": float(
             user_cfg.get("model_disagreement_mild_delta", 0.08)
         ),
@@ -392,9 +418,12 @@ def _unconditional_market_probabilities(
     if conditional_hit is None:
         return None, None
     if quarter_line:
-        # Asian quarter-line prices encode partial settlement units, not a binary
-        # hit rate. Do not present that number as a market hit probability.
-        return None, None
+        # Asian quarter-line prices do not identify the split between full/half
+        # settlement outcomes. Use the de-vigged two-sided price as a conservative
+        # equivalent-win proxy, keep no-loss equal to hit, and mark the option so
+        # downstream scoring applies an explicit uncertainty penalty.
+        proxy = max(0.0, min(1.0, conditional_hit))
+        return proxy, proxy
     p_hit = max(0.0, min(1.0, conditional_hit * (1.0 - model.push)))
     return p_hit, min(1.0, p_hit + model.push)
 
@@ -623,7 +652,7 @@ def _build_ah_options(
             odds_latest_at=market_latest_at,
         )
         if _is_quarter_line(line):
-            option.risk_flags.append("quarter_line_model_probability_only")
+            option.risk_flags.append("quarter_line_market_probability_proxy")
         out.append(option)
     return out
 
@@ -647,19 +676,38 @@ def _market_model_weights(
     return model_weight / total, market_weight / total
 
 
-def _uncertainty_penalty(option: _Option, decision_cfg: dict[str, Any]) -> float:
+def _uncertainty_penalty(
+    option: _Option,
+    decision_cfg: dict[str, Any],
+    *,
+    use_model_comparison: bool = True,
+) -> float:
     penalty = decision_cfg["base_uncertainty"]
     ratio = option.dispersion_ratio
-    if ratio is not None and ratio >= decision_cfg["medium_dispersion_min"]:
+    if ratio is None:
+        penalty += decision_cfg["dispersion_unknown_penalty"]
+    elif ratio >= decision_cfg["medium_dispersion_min"]:
         penalty += decision_cfg["medium_dispersion_penalty"]
+    if ratio is not None and ratio > decision_cfg["dispersion_ratio_max"]:
+        penalty += decision_cfg["severe_dispersion_penalty"]
     if option.n_books == decision_cfg["min_books"]:
         penalty += decision_cfg["marginal_books_penalty"]
-    if option.p_hit_market is not None:
+    elif option.n_books < decision_cfg["min_books"]:
+        penalty += decision_cfg["thin_market_penalty"]
+    if use_model_comparison and option.p_hit_market is not None:
         delta = abs(option.model.p_hit - option.p_hit_market)
         if delta >= decision_cfg["model_disagreement_severe_delta"]:
             penalty += decision_cfg["model_disagreement_severe_penalty"]
         elif delta >= decision_cfg["model_disagreement_mild_delta"]:
             penalty += decision_cfg["model_disagreement_mild_penalty"]
+    if use_model_comparison and "internal_model_disagreement" in option.risk_flags:
+        penalty += decision_cfg["internal_disagreement_penalty"]
+    if "quarter_line_market_probability_proxy" in option.risk_flags:
+        penalty += decision_cfg["quarter_line_penalty"]
+    if "extreme_handicap" in option.risk_flags:
+        penalty += decision_cfg["extreme_handicap_penalty"]
+    if "market_only_rating_fallback" in option.risk_flags:
+        penalty += decision_cfg["rating_fallback_penalty"]
     return penalty
 
 
@@ -677,12 +725,36 @@ def _model_agreement_score(option: _Option) -> float:
     return max(0.0, min(1.0, 1.0 - delta / 0.20))
 
 
+def _evidence_score(
+    option: _Option,
+    decision_cfg: dict[str, Any],
+    *,
+    market_only: bool = False,
+) -> float:
+    book_target = max(decision_cfg["min_books"] + 2, 1)
+    book_coverage = max(0.0, min(1.0, option.n_books / book_target))
+    if market_only:
+        return (option.market_quality + book_coverage) / 2.0
+    return (
+        option.market_quality
+        + option.model_market_agreement
+        + book_coverage
+    ) / 3.0
+
+
 def _score_option(
     option: _Option,
     analysis: MatchAnalysis,
     decision_cfg: dict[str, Any],
+    *,
+    market_only: bool = False,
 ) -> None:
-    if option.p_hit_market is None or option.p_no_loss_market is None:
+    if market_only:
+        p_hit = option.p_hit_market
+        p_no_loss = option.p_no_loss_market
+        if p_hit is None or p_no_loss is None:
+            raise ValueError("market-only option requires market probabilities")
+    elif option.p_hit_market is None or option.p_no_loss_market is None:
         p_hit = option.model.p_hit
         p_no_loss = option.model.p_no_loss
     else:
@@ -691,13 +763,22 @@ def _score_option(
         p_no_loss = (model_weight * option.model.p_no_loss) + (
             market_weight * option.p_no_loss_market
         )
-    penalty = _uncertainty_penalty(option, decision_cfg)
+    penalty = _uncertainty_penalty(
+        option,
+        decision_cfg,
+        use_model_comparison=not market_only,
+    )
     option.p_hit = max(0.0, min(1.0, p_hit))
     option.p_hit_safe = max(0.0, min(1.0, p_hit - penalty))
     option.p_no_loss_safe = max(0.0, min(1.0, p_no_loss - penalty))
     option.uncertainty_penalty = penalty
     option.market_quality = _market_quality_score(option, decision_cfg)
-    option.model_market_agreement = _model_agreement_score(option)
+    option.model_market_agreement = 0.5 if market_only else _model_agreement_score(option)
+    option.evidence_score = _evidence_score(
+        option,
+        decision_cfg,
+        market_only=market_only,
+    )
 
 
 def _x12_internal_disagreement(
@@ -728,25 +809,27 @@ def _apply_hard_vetoes(
     option: _Option,
     analysis: MatchAnalysis,
     decision_cfg: dict[str, Any],
+    *,
+    use_model: bool = True,
 ) -> None:
     if option.odds <= 1.0:
         option.hard_vetoes.append("invalid_odds")
-    if option.n_books < decision_cfg["min_books"]:
-        option.hard_vetoes.append("bookmaker_count_too_low")
+    if option.n_books <= 0:
+        option.hard_vetoes.append("bookmaker_count_zero")
+    elif option.n_books < decision_cfg["min_books"]:
+        option.risk_flags.append("thin_market")
     if option.dispersion_ratio is None:
-        option.hard_vetoes.append("market_dispersion_unknown")
+        option.risk_flags.append("market_dispersion_unknown")
     elif option.dispersion_ratio > decision_cfg["dispersion_ratio_max"]:
-        option.hard_vetoes.append("severe_dispersion")
-    if _x12_internal_disagreement(option, analysis, decision_cfg):
-        option.hard_vetoes.append("model_disagreement")
+        option.risk_flags.append("severe_dispersion")
+    if use_model and _x12_internal_disagreement(option, analysis, decision_cfg):
+        option.risk_flags.append("internal_model_disagreement")
     if (
         option.market == "AH"
         and option.line is not None
         and abs(option.line) >= decision_cfg["extreme_handicap_abs_line"]
     ):
-        option.hard_vetoes.append("extreme_handicap")
-    if _is_quarter_line(option.line):
-        option.hard_vetoes.append("quarter_line_probability_unverified")
+        option.risk_flags.append("extreme_handicap")
 
 
 def _all_options(
@@ -776,7 +859,7 @@ def _decorate_reason(option: _Option, reason: str) -> None:
 def _base_decision(label: str) -> dict[str, Any]:
     return {
         "schema_version": 2,
-        "policy_version": "match_pick_v2",
+        "policy_version": POLICY_VERSION,
         "label": label,
         "selected_option_id": None,
         "market": None,
@@ -788,7 +871,7 @@ def _base_decision(label: str) -> dict[str, Any]:
         "p_no_loss_safe": None,
         "reasons": [],
         "risks": [],
-        "method": "hit_rate_first",
+        "method": "coverage_evidence_ranked",
     }
 
 
@@ -806,8 +889,8 @@ def _make_pick(
     decision_cfg: dict[str, Any],
 ) -> dict[str, Any]:
     _decorate_reason(option, "main_market_only")
-    _decorate_reason(option, "market_quality_pass")
-    _decorate_reason(option, "highest_safe_hit_probability")
+    _decorate_reason(option, "market_data_available")
+    _decorate_reason(option, "evidence_ranked_near_top_probability")
     valid_until: datetime | None = None
     if option.odds_latest_at is not None:
         valid_until = option.odds_latest_at + timedelta(
@@ -815,7 +898,7 @@ def _make_pick(
         )
         kickoff = analysis.match_input.fixture.kickoff_at_utc.astimezone(timezone.utc)
         valid_until = min(valid_until, kickoff)
-    return {
+    decision = {
         **_base_decision(PICK_LABEL),
         "selected_option_id": _option_id(option),
         "market": option.market,
@@ -826,7 +909,7 @@ def _make_pick(
         "p_hit_safe": _round_metric(option.p_hit_safe),
         "p_no_loss_safe": _round_metric(option.p_no_loss_safe),
         "uncertainty_penalty": _round_metric(option.uncertainty_penalty),
-        "model_settlement": option.model.to_dict(),
+        "evidence_score": _round_metric(option.evidence_score),
         "computed_at": observed_at.isoformat() if observed_at is not None else None,
         "odds_latest_at": option.odds_latest_at.isoformat()
         if option.odds_latest_at is not None
@@ -835,6 +918,9 @@ def _make_pick(
         "reasons": list(option.reasons),
         "risks": list(option.risk_flags),
     }
+    if "market_only_rating_fallback" not in option.risk_flags:
+        decision["model_settlement"] = option.model.to_dict()
+    return decision
 
 
 def _is_stale_odds_source(source: Any) -> bool:
@@ -853,6 +939,16 @@ def _global_blockers(
     return list(dict.fromkeys(blockers))
 
 
+def _rating_fallback_reasons(hard_blockers: Iterable[Any]) -> list[str]:
+    return list(
+        dict.fromkeys(
+            str(reason)
+            for reason in hard_blockers
+            if str(reason or "").strip() in _RATING_FALLBACK_BLOCKERS
+        )
+    )
+
+
 def _option_rank(option: _Option) -> tuple[Any, ...]:
     return (
         -(option.p_hit_safe or 0.0),
@@ -865,6 +961,39 @@ def _option_rank(option: _Option) -> tuple[Any, ...]:
     )
 
 
+def _best_available_option(
+    options: list[_Option],
+    decision_cfg: dict[str, Any],
+) -> _Option:
+    standard_options = [
+        option
+        for option in options
+        if "quarter_line_market_probability_proxy" not in option.risk_flags
+        and "extreme_handicap" not in option.risk_flags
+    ]
+    comparable_options = standard_options or options
+    preferred = [
+        option
+        for option in comparable_options
+        if decision_cfg["min_odds"] <= option.odds <= decision_cfg["max_odds"]
+    ]
+    pool = preferred or comparable_options
+    top_hit = max(option.p_hit_safe or 0.0 for option in pool)
+    tolerance = max(0.0, decision_cfg["near_top_hit_tolerance"])
+    evidence_pool = [
+        option
+        for option in pool
+        if (option.p_hit_safe or 0.0) >= top_hit - tolerance
+    ]
+    return sorted(
+        evidence_pool,
+        key=lambda option: (
+            -option.evidence_score,
+            *_option_rank(option),
+        ),
+    )[0]
+
+
 def decide_match_pick(
     analysis: MatchAnalysis,
     cfg: dict[str, Any],
@@ -873,15 +1002,26 @@ def decide_match_pick(
     stale_sources: Iterable[Any] = (),
     hard_blockers: Iterable[Any] = (),
 ) -> dict[str, Any]:
-    """Return one hit-rate-first pick, or an explicit abstention.
+    """Return one evidence-ranked pick, or an explicit data-availability abstention.
 
-    This v2 decision is independent of the legacy S/A/B/C signal engine. Only
-    complete, fresh main markets enter the candidate set.
+    This v3 decision is independent of the legacy S/A/B/C signal engine. Every
+    match with at least one complete, fresh, settleable main market gets a pick.
     """
 
     observed = _parse_observed_at(observed_at)
     decision_cfg = _decision_cfg(cfg)
-    blockers = _global_blockers(stale_sources, hard_blockers)
+    raw_hard_blockers = [
+        str(reason) for reason in hard_blockers if str(reason or "").strip()
+    ]
+    rating_fallback_reasons = _rating_fallback_reasons(raw_hard_blockers)
+    blockers = _global_blockers(
+        stale_sources,
+        [
+            reason
+            for reason in raw_hard_blockers
+            if reason not in _RATING_FALLBACK_BLOCKERS
+        ],
+    )
     kickoff = analysis.match_input.fixture.kickoff_at_utc.astimezone(timezone.utc)
     if observed is not None and observed >= kickoff:
         blockers.append("match_started")
@@ -892,31 +1032,54 @@ def decide_match_pick(
     clean_options: list[_Option] = []
     rejected_count = 0
     for option in options:
-        _apply_hard_vetoes(option, analysis, decision_cfg)
+        if rating_fallback_reasons:
+            option.risk_flags.append("market_only_rating_fallback")
+        _apply_hard_vetoes(
+            option,
+            analysis,
+            decision_cfg,
+            use_model=not bool(rating_fallback_reasons),
+        )
+        if rating_fallback_reasons and (
+            option.p_hit_market is None or option.p_no_loss_market is None
+        ):
+            option.hard_vetoes.append("rating_fallback_requires_market_probability")
         if option.hard_vetoes:
             rejected_count += 1
             continue
-        _score_option(option, analysis, decision_cfg)
+        _score_option(
+            option,
+            analysis,
+            decision_cfg,
+            market_only=bool(rating_fallback_reasons),
+        )
         clean_options.append(option)
 
     if not clean_options:
         return _no_pick(["no_clean_option"], rejected_count=rejected_count)
 
-    eligible = [
+    high_confidence = [
         option
         for option in clean_options
         if decision_cfg["min_odds"] <= option.odds <= decision_cfg["max_odds"]
         and (option.p_hit_safe or 0.0) >= decision_cfg["min_p_hit_safe"]
         and (option.p_no_loss_safe or 0.0) >= decision_cfg["min_p_no_loss_safe"]
     ]
-    if not eligible:
-        return _no_pick(
-            ["below_pick_threshold"],
-            rejected_count=rejected_count + len(clean_options),
-        )
+    selected = _best_available_option(
+        high_confidence or clean_options,
+        decision_cfg,
+    )
+    if not high_confidence:
+        _decorate_reason(selected, "best_available_main_market")
+        selected.risk_flags.append("below_high_confidence_observation")
+    if rating_fallback_reasons:
+        _decorate_reason(selected, "market_consensus_rating_fallback")
+        for reason in rating_fallback_reasons:
+            if reason not in selected.risk_flags:
+                selected.risk_flags.append(reason)
 
     return _make_pick(
-        sorted(eligible, key=_option_rank)[0],
+        selected,
         analysis,
         observed,
         decision_cfg,

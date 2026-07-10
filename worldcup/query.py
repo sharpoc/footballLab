@@ -356,10 +356,10 @@ def _parse_public_at(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _public_no_pick() -> dict[str, Any]:
+def _public_no_pick(policy_version: str = "match_pick_v2") -> dict[str, Any]:
     return {
         "schema_version": 2,
-        "policy_version": "match_pick_v2",
+        "policy_version": policy_version,
         "label": "NO_CLEAN_MARKET",
     }
 
@@ -374,7 +374,10 @@ def project_match_decision(
         return None
     raw_label = str(decision.get("label") or "")
     if raw_label == "NO_CLEAN_MARKET":
-        return _public_no_pick()
+        policy_version = str(decision.get("policy_version") or "match_pick_v2")
+        if policy_version not in {"match_pick_v2", "match_pick_v3"}:
+            policy_version = "match_pick_v2"
+        return _public_no_pick(policy_version)
     try:
         schema_version = int(decision.get("schema_version") or 1)
     except (TypeError, ValueError):
@@ -382,14 +385,22 @@ def project_match_decision(
     if schema_version != 2:
         if not allow_legacy_history or raw_label not in _LEGACY_PICK_LABELS:
             return _public_no_pick()
+        policy_version = "legacy_match_decision_v1"
     elif raw_label != "MATCH_PICK":
         return _public_no_pick()
+    else:
+        raw_policy_version = str(decision.get("policy_version") or "match_pick_v2")
+        policy_version = (
+            raw_policy_version
+            if raw_policy_version in {"match_pick_v2", "match_pick_v3"}
+            else "match_pick_v2"
+        )
     if not decision.get("market") or not decision.get("selection"):
         return None
     if schema_version == 2 and as_of is not None:
         valid_until = _parse_public_at(decision.get("valid_until"))
         if valid_until is None or valid_until <= as_of.astimezone(timezone.utc):
-            return _public_no_pick()
+            return _public_no_pick(policy_version)
     public = {
         key: deepcopy(decision.get(key))
         for key in _DECISION_PUBLIC_FIELDS
@@ -397,13 +408,14 @@ def project_match_decision(
     }
     public["schema_version"] = 2
     public["label"] = "MATCH_PICK"
-    public["policy_version"] = (
-        "match_pick_v2" if schema_version == 2 else "legacy_match_decision_v1"
-    )
+    public["policy_version"] = policy_version
     return public
 
 
 def _match_pick_blocked(snapshot: dict[str, Any], match: dict[str, Any]) -> bool:
+    decision = match.get("match_decision") or {}
+    if decision.get("policy_version") == "match_pick_v3":
+        return False
     competition = _competition_from_mapping(match) or _competition_from_mapping(snapshot) or {}
     rating_policy = str(competition.get("rating_policy") or "")
     if rating_policy.endswith("_pending"):

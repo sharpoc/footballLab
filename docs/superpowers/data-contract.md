@@ -9,8 +9,8 @@
 
 - 新 snapshot 每场最多一个 `match_decision`。
 - 有效首选使用 `label=MATCH_PICK`，中文显示为“本场首选”。
-- 数据质量、赔率新鲜度或概率门槛未通过时使用 `label=NO_CLEAN_MARKET`，中文显示为“暂无可靠首选”。
-- 新决策按命中率优先排序，不读取、不优先、不降级到 S/A/B/C 价值等级。
+- 存在开赛前有效、可结算主盘口时必须使用 `label=MATCH_PICK`；数据质量问题和低概率只做风险扣分。只有赔率全部无效/过期、比赛已开始或没有可结算盘口时使用 `label=NO_CLEAN_MARKET`。
+- 新决策先保证有效主盘覆盖，再按安全命中概率与市场证据排序；不读取、不优先、不降级到 S/A/B/C 价值等级。
 - 公开投影不得输出 `signals`、`grade`、`top_grade`、`signal_count`、`closing_signals`、EV/Edge 或旧 decision label。
 - 旧 snapshot/store 中的 S/A/B/C、`signals`、`closing_signals` 和旧 decision label 可由内部读取路径兼容，不做破坏性迁移；它们不得重新进入新首选、公开页面或当前策略绩效。
 - 新完赛统计以 `closing_match_decision` 为唯一结算对象，对外使用 `decision_tally`、`decision_sample` 和 `decision_coverage`。
@@ -664,7 +664,7 @@ odds_latest_at
 valid_until
 ```
 
-`label` 对外只允许 `MATCH_PICK` 或 `NO_CLEAN_MARKET`。旧 decision label 必须在投影边界归一或拒绝，不得原样暴露。`signals`、`grade`、`signal_count`、`top_grade`、`selected_option_id`、内部 reason/risk 和模型详情不属于公开比赛行。
+`label` 对外只允许 `MATCH_PICK` 或 `NO_CLEAN_MARKET`，当前策略为 `policy_version=match_pick_v3`。存在开赛前有效、可结算主盘口时必须输出 `MATCH_PICK`；`NO_CLEAN_MARKET` 只用于赔率全部无效/过期、比赛已开始或没有任何可结算盘口。旧 decision label 必须在投影边界归一或拒绝，不得原样暴露。`signals`、`grade`、`signal_count`、`top_grade`、`selected_option_id`、内部 reason/risk/evidence 和模型详情不属于公开比赛行。
 
 不得在投影中加入 stake、bet amount、下注金额或其它资金字段。
 

@@ -135,9 +135,11 @@ def test_build_league_snapshot_from_cache_builds_local_csl_snapshot():
         assert match["away_team"] == "Shandong Taishan"
         assert match["elo"] == {"home": 1500, "away": 1500}
         assert "signals" not in match
-        assert match["match_decision"]["label"] == "NO_CLEAN_MARKET"
-        assert "club_rating_pending" in match["match_decision"]["reasons"]
-        assert "club_rating_missing" in match["match_decision"]["reasons"]
+        assert match["match_decision"]["label"] == "MATCH_PICK"
+        assert match["match_decision"]["policy_version"] == "match_pick_v3"
+        assert "market_consensus_rating_fallback" in match["match_decision"]["reasons"]
+        assert "club_rating_pending" in match["match_decision"]["risks"]
+        assert "club_rating_missing" in match["match_decision"]["risks"]
 
 
 def test_build_league_snapshot_reports_missing_club_rating_quality():
@@ -241,8 +243,9 @@ def test_build_league_snapshot_uses_sample_club_ratings_but_keeps_signal_cap():
         assert match["elo"]["home"] > 1500
         assert match["elo"]["away"] < 1500
         assert "signals" not in match
-        assert match["match_decision"]["label"] == "NO_CLEAN_MARKET"
-        assert match["match_decision"]["reasons"] == ["club_rating_pending"]
+        assert match["match_decision"]["label"] == "MATCH_PICK"
+        assert "market_consensus_rating_fallback" in match["match_decision"]["reasons"]
+        assert "club_rating_pending" in match["match_decision"]["risks"]
 
 
 def test_build_league_snapshot_falls_back_when_fixture_team_missing_rating():
@@ -279,8 +282,9 @@ def test_build_league_snapshot_falls_back_when_fixture_team_missing_rating():
         match = snapshot["matches"][0]
         assert match["elo"] == {"home": 1500, "away": 1500}
         assert "signals" not in match
-        assert match["match_decision"]["label"] == "NO_CLEAN_MARKET"
-        assert "club_rating_missing_team" in match["match_decision"]["reasons"]
+        assert match["match_decision"]["label"] == "MATCH_PICK"
+        assert "market_consensus_rating_fallback" in match["match_decision"]["reasons"]
+        assert "club_rating_missing_team" in match["match_decision"]["risks"]
 
 
 def test_ratings_for_fixture_falls_back_when_canonical_is_missing_without_recording_none():
@@ -335,7 +339,7 @@ def test_build_league_snapshot_reports_invalid_league_odds_quality():
 
         match = snapshot["matches"][0]
         assert "signals" not in match
-        assert match["match_decision"]["label"] == "NO_CLEAN_MARKET"
+        assert match["match_decision"]["label"] == "MATCH_PICK"
         assert match["market"]["ou_2_5"]["n_books_by_selection"]["over"] == 2
         assert match["market"]["ou_2_5"]["n_books_by_selection"]["under"] == 3
 

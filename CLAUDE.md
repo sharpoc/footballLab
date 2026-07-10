@@ -10,7 +10,7 @@
 ## 项目定位
 
 - 这是 2026 世界杯研究/分析站。
-- 目标是做数据采集、量化分析和每场唯一“本场首选”展示；条件不足时明确输出“暂无可靠首选”。
+- 目标是做数据采集、量化分析和每场唯一“本场首选”展示；只要存在开赛前有效、可结算的主盘口，每场必须输出一个首选，不能靠删除低置信场次提高表面命中率。
 - 不构成投注建议。
 - 不显示下注金额。
 - 不做追损、重注、串关喊单或任何无风控建议。
@@ -19,16 +19,17 @@
 
 - Plan 1 引擎核心已完成第一版。
 - Plan 0 核心数据源探测已完成第一轮。
-- Plan 2 已启动，当前完成纯离线解析层、单场模型/市场输出、命中率优先的每场唯一 `match_decision` 输出、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、低频调度策略、run metadata、调度执行包装、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照。
+- Plan 2 已启动，当前完成纯离线解析层、单场模型/市场输出、覆盖率与市场证据优先的每场唯一 `match_decision` 输出、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、低频调度策略、run metadata、调度执行包装、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照。
 - Plan 2 collectors 必须基于 `docs/superpowers/data-contract.md` 和 `data/probe/` 保存样例写离线解析测试，不能按假接口写。
 - Plan 3 云端与调度等阿里云资源确认后再细化。
 
 ## 开发规则
 
 - 优先最小可行实现，不提前上 ML。
-- 本届 MVP 只做 Elo + Poisson + 赔率去水 + 命中率优先的每场唯一首选；公开产品只允许 `MATCH_PICK`（本场首选）或 `NO_CLEAN_MARKET`（暂无可靠首选）。
+- 本届 MVP 只做 Elo + Poisson + 赔率去水 + 市场证据优先的每场唯一首选；公开产品只允许 `MATCH_PICK`（本场首选）或 `NO_CLEAN_MARKET`（无法计算）。
 - S/A/B/C、EV/Edge 价值信号及旧 decision label 只允许作为 legacy compatibility 读取旧 snapshot/store；不得参与新 `match_decision` 选择，不得出现在公开 API、预览页、通知或新完赛统计中。
-- 新 snapshot 每场最多一个 `match_decision`；数据质量、新鲜度或概率门槛未通过时必须主动放弃，不得为了“每场都有结果”强行给首选。
+- 新 snapshot 每场最多一个 `match_decision`；概率偏低、书商偏少、离散度偏高、模型分歧或俱乐部评级 pending/missing 时改为风险扣分和市场共识兜底，不得删除整场。只有赔率全部无效/过期、比赛已开始或不存在任何可结算盘口时才允许 `NO_CLEAN_MARKET`。
+- 当前公开策略版本为 `match_pick_v3`：世界杯市场/模型权重为 0.80/0.20；安全概率相近（默认 2 个百分点内）的候选继续比较书商覆盖、盘口质量和模型/市场一致性。中超俱乐部评级未完成时不得使用占位 1500 影响方向，改用赔率去水后的市场共识并附加内部风险扣分。
 - 新完赛契约以 `closing_match_decision` 结算，统计使用 `decision_tally`（`hit/miss/push/no_pick`）、`decision_sample` 和 `decision_coverage`；旧等级 tally 不再是正式契约。
 - 当前实现以 2026 世界杯为首个 competition adapter，但新增通用数据结构、snapshot 字段、概率族、赔率/盘口移动诊断和回测接口时，应尽量使用可迁移到联赛的命名与边界，避免继续把新能力写死为世界杯专用语义；已有 `stage` / `group` 等世界杯字段保持兼容，不为未来联赛提前大重构。
 - 引擎层必须保持纯函数，不联网、不连数据库、不依赖云。

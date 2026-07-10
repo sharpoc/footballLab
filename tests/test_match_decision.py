@@ -8,6 +8,8 @@ from worldcup.match_decision import (
     PICK_LABEL,
     _Option,
     _SettlementProbabilities,
+    _best_available_option,
+    _decision_cfg,
     _main_home_ah_line,
     _option_rank,
     _settlement_probabilities,
@@ -180,7 +182,7 @@ def test_new_and_legacy_entry_points_are_equivalent():
     assert decide_match(analysis, cfg) == decide_match(analysis, [], cfg)
 
 
-def test_pick_is_hit_rate_first_and_uses_only_one_main_line():
+def test_pick_is_evidence_ranked_and_uses_only_one_main_line():
     analysis = _high_probability_analysis(
         ah_home_line=0.0,
         ah_odds={"home": 1.38, "away": 3.1},
@@ -197,12 +199,12 @@ def test_pick_is_hit_rate_first_and_uses_only_one_main_line():
     assert decision["p_no_loss_safe"] >= 0.62
     assert decision["reasons"] == [
         "main_market_only",
-        "market_quality_pass",
-        "highest_safe_hit_probability",
+        "market_data_available",
+        "evidence_ranked_near_top_probability",
     ]
 
 
-def test_below_high_confidence_guardrail_returns_explicit_no_pick():
+def test_below_high_confidence_guardrail_still_returns_best_available_pick():
     analysis = _priced_analysis(
         home_elo=1750,
         away_elo=1750,
@@ -211,19 +213,21 @@ def test_below_high_confidence_guardrail_returns_explicit_no_pick():
 
     decision = decide_match_pick(analysis, load_config())
 
-    assert decision["label"] == NO_PICK_LABEL
-    assert decision["market"] is None
-    assert decision["selection"] is None
-    assert decision["reasons"] == ["below_pick_threshold"]
+    assert decision["label"] == PICK_LABEL
+    assert decision["market"] is not None
+    assert decision["selection"] is not None
+    assert "best_available_main_market" in decision["reasons"]
+    assert "below_high_confidence_observation" in decision["risks"]
 
 
-def test_incomplete_or_duplicate_books_do_not_fake_minimum_coverage():
+def test_incomplete_or_duplicate_books_are_penalized_without_dropping_the_match():
     one_book = _high_probability_analysis(books=("book1",), duplicate_quotes=True)
 
     decision = decide_match_pick(one_book, load_config())
 
-    assert decision["label"] == NO_PICK_LABEL
-    assert decision["reasons"] == ["no_clean_option"]
+    assert decision["label"] == PICK_LABEL
+    assert "thin_market" in decision["risks"]
+    assert decision["uncertainty_penalty"] > 0.02
 
 
 def test_observed_at_excludes_stale_and_missing_quote_timestamps():
@@ -317,7 +321,7 @@ def test_stale_ou_quotes_do_not_influence_a_fresh_x12_pick():
     assert expected["p_hit_safe"] == actual["p_hit_safe"]
 
 
-def test_outlier_filter_keeps_the_complete_market_book_threshold():
+def test_outlier_filter_penalizes_thin_complete_market_without_dropping_match():
     observed_at = datetime(2026, 6, 8, 12, 0, tzinfo=timezone.utc)
     seed = _high_probability_analysis()
     quotes: list[OddsQuote] = []
@@ -346,8 +350,9 @@ def test_outlier_filter_keeps_the_complete_market_book_threshold():
         observed_at=observed_at,
     )
 
-    assert decision["label"] == NO_PICK_LABEL
-    assert decision["market"] is None
+    assert decision["label"] == PICK_LABEL
+    assert decision["market"] is not None
+    assert decision["selection"] is not None
 
 
 def test_decision_weights_are_normalized_and_probabilities_stay_bounded():
@@ -427,6 +432,53 @@ def test_quarter_line_is_not_promoted_above_a_market_supported_pick():
     assert decision["selected_option_id"] == "1X2_90min|home|"
 
 
+def test_quarter_line_only_market_still_returns_a_penalized_pick():
+    analysis = _high_probability_analysis(
+        ah_home_line=-0.25,
+        ah_odds={"home": 1.95, "away": 1.95},
+    )
+    ah_quotes = [
+        quote for quote in analysis.match_input.quotes if quote.market_type == MarketType.AH
+    ]
+    analysis = replace(
+        analysis,
+        match_input=replace(analysis.match_input, quotes=ah_quotes),
+    )
+
+    decision = decide_match_pick(analysis, load_config())
+    rating_fallback = decide_match_pick(
+        analysis,
+        load_config(),
+        hard_blockers=["club_rating_pending"],
+    )
+
+    assert decision["label"] == PICK_LABEL
+    assert decision["market"] == "AH"
+    assert "quarter_line_market_probability_proxy" in decision["risks"]
+    assert rating_fallback["label"] == PICK_LABEL
+    assert "market_consensus_rating_fallback" in rating_fallback["reasons"]
+
+
+def test_extreme_handicap_only_market_still_returns_a_penalized_pick():
+    analysis = _high_probability_analysis(
+        ah_home_line=-2.5,
+        ah_odds={"home": 1.95, "away": 1.95},
+    )
+    ah_quotes = [
+        quote for quote in analysis.match_input.quotes if quote.market_type == MarketType.AH
+    ]
+    analysis = replace(
+        analysis,
+        match_input=replace(analysis.match_input, quotes=ah_quotes),
+    )
+
+    decision = decide_match_pick(analysis, load_config())
+
+    assert decision["label"] == PICK_LABEL
+    assert decision["market"] == "AH"
+    assert "extreme_handicap" in decision["risks"]
+
+
 def test_equal_hit_rate_prefers_lower_expected_loss_and_higher_no_loss_probability():
     risky_half_loss = _Option(
         market_type=MarketType.AH,
@@ -462,7 +514,47 @@ def test_equal_hit_rate_prefers_lower_expected_loss_and_higher_no_loss_probabili
     assert ranked[0] is low_loss_with_push
 
 
-def test_global_stale_odds_and_rating_blockers_force_no_pick():
+def test_near_top_hit_candidates_use_market_evidence_instead_of_probability_alone():
+    fragile_top = _Option(
+        market_type=MarketType.X12,
+        market="1X2",
+        selection="home",
+        line=None,
+        odds=1.8,
+        model=_SettlementProbabilities(full_win=0.62, full_loss=0.38),
+        p_hit_market=0.58,
+        p_no_loss_market=0.58,
+        n_books=2,
+        dispersion_ratio=1.17,
+        p_hit_safe=0.60,
+        p_no_loss_safe=0.60,
+        evidence_score=0.25,
+    )
+    supported_near_top = _Option(
+        market_type=MarketType.OU,
+        market="OU",
+        selection="under",
+        line=2.5,
+        odds=1.75,
+        model=_SettlementProbabilities(full_win=0.60, full_loss=0.40),
+        p_hit_market=0.59,
+        p_no_loss_market=0.59,
+        n_books=10,
+        dispersion_ratio=1.03,
+        p_hit_safe=0.59,
+        p_no_loss_safe=0.59,
+        evidence_score=0.92,
+    )
+
+    selected = _best_available_option(
+        [fragile_top, supported_near_top],
+        _decision_cfg(load_config()),
+    )
+
+    assert selected is supported_near_top
+
+
+def test_stale_odds_blocks_but_missing_rating_uses_market_consensus_fallback():
     analysis = _high_probability_analysis()
     cfg = load_config()
 
@@ -471,8 +563,9 @@ def test_global_stale_odds_and_rating_blockers_force_no_pick():
 
     assert stale["label"] == NO_PICK_LABEL
     assert stale["reasons"] == ["stale_odds:theoddsapi"]
-    assert pending["label"] == NO_PICK_LABEL
-    assert pending["reasons"] == ["club_rating_pending"]
+    assert pending["label"] == PICK_LABEL
+    assert "market_consensus_rating_fallback" in pending["reasons"]
+    assert "club_rating_pending" in pending["risks"]
 
 
 def test_settlement_probabilities_keep_half_results_distinct():
