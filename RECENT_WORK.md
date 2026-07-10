@@ -12,6 +12,10 @@
 - 提交按范围拆分为 `dd40f3b feat: add csl scheduled publishing` 和 `9db9373 feat: make match picks decision only`；未 push。MatchPick v2 已通过绑定当前 Wi-Fi 地址 `192.168.31.46` 部署到 ECS `/opt/worldcup/releases/9db93736aff97e801258a7eba7d727eef3bfea9d`，服务与 Nginx 均为 active，内部 `/readyz` warmup 成功，自动回滚未触发。
 - 公网部署验证：`/healthz`、`/api/matches`、`/preview` 均为 HTTP 200；`/api/matches` 共 12 场，全部投影为 `policy_version=match_pick_v2` / `NO_CLEAN_MARKET`，无等级/信号字段；`/api/finished` 为 schema v2，当前策略 `decision_tally` 全 0、`legacy_decision_count=17`、`missing_decision_count=79`；`/preview` 已缩至约 49.8KB，包含“本场首选”和免责声明，无 S/A、价值分歧或 grade 标记。Nginx 继续按既有规则对公网 `/api/snapshot/latest` 返回 404。
 - 本次发布只部署代码并重启 `worldcup.service`，未读取 `.env`、未调用 The Odds API、未消耗 quota、未生成或发布新 snapshot、未改 LaunchAgent、未 push。由于线上仍是旧快照，当前 12 场均安全归一为“暂无可靠首选”；后续新鲜 v2 snapshot 需按刷新调度自然产生，若要强制刷新/发布必须再次单独确认。
+- 按用户纠偏，撤销独立首选卡片页的 UI 替换：`worldcup.preview` 重新委托原 `ledger_html`，以 decision-only 模式保留“足球研究台账”的顶部导航、日期条、左右工作台、实时/历史切换、搜索和赛事筛选；展示内容仍只读取安全投影后的 MatchPick v2，不恢复 S/A/B/C、价值分歧或旧等级控件，也未改任何模型参数、首选门槛、API 契约或 snapshot。
+- UI 恢复提交为 `662715a fix: restore original ledger UI`，已部署到 ECS `/opt/worldcup/releases/662715a953c0255bc209f840c4f9dabaf910b8a6`；上一 release 为 `9db93736aff97e801258a7eba7d727eef3bfea9d`。`worldcup.service`、Nginx、内部 `/readyz` 和部署 smoke 均正常，自动回滚未触发。
+- 公网浏览器验收：`https://football.celab.xin/preview` 标题为“足球研究台账”，原 workbench 结构已恢复，当前显示 11 场待赛、96 场历史；页面没有独立卡片页的 `.match-card` / `.metrics`，没有 S/A/B/C、价值分歧或旧等级标记，控制台无 warning/error。搜索“西班牙”唯一命中西班牙 vs 比利时，赛事筛选 `csl_2026` 只显示 8 场中超，历史视图切换正常。
+- 验证：配置 runtime 的完整函数式回归 `695/695` 通过，系统 Python 的 FastAPI 适配测试 `13/13` 通过，`py_compile`、`git diff --check` 和本地浏览器结构/交互检查通过。本次仍只部署代码并重启服务，未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布新 snapshot、未改 LaunchAgent、未 push。
 
 ## 2026-07-09 CSL scheduled publish LaunchAgent 安装
 
