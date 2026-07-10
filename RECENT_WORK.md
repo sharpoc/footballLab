@@ -8,6 +8,7 @@
 - HTTPS ingest 对瞬时 TLS/网络/5xx 做有限重试；仍失败时，在 ignored cache 同目录保留不含 secret 的 `*.publish_pending.json`。下次调度唤醒只重试发布同一 snapshot/run_id，成功后清理 pending，不重复刷新或消耗 The Odds API quota。
 - 中超 LaunchAgent 生成器默认唤醒周期由 1800 秒缩短为 900 秒；runner 内部的 1800 秒刷新节流保持不变，所以不会把 API 调用频率翻倍。本轮不修改 UI 布局、MatchPick v3 选择方向或模型参数。
 - TDD 新增过期前刷新、低额度保护、瞬时传输重试、pending 发布不二次刷新，以及 LaunchAgent 900 秒的回归用例。配置 runtime 排除可选 FastAPI 依赖的完整回归 `707/707` 通过，系统 Python 的 FastAPI 适配测试 `13/13` 通过，`py_compile` 与 `git diff --check` 通过。真实本地 dry-run 显示世界杯下一次为 `pick_expiry_guard`，中超当前为 `match_anchor_due`。
+- 实现提交为 `916ddcf fix: keep match picks fresh and retry publishing`，已部署到 ECS `/opt/worldcup/releases/916ddcf2c83d1a55877c324f2ea4002750b99821`；`worldcup.service` / Nginx active，`/healthz`、`/api/matches`、`/preview` 都为 200，线上 11/11 场为 `match_pick_v3` / `MATCH_PICK`。本机中超 LaunchAgent 已重载为 900 秒唤醒、runner 仍为 1800 秒节流；由于当时已命中 T-90，首次唤醒正常刷新 8 场中超并 HTTP 200 `stored`，secondary quota 从 176 降到 173，未留下 pending 文件。
 
 ## 2026-07-10 MatchPick v3：有效主盘每场必选
 
