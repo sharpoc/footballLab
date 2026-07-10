@@ -78,11 +78,31 @@ def test_preview_renders_only_match_picks_and_no_pick_state():
     assert "本场首选" in html
     assert "暂无可靠首选" in html
     assert "平手盘 - 主队" in html
-    assert "安全命中率 <b>59.0%</b>" in html
-    assert "不亏概率 <b>73.0%</b>" in html
+    assert "安全命中率</span><strong>59.0%</strong>" in html
+    assert "不亏概率</span><strong>73.0%</strong>" in html
     assert "墨西哥 对 南非" in html
     assert "上海海港 对 山东泰山" in html
     assert "仅用于研究分析，不构成投注建议。" in html
+
+
+def test_preview_restores_original_workbench_layout_without_grade_ui():
+    html = build_preview_html(_snapshot())
+
+    assert "<title>足球研究台账</title>" in html
+    assert 'class="primary-nav"' in html
+    assert 'class="workbench-shell premium-intelligence-workbench"' in html
+    assert 'class="ledger-workbench"' in html
+    assert 'class="match-list-panel"' in html
+    assert 'class="signal-detail-panel"' in html
+    assert 'data-view-filter="live"' in html
+    assert 'data-view-filter="history"' in html
+    assert 'id="ledger-search"' in html
+    assert 'id="league-filter"' in html
+    assert 'class="match-card"' not in html
+    assert 'class="metrics"' not in html
+
+    for forbidden in ("S/A", "价值分歧", "grade-pill", "data-grade", "条信号"):
+        assert forbidden not in html
 
 
 def test_preview_never_renders_legacy_grade_payloads_or_controls():
@@ -142,10 +162,10 @@ def test_preview_distinguishes_missing_historical_pick_from_no_pick():
 def test_preview_filters_have_accessible_stable_contract():
     html = build_preview_html(_snapshot())
 
-    assert 'id="match-search"' in html
+    assert 'id="ledger-search"' in html
     assert 'type="search"' in html
     assert 'aria-label="搜索球队"' in html
-    assert 'id="competition-filter"' in html
+    assert 'id="league-filter"' in html
     assert 'aria-label="筛选赛事"' in html
     assert 'value="fifa_world_cup_2026"' in html
     assert 'value="csl_2026"' in html
@@ -189,9 +209,9 @@ def test_preview_empty_upcoming_state_is_clear():
 def test_preview_keeps_responsive_layout_and_table_scroll():
     html = build_preview_html(_snapshot())
 
-    assert "@media (max-width:820px)" in html
-    assert "@media (max-width:520px)" in html
-    assert '.table-wrap { overflow:auto; }' in html
+    assert "@media (max-width: 980px)" in html
+    assert ".workbench-table-wrap {" in html
+    assert "overflow-x: auto;" in html
     assert 'name="viewport"' in html
 
 

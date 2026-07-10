@@ -670,11 +670,11 @@ valid_until
 
 ### 本场首选 UI 投影
 
-`worldcup.query` 负责安全投影，`worldcup.match_decision_html` 负责把投影结果渲染为公开 UI：
+`worldcup.query` 负责安全投影，`worldcup.ledger_html` 的 decision-only 模式负责把投影结果渲染到原研究台账 UI：
 
 | 输出 | 说明 |
 |---|---|
-| 待赛比赛卡 | 每场一张卡，只显示本场首选或暂无可靠首选，以及安全命中率、不亏概率和参考赔率 |
+| 待赛工作台 | 左侧每场一行，右侧只显示本场首选或暂无可靠首选，以及安全命中率、不亏概率和参考赔率 |
 | 摘要指标 | 待开赛数、本场首选数、暂无可靠首选数和脱敏数据质量状态 |
 | 完赛记录 | closing 首选、比分、命中/未中/走水/暂无首选及小样本提示 |
 | 数据源健康 | 只展示脱敏后的可用性、计数和质量状态 |
@@ -688,7 +688,7 @@ valid_until
 
 ### 静态预览
 
-`worldcup.preview` 生成单文件“本场首选” HTML，并委托 `worldcup.match_decision_html.build_match_decision_html(snapshot)` 渲染：
+`worldcup.preview` 生成单文件“本场首选” HTML，并委托 `worldcup.ledger_html.build_research_ledger_html(snapshot, decision_only=True)` 渲染：
 
 ```bash
 python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out data/cache/preview.html
@@ -697,13 +697,13 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 预览页必须包含：
 
 - `仅用于研究分析，不构成投注建议` 免责声明。
-- “本场首选”标题、最后更新时间和研究边界说明。
+- 原“足球研究台账”标题、导航、实时/历史视图、最后更新时间和研究边界说明。
 - 待开赛、本场首选、暂无可靠首选和数据质量中文摘要。
-- 球队搜索、赛事筛选和每场唯一首选卡；不得出现等级筛选或价值信号表。
+- 球队搜索、赛事筛选和每场唯一首选工作台；不得出现等级筛选或价值信号表。
 - 本场首选完赛战绩、样本是否足够的提示和 closing 明细。
 - 脱敏数据源健康计数，不展示 provider 原名、quota 明细或原始错误文本。
 - 富化异常只展示脱敏计数（`enrichment_error_count` / “富化异常”），不得展示 raw error。
-- 移动端卡片单列排列，完赛表格横向滚动限制在表格容器内，页面本身不得横向溢出。
+- 移动端工作台改为单列，明细表横向滚动限制在表格容器内，页面本身不得横向溢出。
 - 不显示资金相关字段。
 
 ### Finished match-decision contract

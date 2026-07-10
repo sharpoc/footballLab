@@ -20,7 +20,7 @@
 - Plan 3B PostgreSQL store 适配器已在 `SnapshotStore` 边界后实现；测试只使用 fake connection，未连接真实数据库。
 - Plan 3C store 选择接线已完成：本地 CLI 默认 SQLite，也可以通过 `WORLDCUP_STORE=postgres` 加 `DATABASE_URL` 显式选择 PostgreSQL；本轮未连接真实数据库。
 - Plan 3D PostgreSQL smoke dry-run guard 已完成：只验证 PostgreSQL smoke 前置条件并输出脱敏请求元数据，不发 HTTP、不连数据库。
-- Plan 4 原研究台账 UI 已由 decision-only 页面入口替代；当前代码只展示本场首选和首选战绩，实际部署记录见 `RECENT_WORK.md`。
+- Plan 4 继续使用原研究台账布局与交互；公开预览通过 `ledger_html` 的 decision-only 模式只展示本场首选和首选战绩，实际部署记录见 `RECENT_WORK.md`。
 - Plan 5 Gate C HTTPS 已完成：`football.celab.xin` 通过 Nginx 将公网 HTTPS 流量反代到 `127.0.0.1:8788` 上的 `worldcup.http_app`；`/api/snapshot/latest` 返回 404；Let's Encrypt 证书续期已配置；公网读取和 ingest smoke 已通过。
 
 ## 当前产品契约：只保留本场首选
@@ -61,7 +61,7 @@
 - 当前 refresh runner 在写盘和 history 归档前做本地富化：每场 match 可附加 `odds_trend` 走势点，顶层可附加 `finished` 完赛定格块；富化失败只输出 warning，不阻断 snapshot 生成或发布
 - 当前 `worldcup.lineups_refresh` 可用 FIFA public API 抓取官方首发；默认 dry-run，不联网写盘，只有显式 `--live` 才请求 FIFA 公网，只有再传 `--write` 才写入被忽略的 `data/cache/lineups_wc2026.json`。当临赛窗口内 FIFA 仍未返回两队 11 人首发时，可显式 `--notify` 通过 WxPusher 发一次缺失通知，去重状态写入被忽略的 `data/local/lineups_missing_notifications.json`。`worldcup.pre_match_runner` 可编排“首发轮询 → 新 confirmed lineup → post-lineup refresh guard → 首发后 odds refresh”，默认仍是 dry-run；`--refresh-guard` 只调用 scheduled refresh 的 dry-run 决策并返回 quota / policy 摘要，不刷新 odds、不消耗 The Odds API quota；如果同时打开 `--refresh-after-lineups --live-refresh`，guard 在 quota 未知或低于 `--min-refresh-quota` 时会阻断 live odds refresh。只有显式打开 `--live-lineups` / `--write-lineups` / `--refresh-after-lineups` / `--live-refresh` 才会逐步触发公网抓取、写本地 cache 和 The Odds API 刷新。`xin.celab.football.pre-match` LaunchAgent 已安装为 lineups-only + audit-notify 模式，每 300 秒运行 `worldcup.pre_match_runner --live-lineups --write-lineups --notify-missing --notify-audit`，不带 `--live-refresh`，所以不会自动消耗 The Odds API 刷 odds；生成未来 live-refresh plist 草案时会自动包含 `--refresh-guard`。本地 runner 会可选读取同一输入目录下的 `lineups_wc2026.json`，把已确认首发、替补、缺阵、阵型和球员影响 delta 接入 `lineup_context`；绑定首发上下文时，`source_match_no` 只能作为候选，必须同时校验双方 canonical team 和 UTC 开球时间，避免 FIFA 编号与本地赛程编号不一致时错挂；当前未接入付费首发 API。
 - 当前 `odds_trend` / `odds_movement` 仍可从 history 归档生成只读诊断，但不再晋升等级或改写首选；`match_decision` 在 runner 生成时一次确定，后续富化不得改变方向。`lineup_shadow` / `ou_total_shadow` / probability families 继续作为模型审计字段，不进入公开页面。
-- 当前静态预览/导出页为本场首选 UI：待开赛每场恰好显示“本场首选”或“暂无可靠首选”，摘要与历史区只统计首选；页面保留脱敏数据质量状态和免责声明，不显示 S/A/B/C、价值分歧、下注金额或资金字段。
+- 当前静态预览/导出页保留原研究台账的导航、日期条、左右工作台、搜索、赛事筛选和历史视图；其中业务内容为 decision-only：待开赛每场恰好显示“本场首选”或“暂无可靠首选”，摘要与历史区只统计首选。页面保留脱敏数据质量状态和免责声明，不显示 S/A/B/C、价值分歧、下注金额或资金字段。
 - 当前 readiness check 只读本地文件和变量名，会解析 snapshot/quota、检查预览免责声明，并确认 `.env.example` 只含空值模板，不联网、不打印 secret
 - 当前 HMAC secret helper 只打印 `INGEST_HMAC_SECRET=<value>`，不会写 `.env`
 - 当前公网 MVP 使用 HTTP app + SQLite + Nginx HTTPS；FastAPI、PostgreSQL/RDS、OSS/CDN 都是可选升级，不是单用户 MVP 首发必需项
@@ -127,9 +127,9 @@ worldcup/
   postgres_smoke.py             # PostgreSQL smoke dry-run guard
   query.py                      # 最新快照读取与比赛行投影
   ledger.py                     # 公共格式化兼容层；旧等级 view-model 仅供 legacy 读取
-  ledger_html.py                # legacy 研究台账渲染器；当前页面入口不再调用
-  match_decision_html.py        # decision-only 本场首选 HTML/CSS/vanilla JS 渲染器
-  preview.py                    # 静态 HTML 预览入口，委托本场首选渲染器
+  ledger_html.py                # 研究台账渲染器；公开入口使用 decision-only 模式
+  match_decision_html.py        # 旧的独立首选卡片页实现；公开入口不再调用
+  preview.py                    # 静态 HTML 预览入口，委托研究台账 decision-only 渲染
   http_app.py                   # 标准库 HTTP 适配层和路由契约
   asgi_app.py                   # 无依赖 ASGI 适配层
   export.py                     # 静态站点/API 导出
