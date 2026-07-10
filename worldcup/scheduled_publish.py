@@ -11,6 +11,7 @@ from worldcup.notifications import (
     send_wxpusher_notification,
 )
 from worldcup.publish import publish_snapshot
+from worldcup.publish_outbox import attempt_publish, load_pending_publish
 from worldcup.quota import load_quota_ledger
 from worldcup.refresh_runner import _load_env, refresh_cache_and_build_snapshot
 from worldcup.scheduled_refresh import run_scheduled_refresh
@@ -135,6 +136,40 @@ def run_scheduled_publish(
     )
 
     if refresh["status"] != "refreshed":
+        pending = load_pending_publish(snapshot_path) if live else None
+        if pending is not None:
+            if pending.get("status") != "pending":
+                return {
+                    "status": "publish_pending_invalid",
+                    "reason": pending.get("reason"),
+                    "force": force,
+                    "refresh": refresh,
+                    "publish": None,
+                    "notification": None,
+                    "quota_alert": None,
+                }
+            resolved_secret = secret or env.get("INGEST_HMAC_SECRET")
+            if not resolved_secret:
+                raise ValueError("INGEST_HMAC_SECRET is missing")
+            retried = attempt_publish(
+                snapshot_path=snapshot_path,
+                endpoint=endpoint,
+                secret=resolved_secret,
+                timestamp=now or _now_utc_iso(),
+                publish_fn=publish_fn,
+                stage=False,
+            )
+            return {
+                "status": "republished"
+                if retried["status"] == "published"
+                else retried["status"],
+                "force": force,
+                "refresh": refresh,
+                "publish": retried.get("publish"),
+                "pending": retried.get("pending"),
+                "notification": {"status": "skipped", "reason": "retry_publish"},
+                "quota_alert": None,
+            }
         return {
             "status": refresh["status"],
             "force": force,
@@ -159,13 +194,25 @@ def run_scheduled_publish(
     if not resolved_secret:
         raise ValueError("INGEST_HMAC_SECRET is missing")
 
-    publish = publish_fn(
+    attempted = attempt_publish(
         snapshot_path=refresh["refresh"]["snapshot_path"],
         endpoint=endpoint,
         secret=resolved_secret,
-        timestamp=now,
-        live=live,
+        timestamp=now or _now_utc_iso(),
+        publish_fn=publish_fn,
+        stage=True,
     )
+    if attempted["status"] != "published":
+        return {
+            "status": attempted["status"],
+            "force": force,
+            "refresh": refresh,
+            "publish": attempted.get("publish"),
+            "pending": attempted.get("pending"),
+            "notification": None,
+            "quota_alert": None,
+        }
+    publish = attempted["publish"]
     notification_result = None
     if notify:
         current_snapshot = load_snapshot_if_exists(refresh["refresh"]["snapshot_path"])

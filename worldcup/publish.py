@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import ssl
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -15,6 +17,7 @@ DEFAULT_SECRET_ENV = "INGEST_HMAC_SECRET"
 
 
 Sender = Callable[[dict[str, Any]], dict[str, Any]]
+Sleeper = Callable[[float], None]
 
 
 def _default_sender(request: dict[str, Any]) -> dict[str, Any]:
@@ -70,6 +73,9 @@ def publish_snapshot(
     timestamp: str | None = None,
     live: bool = False,
     sender: Sender | None = None,
+    max_attempts: int = 3,
+    retry_delay_seconds: float = 0.25,
+    sleep_fn: Sleeper = time.sleep,
 ) -> dict[str, Any]:
     snapshot = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
     request = build_ingest_request(
@@ -87,12 +93,32 @@ def publish_snapshot(
         }
 
     send = sender or _default_sender
-    response = send(request)
+    attempts = max(1, int(max_attempts))
+    response: dict[str, Any] | None = None
+    completed_attempts = 0
+    for attempt in range(1, attempts + 1):
+        completed_attempts = attempt
+        try:
+            response = send(request)
+        except (urllib.error.URLError, ssl.SSLError, TimeoutError, ConnectionError):
+            if attempt >= attempts:
+                raise
+        else:
+            status = response.get("http_status")
+            retryable_status = isinstance(status, int) and (
+                status in {408, 429} or status >= 500
+            )
+            if not retryable_status or attempt >= attempts:
+                break
+        if retry_delay_seconds > 0:
+            sleep_fn(float(retry_delay_seconds) * attempt)
+    assert response is not None
     parsed_body = _parse_response_body(str(response.get("body", "")))
     return {
         "status": "sent",
         "http_status": response.get("http_status"),
         "ingest_status": parsed_body.get("status"),
+        "attempts": completed_attempts,
         "request": summary,
     }
 

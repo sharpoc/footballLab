@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import urllib.error
 
 from worldcup.csl_scheduled_publish import (
     build_csl_publish_decision,
@@ -48,6 +49,50 @@ def test_t90_anchor_due_triggers_competition_refresh():
     assert decision["reason"] == "match_anchor_due"
     assert decision["due_matches"][0]["anchor"] == "T-90"
     assert decision["due_matches"][0]["match_label"] == "Home 1 vs Away 1"
+
+
+def test_pick_expiry_guard_refreshes_before_future_csl_picks_expire():
+    snapshot = _snapshot(
+        ["2026-07-11T12:00:00+00:00"],
+        observed_at="2026-07-10T08:34:00+00:00",
+    )
+    snapshot["matches"][0]["match_decision"] = {
+        "policy_version": "match_pick_v3",
+        "label": "MATCH_PICK",
+        "valid_until": "2026-07-10T12:04:00+00:00",
+    }
+
+    decision = build_csl_publish_decision(
+        snapshot=snapshot,
+        quota_remaining=176,
+        now="2026-07-10T11:44:00+00:00",
+    )
+
+    assert decision["should_refresh"] is True
+    assert decision["reason"] == "pick_expiry_due"
+    assert decision["next_due_at"] == "2026-07-10T11:44:00+00:00"
+
+
+def test_low_quota_does_not_refresh_only_for_csl_pick_expiry():
+    snapshot = _snapshot(
+        ["2026-07-11T12:00:00+00:00"],
+        observed_at="2026-07-10T08:34:00+00:00",
+    )
+    snapshot["matches"][0]["match_decision"] = {
+        "policy_version": "match_pick_v3",
+        "label": "MATCH_PICK",
+        "valid_until": "2026-07-10T12:04:00+00:00",
+    }
+
+    decision = build_csl_publish_decision(
+        snapshot=snapshot,
+        quota_remaining=30,
+        now="2026-07-10T11:44:00+00:00",
+    )
+
+    assert decision["should_refresh"] is False
+    assert decision["reason"] == "not_due"
+    assert decision["next_due_at"] == "2026-07-11T11:35:00+00:00"
 
 
 def test_low_quota_skips_t90_but_allows_t25():
@@ -212,3 +257,74 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
     assert calls == {"refresh": 1, "publish": 1}
     assert written["run"]["run_id"] == "20260710T103000Z-csl-live"
     assert diagnostics["run"]["run_id"] == "20260710T103000Z-csl-live"
+
+
+def test_csl_publish_retries_pending_snapshot_without_consuming_refresh_again():
+    calls = {"refresh": 0, "publish": 0}
+
+    def fake_load_env(_path):
+        return {
+            "THE_ODDS_API_KEY_SECONDARY": "test-key",
+            "INGEST_HMAC_SECRET": "test-secret",
+        }
+
+    def fake_refresh(**_kwargs):
+        calls["refresh"] += 1
+        return {
+            "status": "fetched",
+            "events": 1,
+            "quota_entry": {"remaining": 173, "used": 327, "last": 3},
+            "theoddsapi_provider": "theoddsapi_secondary",
+        }
+
+    def fake_builder(_cache_dir, competition_id, snapshot_at):
+        return _snapshot(["2026-07-12T12:00:00+00:00"], observed_at=snapshot_at)
+
+    def fake_publish(**_kwargs):
+        calls["publish"] += 1
+        if calls["publish"] == 1:
+            raise urllib.error.URLError("temporary tls failure")
+        return {"status": "sent", "http_status": 200, "ingest_status": "stored"}
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot_path = root / "csl_publish_snapshot.json"
+        diagnostics_path = root / "csl_live_league_snapshot.json"
+        quota_path = root / "quota.json"
+        pending_path = root / "csl_publish_snapshot.publish_pending.json"
+        _write_json(quota_path, {"providers": {"theoddsapi_secondary": {"remaining": 176}}})
+
+        first = run_csl_scheduled_publish(
+            now="2026-07-10T08:34:54+00:00",
+            live=True,
+            force=True,
+            cache_dir=root,
+            quota_path=quota_path,
+            snapshot_path=snapshot_path,
+            diagnostics_snapshot_path=diagnostics_path,
+            load_env=fake_load_env,
+            refresh_fn=fake_refresh,
+            snapshot_builder=fake_builder,
+            publish_fn=fake_publish,
+        )
+        second = run_csl_scheduled_publish(
+            now="2026-07-10T08:39:54+00:00",
+            live=True,
+            cache_dir=root,
+            quota_path=quota_path,
+            snapshot_path=snapshot_path,
+            diagnostics_snapshot_path=diagnostics_path,
+            load_env=fake_load_env,
+            refresh_fn=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("pending publish retry must not refresh")
+            ),
+            snapshot_builder=fake_builder,
+            publish_fn=fake_publish,
+        )
+
+        pending_exists_after = pending_path.exists()
+
+    assert first["status"] == "publish_pending"
+    assert second["status"] == "republished"
+    assert calls == {"refresh": 1, "publish": 2}
+    assert pending_exists_after is False

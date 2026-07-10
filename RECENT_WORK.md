@@ -2,6 +2,13 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-10 P0：首选鲜度与发布可靠性
+
+- 世界杯与中超调度新增“首选鲜度保底”：正常免费额度下，把每场 `match_decision.valid_until - 20 分钟` 纳入下一次刷新候选，避免当前首选先过期、页面变成暂无可靠首选，再等旧赛前锚点。quota remaining 低于等于 30 时继续按低额度锚点降级，避免因保鲜耗尽数据源。
+- HTTPS ingest 对瞬时 TLS/网络/5xx 做有限重试；仍失败时，在 ignored cache 同目录保留不含 secret 的 `*.publish_pending.json`。下次调度唤醒只重试发布同一 snapshot/run_id，成功后清理 pending，不重复刷新或消耗 The Odds API quota。
+- 中超 LaunchAgent 生成器默认唤醒周期由 1800 秒缩短为 900 秒；runner 内部的 1800 秒刷新节流保持不变，所以不会把 API 调用频率翻倍。本轮不修改 UI 布局、MatchPick v3 选择方向或模型参数。
+- TDD 新增过期前刷新、低额度保护、瞬时传输重试、pending 发布不二次刷新，以及 LaunchAgent 900 秒的回归用例。配置 runtime 排除可选 FastAPI 依赖的完整回归 `707/707` 通过，系统 Python 的 FastAPI 适配测试 `13/13` 通过，`py_compile` 与 `git diff --check` 通过。真实本地 dry-run 显示世界杯下一次为 `pick_expiry_guard`，中超当前为 `match_anchor_due`。
+
 ## 2026-07-10 MatchPick v3：有效主盘每场必选
 
 - 经用户确认，将“为提高表面胜率删除低置信场次”改为“只要存在开赛前有效、新鲜、可结算的 1X2 / OU / AH 主盘，必须输出每场唯一首选”。只有赔率全部无效或过期、比赛已开始、没有可结算主盘时才允许 `NO_CLEAN_MARKET`。

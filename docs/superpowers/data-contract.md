@@ -666,6 +666,8 @@ valid_until
 
 `label` 对外只允许 `MATCH_PICK` 或 `NO_CLEAN_MARKET`，当前策略为 `policy_version=match_pick_v3`。存在开赛前有效、可结算主盘口时必须输出 `MATCH_PICK`；`NO_CLEAN_MARKET` 只用于赔率全部无效/过期、比赛已开始或没有任何可结算盘口。旧 decision label 必须在投影边界归一或拒绝，不得原样暴露。`signals`、`grade`、`signal_count`、`top_grade`、`selected_option_id`、内部 reason/risk/evidence 和模型详情不属于公开比赛行。
 
+正常 quota 时，scheduler 必须把每场当前 `valid_until - 20 分钟` 作为刷新候选；LaunchAgent 唤醒频率必须高于该提前量，避免页面先将首选判定过期。发布在刷新成功后必须先持久化脱敏 pending 状态；发布失败不得重复刷新或重复消耗 The Odds API quota，后续重试仍使用相同 run/snapshot 幂等标识。
+
 不得在投影中加入 stake、bet amount、下注金额或其它资金字段。
 
 ### 本场首选 UI 投影

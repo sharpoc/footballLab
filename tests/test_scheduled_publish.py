@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import urllib.error
 
 import worldcup.scheduled_publish as scheduled_publish
 from worldcup.scheduled_publish import run_scheduled_publish
@@ -69,6 +70,85 @@ def test_scheduled_publish_skips_publish_when_refresh_is_not_due():
     assert result["status"] == "skipped"
     assert result["refresh"]["status"] == "skipped"
     assert result["publish"] is None
+
+
+def test_scheduled_publish_retries_pending_snapshot_without_refreshing_again():
+    calls = {"refresh": 0, "publish": 0}
+
+    def refresh_fn(**kwargs):
+        calls["refresh"] += 1
+        path = Path(kwargs["snapshot_path"])
+        path.write_text(
+            json.dumps(
+                {
+                    "snapshot_at": kwargs["observed_at"],
+                    "run": {
+                        "run_id": "20260710T083215Z-live",
+                        "observed_at": kwargs["observed_at"],
+                    },
+                    "counts": {"matches": 1},
+                    "matches": [
+                        {
+                            "kickoff_at_utc": "2026-07-12T19:00:00+00:00",
+                            "home_team": "Home",
+                            "away_team": "Away",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return FakeRefreshResult(
+            snapshot_path=path,
+            snapshot={"counts": {"matches": 1}},
+            run_metadata={"run_id": "20260710T083215Z-live"},
+        )
+
+    def publish_fn(**_kwargs):
+        calls["publish"] += 1
+        if calls["publish"] == 1:
+            raise urllib.error.URLError("temporary tls failure")
+        return {"status": "sent", "http_status": 200, "ingest_status": "stored"}
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot_path, quota_path = _write_not_due_snapshot(root)
+        pending_path = root / "cache" / "analysis_snapshot.publish_pending.json"
+
+        first = run_scheduled_publish(
+            now="2026-07-10T08:32:15+00:00",
+            live=True,
+            force=True,
+            notify=False,
+            cache_dir=root / "cache",
+            snapshot_path=snapshot_path,
+            quota_path=quota_path,
+            api_key="fake-key",
+            secret="fake-secret",
+            refresh_fn=refresh_fn,
+            publish_fn=publish_fn,
+        )
+        second = run_scheduled_publish(
+            now="2026-07-10T08:37:15+00:00",
+            live=True,
+            notify=False,
+            cache_dir=root / "cache",
+            snapshot_path=snapshot_path,
+            quota_path=quota_path,
+            api_key="fake-key",
+            secret="fake-secret",
+            refresh_fn=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("pending publish retry must not refresh")
+            ),
+            publish_fn=publish_fn,
+        )
+
+        pending_exists_after = pending_path.exists()
+
+    assert first["status"] == "publish_pending"
+    assert second["status"] == "republished"
+    assert calls == {"refresh": 1, "publish": 2}
+    assert pending_exists_after is False
 
 
 def test_scheduled_publish_dry_run_does_not_load_env_or_publish():

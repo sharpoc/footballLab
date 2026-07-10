@@ -123,8 +123,8 @@ def test_build_snapshot_from_probe_serializes_match_analysis():
         assert snapshot["counts"]["match_inputs"] == 1
         assert snapshot["matches"][0]["home_team"] == "Mexico"
         assert snapshot["matches"][0]["odds_updated_at"] == "2026-06-08T04:00:00+00:00"
-        assert snapshot["matches"][0]["refresh_plan"]["next_update_at"] == "2026-06-09T05:00:00+00:00"
-        assert snapshot["matches"][0]["refresh_plan"]["label"] == "常规"
+        assert snapshot["matches"][0]["refresh_plan"]["next_update_at"] == "2026-06-08T05:10:00+00:00"
+        assert snapshot["matches"][0]["refresh_plan"]["label"] == "首选鲜度保底"
         assert snapshot["run"]["policy"]["match_plans"][0]["match_id"] == "event-1"
         assert snapshot["matches"][0]["market"]["1x2"]["last_update_at"] == "2026-06-08T02:00:00+00:00"
         assert snapshot["matches"][0]["market"]["ou_2_5"]["last_update_at"] == "2026-06-08T03:00:00+00:00"

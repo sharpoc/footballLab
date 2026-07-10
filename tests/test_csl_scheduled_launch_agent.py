@@ -32,7 +32,7 @@ def test_build_csl_scheduled_launch_agent_defaults_to_safe_live_runner():
     )
     assert "--env" in args
     assert "/Users/eagod/ai-dev/足彩/.env" in args
-    assert plist["StartInterval"] == 1800
+    assert plist["StartInterval"] == 900
     assert plist["RunAtLoad"] is False
     assert plist["EnvironmentVariables"] == {"PYTHONUNBUFFERED": "1"}
     assert plist["StandardOutPath"].endswith("/csl-scheduled-publish.out.log")
@@ -56,4 +56,4 @@ def test_write_csl_scheduled_launch_agent_roundtrips_through_inspector():
     assert raw["Label"] == DEFAULT_LABEL
     assert inspected["status"] == "present"
     assert inspected["module"] == "worldcup.csl_scheduled_publish"
-    assert inspected["start_interval"] == 1800
+    assert inspected["start_interval"] == 900

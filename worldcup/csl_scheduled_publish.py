@@ -10,6 +10,7 @@ from worldcup.league_odds_refresh import run_league_odds_refresh
 from worldcup.league_runner import build_league_snapshot_from_cache
 from worldcup.local_runner import write_snapshot
 from worldcup.publish import publish_snapshot
+from worldcup.publish_outbox import attempt_publish, load_pending_publish
 from worldcup.quota import load_quota_ledger
 from worldcup.refresh_runner import _load_env
 from worldcup.scheduler import make_run_id
@@ -19,6 +20,7 @@ DEFAULT_SPORT_KEY = "soccer_china_superleague"
 DEFAULT_ENDPOINT = "https://football.celab.xin/api/ingest/snapshot"
 DEFAULT_MIN_INTERVAL_SECONDS = 30 * 60
 DEFAULT_DISCOVERY_INTERVAL_SECONDS = 24 * 3600
+PICK_EXPIRY_REFRESH_LEAD_SECONDS = 20 * 60
 QUOTA_LOW_REMAINING = 30
 CSL_ANCHORS = (
     (90 * 60, "T-90", "赛前90分钟"),
@@ -107,7 +109,7 @@ def _quota_remaining(quota_path: str | Path) -> int | None:
 
 
 def _allowed_anchors(quota_remaining: int | None) -> tuple[tuple[int, str, str], ...]:
-    if quota_remaining is not None and 0 < quota_remaining < QUOTA_LOW_REMAINING:
+    if quota_remaining is not None and 0 < quota_remaining <= QUOTA_LOW_REMAINING:
         return tuple(anchor for anchor in CSL_ANCHORS if anchor[1] in LOW_QUOTA_ANCHORS)
     return CSL_ANCHORS
 
@@ -172,6 +174,68 @@ def _next_due_at(
     return _iso_utc(min(candidates)) if candidates else None
 
 
+def _pick_expiry_items(
+    snapshot: dict[str, Any],
+    now_dt: datetime,
+    last_dt: datetime | None,
+    quota_remaining: int | None,
+) -> list[dict[str, Any]]:
+    if quota_remaining is not None and quota_remaining <= QUOTA_LOW_REMAINING:
+        return []
+    due: list[dict[str, Any]] = []
+    for item in _future_matches(snapshot, now_dt):
+        match = item["match"]
+        decision = match.get("match_decision")
+        if not isinstance(decision, dict) or decision.get("label") != "MATCH_PICK":
+            continue
+        valid_raw = str(decision.get("valid_until") or "").strip()
+        if not valid_raw:
+            continue
+        try:
+            valid_until = _parse_utc(valid_raw)
+        except ValueError:
+            continue
+        guard_at = valid_until - timedelta(seconds=PICK_EXPIRY_REFRESH_LEAD_SECONDS)
+        if last_dt is not None and last_dt >= guard_at:
+            continue
+        if guard_at <= now_dt:
+            due.append(
+                {
+                    "match_id": _match_id(match),
+                    "match_label": _match_label(match),
+                    "kickoff_at_utc": _iso_utc(item["kickoff_dt"]),
+                    "anchor": "PICK-EXPIRY",
+                    "anchor_label": "首选鲜度保底",
+                    "anchor_at": _iso_utc(guard_at),
+                    "valid_until": _iso_utc(valid_until),
+                }
+            )
+    return sorted(due, key=lambda value: (value["anchor_at"], value["kickoff_at_utc"]))
+
+
+def _next_pick_expiry_due_at(
+    snapshot: dict[str, Any],
+    now_dt: datetime,
+    last_dt: datetime | None,
+    quota_remaining: int | None,
+) -> str | None:
+    if quota_remaining is not None and quota_remaining <= QUOTA_LOW_REMAINING:
+        return None
+    candidates: list[datetime] = []
+    for item in _future_matches(snapshot, now_dt):
+        decision = item["match"].get("match_decision")
+        if not isinstance(decision, dict) or decision.get("label") != "MATCH_PICK":
+            continue
+        try:
+            valid_until = _parse_utc(str(decision.get("valid_until") or ""))
+        except ValueError:
+            continue
+        guard_at = valid_until - timedelta(seconds=PICK_EXPIRY_REFRESH_LEAD_SECONDS)
+        if last_dt is None or last_dt < guard_at:
+            candidates.append(max(now_dt, guard_at))
+    return _iso_utc(min(candidates)) if candidates else None
+
+
 def build_csl_publish_decision(
     *,
     snapshot: dict[str, Any],
@@ -202,7 +266,9 @@ def build_csl_publish_decision(
             "next_due_at": None,
         }
 
-    due_matches = _due_match_items(snapshot, now_dt, last_dt, quota_remaining)
+    anchor_due_matches = _due_match_items(snapshot, now_dt, last_dt, quota_remaining)
+    expiry_due_matches = _pick_expiry_items(snapshot, now_dt, last_dt, quota_remaining)
+    due_matches = [*anchor_due_matches, *expiry_due_matches]
     has_future = bool(_future_matches(snapshot, now_dt))
     discovery_due = False
     if not has_future:
@@ -223,12 +289,20 @@ def build_csl_publish_decision(
                 "throttle_remaining_seconds": int(min_interval_seconds - elapsed),
             }
 
-    if due_matches:
+    if anchor_due_matches:
         return {
             **base,
             "should_refresh": True,
             "reason": "match_anchor_due",
             "due_matches": due_matches,
+            "next_due_at": _iso_utc(now_dt),
+        }
+    if expiry_due_matches:
+        return {
+            **base,
+            "should_refresh": True,
+            "reason": "pick_expiry_due",
+            "due_matches": expiry_due_matches,
             "next_due_at": _iso_utc(now_dt),
         }
     if discovery_due:
@@ -239,12 +313,20 @@ def build_csl_publish_decision(
             "due_matches": [],
             "next_due_at": _iso_utc(now_dt),
         }
+    anchor_next_due = _next_due_at(snapshot, now_dt, last_dt, quota_remaining)
+    expiry_next_due = _next_pick_expiry_due_at(
+        snapshot,
+        now_dt,
+        last_dt,
+        quota_remaining,
+    )
+    next_candidates = [value for value in (anchor_next_due, expiry_next_due) if value]
     return {
         **base,
         "should_refresh": False,
         "reason": "not_due" if has_future else "discovery_not_due",
         "due_matches": [],
-        "next_due_at": _next_due_at(snapshot, now_dt, last_dt, quota_remaining),
+        "next_due_at": min(next_candidates) if next_candidates else None,
     }
 
 
@@ -319,6 +401,45 @@ def run_csl_scheduled_publish(
             "publish": None,
         }
 
+    pending = load_pending_publish(snapshot_path)
+    if not force and not decision["should_refresh"] and pending is not None:
+        if pending.get("status") != "pending":
+            return {
+                "status": "publish_pending_invalid",
+                "reason": pending.get("reason"),
+                "force": force,
+                "decision": decision,
+                "refresh": None,
+                "publish": None,
+            }
+        env = load_env(env_path)
+        secret = env.get("INGEST_HMAC_SECRET")
+        if not secret:
+            return {
+                "status": "blocked",
+                "reason": "missing_ingest_hmac_secret",
+                "force": force,
+                "decision": decision,
+                "refresh": None,
+                "publish": None,
+            }
+        retried = attempt_publish(
+            snapshot_path=snapshot_path,
+            endpoint=endpoint,
+            secret=secret,
+            timestamp=observed,
+            publish_fn=publish_fn,
+            stage=False,
+        )
+        return {
+            "status": "republished" if retried["status"] == "published" else retried["status"],
+            "force": force,
+            "decision": decision,
+            "refresh": None,
+            "publish": retried.get("publish"),
+            "pending": retried.get("pending"),
+        }
+
     if not force and not decision["should_refresh"]:
         return {
             "status": "skipped",
@@ -382,13 +503,24 @@ def run_csl_scheduled_publish(
             "refresh": refresh,
             "publish": None,
         }
-    publish = publish_fn(
+    attempted = attempt_publish(
         snapshot_path=snapshot_path,
         endpoint=endpoint,
         secret=secret,
         timestamp=observed,
-        live=True,
+        publish_fn=publish_fn,
+        stage=True,
     )
+    if attempted["status"] != "published":
+        return {
+            "status": attempted["status"],
+            "force": force,
+            "decision": decision,
+            "refresh": refresh,
+            "publish": attempted.get("publish"),
+            "pending": attempted.get("pending"),
+        }
+    publish = attempted["publish"]
     return {
         "status": "published",
         "force": force,
@@ -449,7 +581,7 @@ def main(argv: list[str] | None = None) -> int:
         discovery_interval_seconds=args.discovery_interval_seconds,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0 if result.get("status") in {"dry_run", "skipped", "published"} else 2
+    return 0 if result.get("status") in {"dry_run", "skipped", "published", "republished"} else 2
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ from worldcup.csl_scheduled_publish import (
 )
 
 DEFAULT_LABEL = "xin.celab.football.csl-scheduled-publish"
-DEFAULT_START_INTERVAL_SECONDS = 30 * 60
+DEFAULT_START_INTERVAL_SECONDS = 15 * 60
 DEFAULT_LOG_DIR = Path.home() / "Library" / "Logs" / "worldcup"
 DEFAULT_LAUNCH_AGENT_PATH = (
     Path.home() / "Library" / "LaunchAgents" / f"{DEFAULT_LABEL}.plist"

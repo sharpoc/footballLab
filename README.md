@@ -44,7 +44,7 @@
 - 当前 The Odds API odds/scores fetch 使用统一 `SourceFetchError` 边界：只对 transient network / 5xx 做有限重试；credential、quota、4xx、invalid JSON 和 invalid UTF-8 不重试；只有拿到有效 JSON 后才写 cache / quota ledger；错误诊断会脱敏 `apiKey`，只暴露 `reason`、`retryable`、`attempts` 和可选 HTTP status
 - 当前 scheduler 默认 dry-run，只读取本地 snapshot / quota 并输出 JSON 决策，不会联网或写入状态；全局 due 由所有比赛 `refresh_plan.next_update_at` 的最早值决定；单场计划会携带 `competition_id`、`refresh_priority`、`quota_budget` 和 `refresh_policy`，顶层 `competition_refresh` 汇总各赛事的待刷新窗口，便于后续分赛事限频；若某场 `lineup_shadow` 显示首发已确认但 odds 早于首发信息，则单场计划会给出 `post_information_odds_required`，在额度未耗尽时把下一次刷新提前到当前 dry-run 时刻
 - 当前 scheduled refresh 默认 dry-run，dry-run 不读取 `.env`；只有显式 `--live` 且调度 due，或同时传 `--force`，才会读取 env 并调用 refresh runner
-- 当前 scheduled publish 默认 dry-run，dry-run 不读取 `.env`、不刷新、不发布；只有显式 `--live` 且调度 due，或同时传 `--force`，才会刷新数据并向 HTTPS ingest endpoint 发送签名 snapshot；发布成功后会对比上一轮 snapshot，只有显著变化时才通过全局 WxPusher 工具发送手机通知，可用 `--no-notify` 关闭
+- 当前 scheduled publish 默认 dry-run，dry-run 不读取 `.env`、不刷新、不发布；只有显式 `--live` 且调度 due，或同时传 `--force`，才会刷新数据并向 HTTPS ingest endpoint 发送签名 snapshot。正常额度时，世界杯和中超都会把 `match_decision.valid_until - 20 分钟` 加入刷新候选，避免调度空窗让有效首选先过期。发布 HTTP 会对瞬时 TLS/网络/5xx 做有限重试；仍失败时写入同目录 `*.publish_pending.json` 脱敏状态，下一次 LaunchAgent 唤醒只重试发布已生成 snapshot，不重复刷新或消耗 quota。发布成功后会对比上一轮 snapshot，只有显著变化时才通过全局 WxPusher 工具发送手机通知，可用 `--no-notify` 关闭。
 - 当前 scores capture 默认 dry-run，dry-run 不读取 `.env`、不联网、不写 results；淘汰赛开始后（`2026-06-28T00:00:00Z` 起）即使显式 `--live` 也会默认阻断并返回 `knockout_score_manual_review_required`，避免把可能含加时/点球的比分写入 90 分钟结算链路；只有人工确认 90 分钟口径后显式传 `--allow-knockout-scores` 才会放行。
 - 当前 ingest 默认 dry-run；只构造请求体、HMAC 签名头和 body hash，不发送线上请求
 - 当前 ingest server 是纯本地验签/幂等模块；FastAPI adapter 已复用它，ECS 部署另行确认
@@ -212,7 +212,7 @@ HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store �
 
 `worldcup.csl_scheduled_publish` 是中超自动刷新/发布入口。默认 dry-run 只读取本地 snapshot / quota 并输出决策，不读取 `.env`、不联网、不调用 The Odds API、不发布；只有显式 `--live` 且决策 due，或同时传 `--force`，才会读取 `.env`、刷新中超 odds、生成预测 snapshot 并 HMAC ingest 到线上。
 
-中超自动刷新采用“单场 due 触发、全赛事统一刷新”的省额度策略：调度器扫描当前 `csl_2026` snapshot 里的所有未来比赛，任一比赛命中锚点就刷新整个 `soccer_china_superleague` sport key 一次，避免按每场单独调用 The Odds API。默认锚点为 `T-90` 和 `T-25`；全局最短刷新间隔为 30 分钟；当 quota remaining 低于 30 时只保留 `T-25`；没有未来比赛时最多每 24 小时做一次 discovery refresh，用于发现新的 odds event 赛程。
+中超自动刷新采用“单场 due 触发、全赛事统一刷新”的省额度策略：调度器扫描当前 `csl_2026` snapshot 里的所有未来比赛，任一比赛命中锚点或首选鲜度保底就刷新整个 `soccer_china_superleague` sport key 一次，避免按每场单独调用 The Odds API。默认锚点为 `T-90` 和 `T-25`，正常额度时另保证在 `valid_until` 前 20 分钟刷新；全局最短刷新间隔为 30 分钟；当 quota remaining 低于等于 30 时只保留 `T-25`；没有未来比赛时最多每 24 小时做一次 discovery refresh，用于发现新的 odds event 赛程。
 
 ```bash
 # dry-run：只看是否 due
@@ -229,7 +229,7 @@ HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store �
   --endpoint https://football.celab.xin/api/ingest/snapshot
 ```
 
-`worldcup.csl_scheduled_launch_agent` 可生成本机 LaunchAgent plist，默认每 1800 秒唤醒一次 runner，但 runner 自身仍会先做 due / quota / 30 分钟节流判断。生成或更新 plist 不会自动加载 launchd；实际写入 `~/Library/LaunchAgents/` 和 `launchctl bootstrap` 前必须单独确认。
+`worldcup.csl_scheduled_launch_agent` 可生成本机 LaunchAgent plist，默认每 900 秒唤醒一次 runner，但 runner 自身仍会先做 due / quota / 30 分钟节流判断，所以唤醒频率提高不会直接变成每 15 分钟调用一次 The Odds API。生成或更新 plist 不会自动加载 launchd；实际写入 `~/Library/LaunchAgents/` 和 `launchctl bootstrap` 前必须单独确认。
 
 ### CSL Ops Runner
 
