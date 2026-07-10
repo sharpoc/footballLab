@@ -9,7 +9,8 @@
 - 展示的封盘首选优先从当前 snapshot 取值；如果开赛后刷新已将当前决策降为 `NO_CLEAN_MARKET`，则从同赛事前一份 snapshot 恢复开赛前最后一刻仍有效的 `match_decision` 公开字段。开赛前已过期、记录不完整或 legacy 内容不会被恢复。本轮不改模型、首选方向、公开 API、snapshot 契约、采集、调度或数据库。
 - 首次代码部署后的线上验收发现两个真实链路问题：新进程会在同一 5 分钟时间桶内复用旧代码生成的磁盘 HTML 缓存，已等待自然换桶重渲染，未删除线上缓存；同时 21:26 的开赛后 snapshot 已不再携带赛前首选，因此补上前一 snapshot 的封盘回退。
 - TDD 新增“当前 snapshot 直接保留封盘首选”和“开赛后 snapshot 从前一赛前 snapshot 恢复封盘首选”两个回归用例，均先确认旧逻辑红灯；实现后配置运行时完整回归 `718/718`、系统 Python FastAPI `13/13` 通过；`py_compile` 和 `git diff --check` 通过。
-- 使用当前真实中超 snapshot 完成桌面端与 390px 移动端浏览器验收：山东泰山场次可见，点击详情切换正常，控制台无 warning/error。临时 `127.0.0.1` 预览服务已停止；本地阶段未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布 snapshot、未部署或改 LaunchAgent。
+- 使用当前真实中超 snapshot 完成桌面端与 390px 移动端浏览器验收：山东泰山场次可见，点击详情切换正常，控制台无 warning/error。临时 `127.0.0.1` 预览服务已停止；本地验证阶段未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布 snapshot、未部署或改 LaunchAgent。
+- 实现分为 `c467d383ffe532d1e02b59deb60015deeeb3afa1` 和真实链路补齐 `43bafb7c4db1069a16c54c22112936854829112f` 两个提交；生产 current 已切到 `43bafb7`，`worldcup.service` / Nginx active，`/readyz` warmup 和 `/healthz`、`/api/matches`、`/preview` smoke 全部通过，自动回滚未触发。自然换过 5 分钟 HTML 缓存桶后，公网浏览器验收确认山东泰山 vs 云南玉昆显示“待赛果”和“赛前首选（已封盘）”，封盘方向为大小球 3.5 大球、安全概率 45.0%、参考赔率 1.77，点击交互正常且控制台无 warning/error。部署没有读取 `.env`、没有调用 The Odds API、没有消耗 quota、没有发布新 snapshot、没有修改 LaunchAgent。
 - `RECENT_WORK.md` 已明显超过默认 20 条；经用户确认，本轮只追加记录，不顺手归档、压缩或删除旧记录。
 
 ## 2026-07-10 P1：中超俱乐部评级数据与启用门槛
