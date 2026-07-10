@@ -21,6 +21,7 @@ _RATING_FALLBACK_BLOCKERS = {
     "club_rating_sample_too_small",
     "club_rating_invalid",
     "club_rating_missing_team",
+    "club_rating_team_sample_too_small",
 }
 
 

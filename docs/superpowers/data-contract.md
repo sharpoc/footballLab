@@ -618,6 +618,14 @@ CLI 只做本地验证和入库，不发送线上请求：
 python3 -m worldcup.ingest_app --db data/local/worldcup.db --snapshot data/cache/analysis_snapshot.json --env .env
 ```
 
+### CSL club-rating / results contract
+
+`csl_2026` 使用独立 `csl_model` 参数边界，当前 `rating_activation=shadow_only`、`rating_policy=club_rating_pending`。全局 replay 最少 300 场仅代表 rating pool 可构建；每场双方还必须各自达到 30 场，否则该场使用 1500 结构占位、写入 `club_rating_team_sample_too_small`，并且本场首选只能走市场共识兜底。
+
+live 赛果更新使用两个公开源：7M `fixture.js` 与中足联官方 CSL matches API。只接受双源在 season/date/home/away/full-time score 上全量一致的 finished rows；任一源缺行、alias 未知、日期/主客队/比分冲突，或新数据删除/改写旧赛果时，必须阻断写入并沿用旧 replay cache。原始响应与 replay CSV 只写入被忽略的 `data/cache/`，不含 key/secret，不消耗 The Odds API quota。
+
+`csl_pending_gate` 不得只看全历史聚合结果。它必须同时报告最新赛季 model vs home-prior、同样本 `model_matched` vs market，并检查 market baseline 是否达到最小样本（当前 200）。任一项不足都必须继续 `can_lift_club_rating_pending=false`。
+
 ### Query projection
 
 `worldcup.query` 提供只读投影：

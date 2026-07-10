@@ -12,6 +12,7 @@ from worldcup.elo_replay import DEFAULT_HOME_ADV, DEFAULT_INITIAL_RATING, update
 
 DEFAULT_CLUB_K = 30.0
 DEFAULT_MIN_MATCHES = 20
+DEFAULT_MIN_TEAM_MATCHES = 30
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -67,6 +68,10 @@ class ClubRatingQuality:
     skipped_rows: int = 0
     sample_too_small: bool = True
     errors: tuple[str, ...] = field(default_factory=tuple)
+    min_team_matches: int = DEFAULT_MIN_TEAM_MATCHES
+    team_match_counts: dict[str, int] = field(default_factory=dict)
+    eligible_teams: tuple[str, ...] = field(default_factory=tuple)
+    ineligible_teams: tuple[str, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict:
         return {
@@ -79,6 +84,10 @@ class ClubRatingQuality:
             "skipped_rows": self.skipped_rows,
             "sample_too_small": self.sample_too_small,
             "errors": list(self.errors),
+            "min_team_matches": self.min_team_matches,
+            "team_match_counts": dict(sorted(self.team_match_counts.items())),
+            "eligible_teams": list(self.eligible_teams),
+            "ineligible_teams": list(self.ineligible_teams),
         }
 
     def with_missing_teams(self, teams: set[str]) -> ClubRatingQuality:
@@ -93,6 +102,10 @@ class ClubRatingQuality:
             skipped_rows=self.skipped_rows,
             sample_too_small=self.sample_too_small,
             errors=self.errors,
+            min_team_matches=self.min_team_matches,
+            team_match_counts=self.team_match_counts,
+            eligible_teams=self.eligible_teams,
+            ineligible_teams=self.ineligible_teams,
         )
 
 
@@ -162,6 +175,7 @@ def load_club_rating_pool(
     cache_dir: str | Path,
     competition_id: str,
     min_matches: int = DEFAULT_MIN_MATCHES,
+    min_team_matches: int = DEFAULT_MIN_TEAM_MATCHES,
     initial: float = DEFAULT_INITIAL_RATING,
     k: float = DEFAULT_CLUB_K,
     home_adv: float = DEFAULT_HOME_ADV,
@@ -175,6 +189,7 @@ def load_club_rating_pool(
                 mode="missing",
                 source=source,
                 competition_id=competition_id,
+                min_team_matches=min_team_matches,
             ),
         )
 
@@ -187,6 +202,7 @@ def load_club_rating_pool(
                 mode="invalid",
                 source=source,
                 competition_id=competition_id,
+                min_team_matches=min_team_matches,
                 errors=(str(exc),),
             ),
         )
@@ -210,11 +226,21 @@ def load_club_rating_pool(
                 skipped_rows=skipped_rows,
                 sample_too_small=True,
                 errors=("no_valid_rows",),
+                min_team_matches=min_team_matches,
             ),
         )
 
     sample_too_small = pool.matches_replayed < min_matches
     mode = "sample_too_small" if sample_too_small else "sample_replay"
+    team_match_counts = {
+        code: rating.matches for code, rating in pool.ratings.items()
+    }
+    eligible_teams = tuple(
+        sorted(code for code, count in team_match_counts.items() if count >= min_team_matches)
+    )
+    ineligible_teams = tuple(
+        sorted(code for code, count in team_match_counts.items() if count < min_team_matches)
+    )
     return ClubRatingLoadResult(
         pool=None if sample_too_small else pool,
         quality=ClubRatingQuality(
@@ -225,6 +251,10 @@ def load_club_rating_pool(
             teams_rated=len(pool.ratings),
             skipped_rows=skipped_rows,
             sample_too_small=sample_too_small,
+            min_team_matches=min_team_matches,
+            team_match_counts=team_match_counts,
+            eligible_teams=eligible_teams,
+            ineligible_teams=ineligible_teams,
         ),
     )
 

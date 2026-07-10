@@ -212,3 +212,34 @@ def test_load_club_rating_pool_replays_when_sample_threshold_is_met():
         assert result.quality.skipped_rows == 0
         assert result.quality.sample_too_small is False
         assert result.quality.to_dict()["source"].endswith("club_results_csl_2026.csv")
+
+
+def test_load_club_rating_pool_reports_per_team_sample_eligibility():
+    with TemporaryDirectory() as tmp:
+        cache_dir = Path(tmp)
+        path = cache_dir / "club_results_csl_2026.csv"
+        _write_results(
+            path,
+            [
+                _row("Shanghai Port", "Shandong Taishan", "2", "0", date="2026-03-01"),
+                _row("Shanghai Port", "Beijing Guoan", "1", "0", date="2026-03-08"),
+                _row("Shanghai Port", "Shandong Taishan", "1", "1", date="2026-03-15"),
+            ],
+        )
+
+        result = load_club_rating_pool(
+            cache_dir,
+            "csl_2026",
+            min_matches=3,
+            min_team_matches=2,
+        )
+        quality = result.quality.to_dict()
+
+    assert quality["min_team_matches"] == 2
+    assert quality["team_match_counts"] == {
+        "beijing_guoan": 1,
+        "shandong_taishan": 2,
+        "shanghai_port": 3,
+    }
+    assert quality["eligible_teams"] == ["shandong_taishan", "shanghai_port"]
+    assert quality["ineligible_teams"] == ["beijing_guoan"]

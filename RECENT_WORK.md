@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-10 P1：中超俱乐部评级数据与启用门槛
+
+- 发现本地 `club_results_csl_2026.csv` 仍是 840 场、截止 2026-05-31；当前 7M 赛程数组与中足联官方公开接口均有 136 场 2026 已完赛比赛，双源日期/主客队/比分 136/136 一致。受控 `csl_results_refresh --live --write` 已原子更新 ignored replay cache 为 856 场（2023–2025 各 240，2026 为 136），最新到 2026-07-05；不读 `.env`、不调 The Odds API、不消耗 quota。
+- 新增纯离线中足联/7M 解析器、双源 compare 和防回退写入链；任一源缺行、alias 未知、日期/主客/比分冲突，或新数据删除/改写旧赛果时阻断写入。中超 scheduled publish 在 live due 时先刷新这两个免费源；失败时沿用旧赛果 cache 并写质量警告，不阻断赔率链。
+- 新增独立 `csl_model` 配置边界和逐队样本门槛：全局至少 300 场、单队至少 30 场。更新后重庆铜梁龙/辽宁铁人各 17 场，所以涉及它们的 2 场对阵使用 1500 结构占位并标 `club_rating_team_sample_too_small`；其余成熟样本球队更新真实评级。但整个评级仍 `shadow_only` / `club_rating_pending`，8 场现有市场基准小于 200 场门槛，不让俱乐部 Elo 直接改写首选方向。
+- Pending gate 新增分赛季 model/uniform/home-prior 和同样本 model-vs-market 门槛。当前 8 场可 join 小样本中，model 1X2 Brier=0.4678、market=0.5130，但 `sample_too_small=true`，只记为观察、不宣称已优于市场。运维检查也改为区分“pending 下安全市场兜底首选”与“未经兜底使用 rating”，不再把 MatchPick v3 的合法兜底首选误报为 error。
+- 不改 UI 布局；只修正与 MatchPick v3 矛盾的规则文案，明确“有有效新鲜主盘就给一个首选，概率偏低保留观察风险”。P1 聚焦回归 `94/94`、配置 runtime 排除可选 FastAPI 的完整回归 `715/715`、系统 Python FastAPI `13/13` 均通过；`py_compile` 和 `git diff --check` 通过。
+
 ## 2026-07-10 P0：首选鲜度与发布可靠性
 
 - 世界杯与中超调度新增“首选鲜度保底”：正常免费额度下，把每场 `match_decision.valid_until - 20 分钟` 纳入下一次刷新候选，避免当前首选先过期、页面变成暂无可靠首选，再等旧赛前锚点。quota remaining 低于等于 30 时继续按低额度锚点降级，避免因保鲜耗尽数据源。

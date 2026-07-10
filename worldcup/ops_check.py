@@ -384,15 +384,33 @@ def _match_decision_counts(snapshot: Any) -> dict[str, int] | None:
         return None
     matches = [match for match in snapshot["matches"] if isinstance(match, dict)]
     match_picks = 0
+    rating_fallback_picks = 0
     no_pick = 0
     for match in matches:
         decision = project_match_decision(match.get("match_decision"))
         if (decision or {}).get("label") == "MATCH_PICK":
             match_picks += 1
+            raw_decision = (
+                match.get("match_decision")
+                if isinstance(match.get("match_decision"), dict)
+                else {}
+            )
+            risks = (
+                raw_decision.get("risks")
+                if isinstance(raw_decision.get("risks"), list)
+                else []
+            )
+            if (
+                "market_only_rating_fallback" in risks
+                and "model_settlement" not in raw_decision
+            ):
+                rating_fallback_picks += 1
         elif (decision or {}).get("label") == "NO_CLEAN_MARKET":
             no_pick += 1
     return {
         "match_picks": match_picks,
+        "rating_fallback_picks": rating_fallback_picks,
+        "rating_unsafe_picks": match_picks - rating_fallback_picks,
         "no_pick": no_pick,
         "missing_decisions": len(matches) - match_picks - no_pick,
     }
@@ -404,7 +422,13 @@ def _runner_decision_counts(root: Path, payload: dict[str, Any]) -> dict[str, in
         return snapshot_counts
     return {
         key: int(payload[key])
-        for key in ("match_picks", "no_pick", "missing_decisions")
+        for key in (
+            "match_picks",
+            "rating_fallback_picks",
+            "rating_unsafe_picks",
+            "no_pick",
+            "missing_decisions",
+        )
         if _is_safe_number(payload.get(key))
     }
 
@@ -963,10 +987,7 @@ def _csl_runner_has_error(runner: dict[str, Any]) -> bool:
         or _as_int(club_rating.get("errors_count")) > 0
         or _as_int(runner.get("missing_decisions")) > 0
         or _runner_decision_count_mismatch(runner)
-        or (
-            runner.get("rating_policy") == "club_rating_pending"
-            and _as_int(runner.get("match_picks")) > 0
-        )
+        or _as_int(runner.get("rating_unsafe_picks")) > 0
     )
 
 
@@ -1108,11 +1129,8 @@ def _report_csl_issue_codes(csl: dict[str, Any], runner: dict[str, Any]) -> list
             issues.append("runner_missing_decisions")
         if _runner_decision_count_mismatch(runner):
             issues.append("runner_decision_count_mismatch")
-        if (
-            runner.get("rating_policy") == "club_rating_pending"
-            and _as_int(runner.get("match_picks")) > 0
-        ):
-            issues.append("runner_pick_while_rating_pending")
+        if _as_int(runner.get("rating_unsafe_picks")) > 0:
+            issues.append("runner_pick_without_market_rating_fallback")
     return issues
 
 

@@ -1285,6 +1285,7 @@ def test_run_ops_check_flags_pick_while_club_rating_is_pending_as_error():
                     },
                     "rating_policy": "club_rating_pending",
                     "match_picks": 1,
+                    "rating_unsafe_picks": 1,
                     "no_pick": 0,
                     "missing_decisions": 0,
                 }
@@ -1308,6 +1309,64 @@ def test_run_ops_check_flags_pick_while_club_rating_is_pending_as_error():
     assert runner["match_picks"] == 1
     assert runner["no_pick"] == 0
     assert runner["missing_decisions"] == 0
+
+
+def test_run_ops_check_allows_market_only_pick_while_club_rating_is_pending():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs_dir = root / "logs"
+        launch_agent = logs_dir / "xin.celab.football.scheduled-publish.plist"
+        _write_minimal_ops_inputs(root, launch_agent)
+        _write(
+            root / "data/cache/theoddsapi_csl_2026_odds.json",
+            json.dumps([_csl_live_odds_event()]),
+        )
+        _write(
+            root / "data/local/diagnostics/csl_live_league_runner_check.json",
+            json.dumps(
+                {
+                    "status": "ok",
+                    "counts": {
+                        "fixtures": 1,
+                        "odds_events": 1,
+                        "match_inputs": 1,
+                        "matches": 1,
+                    },
+                    "warnings": ["club_rating_pending", "odds_event_only"],
+                    "club_alias_unmatched": [],
+                    "invalid_odds_count": 0,
+                    "club_rating": {
+                        "mode": "sample_replay",
+                        "matches_replayed": 840,
+                        "teams_rated": 22,
+                        "sample_too_small": False,
+                        "errors": [],
+                    },
+                    "rating_policy": "club_rating_pending",
+                    "match_picks": 1,
+                    "rating_fallback_picks": 1,
+                    "rating_unsafe_picks": 0,
+                    "no_pick": 0,
+                    "missing_decisions": 0,
+                }
+            ),
+        )
+
+        result = run_ops_check(
+            root=root,
+            public_base_url=None,
+            remote_host=None,
+            launch_agent_path=launch_agent,
+            local_log_paths=[],
+            pre_match_launch_agent_path=None,
+            pre_match_log_paths=[],
+        )
+
+    assert result["ok"] is True
+    assert result["summary"]["errors"] == 0
+    runner = result["local"]["csl_live_odds"]["runner_check"]
+    assert runner["rating_fallback_picks"] == 1
+    assert runner["rating_unsafe_picks"] == 0
 
 
 def test_run_ops_check_flags_pre_match_live_refresh_without_guard_as_error():

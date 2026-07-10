@@ -11,6 +11,19 @@ def test_load_config_reads_known_keys():
     assert cfg["elo"]["draw_min"] <= 0.12
     assert cfg["odds"]["min_books"] == 3
     assert cfg["value"]["longshot_market_prob_max"] == 0.12
+    assert cfg["csl_model"] == {
+        "rating_activation": "shadow_only",
+        "min_total_matches": 300,
+        "min_team_matches": 30,
+        "rating_k": 30,
+        "home_adv": 100,
+        "mu_total": 2.6,
+        "mu_market_weight": 0.7,
+        "w_elo": 0.5,
+        "w_poisson": 0.5,
+        "latest_season_min_matches": 100,
+        "market_baseline_min_matches": 200,
+    }
 
 
 def test_odds_quote_rejects_naive_datetime():

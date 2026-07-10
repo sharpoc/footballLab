@@ -14,6 +14,7 @@ from worldcup.publish_outbox import attempt_publish, load_pending_publish
 from worldcup.quota import load_quota_ledger
 from worldcup.refresh_runner import _load_env
 from worldcup.scheduler import make_run_id
+from worldcup.csl_results_refresh import run_csl_results_refresh
 
 DEFAULT_COMPETITION_ID = "csl_2026"
 DEFAULT_SPORT_KEY = "soccer_china_superleague"
@@ -33,6 +34,7 @@ EnvLoader = Callable[[str | Path], dict[str, str]]
 RefreshFn = Callable[..., dict[str, Any]]
 SnapshotBuilder = Callable[..., dict[str, Any]]
 PublishFn = Callable[..., dict[str, Any]]
+ResultsRefreshFn = Callable[..., dict[str, Any]]
 
 
 def _now_utc_iso() -> str:
@@ -340,6 +342,27 @@ def _safe_quota_entry(value: Any) -> dict[str, Any]:
     }
 
 
+def _safe_results_refresh(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"status": "error", "reason": "invalid_results_refresh_result"}
+    safe: dict[str, Any] = {"status": str(value.get("status") or "error")}
+    for key in ("reason", "latest_result_date", "error_type"):
+        if value.get(key) is not None:
+            safe[key] = str(value[key])
+    for key in (
+        "existing_matches",
+        "verified_current_season_matches",
+        "total_matches",
+        "primary_matches",
+        "check_matches",
+        "verified_matches",
+        "regression_count",
+    ):
+        if isinstance(value.get(key), int) and not isinstance(value.get(key), bool):
+            safe[key] = value[key]
+    return safe
+
+
 def _attach_run_metadata(
     snapshot: dict[str, Any],
     *,
@@ -363,6 +386,60 @@ def _attach_run_metadata(
     return snapshot
 
 
+def _runner_diagnostic(snapshot: dict[str, Any]) -> dict[str, Any]:
+    competition = (
+        snapshot.get("competition")
+        if isinstance(snapshot.get("competition"), dict)
+        else {}
+    )
+    quality = (
+        snapshot.get("data_quality")
+        if isinstance(snapshot.get("data_quality"), dict)
+        else {}
+    )
+    matches = snapshot.get("matches") if isinstance(snapshot.get("matches"), list) else []
+    picks = 0
+    no_pick = 0
+    rating_fallback_picks = 0
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        decision = match.get("match_decision")
+        if not isinstance(decision, dict):
+            continue
+        if decision.get("label") == "MATCH_PICK":
+            picks += 1
+            risks = decision.get("risks") if isinstance(decision.get("risks"), list) else []
+            if "market_only_rating_fallback" in risks and "model_settlement" not in decision:
+                rating_fallback_picks += 1
+        elif decision.get("label") == "NO_CLEAN_MARKET":
+            no_pick += 1
+    club_rating = (
+        quality.get("club_rating") if isinstance(quality.get("club_rating"), dict) else {}
+    )
+    return {
+        "status": "ok",
+        "snapshot_at": snapshot.get("snapshot_at"),
+        "competition_id": competition.get("id"),
+        "fixture_source": quality.get("fixture_source"),
+        "rating_policy": competition.get("rating_policy"),
+        "counts": snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {},
+        "warnings": quality.get("warnings") if isinstance(quality.get("warnings"), list) else [],
+        "club_alias_unmatched": (
+            quality.get("club_alias_unmatched")
+            if isinstance(quality.get("club_alias_unmatched"), list)
+            else []
+        ),
+        "invalid_odds_count": int(quality.get("invalid_odds_count") or 0),
+        "club_rating": club_rating,
+        "match_picks": picks,
+        "rating_fallback_picks": rating_fallback_picks,
+        "rating_unsafe_picks": picks - rating_fallback_picks,
+        "no_pick": no_pick,
+        "missing_decisions": len(matches) - picks - no_pick,
+    }
+
+
 def run_csl_scheduled_publish(
     *,
     now: str | None = None,
@@ -373,6 +450,7 @@ def run_csl_scheduled_publish(
     quota_path: str | Path = "data/cache/quota.json",
     snapshot_path: str | Path = "data/cache/csl_publish_snapshot.json",
     diagnostics_snapshot_path: str | Path = "data/local/diagnostics/csl_live_league_snapshot.json",
+    runner_diagnostics_path: str | Path | None = None,
     endpoint: str = DEFAULT_ENDPOINT,
     min_interval_seconds: int = DEFAULT_MIN_INTERVAL_SECONDS,
     discovery_interval_seconds: int = DEFAULT_DISCOVERY_INTERVAL_SECONDS,
@@ -380,6 +458,7 @@ def run_csl_scheduled_publish(
     refresh_fn: RefreshFn = run_league_odds_refresh,
     snapshot_builder: SnapshotBuilder = build_league_snapshot_from_cache,
     publish_fn: PublishFn = publish_snapshot,
+    results_refresh_fn: ResultsRefreshFn = run_csl_results_refresh,
 ) -> dict[str, Any]:
     observed = now or _now_utc_iso()
     snapshot = _read_json_if_exists(snapshot_path)
@@ -450,6 +529,22 @@ def run_csl_scheduled_publish(
         }
 
     env = load_env(env_path)
+    try:
+        results_refresh = _safe_results_refresh(
+            results_refresh_fn(
+                live=True,
+                write=True,
+                competition_id=DEFAULT_COMPETITION_ID,
+                replay_path=Path(cache_dir) / f"club_results_{DEFAULT_COMPETITION_ID}.csv",
+                raw_dir=Path(cache_dir) / "csl_results_sources",
+            )
+        )
+    except (OSError, ValueError, TimeoutError, ConnectionError) as exc:
+        results_refresh = {
+            "status": "error",
+            "reason": "results_refresh_failed_using_existing_cache",
+            "error_type": type(exc).__name__,
+        }
     refresh = refresh_fn(
         live=True,
         env=env,
@@ -465,6 +560,7 @@ def run_csl_scheduled_publish(
             "status": "blocked" if refresh.get("status") == "blocked" else "error",
             "force": force,
             "decision": decision,
+            "results_refresh": results_refresh,
             "refresh": refresh,
             "publish": None,
         }
@@ -480,6 +576,7 @@ def run_csl_scheduled_publish(
             "reason": "empty_csl_snapshot",
             "force": force,
             "decision": decision,
+            "results_refresh": results_refresh,
             "refresh": refresh,
             "publish": None,
         }
@@ -490,8 +587,21 @@ def run_csl_scheduled_publish(
         refresh_result=refresh,
         quota_path=quota_path,
     )
+    data_quality = built.setdefault("data_quality", {})
+    if isinstance(data_quality, dict):
+        data_quality["club_results_refresh"] = results_refresh
+        if results_refresh.get("status") not in {"updated", "verified"}:
+            warnings = data_quality.setdefault("warnings", [])
+            if isinstance(warnings, list) and "club_results_refresh_failed" not in warnings:
+                warnings.append("club_results_refresh_failed")
     write_snapshot(built, diagnostics_snapshot_path)
     write_snapshot(built, snapshot_path)
+    runner_path = (
+        Path(runner_diagnostics_path)
+        if runner_diagnostics_path is not None
+        else Path(diagnostics_snapshot_path).with_name("csl_live_league_runner_check.json")
+    )
+    write_snapshot(_runner_diagnostic(built), runner_path)
 
     secret = env.get("INGEST_HMAC_SECRET")
     if not secret:
@@ -500,6 +610,7 @@ def run_csl_scheduled_publish(
             "reason": "missing_ingest_hmac_secret",
             "force": force,
             "decision": decision,
+            "results_refresh": results_refresh,
             "refresh": refresh,
             "publish": None,
         }
@@ -516,6 +627,7 @@ def run_csl_scheduled_publish(
             "status": attempted["status"],
             "force": force,
             "decision": decision,
+            "results_refresh": results_refresh,
             "refresh": refresh,
             "publish": attempted.get("publish"),
             "pending": attempted.get("pending"),
@@ -525,6 +637,7 @@ def run_csl_scheduled_publish(
         "status": "published",
         "force": force,
         "decision": decision,
+        "results_refresh": results_refresh,
         "refresh": {
             "status": refresh.get("status"),
             "competition_id": refresh.get("competition_id"),

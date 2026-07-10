@@ -1953,7 +1953,7 @@ def _decision_display(decision: Any) -> dict[str, str]:
         return {
             "state": "none",
             "title": "暂无可靠首选",
-            "market": "数据质量或概率门槛未通过",
+            "market": "没有有效、新鲜、可结算的主盘口",
             "probability": "—",
             "no_loss": "—",
             "odds": "—",
@@ -2053,7 +2053,7 @@ def _render_decision_filter_row(
     return """
       <div class="ledger-filter-row workbench-filter-row">
         <div class="filter-group decision-filter-group" aria-label="展示口径">
-          <span class="filter-label">每场只展示一个首选；未过门槛时主动留空</span>
+          <span class="filter-label">每场有有效新鲜主盘就展示一个首选；概率偏低会保留为观察风险</span>
         </div>
         <div class="workbench-tools">
           <label class="search-label">
@@ -2473,8 +2473,8 @@ def _render_decision_right_rail(snapshot: dict[str, Any]) -> str:
     <aside class="right-rail">
       <section class="rail-card">
         <h2>首选规则</h2>
-        <p>每场最多展示一个通过概率、赔率、时效和数据质量门槛的方向。</p>
-        <p>没有合格方向时明确显示“暂无可靠首选”，不强行给结论。</p>
+        <p>每场有开赛前有效、新鲜、可结算的主盘口时展示一个首选。</p>
+        <p>只有主盘无效、过期、不可结算或比赛已开始时，才显示“暂无可靠首选”。</p>
       </section>
       <section class="rail-card">
         <h2>注意事项</h2>

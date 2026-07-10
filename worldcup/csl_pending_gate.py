@@ -218,6 +218,22 @@ def _market_baseline_from_report(report: dict[str, Any] | None) -> dict[str, Any
     }
 
 
+def _market_matched_model_from_report(report: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(report, dict):
+        return {"n": 0, "brier": None, "log_loss": None}
+    markets = report.get("markets") if isinstance(report.get("markets"), dict) else {}
+    x12 = markets.get("1x2") if isinstance(markets.get("1x2"), dict) else {}
+    model = x12.get("model_matched") if isinstance(x12.get("model_matched"), dict) else {}
+    n = model.get("n", 0)
+    if not isinstance(n, int) or n <= 0:
+        return {"n": 0, "brier": None, "log_loss": None}
+    return {
+        "n": n,
+        "brier": model.get("brier") if isinstance(model.get("brier"), float) else None,
+        "log_loss": model.get("log_loss") if isinstance(model.get("log_loss"), float) else None,
+    }
+
+
 def build_pending_gate_report(
     results: list[ClubResult],
     *,
@@ -228,7 +244,10 @@ def build_pending_gate_report(
     min_eval_matches: int = 200,
     cfg: dict[str, Any] | None = None,
     home_adv: float | None = None,
+    rating_k: float = DEFAULT_CLUB_K,
     market_report: dict[str, Any] | None = None,
+    min_latest_season_matches: int = 100,
+    min_market_baseline_matches: int = 200,
 ) -> dict[str, Any]:
     if source is None:
         raise ValueError("source is required")
@@ -238,6 +257,7 @@ def build_pending_gate_report(
     rows = build_walk_forward_matches(
         results,
         warmup_matches=warmup_matches,
+        k=rating_k,
         home_adv=home_adv_value,
     )
 
@@ -245,12 +265,29 @@ def build_pending_gate_report(
     model_rows: list[tuple[dict[str, float], str]] = []
     uniform_rows: list[tuple[dict[str, float], str]] = []
     home_prior_rows: list[tuple[dict[str, float], str]] = []
+    season_rows: dict[str, dict[str, list[tuple[dict[str, float], str]]]] = {}
+    seasons_by_match = {
+        (result.date, result.home_canonical, result.away_canonical): result.season
+        for result in results
+    }
     for row in rows:
         actual = outcome_1x2(row.home_score, row.away_score)
         home_prior = _home_prior_probs_before_date(results, row.kickoff_at_utc[:10])
-        model_rows.append((replay_match(row, effective_cfg)["model_1x2"], actual))
+        model_probs = replay_match(row, effective_cfg)["model_1x2"]
+        model_rows.append((model_probs, actual))
         uniform_rows.append((uniform_probs, actual))
         home_prior_rows.append((home_prior, actual))
+        season = seasons_by_match.get(
+            (row.kickoff_at_utc[:10], row.home_canonical, row.away_canonical),
+            row.kickoff_at_utc[:4],
+        )
+        bucket = season_rows.setdefault(
+            season,
+            {"model": [], "uniform": [], "home_prior": []},
+        )
+        bucket["model"].append((model_probs, actual))
+        bucket["uniform"].append((uniform_probs, actual))
+        bucket["home_prior"].append((home_prior, actual))
 
     model_metrics = _mean_metrics(model_rows)
     uniform_metrics = _mean_metrics(uniform_rows)
@@ -261,7 +298,37 @@ def build_pending_gate_report(
     model_beats_uniform = _beats(model_metrics, uniform_metrics)
     model_beats_home_prior = _beats(model_metrics, home_prior_metrics)
     market_baseline = _market_baseline_from_report(market_report)
+    market_matched_model = _market_matched_model_from_report(market_report)
     market_baseline_available = bool(market_baseline.get("n"))
+    market_baseline_sufficient = (
+        int(market_baseline.get("n") or 0) >= min_market_baseline_matches
+        and market_matched_model.get("n") == market_baseline.get("n")
+    )
+    model_beats_market = (
+        market_baseline_sufficient
+        and _beats(market_matched_model, market_baseline)
+    )
+    season_metrics = {
+        season: {
+            "model": _mean_metrics(bucket["model"]),
+            "uniform": _mean_metrics(bucket["uniform"]),
+            "home_prior": _mean_metrics(bucket["home_prior"]),
+        }
+        for season, bucket in sorted(season_rows.items())
+    }
+    latest_season = max(season_metrics, default=None)
+    latest_metrics = season_metrics.get(latest_season or "", {})
+    latest_model = latest_metrics.get("model") if isinstance(latest_metrics, dict) else {}
+    latest_home_prior = (
+        latest_metrics.get("home_prior") if isinstance(latest_metrics, dict) else {}
+    )
+    latest_season_sample_size_ok = (
+        int((latest_model or {}).get("n") or 0) >= min_latest_season_matches
+    )
+    latest_season_model_beats_home_prior = (
+        latest_season_sample_size_ok
+        and _beats(latest_model or {}, latest_home_prior or {})
+    )
 
     if sample_too_small:
         reasons = ["sample_too_small"]
@@ -276,6 +343,14 @@ def build_pending_gate_report(
             reasons.append("model_not_beating_home_prior_brier")
         if not market_baseline_available:
             reasons.append("historical_market_odds_missing")
+        elif not market_baseline_sufficient:
+            reasons.append("historical_market_odds_sample_too_small")
+        elif not model_beats_market:
+            reasons.append("model_not_beating_market_brier")
+        if not latest_season_sample_size_ok:
+            reasons.append("latest_season_sample_too_small")
+        elif not latest_season_model_beats_home_prior:
+            reasons.append("latest_season_model_not_beating_home_prior_brier")
         status = "observe_only_no_lift" if not reasons else "keep_pending"
 
     sample = {
@@ -305,12 +380,19 @@ def build_pending_gate_report(
             "uniform_1x2": uniform_metrics,
             "home_prior_1x2": home_prior_metrics,
             "market_baseline": market_baseline,
+            "market_matched_model": market_matched_model,
+            "season_1x2": season_metrics,
         },
         "checks": {
             "sample_size_ok": sample_size_ok,
             "model_beats_uniform_brier": model_beats_uniform,
             "model_beats_home_prior_brier": model_beats_home_prior,
             "market_baseline_available": market_baseline_available,
+            "market_baseline_sufficient": market_baseline_sufficient,
+            "model_beats_market_brier": model_beats_market,
+            "latest_season": latest_season,
+            "latest_season_sample_size_ok": latest_season_sample_size_ok,
+            "latest_season_model_beats_home_prior_brier": latest_season_model_beats_home_prior,
         },
         "decision": decision,
         "can_lift_club_rating_pending": False,

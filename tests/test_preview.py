@@ -83,6 +83,8 @@ def test_preview_renders_only_match_picks_and_no_pick_state():
     assert "墨西哥 对 南非" in html
     assert "上海海港 对 山东泰山" in html
     assert "仅用于研究分析，不构成投注建议。" in html
+    assert "有效、新鲜、可结算的主盘口" in html
+    assert "未过门槛时主动留空" not in html
 
 
 def test_preview_restores_original_workbench_layout_without_grade_ui():

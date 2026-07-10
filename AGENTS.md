@@ -36,6 +36,8 @@
 - 采集层使用保存的样例响应做离线解析测试。
 - source refresh 失败但本地缓存存在时，可以继续用上一轮缓存生成快照；必须在 `data_quality.source_errors` 和 `data_quality.stale_sources` 标记，不能静默当作新鲜数据。
 - Elo 来源为本地基线重放：`data/cache/elo_baseline_*.tsv` + openfootball 完赛比分按 eloratings 公式（K=60、中立场）增量重放生成 `elo_world.tsv`；eloratings 抓取仅用于重新锚定基线，抓取失败只记 `data_quality.source_errors`，不标 `stale_sources`、不因此单独强制取消本场首选。重放计算失败时回退沿用现有 `elo_world.tsv` 并记 `elo_local` 错误。常量与实现见 `worldcup/elo_local.py`。
+- 中超俱乐部评级使用独立 `csl_model` 配置边界，当前仍为 `shadow_only` / `club_rating_pending`。除全局 replay 样本外，每场双方都必须达到逐队最小样本（默认 30 场）；未达标时必须使用 1500 结构占位并走市场兜底，不得让小样本 rating 影响首选方向。
+- 中超 replay 赛果 live 更新必须同时通过 7M + 中足联官方公开接口的日期/主客队/比分全量一致校验，并且不得删除或改写已接受的赛果；否则沿用旧 cache 并记质量错误。解除 pending 还必须同时通过最新赛季主场先验和同样本市场基准门槛，不能只看全历史聚合 Brier。
 - scheduler 默认 dry-run，只读取本地 snapshot / quota 并输出 JSON 决策；The Odds API 按免费额度使用，低额度时必须降频。
 - scheduled refresh 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会调用 refresh runner。
 - 正常额度时，世界杯与中超调度都必须把 `match_decision.valid_until - 20 分钟` 作为刷新候选，避免有效首选先过期再等下一个赛前锚点；quota 低于等于 30 时允许按既有低额度锚点降级。

@@ -195,8 +195,9 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
         root = Path(tmp)
         snapshot_path = root / "csl_publish_snapshot.json"
         diagnostics_path = root / "csl_live_league_snapshot.json"
+        runner_diagnostics_path = root / "csl_live_league_runner_check.json"
         quota_path = root / "quota.json"
-        calls = {"refresh": 0, "publish": 0}
+        calls = {"results": 0, "refresh": 0, "publish": 0}
 
         _write_json(quota_path, {"providers": {"theoddsapi_secondary": {"remaining": 200}}})
 
@@ -215,6 +216,17 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
                 "events": 1,
                 "quota_entry": {"remaining": 197, "used": 303, "last": 3},
                 "theoddsapi_provider": "theoddsapi_secondary",
+            }
+
+        def fake_results_refresh(**kwargs):
+            calls["results"] += 1
+            assert kwargs["live"] is True
+            assert kwargs["write"] is True
+            return {
+                "status": "updated",
+                "verified_current_season_matches": 136,
+                "total_matches": 856,
+                "latest_result_date": "2026-07-05",
             }
 
         def fake_builder(cache_dir, competition_id, snapshot_at):
@@ -244,7 +256,9 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
             quota_path=quota_path,
             snapshot_path=snapshot_path,
             diagnostics_snapshot_path=diagnostics_path,
+            runner_diagnostics_path=runner_diagnostics_path,
             load_env=fake_load_env,
+            results_refresh_fn=fake_results_refresh,
             refresh_fn=fake_refresh,
             snapshot_builder=fake_builder,
             publish_fn=fake_publish,
@@ -252,11 +266,15 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
 
         written = json.loads(snapshot_path.read_text(encoding="utf-8"))
         diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+        runner_diagnostics = json.loads(runner_diagnostics_path.read_text(encoding="utf-8"))
 
     assert result["status"] == "published"
-    assert calls == {"refresh": 1, "publish": 1}
+    assert calls == {"results": 1, "refresh": 1, "publish": 1}
+    assert result["results_refresh"]["status"] == "updated"
     assert written["run"]["run_id"] == "20260710T103000Z-csl-live"
     assert diagnostics["run"]["run_id"] == "20260710T103000Z-csl-live"
+    assert runner_diagnostics["match_picks"] == 0
+    assert runner_diagnostics["missing_decisions"] == 1
 
 
 def test_csl_publish_retries_pending_snapshot_without_consuming_refresh_again():
@@ -275,6 +293,14 @@ def test_csl_publish_retries_pending_snapshot_without_consuming_refresh_again():
             "events": 1,
             "quota_entry": {"remaining": 173, "used": 327, "last": 3},
             "theoddsapi_provider": "theoddsapi_secondary",
+        }
+
+    def fake_results_refresh(**_kwargs):
+        return {
+            "status": "updated",
+            "verified_current_season_matches": 136,
+            "total_matches": 856,
+            "latest_result_date": "2026-07-05",
         }
 
     def fake_builder(_cache_dir, competition_id, snapshot_at):
@@ -303,6 +329,7 @@ def test_csl_publish_retries_pending_snapshot_without_consuming_refresh_again():
             snapshot_path=snapshot_path,
             diagnostics_snapshot_path=diagnostics_path,
             load_env=fake_load_env,
+            results_refresh_fn=fake_results_refresh,
             refresh_fn=fake_refresh,
             snapshot_builder=fake_builder,
             publish_fn=fake_publish,

@@ -68,7 +68,7 @@ def _decision_view(decision: dict[str, Any] | None) -> dict[str, str]:
         return {
             "state": "none",
             "title": "暂无可靠首选",
-            "market": "数据质量或概率门槛未通过",
+            "market": "没有有效、新鲜、可结算的主盘口",
             "probability": "—",
             "no_loss": "—",
             "odds": "—",

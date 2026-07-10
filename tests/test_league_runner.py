@@ -230,6 +230,7 @@ def test_build_league_snapshot_uses_sample_club_ratings_but_keeps_signal_cap():
             cache_dir,
             snapshot_at="2026-06-22T09:00:00+00:00",
             club_rating_min_matches=2,
+            club_rating_min_team_matches=1,
         )
 
         club_quality = snapshot["data_quality"]["club_rating"]
@@ -246,6 +247,52 @@ def test_build_league_snapshot_uses_sample_club_ratings_but_keeps_signal_cap():
         assert match["match_decision"]["label"] == "MATCH_PICK"
         assert "market_consensus_rating_fallback" in match["match_decision"]["reasons"]
         assert "club_rating_pending" in match["match_decision"]["risks"]
+
+
+def test_build_league_snapshot_marks_fixture_team_with_too_few_rating_matches():
+    with TemporaryDirectory() as tmp:
+        cache_dir = Path(tmp) / "cache"
+        _write_csl_odds_cache(cache_dir)
+        _write_club_results_cache(
+            cache_dir,
+            [
+                {
+                    "competition_id": "csl_2026",
+                    "season": "2026",
+                    "date": "2026-03-01",
+                    "home_team": "Shanghai Port",
+                    "away_team": "Shandong Taishan",
+                    "home_score": "2",
+                    "away_score": "0",
+                    "neutral": "0",
+                },
+                {
+                    "competition_id": "csl_2026",
+                    "season": "2026",
+                    "date": "2026-03-08",
+                    "home_team": "Shanghai Port",
+                    "away_team": "Beijing Guoan",
+                    "home_score": "1",
+                    "away_score": "0",
+                    "neutral": "0",
+                },
+            ],
+        )
+
+        snapshot = build_league_snapshot_from_cache(
+            cache_dir,
+            snapshot_at="2026-06-22T09:00:00+00:00",
+            club_rating_min_matches=2,
+            club_rating_min_team_matches=2,
+        )
+
+    match = snapshot["matches"][0]
+    quality = snapshot["data_quality"]["club_rating"]
+    assert match["elo"] == {"home": 1500, "away": 1500}
+    assert "club_rating_team_sample_too_small" in match["match_decision"]["risks"]
+    assert quality["min_team_matches"] == 2
+    assert quality["fixture_ineligible_teams"] == ["shandong_taishan"]
+    assert "club_rating_team_sample_too_small" in snapshot["data_quality"]["warnings"]
 
 
 def test_build_league_snapshot_falls_back_when_fixture_team_missing_rating():

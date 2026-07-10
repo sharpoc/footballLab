@@ -206,11 +206,11 @@ python3 -m worldcup.league_runner --competition csl_2026 --cache-dir data/cache 
 
 HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store 里同时存在世界杯和中超 snapshot 时，`/preview` 与 `/api/matches` 会展示各赛事最新一份，并复用页面赛事筛选显示“中超 2026”。该查询只读本地/线上 SQLite 或 PostgreSQL store，不刷新赔率、不读取 `.env`、不调用 The Odds API。线上标准库 HTTP 进程会缓存 public view 和 `/preview` 渲染 HTML，避免每次请求重复扫描、解析历史大 snapshot 和重建大页面；`/preview` 还会把已渲染 HTML 写入 DB 同目录的签名校验磁盘缓存，服务重启后如果 snapshot 未变化可直接复用；签名 ingest 成功后会自动清空进程缓存，磁盘缓存会因 snapshot 签名变化自动失效。
 
-中超初期 `rating_policy=club_rating_pending`、评级样本不足或球队评级缺失时，MatchPick v3 使用完整主盘口的去水市场共识兜底，并对安全概率和证据分做额外扣减；不得用占位 1500 或国家队 Elo 影响方向。任何 live odds 探测、scheduled publish、ECS ingest 或 LaunchAgent 更新都需要单独确认。
+中超当前 `rating_policy=club_rating_pending`：MatchPick v3 使用完整主盘口的去水市场共识兜底，不让占位 1500 或未过门槛的俱乐部 Elo 影响方向。`csl_model` 已与世界杯参数拆开：全局 replay 至少 300 场，且单队至少 30 场才允许该场使用真实评级；否则该场明确记为 `club_rating_team_sample_too_small` 并继续市场兜底。评级仍是 `shadow_only`，只有最新赛季、主场先验和同样本市场基准都达标后才能另行解除 pending。
 
 ### CSL Scheduled Publish
 
-`worldcup.csl_scheduled_publish` 是中超自动刷新/发布入口。默认 dry-run 只读取本地 snapshot / quota 并输出决策，不读取 `.env`、不联网、不调用 The Odds API、不发布；只有显式 `--live` 且决策 due，或同时传 `--force`，才会读取 `.env`、刷新中超 odds、生成预测 snapshot 并 HMAC ingest 到线上。
+`worldcup.csl_scheduled_publish` 是中超自动刷新/发布入口。默认 dry-run 只读取本地 snapshot / quota 并输出决策，不读取 `.env`、不联网、不调用 The Odds API、不发布；只有显式 `--live` 且决策 due，或同时传 `--force`，才会读取 `.env`、刷新中超 odds、生成预测 snapshot 并 HMAC ingest 到线上。live due 时会先用 7M 赛程数组与中足联官方公开接口双源校验已完赛比分；只有日期、主客队和比分全部一致才原子更新本地 replay CSV。这两个公开源不消耗 The Odds API quota；抓取或校验失败时沿用旧 cache 并写质量警告，不阻断赔率刷新。
 
 中超自动刷新采用“单场 due 触发、全赛事统一刷新”的省额度策略：调度器扫描当前 `csl_2026` snapshot 里的所有未来比赛，任一比赛命中锚点或首选鲜度保底就刷新整个 `soccer_china_superleague` sport key 一次，避免按每场单独调用 The Odds API。默认锚点为 `T-90` 和 `T-25`，正常额度时另保证在 `valid_until` 前 20 分钟刷新；全局最短刷新间隔为 30 分钟；当 quota remaining 低于等于 30 时只保留 `T-25`；没有未来比赛时最多每 24 小时做一次 discovery refresh，用于发现新的 odds event 赛程。
 
@@ -291,7 +291,7 @@ competition_id,season,date,home_team,away_team,home_score,away_score,neutral
 python3 -m worldcup.league_runner --competition csl_2026 --cache-dir data/cache --out data/cache/league_analysis_snapshot.json
 ```
 
-缺少 CSV、样本不足、CSV 无效或 fixture 球队缺少 rating 时，snapshot 会在 `data_quality.club_rating` 和 `data_quality.warnings` 标记原因，并保留 1500 仅供结构兼容；MatchPick v3 不让该占位值参与方向选择，而改用市场共识兜底。真实中超历史数据来源、清洗规则、回测和解除 `club_rating_pending` 仍需后续单独确认。
+缺少 CSV、全局样本不足、CSV 无效、fixture 球队缺 rating，或该队少于 30 场 replay 时，snapshot 会在 `data_quality.club_rating` / `data_quality.warnings` 标记原因，并保留 1500 仅供结构兼容；MatchPick v3 不让该占位值参与方向选择。当前双源已校验并写入 2023–2026 共 856 场，最新到 2026-07-05；重庆铜梁龙与辽宁铁人各 17 场，所以它们的当前对阵仍在逐队门槛下。
 
 ### CSL Historical Results Probe
 
@@ -317,6 +317,14 @@ competition_id,season,date,home_team,away_team,home_score,away_score,neutral
 
 双源冲突、未知 alias、主客队反转、比分冲突、日期冲突、主源缺校验源或校验源缺主源都会进入 diagnostics；`pending_gate.can_lift_club_rating_pending` 在 P9.3 中始终为 `false`。
 
+当前赛季可用下面的受控入口校验/更新 replay cache；默认不联网，`--live` 只校验，`--live --write` 才写 ignored cache：
+
+```bash
+python3 -m worldcup.csl_results_refresh
+python3 -m worldcup.csl_results_refresh --live
+python3 -m worldcup.csl_results_refresh --live --write
+```
+
 ### CSL Observation Report 与 Pending Gate
 
 P9.14 新增两个中超本地诊断入口，用于中超开赛后从已保存的本地快照和本地历史赛果生成只读观察报告，不联网、不读取 `.env`、不调用 The Odds API、不消耗 quota、不发布 snapshot、不部署、不更新 LaunchAgent，也不解除 `club_rating_pending`。
@@ -340,7 +348,7 @@ Pending gate 读取本地 `data/cache/club_results_csl_2026.csv`，做无同日�
   --min-eval-matches 200
 ```
 
-Gate report 使用单一 schema：`sample.total_results`、`decision.can_lift_club_rating_pending` 和顶层 `can_lift_club_rating_pending=false`。由于当前没有历史市场赔率 baseline，报告始终保持观察模式，不解除中超 `club_rating_pending`。Replay 按日期批量评估和批量更新 rating；同一天没有开球时间时，不会让当天早些比赛影响当天后续比赛的 rating 或 home-prior baseline。
+Gate report 除聚合样本外，还分赛季报告 model / uniform / home-prior，并要求同样本 `model_matched` 与 market 比较。当前有 8 场 opening/closing 快照与赛果可 join，该小样本 model 1X2 Brier 为 0.4678、market 为 0.5130；但 `8 < 200` 的市场基准门槛，只能记为暂时观察，不解除 `club_rating_pending`。Replay 按日期批量评估和批量更新 rating；同一天没有开球时间时，不会让当天早些比赛影响当天后续比赛的 rating 或 home-prior baseline。
 
 ### CSL Postmatch Eval Loop
 
@@ -371,7 +379,7 @@ P9.15 新增中超本地赛后评估闭环，用于把已归档的 CSL league sn
   --min-eval-matches 200
 ```
 
-判断“准确率”时必须同时看覆盖率和命中率：优先看 `csl_2026_report.json` 中 `sample.sample_too_small`、`markets.1x2.model_matched` vs `markets.1x2.market`、`markets.1x2.uniform`、校准分箱，以及 `csl_pending_gate` 的 `checks.market_baseline_available`。样本不足、closing snapshot 覆盖不足或模型弱于市场/主场先验时，只能作为观察，不能调参或解除 `club_rating_pending`；公开首选继续使用明确标记风险的市场共识兜底。
+判断“准确率”时必须同时看覆盖率和命中率：优先看 `csl_2026_report.json` 中 `sample.sample_too_small`、`markets.1x2.model_matched` vs `markets.1x2.market`、`markets.1x2.uniform`、校准分箱，以及 `csl_pending_gate` 的 `checks.market_baseline_sufficient`、`checks.latest_season_model_beats_home_prior_brier`。样本不足、closing snapshot 覆盖不足或模型弱于市场/最新赛季主场先验时，只能作为观察，不能调参或解除 `club_rating_pending`；公开首选继续使用明确标记风险的市场共识兜底。
 
 ## 本地验证
 
