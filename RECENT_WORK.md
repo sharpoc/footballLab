@@ -8,7 +8,8 @@
 - 新增纯离线中足联/7M 解析器、双源 compare 和防回退写入链；任一源缺行、alias 未知、日期/主客/比分冲突，或新数据删除/改写旧赛果时阻断写入。中超 scheduled publish 在 live due 时先刷新这两个免费源；失败时沿用旧赛果 cache 并写质量警告，不阻断赔率链。
 - 新增独立 `csl_model` 配置边界和逐队样本门槛：全局至少 300 场、单队至少 30 场。更新后重庆铜梁龙/辽宁铁人各 17 场，所以涉及它们的 2 场对阵使用 1500 结构占位并标 `club_rating_team_sample_too_small`；其余成熟样本球队更新真实评级。但整个评级仍 `shadow_only` / `club_rating_pending`，8 场现有市场基准小于 200 场门槛，不让俱乐部 Elo 直接改写首选方向。
 - Pending gate 新增分赛季 model/uniform/home-prior 和同样本 model-vs-market 门槛。当前 8 场可 join 小样本中，model 1X2 Brier=0.4678、market=0.5130，但 `sample_too_small=true`，只记为观察、不宣称已优于市场。运维检查也改为区分“pending 下安全市场兜底首选”与“未经兜底使用 rating”，不再把 MatchPick v3 的合法兜底首选误报为 error。
-- 不改 UI 布局；只修正与 MatchPick v3 矛盾的规则文案，明确“有有效新鲜主盘就给一个首选，概率偏低保留观察风险”。P1 聚焦回归 `94/94`、配置 runtime 排除可选 FastAPI 的完整回归 `715/715`、系统 Python FastAPI `13/13` 均通过；`py_compile` 和 `git diff --check` 通过。
+- 对抗性收尾发现 scheduled publish 原来只覆盖最新诊断 snapshot、没有自动积累 closing 历史；已补为每次成功构建后自动归档到 ignored `csl_history/`。归档失败写 `snapshot_archive_failed` 质量警告但继续发布当前有效首选，避免观测链故障反过来造成线上无首选。
+- 不改 UI 布局；只修正与 MatchPick v3 矛盾的规则文案，明确“有有效新鲜主盘就给一个首选，概率偏低保留观察风险”。P1 聚焦回归 `94/94`、配置 runtime 排除可选 FastAPI 的最终完整回归 `716/716`、系统 Python FastAPI `13/13` 均通过；`py_compile` 和 `git diff --check` 通过。
 
 ## 2026-07-10 P0：首选鲜度与发布可靠性
 

@@ -626,6 +626,8 @@ live 赛果更新使用两个公开源：7M `fixture.js` 与中足联官方 CSL 
 
 `csl_pending_gate` 不得只看全历史聚合结果。它必须同时报告最新赛季 model vs home-prior、同样本 `model_matched` vs market，并检查 market baseline 是否达到最小样本（当前 200）。任一项不足都必须继续 `can_lift_club_rating_pending=false`。
 
+中超 live scheduled publish 每次成功构建 snapshot 后，必须在发布前把同一份 snapshot 归档到 ignored `data/local/diagnostics/csl_history/`，用于后续按开赛时间选 closing snapshot。归档失败必须写 `snapshot_archive_failed` 质量警告，但不得因此隐藏或阻断当场已有的有效首选；HMAC 发布失败仍由既有 outbox 重试，不重复消耗赔率额度。
+
 ### Query projection
 
 `worldcup.query` 提供只读投影：

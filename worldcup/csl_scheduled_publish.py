@@ -15,6 +15,7 @@ from worldcup.quota import load_quota_ledger
 from worldcup.refresh_runner import _load_env
 from worldcup.scheduler import make_run_id
 from worldcup.csl_results_refresh import run_csl_results_refresh
+from worldcup.csl_snapshot_archive import archive_snapshot
 
 DEFAULT_COMPETITION_ID = "csl_2026"
 DEFAULT_SPORT_KEY = "soccer_china_superleague"
@@ -35,6 +36,7 @@ RefreshFn = Callable[..., dict[str, Any]]
 SnapshotBuilder = Callable[..., dict[str, Any]]
 PublishFn = Callable[..., dict[str, Any]]
 ResultsRefreshFn = Callable[..., dict[str, Any]]
+ArchiveFn = Callable[..., dict[str, Any]]
 
 
 def _now_utc_iso() -> str:
@@ -363,6 +365,21 @@ def _safe_results_refresh(value: Any) -> dict[str, Any]:
     return safe
 
 
+def _safe_archive_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"status": "error", "reason": "invalid_archive_result"}
+    safe: dict[str, Any] = {"status": str(value.get("status") or "error")}
+    for key in ("path", "snapshot_at"):
+        if value.get(key) is not None:
+            safe[key] = str(value[key])
+    for key in ("created", "duplicate"):
+        if isinstance(value.get(key), bool):
+            safe[key] = value[key]
+    if isinstance(value.get("matches"), int) and not isinstance(value.get("matches"), bool):
+        safe["matches"] = value["matches"]
+    return safe
+
+
 def _attach_run_metadata(
     snapshot: dict[str, Any],
     *,
@@ -459,6 +476,8 @@ def run_csl_scheduled_publish(
     snapshot_builder: SnapshotBuilder = build_league_snapshot_from_cache,
     publish_fn: PublishFn = publish_snapshot,
     results_refresh_fn: ResultsRefreshFn = run_csl_results_refresh,
+    archive_fn: ArchiveFn = archive_snapshot,
+    archive_history_path: str | Path | None = None,
 ) -> dict[str, Any]:
     observed = now or _now_utc_iso()
     snapshot = _read_json_if_exists(snapshot_path)
@@ -602,6 +621,35 @@ def run_csl_scheduled_publish(
         else Path(diagnostics_snapshot_path).with_name("csl_live_league_runner_check.json")
     )
     write_snapshot(_runner_diagnostic(built), runner_path)
+    history_path = (
+        Path(archive_history_path)
+        if archive_history_path is not None
+        else Path(diagnostics_snapshot_path).with_name("csl_history")
+    )
+    try:
+        archive = _safe_archive_summary(
+            archive_fn(
+                source=diagnostics_snapshot_path,
+                history=history_path,
+                competition_id=DEFAULT_COMPETITION_ID,
+                min_matches=1,
+                dry_run=False,
+            )
+        )
+    except (OSError, ValueError) as exc:
+        archive = {
+            "status": "error",
+            "reason": "snapshot_archive_failed",
+            "error_type": type(exc).__name__,
+        }
+    if archive.get("status") not in {"created", "duplicate"}:
+        if isinstance(data_quality, dict):
+            warnings = data_quality.setdefault("warnings", [])
+            if isinstance(warnings, list) and "snapshot_archive_failed" not in warnings:
+                warnings.append("snapshot_archive_failed")
+        write_snapshot(built, diagnostics_snapshot_path)
+        write_snapshot(built, snapshot_path)
+        write_snapshot(_runner_diagnostic(built), runner_path)
 
     secret = env.get("INGEST_HMAC_SECRET")
     if not secret:
@@ -611,6 +659,7 @@ def run_csl_scheduled_publish(
             "force": force,
             "decision": decision,
             "results_refresh": results_refresh,
+            "archive": archive,
             "refresh": refresh,
             "publish": None,
         }
@@ -628,6 +677,7 @@ def run_csl_scheduled_publish(
             "force": force,
             "decision": decision,
             "results_refresh": results_refresh,
+            "archive": archive,
             "refresh": refresh,
             "publish": attempted.get("publish"),
             "pending": attempted.get("pending"),
@@ -638,6 +688,7 @@ def run_csl_scheduled_publish(
         "force": force,
         "decision": decision,
         "results_refresh": results_refresh,
+        "archive": archive,
         "refresh": {
             "status": refresh.get("status"),
             "competition_id": refresh.get("competition_id"),
@@ -672,6 +723,11 @@ def main(argv: list[str] | None = None) -> int:
         "--diagnostics-snapshot-path",
         default="data/local/diagnostics/csl_live_league_snapshot.json",
     )
+    parser.add_argument(
+        "--archive-history-path",
+        default=None,
+        help="Defaults beside the diagnostics snapshot as csl_history/.",
+    )
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
     parser.add_argument("--min-interval-seconds", type=int, default=DEFAULT_MIN_INTERVAL_SECONDS)
     parser.add_argument(
@@ -689,6 +745,7 @@ def main(argv: list[str] | None = None) -> int:
         quota_path=args.quota_path,
         snapshot_path=args.snapshot_path,
         diagnostics_snapshot_path=args.diagnostics_snapshot_path,
+        archive_history_path=args.archive_history_path,
         endpoint=args.endpoint,
         min_interval_seconds=args.min_interval_seconds,
         discovery_interval_seconds=args.discovery_interval_seconds,

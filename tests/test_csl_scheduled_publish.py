@@ -267,14 +267,66 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
         written = json.loads(snapshot_path.read_text(encoding="utf-8"))
         diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
         runner_diagnostics = json.loads(runner_diagnostics_path.read_text(encoding="utf-8"))
+        archived = list((root / "csl_history").glob("snapshot_*-live.json"))
 
     assert result["status"] == "published"
     assert calls == {"results": 1, "refresh": 1, "publish": 1}
     assert result["results_refresh"]["status"] == "updated"
+    assert result["archive"]["status"] == "created"
+    assert len(archived) == 1
     assert written["run"]["run_id"] == "20260710T103000Z-csl-live"
     assert diagnostics["run"]["run_id"] == "20260710T103000Z-csl-live"
     assert runner_diagnostics["match_picks"] == 0
     assert runner_diagnostics["missing_decisions"] == 1
+
+
+def test_archive_failure_warns_but_does_not_block_current_publish():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot_path = root / "csl_publish_snapshot.json"
+        diagnostics_path = root / "csl_live_league_snapshot.json"
+        quota_path = root / "quota.json"
+        _write_json(quota_path, {"providers": {"theoddsapi_secondary": {"remaining": 200}}})
+
+        def fake_builder(cache_dir, competition_id, snapshot_at):
+            return _snapshot(["2026-07-10T12:00:00+00:00"], observed_at=snapshot_at)
+
+        def broken_archive(**_kwargs):
+            raise OSError("disk temporarily unavailable")
+
+        result = run_csl_scheduled_publish(
+            now="2026-07-10T10:30:00+00:00",
+            live=True,
+            force=True,
+            cache_dir=root,
+            quota_path=quota_path,
+            snapshot_path=snapshot_path,
+            diagnostics_snapshot_path=diagnostics_path,
+            load_env=lambda _path: {"INGEST_HMAC_SECRET": "test-secret"},
+            results_refresh_fn=lambda **_kwargs: {"status": "updated"},
+            refresh_fn=lambda **_kwargs: {
+                "status": "fetched",
+                "events": 1,
+                "quota_entry": {"remaining": 197, "used": 303, "last": 3},
+                "theoddsapi_provider": "theoddsapi_secondary",
+            },
+            snapshot_builder=fake_builder,
+            archive_fn=broken_archive,
+            publish_fn=lambda **_kwargs: {
+                "status": "sent",
+                "http_status": 200,
+                "ingest_status": "stored",
+            },
+        )
+        written = json.loads(snapshot_path.read_text(encoding="utf-8"))
+
+    assert result["status"] == "published"
+    assert result["archive"] == {
+        "status": "error",
+        "reason": "snapshot_archive_failed",
+        "error_type": "OSError",
+    }
+    assert "snapshot_archive_failed" in written["data_quality"]["warnings"]
 
 
 def test_csl_publish_retries_pending_snapshot_without_consuming_refresh_again():
