@@ -1,10 +1,12 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import urllib.error
 
 import worldcup.scheduled_publish as scheduled_publish
+from worldcup.publish_outbox import stage_pending_publish
 from worldcup.scheduled_publish import run_scheduled_publish
 from worldcup.theoddsapi_keys import PRIMARY_PROVIDER, SECONDARY_PROVIDER
 
@@ -149,6 +151,75 @@ def test_scheduled_publish_retries_pending_snapshot_without_refreshing_again():
     assert second["status"] == "republished"
     assert calls == {"refresh": 1, "publish": 2}
     assert pending_exists_after is False
+
+
+def test_scheduled_publish_generates_utc_timestamp_when_now_is_omitted():
+    publish_calls = []
+
+    def refresh_fn(**kwargs):
+        return FakeRefreshResult(
+            snapshot_path=Path(kwargs["snapshot_path"]),
+            snapshot={"counts": {"matches": 1}},
+            run_metadata={"run_id": "generated-time-live"},
+        )
+
+    def publish_fn(**kwargs):
+        publish_calls.append(kwargs)
+        return {"status": "sent", "http_status": 200, "ingest_status": "stored"}
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot_path, quota_path = _write_not_due_snapshot(root)
+
+        result = run_scheduled_publish(
+            live=True,
+            force=True,
+            notify=False,
+            cache_dir=root / "cache",
+            snapshot_path=snapshot_path,
+            quota_path=quota_path,
+            api_key="fake-key",
+            secret="fake-secret",
+            refresh_fn=refresh_fn,
+            publish_fn=publish_fn,
+        )
+
+    generated = datetime.fromisoformat(publish_calls[0]["timestamp"])
+    assert result["status"] == "published"
+    assert generated.tzinfo is not None
+    assert generated.utcoffset() == timezone.utc.utcoffset(generated)
+
+
+def test_scheduled_publish_generates_utc_timestamp_for_pending_retry():
+    publish_calls = []
+
+    def publish_fn(**kwargs):
+        publish_calls.append(kwargs)
+        return {"status": "sent", "http_status": 200, "ingest_status": "stored"}
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot_path, quota_path = _write_not_due_snapshot(root)
+        stage_pending_publish(snapshot_path, staged_at="2026-07-10T08:32:15+00:00")
+        old_run_scheduled_refresh = scheduled_publish.run_scheduled_refresh
+        scheduled_publish.run_scheduled_refresh = lambda **_kwargs: {"status": "skipped"}
+        try:
+            result = run_scheduled_publish(
+                live=True,
+                notify=False,
+                cache_dir=root / "cache",
+                snapshot_path=snapshot_path,
+                quota_path=quota_path,
+                secret="fake-secret",
+                publish_fn=publish_fn,
+            )
+        finally:
+            scheduled_publish.run_scheduled_refresh = old_run_scheduled_refresh
+
+    generated = datetime.fromisoformat(publish_calls[0]["timestamp"])
+    assert result["status"] == "republished"
+    assert generated.tzinfo is not None
+    assert generated.utcoffset() == timezone.utc.utcoffset(generated)
 
 
 def test_scheduled_publish_dry_run_does_not_load_env_or_publish():

@@ -2306,7 +2306,7 @@ def _render_decision_workbench(
       {date_strip}{filters}
       <section class="ledger-workbench">
         <aside class="match-list-panel">
-          <div class="panel-heading"><h2>比赛列表 {match_count}场</h2></div>
+          <div class="panel-heading"><h2 data-workbench-visible-count data-count-label="比赛列表">比赛列表 {match_count}场</h2></div>
           <div class="match-list-scroll"><table class="match-list-table">
             <thead><tr><th>开赛时间</th><th>对阵</th><th>赛事 / 阶段</th><th>本场首选</th><th>安全概率</th></tr></thead>
             <tbody>{list_rows}</tbody>
@@ -2508,7 +2508,7 @@ def _render_decision_history(
         {date_strip}{filters}{review}
         <section class="ledger-workbench">
           <aside class="match-list-panel">
-            <div class="panel-heading"><h2>历史比赛 {match_count}场</h2></div>
+            <div class="panel-heading"><h2 data-workbench-visible-count data-count-label="历史比赛">历史比赛 {match_count}场</h2></div>
             <div class="match-list-scroll"><table class="match-list-table">
               <thead><tr><th>开赛时间</th><th>对阵</th><th>赛事 / 阶段</th><th>收盘首选</th><th>赛果</th></tr></thead>
               <tbody>{list_rows}</tbody>
@@ -4053,6 +4053,14 @@ def build_research_ledger_html(
         return control ? control.value.trim().toLowerCase() : '';
       }}
 
+      function syncWorkbenchVisibleCount(visible) {{
+        var panel = getActiveViewPanel();
+        var heading = panel ? panel.querySelector('[data-workbench-visible-count]') : null;
+        if (!heading) return;
+        var label = heading.dataset.countLabel || '比赛列表';
+        heading.textContent = label + ' ' + visible + '场';
+      }}
+
       function workbenchView(element) {{
         var panel = element ? element.closest('[data-view-panel]') : null;
         return panel ? (panel.dataset.viewPanel || 'live') : 'live';
@@ -4184,6 +4192,7 @@ def build_research_ledger_html(
             workbenchVisible += 1;
           }}
         }});
+        syncWorkbenchVisibleCount(workbenchVisible);
         syncWorkbenchDecisionRows();
         workbenchNoResults.forEach(function (empty) {{
           if (workbenchView(empty) !== activeView) return;

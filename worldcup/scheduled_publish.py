@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -29,6 +30,10 @@ _SLOT_LABELS = {
     SECONDARY_PROVIDER: "SECONDARY",
     LEGACY_PROVIDER: "LEGACY",
 }
+
+
+def _now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _watched_providers(env: dict[str, str]) -> list[str]:

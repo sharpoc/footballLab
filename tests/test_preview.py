@@ -171,6 +171,9 @@ def test_preview_filters_have_accessible_stable_contract():
     assert 'aria-label="筛选赛事"' in html
     assert 'value="fifa_world_cup_2026"' in html
     assert 'value="csl_2026"' in html
+    assert 'data-workbench-visible-count data-count-label="比赛列表"' in html
+    assert 'data-workbench-visible-count data-count-label="历史比赛"' in html
+    assert "syncWorkbenchVisibleCount(workbenchVisible)" in html
     assert "applyFilters" in html
 
 
