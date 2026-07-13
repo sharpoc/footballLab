@@ -1,5 +1,7 @@
 from worldcup.collectors.csl_result_sources import (
+    parse_cfl_official_fixture_rows,
     parse_cfl_official_result_rows,
+    parse_sevenm_fixture_rows,
     parse_sevenm_fixture_result_rows,
 )
 
@@ -87,3 +89,61 @@ def test_parse_sevenm_fixture_result_rows_parses_finished_arrays_only():
             "source_url": "https://example.invalid/sevenm",
         }
     ]
+
+
+def test_fixture_row_parsers_keep_scheduled_and_postponed_statuses():
+    official = {
+        "data": {
+            "dataList": [
+                {
+                    "id": "official-postponed",
+                    "match_status": "Postponed",
+                    "local_date": "2026-07-11",
+                    "local_time": "19:35:00",
+                    "week": 18,
+                    "home_contestant_name": "上海申花",
+                    "away_contestant_name": "北京国安",
+                    "ft_home_score": 0,
+                    "ft_away_score": 0,
+                },
+                {
+                    "id": "official-rescheduled",
+                    "match_status": "Fixture",
+                    "local_date": "2026-07-14",
+                    "local_time": "19:35:00",
+                    "week": 18,
+                    "home_contestant_name": "浙江队",
+                    "away_contestant_name": "青岛海牛",
+                    "ft_home_score": 0,
+                    "ft_away_score": 0,
+                },
+            ]
+        }
+    }
+    sevenm = """
+    var Tmp_bh_Arr = [ 7001, 7002 ];
+    var Run_Arr = [ 18, 18 ];
+    var Time_Arr = [ "2026,07,11,19,35,00", "2026,07,14,19,35,00" ];
+    var Scores_Arr = [ "VS", "VS" ];
+    var TeamA_Arr = [ "上海申花", "浙江队" ];
+    var TeamB_Arr = [ "北京国安", "青岛海牛" ];
+    var Stat_Arr = [ 13, 17 ];
+    var Memo_Arr = [ "因天气恶劣而延期", "" ];
+    """
+
+    official_rows = parse_cfl_official_fixture_rows(
+        official,
+        season="2026",
+        source_url="https://example.invalid/cfl",
+    )
+    sevenm_rows = parse_sevenm_fixture_rows(
+        sevenm,
+        season="2026",
+        source_url="https://example.invalid/sevenm",
+    )
+
+    assert [row["status"] for row in official_rows] == ["POSTPONED", "SCHEDULED"]
+    assert [row["status"] for row in sevenm_rows] == ["POSTPONED", "SCHEDULED"]
+    assert official_rows[0]["kickoff_at_utc"] == "2026-07-11T11:35:00+00:00"
+    assert official_rows[0]["home_canonical"] == "shanghai_shenhua"
+    assert sevenm_rows[1]["away_canonical"] == "qingdao_hainiu"

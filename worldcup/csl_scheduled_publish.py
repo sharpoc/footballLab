@@ -124,6 +124,8 @@ def _future_matches(snapshot: dict[str, Any], now_dt: datetime) -> list[dict[str
     for match in matches:
         if not isinstance(match, dict):
             continue
+        if str(match.get("fixture_status") or "").upper() == "POSTPONED":
+            continue
         kickoff_raw = str(match.get("kickoff_at_utc") or "").strip()
         if not kickoff_raw:
             continue
@@ -362,6 +364,19 @@ def _safe_results_refresh(value: Any) -> dict[str, Any]:
     ):
         if isinstance(value.get(key), int) and not isinstance(value.get(key), bool):
             safe[key] = value[key]
+    fixture_status = value.get("fixture_status")
+    if isinstance(fixture_status, dict):
+        safe_fixture_status: dict[str, Any] = {
+            "status": str(fixture_status.get("status") or "error")
+        }
+        if fixture_status.get("reason") is not None:
+            safe_fixture_status["reason"] = str(fixture_status["reason"])
+        for key in ("active_matches", "postponed_matches"):
+            if isinstance(fixture_status.get(key), int) and not isinstance(
+                fixture_status.get(key), bool
+            ):
+                safe_fixture_status[key] = fixture_status[key]
+        safe["fixture_status"] = safe_fixture_status
     return safe
 
 
@@ -417,9 +432,13 @@ def _runner_diagnostic(snapshot: dict[str, Any]) -> dict[str, Any]:
     matches = snapshot.get("matches") if isinstance(snapshot.get("matches"), list) else []
     picks = 0
     no_pick = 0
+    postponed = 0
     rating_fallback_picks = 0
     for match in matches:
         if not isinstance(match, dict):
+            continue
+        if str(match.get("fixture_status") or "").upper() == "POSTPONED":
+            postponed += 1
             continue
         decision = match.get("match_decision")
         if not isinstance(decision, dict):
@@ -452,8 +471,9 @@ def _runner_diagnostic(snapshot: dict[str, Any]) -> dict[str, Any]:
         "match_picks": picks,
         "rating_fallback_picks": rating_fallback_picks,
         "rating_unsafe_picks": picks - rating_fallback_picks,
+        "postponed": postponed,
         "no_pick": no_pick,
-        "missing_decisions": len(matches) - picks - no_pick,
+        "missing_decisions": len(matches) - picks - no_pick - postponed,
     }
 
 
@@ -613,6 +633,15 @@ def run_csl_scheduled_publish(
             warnings = data_quality.setdefault("warnings", [])
             if isinstance(warnings, list) and "club_results_refresh_failed" not in warnings:
                 warnings.append("club_results_refresh_failed")
+            stale_sources = data_quality.setdefault("stale_sources", [])
+            if isinstance(stale_sources, list):
+                stale_names = ["csl_results"]
+                fixture_refresh = results_refresh.get("fixture_status") or {}
+                if fixture_refresh.get("status") not in {"updated", "verified"}:
+                    stale_names.append("csl_fixture_status")
+                for source_name in stale_names:
+                    if source_name not in stale_sources:
+                        stale_sources.append(source_name)
     write_snapshot(built, diagnostics_snapshot_path)
     write_snapshot(built, snapshot_path)
     runner_path = (

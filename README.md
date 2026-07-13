@@ -212,6 +212,8 @@ HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store �
 
 `worldcup.csl_scheduled_publish` 是中超自动刷新/发布入口。默认 dry-run 只读取本地 snapshot / quota 并输出决策，不读取 `.env`、不联网、不调用 The Odds API、不发布；只有显式 `--live` 且决策 due，或同时传 `--force`，才会读取 `.env`、刷新中超 odds、生成预测 snapshot 并 HMAC ingest 到线上。live due 时会先用 7M 赛程数组与中足联官方公开接口双源校验已完赛比分；只有日期、主客队和比分全部一致才原子更新本地 replay CSV。这两个公开源不消耗 The Odds API quota；抓取或校验失败时沿用旧 cache 并写质量警告，不阻断赔率刷新。每次成功构建的赛前 snapshot 还会自动归档到 ignored `data/local/diagnostics/csl_history/`，用于后续 closing join 和市场基准积累；归档失败会写质量警告，但不阻断当场首选发布。
 
+同一轮双源响应还会校验未完赛赛程的 `SCHEDULED` / `POSTPONED` 状态，成功后原子写入 ignored `data/cache/csl_fixture_status_csl_2026.json`；状态 cache 缺失时，runner 可以只读复用已经保存且双源一致的 `data/cache/csl_results_sources/` 原始响应。官方与 7M 对日期、主客队或状态存在分歧时不更新状态 cache，避免单源误撤首选。确认延期的场次会保留在公开比赛列表并输出 `fixture_status=POSTPONED`，页面显示“比赛延期”，`match_decision` 强制投影为 `NO_CLEAN_MARKET`；该场不参与赛前锚点/首选鲜度调度，也不会进入 closing 或赛后评估。官方出现同一主客队的新日期后，新赛程重新按新赔率计算，赔率源仍残留的更早旧事件会被压掉，避免旧、新场次重复。结果/状态刷新失败但本地 cache 可用时会在 `data_quality.stale_sources` 标记，不静默当作新鲜状态。
+
 中超自动刷新采用“单场 due 触发、全赛事统一刷新”的省额度策略：调度器扫描当前 `csl_2026` snapshot 里的所有未来比赛，任一比赛命中锚点或首选鲜度保底就刷新整个 `soccer_china_superleague` sport key 一次，避免按每场单独调用 The Odds API。默认锚点为 `T-90` 和 `T-25`，正常额度时另保证在 `valid_until` 前 20 分钟刷新；全局最短刷新间隔为 30 分钟；当 quota remaining 低于等于 30 时只保留 `T-25`；没有未来比赛时最多每 24 小时做一次 discovery refresh，用于发现新的 odds event 赛程。
 
 ```bash

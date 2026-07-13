@@ -484,13 +484,20 @@ def project_match_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     for match in snapshot.get("matches", []):
         home = match.get("home_team", "")
         away = match.get("away_team", "")
+        fixture_status = str(match.get("fixture_status") or "SCHEDULED").upper()
         refresh_plan = match.get("refresh_plan") or {}
         competition = _competition_block_for_snapshot({"matches": [match]})
-        projected_decision = (
-            _public_no_pick()
-            if _match_pick_blocked(snapshot, match)
-            else project_match_decision(match.get("match_decision"), as_of=as_of)
-        )
+        if fixture_status == "POSTPONED":
+            policy_version = str((match.get("match_decision") or {}).get("policy_version") or "")
+            projected_decision = _public_no_pick(
+                "match_pick_v3" if policy_version == "match_pick_v3" else "match_pick_v2"
+            )
+        else:
+            projected_decision = (
+                _public_no_pick()
+                if _match_pick_blocked(snapshot, match)
+                else project_match_decision(match.get("match_decision"), as_of=as_of)
+            )
         rows.append(
             {
                 "kickoff_at_utc": match.get("kickoff_at_utc", ""),
@@ -501,6 +508,7 @@ def project_match_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "match_label": f"{home} vs {away}".strip(),
                 "competition_id": competition.get("id"),
                 "competition_label": competition.get("name") or competition.get("label"),
+                "fixture_status": fixture_status,
                 "next_update_at": refresh_plan.get("next_update_at"),
                 "next_update_label": refresh_plan.get("label"),
                 "next_update_description": refresh_plan.get("description"),

@@ -2,6 +2,14 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-13 中超延期状态闭环
+
+- 定位第 18 轮延期场次仍显示首选的根因：中超赛前 snapshot 只跟随 The Odds API event / `commence_time`，没有消费中足联官方 `match_status`；赔率源未及时撤场时，延期场次会保留到原定开球时间，浙江 vs 青岛海牛还曾同时出现原日期与 7 月 14 日补赛两个事件。
+- 新增中足联官方 `Fixture/Postponed/Played` 与 7M `Scores_Arr/Memo_Arr` 的离线赛程状态解析及全量双源校验。双方日期、主客队和状态全部一致且仍有未完赛场次时，live results refresh 原子写入 ignored `data/cache/csl_fixture_status_csl_2026.json`；状态 cache 缺失时 runner 可只读复用保存的双源 raw，任何缺行或状态冲突都不覆盖旧 cache。
+- League runner 用双源状态覆盖赔率事件：`POSTPONED` 强制撤销首选并保留为明确延期记录；同一主客队已确认更晚新日期时压掉赔率源残留旧 event。公开 `/api/matches` 增加 `fixture_status`，页面显示“比赛延期 / 等待官方公布补赛时间”，延期不计入“暂无可靠首选”、不触发 T-90/T-25/鲜度保底，也不进入 closing、赛后回测或观察报告 no-pick；结果/状态刷新失败沿用 cache 并标 `stale_sources`。
+- 使用 2026-07-12 保存的真实 raw 离线核对：中足联与 7M 各 240 场，101 场未完赛状态 101/101 一致，识别 4 场 `POSTPONED`；浙江 vs 青岛海牛只保留 7 月 14 日新 `SCHEDULED`。当前赔率 cache 离线构建为 7 场正常待赛 + 4 场延期，页面不再把 4 场延期识别为已开赛待赛果。
+- TDD 聚焦回归 `94/94`；Python 3.12 可执行全项目回归 `729/729`，仅因该 runtime 未安装可选 FastAPI 跳过对应模块，系统 Python FastAPI 补跑 `13/13`，合计 `742/742`；`compileall` 和 `git diff --check` 通过。实现阶段未联网、未读取 `.env`、未调用 The Odds API、未消耗 quota、未发布 snapshot、未部署、未修改 LaunchAgent、未 commit/push。`RECENT_WORK.md` 按用户确认仅追加本条，不整理旧记录。
+
 ## 2026-07-10 筛选后比赛列表计数同步
 
 - 定位赛事筛选后左栏仍显示“比赛列表 12场”的原因：前端 `applyFilters()` 只隐藏不匹配的行并切换详情，标题仍是服务端首次渲染的静态总数。

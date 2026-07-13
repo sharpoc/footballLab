@@ -205,6 +205,7 @@ def test_build_observation_report_sanitizes_snapshot_and_counts_decisions():
     assert report["competition"]["id"] == "csl_2026"
     assert report["counts"]["matches"] == 1
     assert report["counts"]["match_picks"] == 1
+    assert report["counts"]["postponed"] == 0
     assert report["counts"]["no_pick"] == 0
     assert report["counts"]["missing_decisions"] == 0
     assert report["warnings"] == ["club_rating_pending", "odds_event_only"]
@@ -282,13 +283,17 @@ def test_observation_report_counts_no_pick_and_missing_decision_separately():
     missing["home_team"] = "Beijing Guoan"
     missing["away_team"] = "Chengdu Rongcheng"
     missing.pop("match_decision")
-    snapshot["matches"] = [pick, no_pick, missing]
+    postponed = json.loads(json.dumps(no_pick, ensure_ascii=False))
+    postponed["source_event_id"] = "csl-event-4"
+    postponed["fixture_status"] = "POSTPONED"
+    snapshot["matches"] = [pick, no_pick, missing, postponed]
 
     report = build_observation_report(snapshot, generated_at="2026-06-29T10:40:00Z")
 
     assert report["counts"] == {
-        "matches": 3,
+        "matches": 4,
         "match_picks": 1,
+        "postponed": 1,
         "no_pick": 1,
         "missing_decisions": 1,
     }
@@ -328,6 +333,7 @@ def test_observation_report_cli_writes_default_markdown_path():
             "status": "warn",
             "matches": 1,
             "match_picks": 1,
+            "postponed": 0,
             "no_pick": 0,
             "missing_decisions": 0,
             "format": "markdown",

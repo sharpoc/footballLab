@@ -200,6 +200,11 @@ def _safe_match(match: dict[str, Any]) -> dict[str, Any]:
     return {
         "source_event_id": _safe_text(match.get("source_event_id")),
         "kickoff_at_utc": match.get("kickoff_at_utc"),
+        "fixture_status": (
+            "POSTPONED"
+            if str(match.get("fixture_status") or "").upper() == "POSTPONED"
+            else "SCHEDULED"
+        ),
         "home_team": match.get("home_team"),
         "away_team": match.get("away_team"),
         "elo": _safe_elo(match),
@@ -211,21 +216,27 @@ def _safe_match(match: dict[str, Any]) -> dict[str, Any]:
 
 
 def _decision_counts(matches: list[dict[str, Any]]) -> dict[str, int]:
+    postponed = sum(
+        1 for match in matches if match.get("fixture_status") == "POSTPONED"
+    )
     match_picks = sum(
         1
         for match in matches
+        if match.get("fixture_status") != "POSTPONED"
         if (match.get("match_decision") or {}).get("label") == "MATCH_PICK"
     )
     no_pick = sum(
         1
         for match in matches
+        if match.get("fixture_status") != "POSTPONED"
         if (match.get("match_decision") or {}).get("label") == "NO_CLEAN_MARKET"
     )
     return {
         "matches": len(matches),
         "match_picks": match_picks,
+        "postponed": postponed,
         "no_pick": no_pick,
-        "missing_decisions": len(matches) - match_picks - no_pick,
+        "missing_decisions": len(matches) - match_picks - no_pick - postponed,
     }
 
 
@@ -314,6 +325,7 @@ def format_observation_markdown(report: dict[str, Any]) -> str:
         f"status: {report.get('status')}",
         f"matches: {counts.get('matches', 0)}",
         f"match picks: {counts.get('match_picks', 0)}",
+        f"postponed: {counts.get('postponed', 0)}",
         f"no pick: {counts.get('no_pick', 0)}",
         f"missing decisions: {counts.get('missing_decisions', 0)}",
         "",
@@ -413,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": report["status"],
         "matches": report["counts"]["matches"],
         "match_picks": report["counts"]["match_picks"],
+        "postponed": report["counts"]["postponed"],
         "no_pick": report["counts"]["no_pick"],
         "missing_decisions": report["counts"]["missing_decisions"],
         "format": args.format,

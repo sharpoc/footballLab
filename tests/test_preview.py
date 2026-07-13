@@ -87,6 +87,21 @@ def test_preview_renders_only_match_picks_and_no_pick_state():
     assert "未过门槛时主动留空" not in html
 
 
+def test_preview_renders_postponed_match_without_pick_or_awaiting_result_copy():
+    snapshot = _snapshot()
+    postponed = snapshot["matches"][1]
+    postponed["fixture_status"] = "POSTPONED"
+    postponed["kickoff_at_utc"] = "2000-06-12T01:00:00+00:00"
+
+    html = build_preview_html(snapshot)
+
+    assert "比赛延期" in html
+    assert "等待官方公布补赛时间" in html
+    assert "上海海港 对 山东泰山" in html
+    assert "比赛已由官方确认延期，原开球时间和原首选均已失效" in html
+    assert "赛前首选（已封盘）" not in html
+
+
 def test_preview_restores_original_workbench_layout_without_grade_ui():
     html = build_preview_html(_snapshot())
 

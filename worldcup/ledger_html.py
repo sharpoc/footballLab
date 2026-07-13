@@ -1948,7 +1948,16 @@ def _decision_odds_label(value: Any) -> str:
         return str(value)
 
 
-def _decision_display(decision: Any) -> dict[str, str]:
+def _decision_display(decision: Any, fixture_status: Any = None) -> dict[str, str]:
+    if str(fixture_status or "").upper() == "POSTPONED":
+        return {
+            "state": "postponed",
+            "title": "比赛延期",
+            "market": "等待官方公布补赛时间",
+            "probability": "—",
+            "no_loss": "—",
+            "odds": "—",
+        }
     if not isinstance(decision, dict) or decision.get("label") == "NO_CLEAN_MARKET":
         return {
             "state": "none",
@@ -2019,7 +2028,8 @@ def _decision_live_rows(
         kickoff = _decision_parse_at(projected.get("kickoff_at_utc"))
         if key in finished_keys:
             continue
-        awaiting_result = kickoff is not None and kickoff <= now_at
+        postponed = str(projected.get("fixture_status") or "").upper() == "POSTPONED"
+        awaiting_result = not postponed and kickoff is not None and kickoff <= now_at
         if awaiting_result:
             for source_matches in source_match_indexes:
                 source_match = source_matches.get(key) or {}
@@ -2036,7 +2046,7 @@ def _decision_live_rows(
         home = format_team_label(home_source)
         away = format_team_label(away_source)
         decision = projected.get("match_decision")
-        view = _decision_display(decision)
+        view = _decision_display(decision, projected.get("fixture_status"))
         stage_group = " · ".join(
             str(part)
             for part in (projected.get("stage"), projected.get("group"))
@@ -2067,7 +2077,9 @@ def _decision_live_rows(
                 "kickoff_time": kickoff_time,
                 "stage_group": stage_group,
                 "search_text": search_text,
-                "match_state": "awaiting_result" if awaiting_result else "upcoming",
+                "match_state": (
+                    "postponed" if postponed else "awaiting_result" if awaiting_result else "upcoming"
+                ),
                 "decision_view": view,
             }
         )
@@ -2144,7 +2156,9 @@ def _render_decision_date_strip(rows: list[dict[str, Any]], *, history: bool = F
 def _render_decision_summary(snapshot: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     picks = sum(1 for row in rows if row["decision_view"]["state"] == "pick")
     awaiting_result = sum(1 for row in rows if row.get("match_state") == "awaiting_result")
-    upcoming = len(rows) - awaiting_result
+    postponed = sum(1 for row in rows if row.get("match_state") == "postponed")
+    upcoming = len(rows) - awaiting_result - postponed
+    no_pick = len(rows) - picks - postponed
     stale = bool((snapshot.get("data_quality") or {}).get("stale_sources"))
     errors = bool((snapshot.get("data_quality") or {}).get("source_errors"))
     quality = "需注意" if stale or errors else "正常"
@@ -2153,7 +2167,8 @@ def _render_decision_summary(snapshot: dict[str, Any], rows: list[dict[str, Any]
         ("待开赛", upcoming, "neutral"),
         ("赛果待确认", awaiting_result, "warn" if awaiting_result else "neutral"),
         ("本场首选", picks, "neutral"),
-        ("暂无可靠首选", len(rows) - picks, "neutral"),
+        ("比赛延期", postponed, "warn" if postponed else "neutral"),
+        ("暂无可靠首选", no_pick, "neutral"),
         ("数据质量", quality, tone),
     )
     return '<section class="summary-grid" aria-label="首选摘要">{cards}</section>'.format(
@@ -2217,6 +2232,7 @@ def _render_decision_workbench(
             if part
         )
         awaiting_result = row.get("match_state") == "awaiting_result"
+        postponed = row.get("match_state") == "postponed"
         status_label = "待赛果" if awaiting_result else decision["title"]
         detail_status_label = "已开赛·赛果待确认" if awaiting_result else decision["title"]
         badge_state = (
@@ -2258,12 +2274,18 @@ def _render_decision_workbench(
         next_update = (
             "等待赛果确认"
             if awaiting_result
+            else "等待官方公布补赛时间"
+            if postponed
             else row.get("next_update_description") or row.get("next_update_label") or "按调度计划更新"
         )
-        detail_heading = "赛前首选（已封盘）" if awaiting_result else "本场首选"
+        detail_heading = (
+            "比赛延期" if postponed else "赛前首选（已封盘）" if awaiting_result else "本场首选"
+        )
         detail_note = (
             "比赛已开赛，赛果尚未确认；下列内容为赛前定格首选，不是滚球建议。"
             if awaiting_result
+            else "比赛已由官方确认延期，原开球时间和原首选均已失效；等待补赛时间确认后重新计算。"
+            if postponed
             else "每场只保留一个通过概率、赔率和数据质量门槛的方向；不够可靠时主动留空。"
         )
         detail_panels.append(
@@ -2296,6 +2318,8 @@ def _render_decision_workbench(
                 freshness=(
                     "赛前首选已封盘"
                     if awaiting_result
+                    else "比赛延期"
+                    if postponed
                     else "缓存" if row.get("stale") else "正常"
                 ),
             )

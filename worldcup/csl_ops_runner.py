@@ -373,6 +373,7 @@ def _observation_step(
             "path": str(written),
             "matches": _safe_count(counts.get("matches")) or 0,
             "match_picks": _safe_count(counts.get("match_picks")) or 0,
+            "postponed": _safe_count(counts.get("postponed")) or 0,
             "no_pick": _safe_count(counts.get("no_pick")) or 0,
             "missing_decisions": _safe_count(counts.get("missing_decisions")) or 0,
         },

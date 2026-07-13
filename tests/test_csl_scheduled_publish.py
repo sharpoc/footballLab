@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 import urllib.error
 
 from worldcup.csl_scheduled_publish import (
+    _runner_diagnostic,
     build_csl_publish_decision,
     run_csl_scheduled_publish,
 )
@@ -49,6 +50,45 @@ def test_t90_anchor_due_triggers_competition_refresh():
     assert decision["reason"] == "match_anchor_due"
     assert decision["due_matches"][0]["anchor"] == "T-90"
     assert decision["due_matches"][0]["match_label"] == "Home 1 vs Away 1"
+
+
+def test_postponed_match_never_triggers_anchor_or_pick_expiry_refresh():
+    snapshot = _snapshot(
+        ["2026-07-10T12:00:00+00:00"],
+        observed_at="2026-07-10T09:00:00+00:00",
+    )
+    snapshot["matches"][0]["fixture_status"] = "POSTPONED"
+    snapshot["matches"][0]["match_decision"] = {
+        "policy_version": "match_pick_v3",
+        "label": "MATCH_PICK",
+        "valid_until": "2026-07-10T12:00:00+00:00",
+    }
+
+    decision = build_csl_publish_decision(
+        snapshot=snapshot,
+        quota_remaining=200,
+        now="2026-07-10T10:30:00+00:00",
+    )
+
+    assert decision["should_refresh"] is False
+    assert decision["reason"] == "discovery_not_due"
+    assert decision["due_matches"] == []
+
+
+def test_runner_diagnostic_counts_postponed_separately_from_no_pick():
+    snapshot = _snapshot(["2026-07-10T12:00:00+00:00"])
+    snapshot["matches"][0]["fixture_status"] = "POSTPONED"
+    snapshot["matches"][0]["match_decision"] = {
+        "schema_version": 2,
+        "policy_version": "match_pick_v3",
+        "label": "NO_CLEAN_MARKET",
+    }
+
+    diagnostic = _runner_diagnostic(snapshot)
+
+    assert diagnostic["postponed"] == 1
+    assert diagnostic["no_pick"] == 0
+    assert diagnostic["missing_decisions"] == 0
 
 
 def test_pick_expiry_guard_refreshes_before_future_csl_picks_expire():
@@ -327,6 +367,52 @@ def test_archive_failure_warns_but_does_not_block_current_publish():
         "error_type": "OSError",
     }
     assert "snapshot_archive_failed" in written["data_quality"]["warnings"]
+
+
+def test_results_failure_marks_cached_fixture_status_stale_without_blocking_odds_publish():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot_path = root / "csl_publish_snapshot.json"
+        diagnostics_path = root / "csl_live_league_snapshot.json"
+        quota_path = root / "quota.json"
+        _write_json(quota_path, {"providers": {"theoddsapi_secondary": {"remaining": 200}}})
+
+        result = run_csl_scheduled_publish(
+            now="2026-07-10T10:30:00+00:00",
+            live=True,
+            force=True,
+            cache_dir=root,
+            quota_path=quota_path,
+            snapshot_path=snapshot_path,
+            diagnostics_snapshot_path=diagnostics_path,
+            load_env=lambda _path: {"INGEST_HMAC_SECRET": "test-secret"},
+            results_refresh_fn=lambda **_kwargs: {
+                "status": "error",
+                "reason": "results_refresh_failed_using_existing_cache",
+            },
+            refresh_fn=lambda **_kwargs: {
+                "status": "fetched",
+                "events": 1,
+                "quota_entry": {"remaining": 197, "used": 303, "last": 3},
+                "theoddsapi_provider": "theoddsapi_secondary",
+            },
+            snapshot_builder=lambda _cache_dir, competition_id, snapshot_at: _snapshot(
+                ["2026-07-10T12:00:00+00:00"], observed_at=snapshot_at
+            ),
+            publish_fn=lambda **_kwargs: {
+                "status": "sent",
+                "http_status": 200,
+                "ingest_status": "stored",
+            },
+        )
+        written = json.loads(snapshot_path.read_text(encoding="utf-8"))
+
+    assert result["status"] == "published"
+    assert "club_results_refresh_failed" in written["data_quality"]["warnings"]
+    assert written["data_quality"]["stale_sources"] == [
+        "csl_results",
+        "csl_fixture_status",
+    ]
 
 
 def test_csl_publish_retries_pending_snapshot_without_consuming_refresh_again():

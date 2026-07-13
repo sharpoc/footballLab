@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from worldcup.club_rating import ClubResult, load_club_results_csv
 from worldcup.collectors.csl_result_sources import (
+    parse_cfl_official_fixture_rows,
     parse_cfl_official_result_rows,
+    parse_sevenm_fixture_rows,
     parse_sevenm_fixture_result_rows,
 )
 from worldcup.collectors.csl_results import compare_csl_sources, parse_csl_result_rows
@@ -69,6 +72,94 @@ def _write_raw_atomic(path: Path, content: str) -> None:
     temporary.replace(path)
 
 
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    _write_raw_atomic(
+        path,
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+    )
+
+
+def _fixture_key(row: dict[str, str]) -> tuple[str, str, str]:
+    return (
+        str(row.get("kickoff_at_utc") or ""),
+        str(row.get("home_canonical") or ""),
+        str(row.get("away_canonical") or ""),
+    )
+
+
+def build_verified_fixture_status_payload(
+    official_rows: list[dict[str, str]],
+    sevenm_rows: list[dict[str, str]],
+    *,
+    competition_id: str,
+    observed_at: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    official = {
+        _fixture_key(row): row for row in official_rows if row.get("status") != "PLAYED"
+    }
+    sevenm = {
+        _fixture_key(row): row for row in sevenm_rows if row.get("status") != "PLAYED"
+    }
+    missing_in_sevenm = sorted("|".join(key) for key in official.keys() - sevenm.keys())
+    missing_in_official = sorted("|".join(key) for key in sevenm.keys() - official.keys())
+    mismatched = sorted(
+        "|".join(key)
+        for key in official.keys() & sevenm.keys()
+        if official[key].get("status") != sevenm[key].get("status")
+    )
+    verified = bool(official) and not missing_in_sevenm and not missing_in_official and not mismatched
+    fixtures = []
+    if verified:
+        for key in sorted(official):
+            primary = official[key]
+            check = sevenm[key]
+            fixtures.append(
+                {
+                    key_name: primary[key_name]
+                    for key_name in (
+                        "season",
+                        "round",
+                        "kickoff_at_utc",
+                        "home_team",
+                        "away_team",
+                        "home_canonical",
+                        "away_canonical",
+                        "status",
+                    )
+                }
+                | {
+                    "source_match_ids": {
+                        "cfl_official": primary.get("source_match_id"),
+                        "sevenm": check.get("source_match_id"),
+                    }
+                }
+            )
+    payload = {
+        "schema_version": 1,
+        "competition_id": competition_id,
+        "observed_at": observed_at,
+        "source": "cfl_official+sevenm",
+        "fixtures": fixtures,
+        "quality": {
+            "verified": verified,
+            "official_active_matches": len(official),
+            "sevenm_active_matches": len(sevenm),
+            "missing_in_sevenm": missing_in_sevenm,
+            "missing_in_official": missing_in_official,
+            "status_mismatches": mismatched,
+        },
+    }
+    summary = {
+        "status": "verified" if verified else "blocked",
+        "reason": None if verified else "fixture_status_dual_source_verification_failed",
+        "active_matches": len(fixtures),
+        "postponed_matches": sum(
+            1 for fixture in fixtures if fixture.get("status") == "POSTPONED"
+        ),
+    }
+    return payload, summary
+
+
 def _existing_replay_row(result: ClubResult) -> dict[str, str]:
     return {
         "competition_id": result.competition_id,
@@ -90,6 +181,7 @@ def run_csl_results_refresh(
     season: str = "2026",
     replay_path: str | Path = DEFAULT_REPLAY_PATH,
     raw_dir: str | Path = DEFAULT_RAW_DIR,
+    fixture_status_path: str | Path | None = None,
     official_url: str = CFL_OFFICIAL_2026_URL,
     sevenm_url: str = SEVENM_2026_FIXTURE_URL,
     official_fetch: OfficialFetch = fetch_cfl_official_results,
@@ -107,6 +199,31 @@ def run_csl_results_refresh(
 
     official_payload = official_fetch(official_url)
     sevenm_source = sevenm_fetch(sevenm_url)
+    observed_at = datetime.now(timezone.utc).isoformat()
+    official_fixtures = parse_cfl_official_fixture_rows(
+        official_payload,
+        season=season,
+        source_url=official_url,
+    )
+    sevenm_fixtures = parse_sevenm_fixture_rows(
+        sevenm_source,
+        season=season,
+        source_url=sevenm_url,
+    )
+    fixture_payload, fixture_status = build_verified_fixture_status_payload(
+        official_fixtures,
+        sevenm_fixtures,
+        competition_id=competition_id,
+        observed_at=observed_at,
+    )
+    resolved_fixture_status_path = (
+        Path(fixture_status_path)
+        if fixture_status_path is not None
+        else replay.parent / f"csl_fixture_status_{competition_id}.json"
+    )
+    if write and fixture_status["status"] == "verified":
+        _write_json_atomic(resolved_fixture_status_path, fixture_payload)
+        fixture_status["status"] = "updated"
     primary = parse_csl_result_rows(
         parse_sevenm_fixture_result_rows(
             sevenm_source,
@@ -149,6 +266,7 @@ def run_csl_results_refresh(
             "check_matches": check.valid_rows,
             "verified_matches": len(compared.clean_rows),
             "quality": quality,
+            "fixture_status": fixture_status,
         }
 
     new_current = {row.match_key: row for row in compared.clean_rows}
@@ -169,6 +287,7 @@ def run_csl_results_refresh(
             "reason": "existing_results_regression",
             "write": write,
             "regression_count": len(regression),
+            "fixture_status": fixture_status,
         }
 
     historical = [_existing_replay_row(row) for row in existing if row.season != season]
@@ -199,6 +318,7 @@ def run_csl_results_refresh(
         "verified_current_season_matches": len(current),
         "total_matches": len(combined),
         "latest_result_date": latest,
+        "fixture_status": fixture_status,
     }
 
 

@@ -76,6 +76,21 @@ def test_closing_picks_last_csl_snapshot_before_kickoff():
     assert entry["market"]["1x2"]["odds"]["home"] == 2.4
 
 
+def test_closing_never_uses_postponed_snapshot_entry():
+    snapshot = _snapshot("2026-07-03T11:30:00+00:00", 2.4)
+    snapshot["matches"][0]["fixture_status"] = "POSTPONED"
+
+    entry = closing_match_entry(
+        [snapshot],
+        "2026-07-03",
+        "yunnan_yukun",
+        "henan",
+        competition_id="csl_2026",
+    )
+
+    assert entry is None
+
+
 def test_closing_filters_by_competition_id_when_history_is_mixed():
     csl_snapshot = _snapshot("2026-07-03T11:20:00+00:00", 2.4)
     epl_snapshot = _snapshot("2026-07-03T11:40:00+00:00", 1.6)

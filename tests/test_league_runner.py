@@ -83,6 +83,21 @@ def _write_club_results_cache(cache_dir: Path, rows: list[dict[str, str]]) -> No
             writer.writerow(row)
 
 
+def _write_fixture_status_cache(cache_dir: Path, fixtures: list[dict]) -> None:
+    (cache_dir / "csl_fixture_status_csl_2026.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "competition_id": "csl_2026",
+                "observed_at": "2026-07-10T12:00:00+00:00",
+                "source": "cfl_official+sevenm",
+                "fixtures": fixtures,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_cap_signals_for_pending_club_rating_caps_strong_grades():
     signals = [
         Signal(MarketType.X12, "home", Grade.S, 0.12, 0.08, "OK", ["value_edge"]),
@@ -140,6 +155,89 @@ def test_build_league_snapshot_from_cache_builds_local_csl_snapshot():
         assert "market_consensus_rating_fallback" in match["match_decision"]["reasons"]
         assert "club_rating_pending" in match["match_decision"]["risks"]
         assert "club_rating_missing" in match["match_decision"]["risks"]
+
+
+def test_build_league_snapshot_marks_postponed_and_suppresses_superseded_odds_event():
+    with TemporaryDirectory() as tmp:
+        cache_dir = Path(tmp) / "cache"
+        _write_csl_odds_cache(cache_dir)
+        odds_path = cache_dir / "theoddsapi_csl_2026_odds.json"
+        odds_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "zhejiang-old",
+                        "sport_key": "soccer_china_superleague",
+                        "commence_time": "2026-07-11T11:00:00Z",
+                        "home_team": "Zhejiang",
+                        "away_team": "Qingdao Hainiu FC",
+                        "bookmakers": [],
+                    },
+                    {
+                        "id": "shenhua-postponed",
+                        "sport_key": "soccer_china_superleague",
+                        "commence_time": "2026-07-11T11:35:00Z",
+                        "home_team": "Shanghai Shenhua FC",
+                        "away_team": "Beijing FC",
+                        "bookmakers": [],
+                    },
+                    {
+                        "id": "zhejiang-rescheduled",
+                        "sport_key": "soccer_china_superleague",
+                        "commence_time": "2026-07-14T11:35:00Z",
+                        "home_team": "Zhejiang",
+                        "away_team": "Qingdao Hainiu FC",
+                        "bookmakers": [],
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+        _write_fixture_status_cache(
+            cache_dir,
+            [
+                {
+                    "season": "2026",
+                    "round": "18",
+                    "kickoff_at_utc": "2026-07-11T11:35:00+00:00",
+                    "home_team": "上海申花",
+                    "away_team": "北京国安",
+                    "home_canonical": "shanghai_shenhua",
+                    "away_canonical": "beijing_guoan",
+                    "status": "POSTPONED",
+                    "source_match_ids": {"cfl_official": "official-1", "sevenm": "7001"},
+                },
+                {
+                    "season": "2026",
+                    "round": "18",
+                    "kickoff_at_utc": "2026-07-14T11:35:00+00:00",
+                    "home_team": "浙江队",
+                    "away_team": "青岛海牛",
+                    "home_canonical": "zhejiang_professional",
+                    "away_canonical": "qingdao_hainiu",
+                    "status": "SCHEDULED",
+                    "source_match_ids": {"cfl_official": "official-2", "sevenm": "7002"},
+                },
+            ],
+        )
+
+        snapshot = build_league_snapshot_from_cache(
+            cache_dir,
+            snapshot_at="2026-07-10T13:00:00+00:00",
+        )
+
+    assert snapshot["counts"]["matches"] == 2
+    assert snapshot["counts"]["postponed_matches"] == 1
+    assert snapshot["data_quality"]["fixture_status"]["superseded_odds_events"] == 1
+    assert {match["source_event_id"] for match in snapshot["matches"]} == {
+        "shenhua-postponed",
+        "zhejiang-rescheduled",
+    }
+    postponed = next(
+        match for match in snapshot["matches"] if match["fixture_status"] == "POSTPONED"
+    )
+    assert postponed["match_decision"]["label"] == "NO_CLEAN_MARKET"
+    assert postponed["match_decision"]["reasons"] == ["fixture_postponed"]
 
 
 def test_build_league_snapshot_reports_missing_club_rating_quality():

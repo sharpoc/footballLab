@@ -432,6 +432,28 @@ def test_project_match_rows_returns_preview_safe_rows():
     assert "bet_amount" not in rows[0]
 
 
+def test_project_match_rows_exposes_postponed_status_and_never_exposes_pick():
+    snapshot = _snapshot()
+    snapshot["matches"][0]["fixture_status"] = "POSTPONED"
+    snapshot["matches"][0]["match_decision"] = {
+        "schema_version": 2,
+        "policy_version": "match_pick_v3",
+        "label": "MATCH_PICK",
+        "market": "1X2",
+        "selection": "home",
+        "valid_until": "2099-06-11T19:00:00+00:00",
+    }
+
+    row = project_match_rows(snapshot)[0]
+
+    assert row["fixture_status"] == "POSTPONED"
+    assert row["match_decision"] == {
+        "schema_version": 2,
+        "policy_version": "match_pick_v3",
+        "label": "NO_CLEAN_MARKET",
+    }
+
+
 def test_live_projection_never_repackages_legacy_or_expired_pick_as_current_pick():
     snapshot = _snapshot()
     snapshot["data_quality"]["stale_sources"] = []
@@ -560,6 +582,7 @@ def test_project_match_rows_ignores_probability_families_for_public_summary():
             "match_label": "Mexico vs South Africa",
             "competition_id": "fifa_world_cup_2026",
             "competition_label": "2026 世界杯",
+            "fixture_status": "SCHEDULED",
             "next_update_at": "2026-06-09T00:00:00+00:00",
             "next_update_label": "常规",
             "next_update_description": None,

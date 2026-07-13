@@ -9,10 +9,15 @@ from pathlib import Path
 from typing import Any
 
 from worldcup.club_rating import ClubRatingPool, load_club_rating_pool
+from worldcup.collectors.csl_result_sources import (
+    parse_cfl_official_fixture_rows,
+    parse_sevenm_fixture_rows,
+)
 from worldcup.collectors.league_odds import parse_league_odds_events
 from worldcup.collectors.models import EloRating, Fixture, ParsedOddsEvent
 from worldcup.competitions import get_competition
 from worldcup.config import load_config
+from worldcup.csl_results_refresh import build_verified_fixture_status_payload
 from worldcup.match_decision import decide_match, prepare_match_input_for_pick
 from worldcup.local_runner import (
     _analysis_to_dict,
@@ -31,6 +36,135 @@ def _now_utc_iso() -> str:
 
 def _odds_cache_name(competition_id: str) -> str:
     return f"theoddsapi_{competition_id}_odds.json"
+
+
+def _fixture_status_cache_name(competition_id: str) -> str:
+    return f"csl_fixture_status_{competition_id}.json"
+
+
+def _normalized_utc(value: str) -> str:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError(f"Expected timezone-aware datetime: {value}")
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _fixture_status_key(
+    kickoff_at_utc: str,
+    home_canonical: str | None,
+    away_canonical: str | None,
+) -> tuple[str, str, str] | None:
+    if not home_canonical or not away_canonical:
+        return None
+    try:
+        kickoff = _normalized_utc(kickoff_at_utc)
+    except ValueError:
+        return None
+    return kickoff, home_canonical, away_canonical
+
+
+def _load_fixture_status_cache(cache_dir: Path, competition_id: str) -> dict[str, Any]:
+    path = cache_dir / _fixture_status_cache_name(competition_id)
+    if not path.exists():
+        raw_root = cache_dir / "csl_results_sources"
+        official_path = raw_root / "cfl_official_2026.json"
+        sevenm_path = raw_root / "sevenm_2026_fixture.js"
+        if official_path.exists() and sevenm_path.exists():
+            try:
+                official_rows = parse_cfl_official_fixture_rows(
+                    _read_json(official_path),
+                    season="2026",
+                    source_url="saved-cfl-official",
+                )
+                sevenm_rows = parse_sevenm_fixture_rows(
+                    sevenm_path.read_text(encoding="utf-8"),
+                    season="2026",
+                    source_url="saved-sevenm",
+                )
+                observed_at = datetime.fromtimestamp(
+                    min(official_path.stat().st_mtime, sevenm_path.stat().st_mtime),
+                    tz=timezone.utc,
+                ).isoformat()
+                payload, summary = build_verified_fixture_status_payload(
+                    official_rows,
+                    sevenm_rows,
+                    competition_id=competition_id,
+                    observed_at=observed_at,
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                payload, summary = {}, {"status": "blocked"}
+            if summary.get("status") == "verified":
+                return {
+                    "status": "verified_saved_raw",
+                    "path": f"{official_path}|{sevenm_path}",
+                    "observed_at": payload.get("observed_at"),
+                    "source": payload.get("source"),
+                    "fixtures": payload.get("fixtures") or [],
+                }
+        return {"status": "missing", "path": str(path), "fixtures": []}
+    try:
+        payload = _read_json(path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {
+            "status": "invalid",
+            "path": str(path),
+            "fixtures": [],
+        }
+    if not isinstance(payload, dict) or payload.get("competition_id") != competition_id:
+        return {
+            "status": "invalid",
+            "path": str(path),
+            "fixtures": [],
+        }
+    fixtures = [
+        fixture
+        for fixture in payload.get("fixtures") or []
+        if isinstance(fixture, dict)
+        and fixture.get("status") in {"SCHEDULED", "POSTPONED"}
+        and _fixture_status_key(
+            str(fixture.get("kickoff_at_utc") or ""),
+            str(fixture.get("home_canonical") or "") or None,
+            str(fixture.get("away_canonical") or "") or None,
+        )
+        is not None
+    ]
+    return {
+        "status": "verified",
+        "path": str(path),
+        "observed_at": payload.get("observed_at"),
+        "source": payload.get("source"),
+        "fixtures": fixtures,
+    }
+
+
+def _postponed_match(
+    fixture_status: dict[str, Any],
+    *,
+    competition: dict[str, Any],
+    source_event_id: str | None = None,
+) -> dict[str, Any]:
+    source_ids = fixture_status.get("source_match_ids") or {}
+    event_id = source_event_id or str(source_ids.get("cfl_official") or "")
+    return {
+        "source_match_no": None,
+        "source_event_id": event_id,
+        "kickoff_at_utc": _normalized_utc(str(fixture_status["kickoff_at_utc"])),
+        "stage": None,
+        "group": None,
+        "venue_name": None,
+        "home_team": fixture_status.get("home_team"),
+        "away_team": fixture_status.get("away_team"),
+        "home_canonical": fixture_status.get("home_canonical"),
+        "away_canonical": fixture_status.get("away_canonical"),
+        "competition": dict(competition),
+        "fixture_status": "POSTPONED",
+        "match_decision": {
+            "schema_version": 2,
+            "policy_version": "match_pick_v3",
+            "label": "NO_CLEAN_MARKET",
+            "reasons": ["fixture_postponed"],
+        },
+    }
 
 
 def _invalid_odds_quality(
@@ -192,6 +326,20 @@ def build_league_snapshot_from_cache(
     )
     cache_path = Path(cache_dir) / _odds_cache_name(competition_id)
     parse_result = parse_league_odds_events(_read_json(cache_path), competition_id)
+    fixture_status = _load_fixture_status_cache(Path(cache_dir), competition_id)
+    status_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    scheduled_by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for status_row in fixture_status["fixtures"]:
+        key = _fixture_status_key(
+            str(status_row.get("kickoff_at_utc") or ""),
+            str(status_row.get("home_canonical") or "") or None,
+            str(status_row.get("away_canonical") or "") or None,
+        )
+        if key is None:
+            continue
+        status_by_key[key] = status_row
+        if status_row.get("status") == "SCHEDULED":
+            scheduled_by_pair.setdefault((key[1], key[2]), []).append(status_row)
     club_rating_result = load_club_rating_pool(
         cache_dir,
         competition_id,
@@ -203,11 +351,42 @@ def build_league_snapshot_from_cache(
     rating_pool = club_rating_result.pool
 
     matches = []
+    analyzed_matches = 0
+    represented_postponed: set[tuple[str, str, str]] = set()
+    superseded_odds_events = 0
     missing_rating_teams: set[str] = set()
     ineligible_rating_teams: set[str] = set()
     club_rating_pending = competition.rating_policy == "club_rating_pending"
     rating_mode = club_rating_result.quality.mode
     for fixture, odds_event in zip(parse_result.fixtures, parse_result.odds_events):
+        status_key = _fixture_status_key(
+            fixture.kickoff_at_utc.isoformat(),
+            fixture.home_canonical,
+            fixture.away_canonical,
+        )
+        status_row = status_by_key.get(status_key) if status_key is not None else None
+        if status_row is not None and status_row.get("status") == "POSTPONED":
+            matches.append(
+                _postponed_match(
+                    status_row,
+                    competition=competition.snapshot_block(),
+                    source_event_id=odds_event.source_event_id,
+                )
+            )
+            represented_postponed.add(status_key)
+            continue
+        if status_key is not None and status_row is None:
+            scheduled_rows = scheduled_by_pair.get((status_key[1], status_key[2]), [])
+            event_date = fixture.kickoff_at_utc.astimezone(timezone.utc).date()
+            if any(
+                datetime.fromisoformat(
+                    str(candidate["kickoff_at_utc"]).replace("Z", "+00:00")
+                ).astimezone(timezone.utc).date()
+                > event_date
+                for candidate in scheduled_rows
+            ):
+                superseded_odds_events += 1
+                continue
         match_input, missing, ineligible = _match_input_from_fixture_event(
             fixture,
             odds_event,
@@ -233,17 +412,36 @@ def build_league_snapshot_from_cache(
             observed_at=observed_at,
             hard_blockers=decision_blockers,
         )
+        match = _analysis_to_dict(
+            analysis,
+            competition_id=competition_id,
+            match_decision=match_decision,
+        )
+        if status_row is not None:
+            match["fixture_status"] = str(status_row["status"])
+        matches.append(match)
+        analyzed_matches += 1
+
+    for status_key, status_row in status_by_key.items():
+        if status_row.get("status") != "POSTPONED" or status_key in represented_postponed:
+            continue
         matches.append(
-            _analysis_to_dict(
-                analysis,
-                competition_id=competition_id,
-                match_decision=match_decision,
+            _postponed_match(
+                status_row,
+                competition=competition.snapshot_block(),
             )
         )
+    matches.sort(key=lambda match: str(match.get("kickoff_at_utc") or ""))
 
     warnings: list[str] = []
     if parse_result.fixture_source == "odds_event_only":
         warnings.append("odds_event_only")
+    if fixture_status["status"] == "missing":
+        warnings.append("fixture_status_missing")
+    if fixture_status["status"] == "invalid":
+        warnings.append("fixture_status_invalid")
+    if any(match.get("fixture_status") == "POSTPONED" for match in matches):
+        warnings.append("fixture_postponed")
     if club_rating_pending:
         warnings.append("club_rating_pending")
     club_quality = club_rating_result.quality.with_missing_teams(missing_rating_teams)
@@ -268,15 +466,26 @@ def build_league_snapshot_from_cache(
         "snapshot_at": observed_at,
         "competition": competition.snapshot_block(),
         "counts": {
-            "fixtures": len(parse_result.fixtures),
+            "fixtures": len(matches),
             "odds_events": len(parse_result.odds_events),
-            "match_inputs": len(matches),
+            "match_inputs": analyzed_matches,
             "matches": len(matches),
+            "postponed_matches": sum(
+                1 for match in matches if match.get("fixture_status") == "POSTPONED"
+            ),
         },
         "data_quality": {
             "fixture_source": parse_result.fixture_source,
             "warnings": warnings,
             "club_alias_unmatched": parse_result.unmatched_clubs,
+            "fixture_status": {
+                "status": fixture_status["status"],
+                "source": fixture_status.get("source"),
+                "observed_at": fixture_status.get("observed_at"),
+                "path": fixture_status["path"],
+                "verified_active_matches": len(fixture_status["fixtures"]),
+                "superseded_odds_events": superseded_odds_events,
+            },
             "club_rating": club_quality_dict,
             **_invalid_odds_quality(parse_result.odds_events, cache_path),
         },

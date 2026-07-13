@@ -432,6 +432,7 @@ def test_run_local_writes_snapshot_archive_observation_and_summary():
         assert summary["steps"]["archive"]["status"] in {"created", "duplicate"}
         assert summary["steps"]["observation"]["matches"] == 1
         assert summary["steps"]["observation"]["match_picks"] == 1
+        assert summary["steps"]["observation"]["postponed"] == 0
         assert summary["steps"]["observation"]["no_pick"] == 0
         assert summary["steps"]["observation"]["missing_decisions"] == 0
         assert summary["paths"]["snapshot"] == str(snapshot)
