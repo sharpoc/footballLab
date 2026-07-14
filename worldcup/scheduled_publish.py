@@ -20,6 +20,7 @@ from worldcup.theoddsapi_keys import (
     LEGACY_PROVIDER,
     PRIMARY_PROVIDER,
     SECONDARY_PROVIDER,
+    TERTIARY_PROVIDER,
     configured_key_slots,
 )
 
@@ -28,6 +29,7 @@ QUOTA_ALERT_THRESHOLDS = (100, 30, 10, 0)
 _SLOT_LABELS = {
     PRIMARY_PROVIDER: "PRIMARY",
     SECONDARY_PROVIDER: "SECONDARY",
+    TERTIARY_PROVIDER: "TERTIARY",
     LEGACY_PROVIDER: "LEGACY",
 }
 
@@ -96,7 +98,8 @@ def _build_quota_alert(
             )
     lines += [
         "处理：申请新免费 key 替换 .env 中耗尽槽位的",
-        "THE_ODDS_API_KEY_PRIMARY / THE_ODDS_API_KEY_SECONDARY，",
+        "THE_ODDS_API_KEY_PRIMARY / THE_ODDS_API_KEY_SECONDARY / "
+        "THE_ODDS_API_KEY_TERTIARY，",
         "再经确认执行一次 python3 -m worldcup.scheduled_publish --live --force",
         "让新额度写回 quota 台账（耗尽状态下调度不会自行恢复该槽位）。",
     ]

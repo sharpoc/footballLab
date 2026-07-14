@@ -6,6 +6,8 @@ from typing import Any, Mapping
 LEGACY_PROVIDER = "theoddsapi"
 PRIMARY_PROVIDER = "theoddsapi_primary"
 SECONDARY_PROVIDER = "theoddsapi_secondary"
+TERTIARY_PROVIDER = "theoddsapi_tertiary"
+LOW_QUOTA_SWITCH_THRESHOLD = 30
 
 
 @dataclass(frozen=True)
@@ -25,11 +27,14 @@ def _clean(value: str | None) -> str | None:
 def configured_key_slots(env: Mapping[str, str]) -> tuple[KeySlotSelection, ...]:
     primary = _clean(env.get("THE_ODDS_API_KEY_PRIMARY")) or _clean(env.get("THE_ODDS_API_KEY"))
     secondary = _clean(env.get("THE_ODDS_API_KEY_SECONDARY"))
+    tertiary = _clean(env.get("THE_ODDS_API_KEY_TERTIARY"))
     slots: list[KeySlotSelection] = []
     if primary:
         slots.append(KeySlotSelection(primary, PRIMARY_PROVIDER, "primary"))
     if secondary:
         slots.append(KeySlotSelection(secondary, SECONDARY_PROVIDER, "secondary"))
+    if tertiary:
+        slots.append(KeySlotSelection(tertiary, TERTIARY_PROVIDER, "tertiary"))
     return tuple(slots)
 
 
@@ -40,17 +45,17 @@ def _remaining(entry: Any) -> int | None:
     return value if isinstance(value, int) else None
 
 
-def _is_exhausted(entry: Any) -> bool:
-    remaining = _remaining(entry)
-    return remaining is not None and remaining <= 0
-
-
 def choose_key_slot(env: Mapping[str, str], providers: Mapping[str, Any]) -> KeySlotSelection | None:
     slots = configured_key_slots(env)
     if not slots:
         return None
     for slot in slots:
-        if not _is_exhausted(providers.get(slot.provider)):
+        remaining = _remaining(providers.get(slot.provider))
+        if remaining is None or remaining > LOW_QUOTA_SWITCH_THRESHOLD:
+            return slot
+    for slot in slots:
+        remaining = _remaining(providers.get(slot.provider))
+        if remaining is not None and remaining > 0:
             return slot
     return None
 

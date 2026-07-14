@@ -40,6 +40,7 @@
 - 中超 replay 赛果 live 更新必须同时通过 7M + 中足联官方公开接口的日期/主客队/比分全量一致校验，并且不得删除或改写已接受的赛果；否则沿用旧 cache 并记质量错误。解除 pending 还必须同时通过最新赛季主场先验和同样本市场基准门槛，不能只看全历史聚合 Brier。
 - 中超 scheduled publish 每次成功构建赛前 snapshot 后必须自动归档到 ignored `data/local/diagnostics/csl_history/`，用于 closing join 和市场基准积累；归档失败记 `snapshot_archive_failed`，但不阻断当场有效首选发布。
 - scheduler 默认 dry-run，只读取本地 snapshot / quota 并输出 JSON 决策；The Odds API 按免费额度使用，低额度时必须降频。
+- The Odds API 使用 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY` / `THE_ODDS_API_KEY_TERTIARY` 三个显式槽位依次轮换；当前槽位剩余额度降到 30 或以下时，优先切换到仍未探测或剩余大于 30 的下一槽位并保留低额度应急余额。只有三个槽位都没有新鲜额度时才按低额度锚点降频，全部耗尽时暂停刷新。真实 token 只允许写入 ignored `.env`，不得进入代码、文档、日志或回复。
 - scheduled refresh 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会调用 refresh runner。
 - 正常额度时，世界杯与中超调度都必须把 `match_decision.valid_until - 20 分钟` 作为刷新候选，避免有效首选先过期再等下一个赛前锚点；quota 低于等于 30 时允许按既有低额度锚点降级。
 - scheduled publish 对瞬时 TLS/网络/5xx 做有限重试；仍失败时必须保留不含 secret 的 `*.publish_pending.json` 状态，下次唤醒只重试发布现有 snapshot，不重复刷新或消耗 quota。

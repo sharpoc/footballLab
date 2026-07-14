@@ -53,6 +53,7 @@ ALLOWED_QUOTA_PROVIDERS = {
     "theoddsapi",
     "theoddsapi_primary",
     "theoddsapi_secondary",
+    "theoddsapi_tertiary",
 }
 ALLOWED_CSL_SPORT_KEYS = {
     "soccer_china_superleague",

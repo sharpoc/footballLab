@@ -20,6 +20,7 @@ from worldcup.league_odds_refresh import run_league_odds_refresh
 from worldcup.league_runner import build_league_snapshot_from_cache
 from worldcup.local_runner import write_snapshot
 from worldcup.refresh_runner import _load_env
+from worldcup.theoddsapi_keys import LOW_QUOTA_SWITCH_THRESHOLD
 
 DEFAULT_COMPETITION_ID = "csl_2026"
 DEFAULT_CSL_SPORT_KEY = "soccer_china_superleague"
@@ -29,7 +30,12 @@ DEFAULT_SNAPSHOT_OUT = "data/local/diagnostics/csl_live_league_snapshot.json"
 DEFAULT_HISTORY = "data/local/diagnostics/csl_history"
 DEFAULT_SUMMARY_DIR = "data/local/diagnostics"
 DEFAULT_OBSERVATION_FORMAT = "markdown"
-KNOWN_QUOTA_PROVIDERS = ("theoddsapi_primary", "theoddsapi_secondary", "theoddsapi")
+KNOWN_QUOTA_PROVIDERS = (
+    "theoddsapi_primary",
+    "theoddsapi_secondary",
+    "theoddsapi_tertiary",
+    "theoddsapi",
+)
 WRITE_ALLOWED_PREFIXES = ("data/local", "data/cache")
 
 EnvLoader = Callable[[str], dict[str, str]]
@@ -166,8 +172,15 @@ def _quota_remaining(quota_path: Path) -> int | float | None:
         safe_remaining = _safe_count(remaining)
         if safe_remaining is not None:
             known_remaining.append(safe_remaining)
-            if safe_remaining > 0:
+            if safe_remaining > LOW_QUOTA_SWITCH_THRESHOLD:
                 return safe_remaining
+    for provider in KNOWN_QUOTA_PROVIDERS:
+        value = providers.get(provider)
+        if not isinstance(value, dict):
+            continue
+        safe_remaining = _safe_count(value.get("remaining"))
+        if safe_remaining is not None and safe_remaining > 0:
+            return safe_remaining
     if known_remaining:
         return 0
 

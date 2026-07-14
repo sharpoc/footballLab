@@ -4,10 +4,28 @@ from tempfile import TemporaryDirectory
 import urllib.error
 
 from worldcup.csl_scheduled_publish import (
+    _quota_remaining,
     _runner_diagnostic,
     build_csl_publish_decision,
     run_csl_scheduled_publish,
 )
+
+
+def test_quota_remaining_prefers_fresh_tertiary_over_low_secondary():
+    with TemporaryDirectory() as tmp:
+        quota_path = Path(tmp) / "quota.json"
+        _write_json(
+            quota_path,
+            {
+                "providers": {
+                    "theoddsapi_primary": {"remaining": 0},
+                    "theoddsapi_secondary": {"remaining": 26},
+                    "theoddsapi_tertiary": {"remaining": 497},
+                }
+            },
+        )
+
+        assert _quota_remaining(quota_path) == 497
 
 
 def _snapshot(kickoffs, *, observed_at="2026-07-09T10:00:00+00:00"):

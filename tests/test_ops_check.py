@@ -184,6 +184,12 @@ def _write_minimal_ops_inputs(root: Path, launch_agent: Path) -> None:
                         "used": 252,
                         "last": 3,
                         "api_key": "must-not-leak",
+                    },
+                    "theoddsapi_tertiary": {
+                        "remaining": 497,
+                        "used": 3,
+                        "last": 3,
+                        "api_key": "tertiary-must-not-leak",
                     }
                 }
             }
@@ -426,6 +432,11 @@ def test_run_ops_check_summarizes_csl_live_odds_without_raw_prices_or_secrets():
         "used": 252,
         "last": 3,
     }
+    assert csl["quota"]["providers"]["theoddsapi_tertiary"] == {
+        "remaining": 497,
+        "used": 3,
+        "last": 3,
+    }
     assert csl["refresh_diagnostic"]["status"] == "fetched"
     assert csl["runner_check"]["counts"]["matches"] == 1
     assert csl["runner_check"]["warnings"] == ["club_rating_pending", "odds_event_only"]
@@ -435,6 +446,7 @@ def test_run_ops_check_summarizes_csl_live_odds_without_raw_prices_or_secrets():
     assert csl["runner_check"]["missing_decisions"] == 0
     rendered = str(result)
     assert "must-not-leak" not in rendered
+    assert "tertiary-must-not-leak" not in rendered
     assert "raw_market_should_not_leak" not in rendered
     assert "raw_price_should_not_leak" not in rendered
     assert "bookmakers" not in rendered

@@ -16,6 +16,7 @@ from worldcup.refresh_runner import _load_env
 from worldcup.scheduler import make_run_id
 from worldcup.csl_results_refresh import run_csl_results_refresh
 from worldcup.csl_snapshot_archive import archive_snapshot
+from worldcup.theoddsapi_keys import LOW_QUOTA_SWITCH_THRESHOLD
 
 DEFAULT_COMPETITION_ID = "csl_2026"
 DEFAULT_SPORT_KEY = "soccer_china_superleague"
@@ -29,7 +30,12 @@ CSL_ANCHORS = (
     (25 * 60, "T-25", "赛前25分钟"),
 )
 LOW_QUOTA_ANCHORS = {"T-25"}
-KNOWN_QUOTA_PROVIDERS = ("theoddsapi_secondary", "theoddsapi_primary", "theoddsapi")
+KNOWN_QUOTA_PROVIDERS = (
+    "theoddsapi_primary",
+    "theoddsapi_secondary",
+    "theoddsapi_tertiary",
+    "theoddsapi",
+)
 
 EnvLoader = Callable[[str | Path], dict[str, str]]
 RefreshFn = Callable[..., dict[str, Any]]
@@ -98,6 +104,13 @@ def _quota_remaining(quota_path: str | Path) -> int | None:
         return None
     if not isinstance(providers, dict):
         return None
+    for provider in KNOWN_QUOTA_PROVIDERS:
+        entry = providers.get(provider)
+        if not isinstance(entry, dict):
+            continue
+        remaining = _as_int(entry.get("remaining"))
+        if remaining is not None and remaining > LOW_QUOTA_SWITCH_THRESHOLD:
+            return remaining
     for provider in KNOWN_QUOTA_PROVIDERS:
         entry = providers.get(provider)
         if not isinstance(entry, dict):

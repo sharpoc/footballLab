@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-14 The Odds API 三槽低额度切换
+
+- 经用户确认，在现有 Primary / Secondary 基础上新增 Tertiary 独立槽位；真实 token 仅写入 ignored `.env`，`.env.example`、README 和项目协作规则只记录正式变量名与轮换契约，不包含真实值。实现阶段先以待激活变量保存，获得第二次 live 确认后才切为正式变量。
+- 轮换从“完全耗尽才切换”改为“当前槽位剩余大于 30 时继续使用，降到 30 或以下时优先切到仍未探测或剩余大于 30 的下一槽位”。低额度旧槽保留作应急；若三个槽位都只剩低额度则按顺序继续使用尚有余额的槽位并启用低额度锚点，全部为 0 才暂停。
+- 世界杯 scheduled refresh、The Odds API scores、中超 odds refresh 共用统一选择器；中超 scheduled publish / ops runner、quota 告警、readiness 和脱敏 ops check 同步识别 `theoddsapi_tertiary`。脱敏模拟验证在 Primary=0、Secondary=26、Tertiary 尚无 ledger 记录时返回 `tertiary`，未读取或输出 token 值。
+- TDD 先确认缺少 Tertiary provider 的红灯，再覆盖阈值切换、未知新槽 bootstrap、全低额度应急回退、中超 quota 汇总和脱敏巡检。配置运行时排除可选 FastAPI 文件的完整回归 `735/735`、系统 Python FastAPI `13/13`，合计 `748/748`；`compileall`、`git diff --check` 和 readiness 通过。实现与离线验证阶段未联网、未调用 The Odds API、未消耗 quota、未刷新或发布 snapshot、未部署、未修改 LaunchAgent、未 commit/push。
+- 经用户第二次确认，正式激活 Tertiary，并以 `--no-notify` 执行一次世界杯受控 `--live --force`。刷新明确选择 `odds_api_key_slot=tertiary`，生成 `run_id=20260714T102722Z-live` 的 2 场 snapshot，HTTPS ingest 首次返回 HTTP 200 / `stored`，无 pending、无 WxPusher 通知。Tertiary 首次真实额度为 used 3 / remaining 497；Primary 为 0，Secondary 在激活前被既有 LaunchAgent 两次自然刷新从 26 消耗到 20，不是本次 Tertiary force 消耗。
+- 线上验收 `/healthz` 正常，`/api/matches` 共 11 场，世界杯 2/2、中超 9/9 均为 `MATCH_PICK`，`NO_CLEAN_MARKET=0`。中超 dry-run 已读取 Tertiary remaining=497，恢复 T-90/T-25 正常锚点；真实 token 未进入 tracked files、文档、日志或输出。本轮未部署、未修改 LaunchAgent、未 commit/push。
+
 ## 2026-07-13 中超延期状态闭环
 
 - 定位第 18 轮延期场次仍显示首选的根因：中超赛前 snapshot 只跟随 The Odds API event / `commence_time`，没有消费中足联官方 `match_status`；赔率源未及时撤场时，延期场次会保留到原定开球时间，浙江 vs 青岛海牛还曾同时出现原日期与 7 月 14 日补赛两个事件。

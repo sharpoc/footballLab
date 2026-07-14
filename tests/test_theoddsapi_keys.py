@@ -2,6 +2,7 @@ from worldcup.theoddsapi_keys import (
     LEGACY_PROVIDER,
     PRIMARY_PROVIDER,
     SECONDARY_PROVIDER,
+    TERTIARY_PROVIDER,
     choose_key_slot,
     quota_remaining_for_scheduler,
 )
@@ -9,7 +10,7 @@ from worldcup.theoddsapi_keys import (
 
 def test_choose_key_slot_prefers_primary_when_not_exhausted():
     env = {"THE_ODDS_API_KEY_PRIMARY": "primary", "THE_ODDS_API_KEY_SECONDARY": "secondary"}
-    providers = {PRIMARY_PROVIDER: {"remaining": 12}, SECONDARY_PROVIDER: {"remaining": 497}}
+    providers = {PRIMARY_PROVIDER: {"remaining": 31}, SECONDARY_PROVIDER: {"remaining": 497}}
 
     selected = choose_key_slot(env, providers)
 
@@ -20,8 +21,8 @@ def test_choose_key_slot_prefers_primary_when_not_exhausted():
 
 
 def test_choose_key_slot_uses_legacy_key_as_primary():
-    env = {"THE_ODDS_API_KEY": "legacy-primary", "THE_ODDS_API_KEY_SECONDARY": "secondary"}
-    providers = {PRIMARY_PROVIDER: {"remaining": 12}}
+    env = {"THE_ODDS_API_KEY": "legacy-primary"}
+    providers = {PRIMARY_PROVIDER: {"remaining": 31}}
 
     selected = choose_key_slot(env, providers)
 
@@ -42,9 +43,71 @@ def test_choose_key_slot_rotates_to_secondary_when_primary_exhausted():
     assert selected.slot == "secondary"
 
 
+def test_choose_key_slot_rotates_when_current_slot_reaches_low_quota_threshold():
+    env = {
+        "THE_ODDS_API_KEY_PRIMARY": "primary",
+        "THE_ODDS_API_KEY_SECONDARY": "secondary",
+    }
+    providers = {
+        PRIMARY_PROVIDER: {"remaining": 30},
+        SECONDARY_PROVIDER: {"remaining": 497},
+    }
+
+    selected = choose_key_slot(env, providers)
+
+    assert selected is not None
+    assert selected.provider == SECONDARY_PROVIDER
+    assert selected.slot == "secondary"
+
+
+def test_choose_key_slot_rotates_to_unknown_tertiary_after_secondary_is_low():
+    env = {
+        "THE_ODDS_API_KEY_PRIMARY": "primary",
+        "THE_ODDS_API_KEY_SECONDARY": "secondary",
+        "THE_ODDS_API_KEY_TERTIARY": "tertiary",
+    }
+    providers = {
+        PRIMARY_PROVIDER: {"remaining": 0},
+        SECONDARY_PROVIDER: {"remaining": 26},
+    }
+
+    selected = choose_key_slot(env, providers)
+
+    assert selected is not None
+    assert selected.api_key == "tertiary"
+    assert selected.provider == TERTIARY_PROVIDER
+    assert selected.slot == "tertiary"
+
+
+def test_choose_key_slot_uses_low_quota_reserve_when_no_fresh_slot_remains():
+    env = {
+        "THE_ODDS_API_KEY_PRIMARY": "primary",
+        "THE_ODDS_API_KEY_SECONDARY": "secondary",
+        "THE_ODDS_API_KEY_TERTIARY": "tertiary",
+    }
+    providers = {
+        PRIMARY_PROVIDER: {"remaining": 0},
+        SECONDARY_PROVIDER: {"remaining": 26},
+        TERTIARY_PROVIDER: {"remaining": 10},
+    }
+
+    selected = choose_key_slot(env, providers)
+
+    assert selected is not None
+    assert selected.provider == SECONDARY_PROVIDER
+
+
 def test_choose_key_slot_returns_none_when_all_configured_slots_exhausted():
-    env = {"THE_ODDS_API_KEY_PRIMARY": "primary", "THE_ODDS_API_KEY_SECONDARY": "secondary"}
-    providers = {PRIMARY_PROVIDER: {"remaining": 0}, SECONDARY_PROVIDER: {"remaining": 0}}
+    env = {
+        "THE_ODDS_API_KEY_PRIMARY": "primary",
+        "THE_ODDS_API_KEY_SECONDARY": "secondary",
+        "THE_ODDS_API_KEY_TERTIARY": "tertiary",
+    }
+    providers = {
+        PRIMARY_PROVIDER: {"remaining": 0},
+        SECONDARY_PROVIDER: {"remaining": 0},
+        TERTIARY_PROVIDER: {"remaining": 0},
+    }
 
     assert choose_key_slot(env, providers) is None
 

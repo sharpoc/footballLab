@@ -289,6 +289,42 @@ def test_dry_run_quota_uses_secondary_when_primary_is_exhausted():
         assert "\"providers\"" not in serialized
 
 
+def test_dry_run_quota_prefers_fresh_tertiary_over_low_secondary():
+    import worldcup.csl_ops_runner as runner
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        cache_dir = root / "data/cache"
+        quota_path = root / "custom/quota.json"
+        _write_csl_odds_cache(cache_dir)
+        _write_results(cache_dir)
+        quota_path.parent.mkdir(parents=True)
+        quota_path.write_text(
+            json.dumps(
+                {
+                    "providers": {
+                        "theoddsapi_primary": {"remaining": 0},
+                        "theoddsapi_secondary": {"remaining": 26},
+                        "theoddsapi_tertiary": {"remaining": 497},
+                    }
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+
+        summary = runner.run_csl_ops(
+            root=root,
+            generated_at="2026-07-14T10:15:00Z",
+            quota_path="custom/quota.json",
+        )
+
+    assert summary["steps"]["local_state"]["quota_remaining"] == 497
+    serialized = json.dumps(summary, ensure_ascii=False, sort_keys=True)
+    assert "theoddsapi_tertiary" not in serialized
+    assert "\"providers\"" not in serialized
+
+
 def test_dry_run_quota_ignores_non_finite_remaining():
     import worldcup.csl_ops_runner as runner
 
