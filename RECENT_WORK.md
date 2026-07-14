@@ -9,7 +9,8 @@
 - 世界杯 scheduled refresh、The Odds API scores、中超 odds refresh 共用统一选择器；中超 scheduled publish / ops runner、quota 告警、readiness 和脱敏 ops check 同步识别 `theoddsapi_tertiary`。脱敏模拟验证在 Primary=0、Secondary=26、Tertiary 尚无 ledger 记录时返回 `tertiary`，未读取或输出 token 值。
 - TDD 先确认缺少 Tertiary provider 的红灯，再覆盖阈值切换、未知新槽 bootstrap、全低额度应急回退、中超 quota 汇总和脱敏巡检。配置运行时排除可选 FastAPI 文件的完整回归 `735/735`、系统 Python FastAPI `13/13`，合计 `748/748`；`compileall`、`git diff --check` 和 readiness 通过。实现与离线验证阶段未联网、未调用 The Odds API、未消耗 quota、未刷新或发布 snapshot、未部署、未修改 LaunchAgent、未 commit/push。
 - 经用户第二次确认，正式激活 Tertiary，并以 `--no-notify` 执行一次世界杯受控 `--live --force`。刷新明确选择 `odds_api_key_slot=tertiary`，生成 `run_id=20260714T102722Z-live` 的 2 场 snapshot，HTTPS ingest 首次返回 HTTP 200 / `stored`，无 pending、无 WxPusher 通知。Tertiary 首次真实额度为 used 3 / remaining 497；Primary 为 0，Secondary 在激活前被既有 LaunchAgent 两次自然刷新从 26 消耗到 20，不是本次 Tertiary force 消耗。
-- 线上验收 `/healthz` 正常，`/api/matches` 共 11 场，世界杯 2/2、中超 9/9 均为 `MATCH_PICK`，`NO_CLEAN_MARKET=0`。中超 dry-run 已读取 Tertiary remaining=497，恢复 T-90/T-25 正常锚点；真实 token 未进入 tracked files、文档、日志或输出。本轮未部署、未修改 LaunchAgent、未 commit/push。
+- 线上验收 `/healthz` 正常，`/api/matches` 共 11 场，世界杯 2/2、中超 9/9 均为 `MATCH_PICK`，`NO_CLEAN_MARKET=0`。中超 dry-run 已读取 Tertiary remaining=497，恢复 T-90/T-25 正常锚点；真实 token 未进入 tracked files、文档、日志或输出。
+- 三槽实现提交为 `6741bff feat: rotate three odds api keys`，与此前未推送的延期修复 `172c3c0` 一并推送到 `origin/codex/csl-scheduled-publish`。绑定 Wi-Fi 源地址 `192.168.31.46` 部署到 ECS `/opt/worldcup/releases/6741bff25d9a023404d946d2ab693687d8696d3e`，`worldcup.service` / Nginx active，内部 `/readyz` warmup 正常，公网 `/healthz`、`/api/matches`、`/preview` 均为 200，自动回滚未触发。部署未读取 `.env`、未调用 The Odds API、未发布 snapshot，也未修改或重载 LaunchAgent；现有两个 LaunchAgent 已通过相同 `.env` 路径自然使用三槽逻辑。
 
 ## 2026-07-13 中超延期状态闭环
 
