@@ -95,6 +95,8 @@ def _snapshot(run_id="20260608T000000Z-live"):
                     "odds": 2.0,
                     "p_hit_safe": 0.59,
                     "p_no_loss_safe": 0.59,
+                    "computed_at": "2099-06-11T18:44:38+00:00",
+                    "odds_latest_at": "2099-06-11T18:44:34+00:00",
                     "valid_until": "2099-06-11T19:00:00+00:00",
                     "selected_option_id": "internal-only",
                 },
@@ -190,6 +192,8 @@ def test_http_get_matches_returns_projected_rows():
         assert response["status"] == 200
         assert response["headers"]["Content-Type"] == "application/json"
         assert body["matches"][0]["match_label"] == "Mexico vs South Africa"
+        assert body["matches"][0]["last_update_at"] == "2099-06-11T18:44:34+00:00"
+        assert body["matches"][0]["last_update_label"] == "赔率更新"
         assert "stake" not in body["matches"][0]
         assert body["matches"][0]["match_decision"]["label"] == "MATCH_PICK"
         assert "signals" not in response["body"]

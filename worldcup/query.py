@@ -486,6 +486,18 @@ def project_match_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         away = match.get("away_team", "")
         fixture_status = str(match.get("fixture_status") or "SCHEDULED").upper()
         refresh_plan = match.get("refresh_plan") or {}
+        raw_decision = match.get("match_decision") or {}
+        last_update_at = (
+            raw_decision.get("odds_latest_at")
+            or match.get("odds_updated_at")
+            or raw_decision.get("computed_at")
+            or snapshot.get("snapshot_at")
+        )
+        last_update_label = (
+            "赔率更新"
+            if raw_decision.get("odds_latest_at") or match.get("odds_updated_at")
+            else "分析更新"
+        )
         competition = _competition_block_for_snapshot({"matches": [match]})
         if fixture_status == "POSTPONED":
             policy_version = str((match.get("match_decision") or {}).get("policy_version") or "")
@@ -509,6 +521,8 @@ def project_match_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "competition_id": competition.get("id"),
                 "competition_label": competition.get("name") or competition.get("label"),
                 "fixture_status": fixture_status,
+                "last_update_at": last_update_at,
+                "last_update_label": last_update_label,
                 "next_update_at": refresh_plan.get("next_update_at"),
                 "next_update_label": refresh_plan.get("label"),
                 "next_update_description": refresh_plan.get("description"),

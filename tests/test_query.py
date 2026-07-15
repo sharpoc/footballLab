@@ -407,6 +407,8 @@ def test_project_match_rows_returns_preview_safe_rows():
         "line": 0.0,
         "p_hit_safe": 0.59,
         "p_no_loss_safe": 0.73,
+        "computed_at": "2026-06-08T00:10:00+00:00",
+        "odds_latest_at": "2026-06-08T00:09:00+00:00",
         "valid_until": "2099-06-11T19:00:00+00:00",
     }
 
@@ -420,6 +422,10 @@ def test_project_match_rows_returns_preview_safe_rows():
     assert rows[0]["next_update_at"] == "2026-06-11T17:30:00+00:00"
     assert rows[0]["next_update_label"] == "T-1小时30分"
     assert rows[0]["next_update_description"] == "阵容/伤停预热"
+    assert rows[0]["last_update_at"] == "2026-06-08T00:09:00+00:00"
+    assert rows[0]["last_update_label"] == "赔率更新"
+    assert rows[1]["last_update_at"] == "2026-06-08T00:00:00+00:00"
+    assert rows[1]["last_update_label"] == "分析更新"
     assert rows[0]["stale"] is True
     assert rows[0]["competition_id"] == "fifa_world_cup_2026"
     assert rows[0]["competition_label"] == "2026 世界杯"
@@ -583,6 +589,8 @@ def test_project_match_rows_ignores_probability_families_for_public_summary():
             "competition_id": "fifa_world_cup_2026",
             "competition_label": "2026 世界杯",
             "fixture_status": "SCHEDULED",
+            "last_update_at": "2026-06-08T00:00:00+00:00",
+            "last_update_label": "分析更新",
             "next_update_at": "2026-06-09T00:00:00+00:00",
             "next_update_label": "常规",
             "next_update_description": None,

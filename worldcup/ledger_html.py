@@ -178,6 +178,19 @@ def _format_snapshot_time(value: Any) -> str:
     return f"{display.year} 年 {display.month} 月 {display.day} 日 {weekday} {display:%H:%M}"
 
 
+def _format_compact_update_time(value: Any) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    display = parsed.astimezone(BEIJING_TZ)
+    return f"{display.month}/{display.day} {display:%H:%M}"
+
+
 def _quality_values(snapshot: dict[str, Any], key: str) -> list[Any]:
     data_quality = snapshot.get("data_quality") or {}
     run = snapshot.get("run") or {}
@@ -2086,6 +2099,30 @@ def _decision_live_rows(
     return sorted(rows, key=lambda row: str(row.get("kickoff_at_utc") or ""))
 
 
+def _decision_next_update_text(
+    row: dict[str, Any],
+    *,
+    awaiting_result: bool,
+    postponed: bool,
+) -> str:
+    if awaiting_result:
+        return "等待赛果确认"
+    if postponed:
+        return "等待官方公布补赛时间"
+
+    next_update = _decision_parse_at(row.get("next_update_at"))
+    kickoff = _decision_parse_at(row.get("kickoff_at_utc"))
+    if next_update is not None and kickoff is not None and next_update >= kickoff:
+        return "临场更新已完成"
+    if next_update is not None:
+        return _format_compact_update_time(next_update)
+    return str(
+        row.get("next_update_label")
+        or row.get("next_update_description")
+        or "等待调度"
+    )
+
+
 def _render_decision_filter_row(
     *,
     search_id: str,
@@ -2271,12 +2308,13 @@ def _render_decision_workbench(
                 probability=_text(decision["probability"]),
             )
         )
-        next_update = (
-            "等待赛果确认"
-            if awaiting_result
-            else "等待官方公布补赛时间"
-            if postponed
-            else row.get("next_update_description") or row.get("next_update_label") or "按调度计划更新"
+        last_update = (
+            _format_compact_update_time(row.get("last_update_at")) or "待确认"
+        )
+        next_update = _decision_next_update_text(
+            row,
+            awaiting_result=awaiting_result,
+            postponed=postponed,
         )
         detail_heading = (
             "比赛延期" if postponed else "赛前首选（已封盘）" if awaiting_result else "本场首选"
@@ -2292,12 +2330,13 @@ def _render_decision_workbench(
             '<section class="workbench-detail{active}" id="{detail_id}" data-workbench-detail="{detail_id}" {hidden}>'
             '<div class="detail-title-row"><h2>{title} · {detail_heading}</h2></div>'
             '<p class="muted history-workbench-note">{detail_note}</p>'
-            '<div class="detail-metrics">'
+            '<div class="detail-metrics decision-detail-metrics">'
             '<div><span>当前状态</span><strong>{badge}</strong></div>'
             '<div><span>安全命中率</span><strong>{probability}</strong></div>'
             '<div><span>不亏概率</span><strong>{no_loss}</strong></div>'
             '<div><span>参考赔率</span><strong>{odds}</strong></div>'
-            '<div><span>下一次更新</span><strong>{next_update}</strong></div>'
+            '<div><span>最后更新</span><strong>{last_update}</strong></div>'
+            '<div class="detail-metric-next-update"><span>下次更新</span><strong>{next_update}</strong></div>'
             '</div>'
             '<div class="workbench-table-wrap"><table class="workbench-signal-table">'
             '<thead><tr><th>首选盘口</th><th>安全命中率</th><th>不亏概率</th><th>参考赔率</th><th>数据状态</th></tr></thead>'
@@ -2313,6 +2352,7 @@ def _render_decision_workbench(
                 probability=_text(decision["probability"]),
                 no_loss=_text(decision["no_loss"]),
                 odds=_text(decision["odds"]),
+                last_update=_text(last_update),
                 next_update=_text(next_update),
                 market=_text(decision["market"]),
                 freshness=(
@@ -3227,6 +3267,16 @@ def build_research_ledger_html(
       line-height: 1.2;
     }}
     .detail-metric-next-update strong {{ white-space: nowrap; }}
+    .detail-metrics.decision-detail-metrics {{
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }}
+    .detail-metrics.decision-detail-metrics div:nth-child(3n) {{ border-right: 0; }}
+    .detail-metrics.decision-detail-metrics div:nth-child(-n+3) {{
+      border-bottom: 1px solid var(--line-soft);
+    }}
+    .detail-metrics.decision-detail-metrics .detail-metric-next-update strong {{
+      white-space: normal;
+    }}
     .detail-metrics div:nth-child(2) strong {{ color: var(--accent-strong); }}
     .market-tabs {{
       display: flex;
@@ -3869,6 +3919,16 @@ def build_research_ledger_html(
       .detail-metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .detail-metrics div:nth-child(2n) {{ border-right: 0; }}
       .detail-metrics div:nth-child(-n+2) {{ border-bottom: 1px solid #edf1f5; }}
+      .detail-metrics.decision-detail-metrics {{
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }}
+      .detail-metrics.decision-detail-metrics div:nth-child(3n) {{
+        border-right: 1px solid var(--line-soft);
+      }}
+      .detail-metrics.decision-detail-metrics div:nth-child(2n) {{ border-right: 0; }}
+      .detail-metrics.decision-detail-metrics div:nth-child(-n+4) {{
+        border-bottom: 1px solid #edf1f5;
+      }}
       .ledger-mode-bar {{ align-items: stretch; flex-direction: column; }}
       .mode-tabs {{ width: 100%; }}
       .mode-tab {{ flex: 1; }}

@@ -42,7 +42,7 @@
 - 当前 collector 解析层不联网；后续真实请求层可再引入 HTTP 客户端
 - 当前 refresh runner 默认 dry-run；只有显式 `--live` 才会读取 `.env` 并联网消耗 The Odds API 额度
 - 当前 The Odds API odds/scores fetch 使用统一 `SourceFetchError` 边界：只对 transient network / 5xx 做有限重试；credential、quota、4xx、invalid JSON 和 invalid UTF-8 不重试；只有拿到有效 JSON 后才写 cache / quota ledger；错误诊断会脱敏 `apiKey`，只暴露 `reason`、`retryable`、`attempts` 和可选 HTTP status
-- 当前 scheduler 默认 dry-run，只读取本地 snapshot / quota 并输出 JSON 决策，不会联网或写入状态；全局 due 由所有比赛 `refresh_plan.next_update_at` 的最早值决定；单场计划会携带 `competition_id`、`refresh_priority`、`quota_budget` 和 `refresh_policy`，顶层 `competition_refresh` 汇总各赛事的待刷新窗口，便于后续分赛事限频；若某场 `lineup_shadow` 显示首发已确认但 odds 早于首发信息，则单场计划会给出 `post_information_odds_required`，在额度未耗尽时把下一次刷新提前到当前 dry-run 时刻
+- 当前 scheduler 默认 dry-run，只读取本地 snapshot / quota 并输出 JSON 决策，不会联网或写入状态；全局 due 由所有比赛 `refresh_plan.next_update_at` 的最早值决定；单场计划会携带 `competition_id`、`refresh_priority`、`quota_budget` 和 `refresh_policy`，顶层 `competition_refresh` 汇总各赛事的待刷新窗口，便于后续分赛事限频；若某场 `lineup_shadow` 显示首发已确认但 odds 早于首发信息，则单场计划会给出 `post_information_odds_required`，在额度未耗尽时把下一次刷新提前到当前 dry-run 时刻；最后一个临场锚点和首选鲜度保底都已完成时，单场计划进入 `pre_match_refresh_complete`，不得再生成超过开赛时间的 24 小时候选。
 - 当前 scheduled refresh 默认 dry-run，dry-run 不读取 `.env`；只有显式 `--live` 且调度 due，或同时传 `--force`，才会读取 env 并调用 refresh runner
 - 当前 scheduled publish 默认 dry-run，dry-run 不读取 `.env`、不刷新、不发布；只有显式 `--live` 且调度 due，或同时传 `--force`，才会刷新数据并向 HTTPS ingest endpoint 发送签名 snapshot。正常额度时，世界杯和中超都会把 `match_decision.valid_until - 20 分钟` 加入刷新候选，避免调度空窗让有效首选先过期。发布 HTTP 会对瞬时 TLS/网络/5xx 做有限重试；仍失败时写入同目录 `*.publish_pending.json` 脱敏状态，下一次 LaunchAgent 唤醒只重试发布已生成 snapshot，不重复刷新或消耗 quota。发布成功后会对比上一轮 snapshot，只有显著变化时才通过全局 WxPusher 工具发送手机通知，可用 `--no-notify` 关闭。
 - 当前 scores capture 默认 dry-run，dry-run 不读取 `.env`、不联网、不写 results；淘汰赛开始后（`2026-06-28T00:00:00Z` 起）即使显式 `--live` 也会默认阻断并返回 `knockout_score_manual_review_required`，避免把可能含加时/点球的比分写入 90 分钟结算链路；只有人工确认 90 分钟口径后显式传 `--allow-knockout-scores` 才会放行。
@@ -50,6 +50,7 @@
 - 当前 ingest server 是纯本地验签/幂等模块；FastAPI adapter 已复用它，ECS 部署另行确认
 - 当前 HTTP ingest 入口会拒绝非 JSON 请求、超限 body、非法 Content-Length 和非法 UTF-8；ingest 响应统一携带 `X-Request-Id`，错误体只暴露结构化 `error.code` / `error.request_id`，不回显 raw body、签名、secret 或 payload
 - 当前 SQLite store / preview 都是本地低风险链路；默认输出在已忽略的 `data/local/` 或 `data/cache/`；公开 `/api/snapshot/latest`、`/api/matches`、`/api/finished` 和 `/preview` 只返回 decision-only 投影，并按 `competition_id` 合并各赛事最新 snapshot 形成只读展示视图；线上 HTTP 进程会缓存 public view 和 `/preview` 渲染 HTML，并用 DB 同目录的 `*.preview.html` / `*.preview.html.meta.json` 做重启后可复用的签名校验磁盘缓存，签名 ingest 成功后清空进程缓存且磁盘缓存会因 snapshot 签名变化自动失效
+- `/api/matches` 每场额外公开安全的 `last_update_at` / `last_update_label` 和既有 `next_update_*`；页面统一换算为北京时间展示“最后更新 / 下次更新”。`last_update_at` 优先使用当前首选实际消费的最新赔率时间，缺失时回退到赔率、分析或 snapshot 时间；下次计划不存在或已超过开赛时，页面显示调度终态，不伪造未来刷新时间。
 - 当前 PostgreSQL store adapter 可用于后续 ECS/RDS 接入；`psycopg` 只作为可选依赖声明，本轮未安装、未连接真实数据库
 - 当前 store selection 默认 `sqlite`；单服务器 MVP 首发推荐 SQLite，只有显式 `--store postgres` 或 `.env` 中 `WORLDCUP_STORE=postgres` 时才要求 `DATABASE_URL`
 - 当前 PostgreSQL smoke guard 默认只做 dry-run；SQLite 首发路线下返回 `blocked / expected_postgres` 是安全结果，且不打印 DSN、secret、签名或请求 body

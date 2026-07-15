@@ -17,6 +17,7 @@ QUOTA_LOW_REMAINING = 30
 QUOTA_LOW_INTERVAL_SECONDS = 86400
 POST_INFORMATION_ODDS_REASON = "post_information_odds_required"
 PICK_EXPIRY_REASON = "pick_expiry_guard"
+PRE_MATCH_COMPLETE_REASON = "pre_match_refresh_complete"
 PICK_EXPIRY_REFRESH_LEAD_SECONDS = 20 * 60
 CRITICAL_LOW_QUOTA_ANCHORS = {
     "pre_90m_lineup_warmup",
@@ -286,15 +287,16 @@ def build_match_refresh_plan(
     cadence_due = last_dt + timedelta(seconds=interval_seconds)
     cadence_next = _align_cadence_due_to_kickoff_clock(cadence_due, kickoff_dt)
     cadence_label, cadence_description = _cadence_label(cadence_reason, interval_seconds)
-    candidates.append(
-        (
-            cadence_next,
-            1,
-            cadence_reason,
-            cadence_label,
-            cadence_description,
+    if cadence_next < kickoff_dt:
+        candidates.append(
+            (
+                cadence_next,
+                1,
+                cadence_reason,
+                cadence_label,
+                cadence_description,
+            )
         )
-    )
 
     expiry_guard_at = _pick_expiry_guard_at(
         match,
@@ -302,7 +304,7 @@ def build_match_refresh_plan(
         last_refresh_at=last_dt,
         quota_remaining=quota_remaining,
     )
-    if expiry_guard_at is not None:
+    if expiry_guard_at is not None and expiry_guard_at < kickoff_dt:
         candidates.append(
             (
                 now_dt if expiry_guard_at <= now_dt else expiry_guard_at,
@@ -329,6 +331,17 @@ def build_match_refresh_plan(
                 description,
             )
         )
+
+    if not candidates:
+        return {
+            **base,
+            "next_update_at": None,
+            "policy_reason": PRE_MATCH_COMPLETE_REASON,
+            "label": "临场更新已完成",
+            "description": "等待开赛，赛前不再自动刷新",
+            "interval_seconds": interval_seconds,
+            "should_refresh": False,
+        }
 
     next_dt, _priority, reason, label, description = min(candidates, key=lambda item: (item[0], item[1]))
     return {

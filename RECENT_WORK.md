@@ -2,6 +2,15 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-15 单场最后/下次更新时间
+
+- 定位临近开赛仍显示“按24小时时间间隔刷新”的根因：最后一个赛前锚点执行后，调度器把通用 24 小时 cadence 当成下次更新；该时间已晚于开球，页面又直接展示策略说明，造成赛前还会等待 24 小时的误解。
+- `/api/matches` 为每场新增 `last_update_at` / `last_update_label` 安全投影；最后更新时间优先使用该场赔率时间，其次为分析计算时间和 snapshot 时间。原有 `next_update_at` / `next_update_label` 保持兼容。
+- 首选详情新增“最后更新”和“下次更新”，统一显示北京时间；有明确计划时显示具体日期时间，最后一个赛前刷新完成后显示“临场更新已完成”，延期或已开赛场次继续显示对应状态，不再回退为 24 小时文案。
+- 调度器只保留开球前的 cadence / 首选鲜度候选；所有赛前候选均完成后返回终态 `pre_match_refresh_complete`，且 `next_update_at=null`、`should_refresh=false`。同步更新 README、数据契约和回归测试，不改首选方向、模型、赔率额度或 snapshot 结构。
+- TDD 先以 5 个聚焦用例确认旧逻辑失败，完成后聚焦回归 `5/5`、配置运行时排除可选 FastAPI 的完整回归 `737/737`、系统 Python FastAPI `13/13`，合计 `750/750`；`compileall` 和 `git diff --check` 通过。实现和验证未联网、未读取 `.env`、未调用 The Odds API、未消耗 quota、未刷新或发布 snapshot、未部署、未修改 LaunchAgent、未 commit/push。
+- 应用内浏览器运行时初始化出现 `Cannot redefine property: process`，因此没有用未获确认的外部浏览器替代；已通过生成的静态 HTML 检查移动端相关结构与具体时间文案。
+
 ## 2026-07-14 The Odds API 三槽低额度切换
 
 - 经用户确认，在现有 Primary / Secondary 基础上新增 Tertiary 独立槽位；真实 token 仅写入 ignored `.env`，`.env.example`、README 和项目协作规则只记录正式变量名与轮换契约，不包含真实值。实现阶段先以待激活变量保存，获得第二次 live 确认后才切为正式变量。

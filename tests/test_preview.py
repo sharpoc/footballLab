@@ -17,6 +17,11 @@ def _snapshot() -> dict:
                 "group": "Group A",
                 "home_team": "Mexico",
                 "away_team": "South Africa",
+                "refresh_plan": {
+                    "next_update_at": "2099-06-11T18:50:00+00:00",
+                    "label": "T-10分钟",
+                    "description": "临场确认",
+                },
                 "signals": [{"grade": "A", "sentinel": "legacy-must-not-render"}],
                 "match_decision": {
                     "schema_version": 2,
@@ -27,6 +32,8 @@ def _snapshot() -> dict:
                     "odds": 1.74,
                     "p_hit_safe": 0.59,
                     "p_no_loss_safe": 0.73,
+                    "computed_at": "2099-06-11T18:44:38+00:00",
+                    "odds_latest_at": "2099-06-11T18:44:34+00:00",
                     "valid_until": "2099-06-11T19:00:00+00:00",
                     "selected_option_id": "internal-only",
                 },
@@ -37,6 +44,11 @@ def _snapshot() -> dict:
                 "stage": "Round 16",
                 "home_team": "Shanghai Port",
                 "away_team": "Shandong Taishan",
+                "refresh_plan": {
+                    "next_update_at": None,
+                    "label": "临场更新已完成",
+                    "description": "等待开赛，赛前不再自动刷新",
+                },
                 "match_decision": {
                     "schema_version": 2,
                     "label": "NO_CLEAN_MARKET",
@@ -85,6 +97,26 @@ def test_preview_renders_only_match_picks_and_no_pick_state():
     assert "仅用于研究分析，不构成投注建议。" in html
     assert "有效、新鲜、可结算的主盘口" in html
     assert "未过门槛时主动留空" not in html
+    assert html.count("<span>最后更新</span>") == 2
+    assert html.count("<span>下次更新</span>") == 2
+    assert "6/12 02:44" in html
+    assert "6/12 02:50" in html
+    assert "临场更新已完成" in html
+
+
+def test_preview_never_displays_a_next_update_at_or_after_kickoff():
+    snapshot = _snapshot()
+    snapshot["matches"][0]["refresh_plan"] = {
+        "next_update_at": "2099-06-12T19:00:00+00:00",
+        "label": "常规",
+        "description": "按24 小时间隔刷新",
+    }
+
+    html = build_preview_html(snapshot)
+
+    assert "按24 小时间隔刷新" not in html
+    assert "6/13 03:00" not in html
+    assert "临场更新已完成" in html
 
 
 def test_preview_renders_postponed_match_without_pick_or_awaiting_result_copy():

@@ -650,12 +650,16 @@ away_team
 match_label
 competition_id
 competition_label
+last_update_at
+last_update_label
 next_update_at
 next_update_label
 next_update_description
 stale
 match_decision
 ```
+
+`last_update_at` 优先取 `match_decision.odds_latest_at`，其次为单场 `odds_updated_at`、`match_decision.computed_at` 和顶层 `snapshot_at`；`last_update_label` 只区分“赔率更新 / 分析更新”，不公开 bookmaker 或 provider 明细。`next_update_at` 必须早于开赛时间；最后临场刷新完成后使用 `policy_reason=pre_match_refresh_complete`、`next_update_at=null`，公开页显示“临场更新已完成”。
 
 `match_decision` 的公开字段只包含：
 
