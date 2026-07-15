@@ -10,6 +10,8 @@
 - 调度器只保留开球前的 cadence / 首选鲜度候选；所有赛前候选均完成后返回终态 `pre_match_refresh_complete`，且 `next_update_at=null`、`should_refresh=false`。同步更新 README、数据契约和回归测试，不改首选方向、模型、赔率额度或 snapshot 结构。
 - TDD 先以 5 个聚焦用例确认旧逻辑失败，完成后聚焦回归 `5/5`、配置运行时排除可选 FastAPI 的完整回归 `737/737`、系统 Python FastAPI `13/13`，合计 `750/750`；`compileall` 和 `git diff --check` 通过。实现和验证未联网、未读取 `.env`、未调用 The Odds API、未消耗 quota、未刷新或发布 snapshot、未部署、未修改 LaunchAgent、未 commit/push。
 - 应用内浏览器运行时初始化出现 `Cannot redefine property: process`，因此没有用未获确认的外部浏览器替代；已通过生成的静态 HTML 检查移动端相关结构与具体时间文案。
+- 功能提交为 `ee10076 feat: show per-match update times`，已推送到 `origin/codex/csl-scheduled-publish`，并绑定 Wi-Fi 地址 `192.168.31.46` 部署到 ECS `/opt/worldcup/releases/ee100768b16eabcea1b91e5db96a07dd4eea4f09`。`worldcup.service` / Nginx active，内部 `/readyz` warmup 与公网 `/healthz`、`/api/matches`、`/preview` smoke 均通过，自动回滚未触发。
+- 公网 `/api/matches` 当前 13/13 场均包含 `last_update_at`、`last_update_label` 和既有 `next_update_*` 字段；`/preview` 渲染 13 组“最后更新 / 下次更新”，旧“按24 小时时间间隔刷新”文案为 0，研究免责声明保留。部署未读取 `.env`、未调用 The Odds API、未消耗 quota、未刷新或发布 snapshot，也未修改 LaunchAgent。
 
 ## 2026-07-14 The Odds API 三槽低额度切换
 
