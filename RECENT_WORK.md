@@ -11,6 +11,9 @@
 - 用户随后明确确认部分发布、本地 commit + 可回滚 ECS 部署，以及每天北京时间 16:40 的独立赛后 LaunchAgent。`postmatch_publish` 现只把 closing 缺失降为透明覆盖缺口，仍阻断源回退/重复、比分修订、finished 冲突和比分不一致；缺 closing 的比赛不补造首选，其他已有 closing 的完赛场继续发布，并同步写 `decision_coverage.missing_closing_count`、`skipped_no_closing`、`run.postmatch.missing_closing_count` / `partial_publish`。
 - 新增 `worldcup.postmatch_launch_agent` 生成器，默认每天 16:40 执行独立 live runner，显式使用项目绝对路径和 HTTPS endpoint；生成器本身只输出/写 plist，不自行加载 launchd。TDD 聚焦回归 `31/31`，配置 runtime 完整回归（排除未安装的可选 FastAPI）`778/778`，系统 Python FastAPI `13/13`，合计 `791/791`；`compileall` 和 `git diff --check` 通过。
 - 使用真实 104 场 openfootball cache、103 条 results、101 场 base finished 和本地 closing history 的临时副本完成无网络/假 publish 演练：成功生成 102 场 finished，`missing_closing_count=1`、`partial_publish=true`，英格兰 vs 阿根廷进入 finished 且公开实时列表为 0；所有产物只写临时目录。实际 commit、部署、HMAC 发布和 LaunchAgent 加载结果待后续步骤追加。
+- 实现已本地提交为 `4af0eb7 fix: publish verified postmatch results`，未 push。标准部署 dry-run 为 `dry_run_ready`；首次 live 部署在 SSH banner 前超时并明确返回 `deployed=false`，远端 release/current/service 未切换。随后 TCP 22/443 仍可建立连接，但绑定 `192.168.31.46` / `en1` 的 SSH banner 与直连 HTTPS `/healthz` 均超时，因此未绕过标准部署或改本机路由。
+- 真实 `postmatch_publish --live` 已构造 102 场 finished 完整候选，`missing_closing_count=1`、`partial_publish=true`；HTTPS ingest 未确认返回，outbox 安全保留绑定 endpoint/run/hash 的 `publish_pending` 与不可变 prepared snapshot，canonical postmatch snapshot/state 尚未落盘。未重复抓取、未调用 The Odds API、未消耗 quota。
+- 经确认已写入并加载 `/Users/eagod/Library/LaunchAgents/xin.celab.football.postmatch-publish.plist`；`plutil` 通过，launchd 注册为 `gui/501/xin.celab.football.postmatch-publish`，每天北京时间 16:40 运行，`RunAtLoad=false`、`runs=0`，未 kickstart。首次定时唤醒会优先重试现有 pending，不重新抓取。
 
 ## 2026-07-17 延期公开隐藏与世界杯赛后同步
 

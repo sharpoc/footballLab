@@ -576,6 +576,8 @@ python3 -m worldcup.postmatch_launch_agent \
   --out ~/Library/LaunchAgents/xin.celab.football.postmatch-publish.plist
 ```
 
+本机已加载 `xin.celab.football.postmatch-publish`，每天北京时间 16:40 执行上述独立 live runner，`RunAtLoad=false`；它与 16:30 的 `daily-eval` 相互独立，不调用 The Odds API，也不发送研究日报通知。
+
 赛后链路已由 LaunchAgent `xin.celab.football.daily-eval` 每天北京时间 16:30 自动执行 `python3 -m worldcup.daily_eval --notify --live-scores`：小组赛阶段可先调用 The Odds API scores 端点补抓赛果（每天约 2 credits，同 key 槽位轮换），再依次 `results_capture` → `eval_data` → `backtest` → `finished_record` 并推送研究日报（完赛数、评估样本、模型 vs 市场指标、本场首选命中/未中/走水/暂无首选）；无新增赛果不推送。淘汰赛阶段该 scores 补抓默认会被 `knockout_score_manual_review_required` 阻断，需人工确认 90 分钟比分口径后才可用 `--allow-knockout-scores` 放行。
 
 比赛日之后跑：
