@@ -14,6 +14,10 @@
 - 实现已本地提交为 `4af0eb7 fix: publish verified postmatch results`，未 push。标准部署 dry-run 为 `dry_run_ready`；首次 live 部署在 SSH banner 前超时并明确返回 `deployed=false`，远端 release/current/service 未切换。随后 TCP 22/443 仍可建立连接，但绑定 `192.168.31.46` / `en1` 的 SSH banner 与直连 HTTPS `/healthz` 均超时，因此未绕过标准部署或改本机路由。
 - 真实 `postmatch_publish --live` 已构造 102 场 finished 完整候选，`missing_closing_count=1`、`partial_publish=true`；HTTPS ingest 未确认返回，outbox 安全保留绑定 endpoint/run/hash 的 `publish_pending` 与不可变 prepared snapshot，canonical postmatch snapshot/state 尚未落盘。未重复抓取、未调用 The Odds API、未消耗 quota。
 - 经确认已写入并加载 `/Users/eagod/Library/LaunchAgents/xin.celab.football.postmatch-publish.plist`；`plutil` 通过，launchd 注册为 `gui/501/xin.celab.football.postmatch-publish`，每天北京时间 16:40 运行，`RunAtLoad=false`、`runs=0`，未 kickstart。首次定时唤醒会优先重试现有 pending，不重新抓取。
+- 用户关闭 TUN 后确认路由/DNS 已恢复 `en1 -> 39.102.50.205`，但 ECS 仍无 SSH banner 与 HTTPS 响应；用户在阿里云控制台重启实例后，SSH 恢复且旧 release/service/Nginx 均可读。随后以标准工具和自动回滚部署 `ffd0cad8f931621df0f540b47b5dca364480c2d6`，previous release 为 `ee100768...`，current/service/Nginx/内部 warmup 与公网 `/healthz`、`/api/matches`、`/preview` smoke 全部通过，未触发回滚。
+- 部署后只重试原 pending，复用同一 prepared snapshot，没有重新抓取；第二次传输返回 HTTP 200 / ingest `stored`，本地 canonical postmatch snapshot/state 已落盘，pending/prepared 已清理。ECS SQLite 最新记录为 `20260719T133440Z-postmatch`，未调用 The Odds API、未消耗 quota、未打印 secret。
+- 公网最终验收：`/api/matches` 为 5 场，`POSTPONED=0`、英格兰 vs 阿根廷实时条目为 0；`/api/finished` 为 102 场，英格兰 1–2 阿根廷已结算，coverage 为 `finished_result_count=103`、`closing_available_count=102`、`missing_closing_count=1`、`skipped_no_closing=1`；`/preview` 目标行显示 `1 - 2` 与赛果结论，不再显示“赛果待确认”。研究免责声明和公开字段安全检查均通过。
+- 最终巡检发现 `ops_check` 仍拿旧 analysis finished=101 与 results=103 对账，属于新 postmatch 边界接入遗漏；现改为只优先使用 state/hash 验证通过的 postmatch snapshot，否则回退 analysis snapshot。TDD ops 回归 `28/28`，配置 runtime 全量 `779/779`、系统 FastAPI `13/13`，合计 `792/792`；真实 `ops_check` 为 `errors=0`、5 个既有 warning，远端日志敏感命中 0。
 
 ## 2026-07-17 延期公开隐藏与世界杯赛后同步
 

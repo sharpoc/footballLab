@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import plistlib
 from contextlib import redirect_stdout
@@ -1519,6 +1520,102 @@ def test_run_ops_check_reports_finished_decision_tally_and_results_consistency()
         "no_pick": 0,
     }
     assert result["local"]["finished"]["results"]["count"] == 1
+    assert result["local"]["finished"]["results"]["matches_finished_result_count"] is True
+
+
+def test_run_ops_check_prefers_verified_postmatch_snapshot_for_finished_consistency():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        base = {
+            "snapshot_at": "2026-07-15T18:46:55+00:00",
+            "counts": {"matches": 1},
+            "matches": [{"home_team": "England", "away_team": "Argentina"}],
+            "run": {"run_id": "20260715T184655Z-live"},
+            "data_quality": {"source_errors": [], "stale_sources": []},
+            "finished": {
+                "matches": [],
+                "decision_tally": {"hit": 0, "miss": 0, "push": 0, "no_pick": 0},
+                "skipped_no_closing": 0,
+            },
+        }
+        postmatch = {
+            **base,
+            "snapshot_at": "2026-07-19T13:34:40+00:00",
+            "run": {
+                "run_id": "20260719T133440Z-postmatch",
+                "mode": "postmatch_results",
+                "parent_run_id": "20260715T184655Z-live",
+            },
+            "finished": {
+                "matches": [
+                    {
+                        "kickoff_at_utc": "2026-07-15T19:00:00+00:00",
+                        "home_team": "England",
+                        "away_team": "Argentina",
+                        "result": {"home_score": 1, "away_score": 2},
+                        "closing_match_decision": {
+                            "schema_version": 2,
+                            "label": "MATCH_PICK",
+                            "market": "OU",
+                            "selection": "under",
+                            "line": 2.5,
+                        },
+                    }
+                ],
+                "decision_tally": {"hit": 0, "miss": 1, "push": 0, "no_pick": 0},
+                "decision_coverage": {
+                    "finished_result_count": 2,
+                    "closing_available_count": 1,
+                    "missing_closing_count": 1,
+                },
+                "skipped_no_closing": 1,
+            },
+        }
+        canonical = json.dumps(
+            postmatch,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        state = {
+            "schema_version": 1,
+            "status": "published",
+            "snapshot_sha256": hashlib.sha256(canonical).hexdigest(),
+        }
+        _write(root / "data/cache/analysis_snapshot.json", json.dumps(base))
+        _write(root / "data/cache/wc2026_postmatch_snapshot.json", json.dumps(postmatch))
+        _write(root / "data/cache/wc2026_postmatch_state.json", json.dumps(state))
+        _write(root / "data/cache/quota.json", '{"providers":{}}')
+        _write(
+            root / "data/local/results/wc2026_results.csv",
+            "\n".join(
+                [
+                    "kickoff_at_utc,home_team,away_team,home_canonical,away_canonical,home_score,away_score,captured_at",
+                    "2026-07-15T19:00:00+00:00,England,Argentina,england,argentina,1,2,2026-07-16T00:00:00+00:00",
+                    "2026-07-18T21:00:00+00:00,France,England,france,england,4,6,2026-07-19T12:00:00+00:00",
+                ]
+            ),
+        )
+        logs_dir = root / "logs"
+        launch_agent = logs_dir / "xin.celab.football.scheduled-publish.plist"
+        _write_plist(launch_agent)
+
+        result = run_ops_check(
+            root=root,
+            public_base_url=None,
+            remote_host=None,
+            launch_agent_path=launch_agent,
+            local_log_paths=[],
+            pre_match_launch_agent_path=None,
+        )
+
+    assert result["ok"] is True
+    assert result["local"]["finished"]["snapshot_path"].endswith(
+        "data/cache/wc2026_postmatch_snapshot.json"
+    )
+    assert result["local"]["finished"]["summary"]["match_count"] == 1
+    assert result["local"]["finished"]["summary"]["coverage"]["missing_closing_count"] == 1
+    assert result["local"]["finished"]["results"]["count"] == 2
     assert result["local"]["finished"]["results"]["matches_finished_result_count"] is True
 
 

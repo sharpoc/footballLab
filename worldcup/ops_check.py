@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import re
 import shlex
@@ -30,6 +31,8 @@ DEFAULT_PRE_MATCH_LOGS = (
     Path.home() / "Library" / "Logs" / "worldcup" / "pre-match.err.log",
 )
 DEFAULT_LINEUP_AUDIT_PATH = Path("data/local/diagnostics/lineup_audit.json")
+DEFAULT_POSTMATCH_SNAPSHOT_PATH = Path("data/cache/wc2026_postmatch_snapshot.json")
+DEFAULT_POSTMATCH_STATE_PATH = Path("data/cache/wc2026_postmatch_state.json")
 DEFAULT_CSL_COMPETITION_ID = "csl_2026"
 DEFAULT_CSL_LIVE_ODDS_CACHE_PATH = Path("data/cache/theoddsapi_csl_2026_odds.json")
 DEFAULT_CSL_LIVE_REFRESH_DIAGNOSTIC_PATH = Path(
@@ -587,8 +590,30 @@ def _csv_row_count(path: Path) -> dict[str, Any]:
     return {"status": "ok", "path": str(path), "count": len(rows)}
 
 
+def _canonical_json_sha256(value: Any) -> str:
+    canonical = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _finished_snapshot(root: Path) -> tuple[dict[str, Any] | None, Path, str]:
+    postmatch_path = root / DEFAULT_POSTMATCH_SNAPSHOT_PATH
+    state = _read_json(root / DEFAULT_POSTMATCH_STATE_PATH)
+    postmatch = _read_json(postmatch_path)
+    if (
+        postmatch is not None
+        and state is not None
+        and state.get("schema_version") == 1
+        and state.get("status") == "published"
+        and state.get("snapshot_sha256") == _canonical_json_sha256(postmatch)
+    ):
+        return postmatch, postmatch_path, "postmatch"
+
+    analysis_path = root / "data/cache/analysis_snapshot.json"
+    return _read_json(analysis_path), analysis_path, "analysis"
+
+
 def _finished_consistency(root: Path) -> dict[str, Any]:
-    snapshot = _read_json(root / "data/cache/analysis_snapshot.json")
+    snapshot, snapshot_path, snapshot_source = _finished_snapshot(root)
     if snapshot is None:
         return {"status": "missing_snapshot"}
 
@@ -609,6 +634,8 @@ def _finished_consistency(root: Path) -> dict[str, Any]:
 
     return {
         "status": "ok",
+        "snapshot_path": str(snapshot_path),
+        "snapshot_source": snapshot_source,
         "summary": summary,
         "declared_decision_tally": declared if declared_present else None,
         "recomputed_decision_tally": recomputed,
