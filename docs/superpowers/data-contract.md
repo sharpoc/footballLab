@@ -50,6 +50,11 @@ group
 round
 ground
 num
+score.ft
+score.et
+score.p
+score1
+score2
 ```
 
 ### 内部字段映射
@@ -64,6 +69,9 @@ num
 | `group` | `group` | 淘汰赛可能为空 |
 | `round` | `stage` | 例如 `Matchday 1` / `Final` |
 | `ground` | `venue_name` | 城市或场地描述 |
+| `score.ft` | `home_score` / `away_score` | 90 分钟赛果；公开完赛结算的唯一允许字段 |
+| `score.et` / `score.p` | 不进入公开结算 | 加时/点球信息仅作源诊断，不得替代 90 分钟比分 |
+| `score1` / `score2` | legacy compatibility | 旧离线样例/Elo 重放可兼容；严格赛后发布不得 fallback |
 
 ### 时间处理
 
@@ -76,6 +84,7 @@ num
 - 淘汰赛队名会出现 `W101` 等占位符，不能当真实国家队名。
 - `ground` 是场地/城市描述，不一定是标准球场 ID。
 - 多源拼接必须维护 team alias 表。
+- 淘汰赛可能同时出现 90 分钟、加时和点球比分。公开 finished 结算必须显式启用 strict 模式并只读取合法的 `score.ft=[int,int]`；缺少合法 `ft` 时保持“赛果待确认”，不能读取 `et`、`p` 或 legacy 顶层比分猜测。
 
 ## 2. API-Football
 
@@ -650,6 +659,7 @@ away_team
 match_label
 competition_id
 competition_label
+fixture_status
 last_update_at
 last_update_label
 next_update_at
@@ -660,6 +670,8 @@ match_decision
 ```
 
 `last_update_at` 优先取 `match_decision.odds_latest_at`，其次为单场 `odds_updated_at`、`match_decision.computed_at` 和顶层 `snapshot_at`；`last_update_label` 只区分“赔率更新 / 分析更新”，不公开 bookmaker 或 provider 明细。`next_update_at` 必须早于开赛时间；最后临场刷新完成后使用 `policy_reason=pre_match_refresh_complete`、`next_update_at=null`，公开页显示“临场更新已完成”。
+
+公开实时比赛投影必须整场排除明确 `fixture_status=POSTPONED` 的记录，以及身份已存在于 `finished.matches` 的完赛记录；内部 snapshot/cache/history 保持原样，不能为实现隐藏而删除源数据。仅仅 `kickoff_at_utc <= now` 不能推断完赛：没有确认赛果的已开赛比赛仍保留“赛果待确认”。`build_public_snapshot.counts.matches` 必须等于过滤后的公开 `matches` 长度，公开 counts 不得保留 `postponed` / `postponed_matches`，`/readyz.match_count` 也使用公开投影计数，确保 `/api/snapshot/latest`、`/api/matches`、`/readyz` 和静态 JSON 口径一致。
 
 `match_decision` 的公开字段只包含：
 
@@ -732,6 +744,8 @@ python3 -m worldcup.preview --snapshot data/cache/analysis_snapshot.json --out d
 - `decision_coverage` 至少记录 `finished_result_count`、`closing_available_count`、`missing_closing_count`、`decision_available_count`、`missing_decision_count`、`invalid_decision_count` 和 `unresolved_count`。
 - 存量 store 内的 `closing_signals`、grade tally 和旧 decision label 保持只读 legacy compatibility，不做破坏性迁移；新 `finished` 块和公开投影必须剔除这些字段。
 - `GET /api/finished` 与 `api/finished.json` 仍通过 `project_finished_rows(snapshot)` 输出公开安全复盘投影；公开 `summary` 使用 `decision_tally`、`sample` 和 `coverage`，不得暴露完整内部 snapshot、run_id、quota、provider 原名或 raw source error。
+
+世界杯赛后公开同步使用独立 `worldcup.postmatch_publish` 边界：默认 dry-run 必须在读取 secret、联网和写盘之前返回；live 必须传入非占位 ingest endpoint，并在任何副作用前验证 `observed_at`，output/state/cache/results/store 任一共享写路径重叠的运行都必须由固定顺序的独占文件锁串行化。runner 只从 openfootball 内存响应解析合法的非负整数 `score.ft`，验证后对 ignored cache/results/store 三个文件分别原子替换、顺序写入，并发布“完整单赛事 analysis snapshot + 累计 finished”；该顺序不是跨文件事务，异常中断后下次运行必须重做单调性校验。不得覆盖赛前 `analysis_snapshot.json`、不得发布 result-only patch、空 matches、无明确世界杯身份或 `multi_competition` 合并 snapshot；不读写 quota ledger、不消耗额度、不影响 odds scheduler，也不调用 The Odds API。候选 snapshot 必须先写入与 canonical owner 同目录、以实际文件 hash 命名的不可变 prepared 文件，再持久化绑定 owner 绝对路径、prepared 绝对路径/内容 hash 和 endpoint 的独立 pending；只有 HTTP 2xx 且 ingest 业务状态为 `stored` / `duplicate` 才视为成功，之后依次替换 canonical output、写 state、清 pending。pending 一旦落盘，后续任一步失败都必须保留 pending/prepared，下次只允许重发同一 endpoint/run/snapshot，依赖 ingest idempotency 防止重复入库；pending 落盘前中断留下的未引用 prepared 必须在下次无 pending 运行时先清理。state 的 snapshot hash 必须与现存赛后产物一致；finished fingerprint 只抑制同 parent run 且同 finished 的正常重跑；base parent 变化且 base finished 未追平时应重新发布完整 snapshot。源 fixture/result 回退、重复身份、比分修订、base/previous/store finished 冲突或比分不一致必须阻断公开发布。单场 closing 缺失不得补造 `closing_match_decision`，但允许发布其他已有 closing 的 finished records；此时 `finished.decision_coverage.missing_closing_count`、`finished.skipped_no_closing`、`run.postmatch.missing_closing_count` 必须一致，且 `run.postmatch.partial_publish=true`。
 
 ### Local HTTP route contract
 

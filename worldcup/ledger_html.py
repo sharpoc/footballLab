@@ -2000,15 +2000,59 @@ def _decision_display(decision: Any, fixture_status: Any = None) -> dict[str, st
     }
 
 
-def _decision_finished_keys(snapshot: dict[str, Any]) -> set[tuple[str, str, str]]:
+def _decision_match_identity(
+    value: dict[str, Any],
+    snapshot: dict[str, Any],
+) -> tuple[str, str, str, str]:
+    competition = value.get("competition") if isinstance(value.get("competition"), dict) else {}
+    snapshot_competition = (
+        snapshot.get("competition")
+        if isinstance(snapshot.get("competition"), dict)
+        else {}
+    )
+    competition_id = str(
+        competition.get("id")
+        or value.get("competition_id")
+        or snapshot_competition.get("id")
+        or "fifa_world_cup_2026"
+    )
+    kickoff_raw = str(value.get("kickoff_at_utc") or "")
+    kickoff = _decision_parse_at(kickoff_raw)
+    return (
+        competition_id,
+        kickoff.isoformat() if kickoff is not None else kickoff_raw,
+        str(value.get("home_team") or "").casefold(),
+        str(value.get("away_team") or "").casefold(),
+    )
+
+
+def _decision_finished_keys(snapshot: dict[str, Any]) -> set[tuple[str, str, str, str]]:
     return {
-        (
-            str(record.get("kickoff_at_utc") or ""),
-            str(record.get("home_team") or "").casefold(),
-            str(record.get("away_team") or "").casefold(),
-        )
+        _decision_match_identity(record, snapshot)
         for record in ((snapshot.get("finished") or {}).get("matches") or [])
+        if isinstance(record, dict)
     }
+
+
+def _decision_competition_options(
+    snapshot: dict[str, Any],
+    live_rows: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    finished_rows = (project_finished_rows(snapshot).get("matches") or [])
+    seen: set[str] = set()
+    options: list[dict[str, str]] = []
+    for row in [*live_rows, *finished_rows]:
+        competition_id = str(row.get("competition_id") or "").strip()
+        if not competition_id or competition_id in seen:
+            continue
+        seen.add(competition_id)
+        options.append(
+            {
+                "id": competition_id,
+                "label": str(row.get("competition_label") or competition_id),
+            }
+        )
+    return options
 
 
 def _decision_live_rows(
@@ -2022,22 +2066,15 @@ def _decision_live_rows(
             continue
         source_match_indexes.append(
             {
-                (
-                    str(match.get("kickoff_at_utc") or ""),
-                    str(match.get("home_team") or "").casefold(),
-                    str(match.get("away_team") or "").casefold(),
-                ): match
+                _decision_match_identity(match, source_snapshot): match
                 for match in source_snapshot.get("matches") or []
+                if isinstance(match, dict)
             }
         )
     now_at = datetime.now(timezone.utc)
     rows = []
     for projected in project_match_rows(snapshot):
-        key = (
-            str(projected.get("kickoff_at_utc") or ""),
-            str(projected.get("home_team") or "").casefold(),
-            str(projected.get("away_team") or "").casefold(),
-        )
+        key = _decision_match_identity(projected, snapshot)
         kickoff = _decision_parse_at(projected.get("kickoff_at_utc"))
         if key in finished_keys:
             continue
@@ -2193,9 +2230,8 @@ def _render_decision_date_strip(rows: list[dict[str, Any]], *, history: bool = F
 def _render_decision_summary(snapshot: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     picks = sum(1 for row in rows if row["decision_view"]["state"] == "pick")
     awaiting_result = sum(1 for row in rows if row.get("match_state") == "awaiting_result")
-    postponed = sum(1 for row in rows if row.get("match_state") == "postponed")
-    upcoming = len(rows) - awaiting_result - postponed
-    no_pick = len(rows) - picks - postponed
+    upcoming = len(rows) - awaiting_result
+    no_pick = len(rows) - picks
     stale = bool((snapshot.get("data_quality") or {}).get("stale_sources"))
     errors = bool((snapshot.get("data_quality") or {}).get("source_errors"))
     quality = "需注意" if stale or errors else "正常"
@@ -2204,7 +2240,6 @@ def _render_decision_summary(snapshot: dict[str, Any], rows: list[dict[str, Any]
         ("待开赛", upcoming, "neutral"),
         ("赛果待确认", awaiting_result, "warn" if awaiting_result else "neutral"),
         ("本场首选", picks, "neutral"),
-        ("比赛延期", postponed, "warn" if postponed else "neutral"),
         ("暂无可靠首选", no_pick, "neutral"),
         ("数据质量", quality, tone),
     )
@@ -2617,15 +2652,16 @@ def build_research_ledger_html(
     decision_only: bool = False,
 ) -> str:
     snapshot_at = _format_snapshot_time(snapshot.get("snapshot_at"))
-    competitions = competition_options(snapshot)
     if decision_only:
         decision_rows = _decision_live_rows(snapshot, previous_snapshot=previous_snapshot)
+        competitions = _decision_competition_options(snapshot, decision_rows)
         controls = ""
         table = _render_decision_workbench(decision_rows, competitions)
         finished_section = _render_decision_history(snapshot, competitions)
         right_rail = _render_decision_right_rail(snapshot)
         summary = _render_decision_summary(snapshot, decision_rows)
     else:
+        competitions = competition_options(snapshot)
         signal_rows = project_signal_rows(snapshot, previous_snapshot=previous_snapshot)
         controls = _render_controls(signal_rows)
         table = _render_live_ledger(signal_rows, competitions=competitions)

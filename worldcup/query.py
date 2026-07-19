@@ -78,6 +78,17 @@ def _competition_block_for_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {"id": DEFAULT_COMPETITION_ID, "name": DEFAULT_COMPETITION_LABEL}
 
 
+def _competition_block_for_item(
+    snapshot: dict[str, Any],
+    item: dict[str, Any],
+) -> dict[str, Any]:
+    return (
+        _competition_from_mapping(item)
+        or _competition_from_mapping(snapshot)
+        or {"id": DEFAULT_COMPETITION_ID, "name": DEFAULT_COMPETITION_LABEL}
+    )
+
+
 def _competition_id_for_snapshot(snapshot: dict[str, Any]) -> str:
     return str(_competition_block_for_snapshot(snapshot).get("id") or DEFAULT_COMPETITION_ID)
 
@@ -364,6 +375,28 @@ def _public_no_pick(policy_version: str = "match_pick_v2") -> dict[str, Any]:
     }
 
 
+def _public_match_identity(
+    value: dict[str, Any],
+    *,
+    default_competition_id: str,
+) -> tuple[str, str, str, str]:
+    competition = value.get("competition") if isinstance(value.get("competition"), dict) else {}
+    competition_id = str(
+        competition.get("id")
+        or value.get("competition_id")
+        or default_competition_id
+    )
+    kickoff_raw = str(value.get("kickoff_at_utc") or "")
+    kickoff = _parse_public_at(kickoff_raw)
+    kickoff_key = kickoff.isoformat() if kickoff is not None else kickoff_raw
+    return (
+        competition_id,
+        kickoff_key,
+        str(value.get("home_team") or "").casefold(),
+        str(value.get("away_team") or "").casefold(),
+    )
+
+
 def project_match_decision(
     decision: Any,
     *,
@@ -441,7 +474,7 @@ def project_finished_rows(snapshot: dict[str, Any]) -> dict[str, Any]:
         result = record.get("result") or {}
         home = record.get("home_team", "")
         away = record.get("away_team", "")
-        competition = _competition_block_for_snapshot({"matches": [record]})
+        competition = _competition_block_for_item(snapshot, record)
         matches.append(
             {
                 "kickoff_at_utc": record.get("kickoff_at_utc", ""),
@@ -481,10 +514,26 @@ def project_match_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     stale = bool(data_quality.get("stale_sources"))
     rows: list[dict[str, Any]] = []
     as_of = datetime.now(timezone.utc)
+    default_competition_id = _competition_id_for_snapshot(snapshot)
+    finished_identities = {
+        _public_match_identity(
+            record,
+            default_competition_id=default_competition_id,
+        )
+        for record in ((snapshot.get("finished") or {}).get("matches") or [])
+        if isinstance(record, dict)
+    }
     for match in snapshot.get("matches", []):
         home = match.get("home_team", "")
         away = match.get("away_team", "")
         fixture_status = str(match.get("fixture_status") or "SCHEDULED").upper()
+        competition = _competition_block_for_item(snapshot, match)
+        match_identity = _public_match_identity(
+            match,
+            default_competition_id=str(competition.get("id") or default_competition_id),
+        )
+        if fixture_status == "POSTPONED" or match_identity in finished_identities:
+            continue
         refresh_plan = match.get("refresh_plan") or {}
         raw_decision = match.get("match_decision") or {}
         last_update_at = (
@@ -498,18 +547,11 @@ def project_match_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             if raw_decision.get("odds_latest_at") or match.get("odds_updated_at")
             else "分析更新"
         )
-        competition = _competition_block_for_snapshot({"matches": [match]})
-        if fixture_status == "POSTPONED":
-            policy_version = str((match.get("match_decision") or {}).get("policy_version") or "")
-            projected_decision = _public_no_pick(
-                "match_pick_v3" if policy_version == "match_pick_v3" else "match_pick_v2"
-            )
-        else:
-            projected_decision = (
-                _public_no_pick()
-                if _match_pick_blocked(snapshot, match)
-                else project_match_decision(match.get("match_decision"), as_of=as_of)
-            )
+        projected_decision = (
+            _public_no_pick()
+            if _match_pick_blocked(snapshot, match)
+            else project_match_decision(match.get("match_decision"), as_of=as_of)
+        )
         rows.append(
             {
                 "kickoff_at_utc": match.get("kickoff_at_utc", ""),

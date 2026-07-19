@@ -39,6 +39,8 @@
 - 中超俱乐部评级使用独立 `csl_model` 配置边界，当前仍为 `shadow_only` / `club_rating_pending`。除全局 replay 样本外，每场双方都必须达到逐队最小样本（默认 30 场）；未达标时必须使用 1500 结构占位并走市场兜底，不得让小样本 rating 影响首选方向。
 - 中超 replay 赛果 live 更新必须同时通过 7M + 中足联官方公开接口的日期/主客队/比分全量一致校验，并且不得删除或改写已接受的赛果；否则沿用旧 cache 并记质量错误。解除 pending 还必须同时通过最新赛季主场先验和同样本市场基准门槛，不能只看全历史聚合 Brier。
 - 中超 scheduled publish 每次成功构建赛前 snapshot 后必须自动归档到 ignored `data/local/diagnostics/csl_history/`，用于 closing join 和市场基准积累；归档失败记 `snapshot_archive_failed`，但不阻断当场有效首选发布。
+- 明确 `fixture_status=POSTPONED` 的场次只从公开 `project_match_rows` / API / preview / static export 隐藏，内部 snapshot/cache/history 必须保留；已进入 `finished.matches` 的比赛同样从公开实时列表移除。不得仅按开球时间推断完赛，已开赛但未确认赛果的场次仍展示“赛果待确认”。
+- 世界杯赛后公开同步必须使用独立 `postmatch_publish` 产物和 state/outbox，不得覆盖 `analysis_snapshot.json` 或影响 odds scheduler/quota；live 必须显式传入非占位 endpoint 并持有单实例文件锁，公开结算严格只接受 openfootball `score.ft` 的 90 分钟非负整数比分，忽略 `score.et`、`score.p` 和 legacy `score1/score2`。源回退/重复、比分修订、finished 回退/冲突或比分不一致必须阻断发布；单场 closing 缺失不得补造首选，也不得拖住其他已有 closing 的完赛场，必须在 `decision_coverage.missing_closing_count`、`skipped_no_closing` 和 `run.postmatch.partial_publish` 中透明记录。pending 必须绑定 endpoint，只有 ingest 返回 `stored` / `duplicate` 才算成功，之后先落 state、再清 pending。
 - scheduler 默认 dry-run，只读取本地 snapshot / quota 并输出 JSON 决策；The Odds API 按免费额度使用，低额度时必须降频。
 - The Odds API 使用 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY` / `THE_ODDS_API_KEY_TERTIARY` 三个显式槽位依次轮换；当前槽位剩余额度降到 30 或以下时，优先切换到仍未探测或剩余大于 30 的下一槽位并保留低额度应急余额。只有三个槽位都没有新鲜额度时才按低额度锚点降频，全部耗尽时暂停刷新。真实 token 只允许写入 ignored `.env`，不得进入代码、文档、日志或回复。
 - scheduled refresh 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会调用 refresh runner。

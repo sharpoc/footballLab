@@ -119,19 +119,79 @@ def test_preview_never_displays_a_next_update_at_or_after_kickoff():
     assert "临场更新已完成" in html
 
 
-def test_preview_renders_postponed_match_without_pick_or_awaiting_result_copy():
+def test_preview_omits_postponed_match_entirely():
     snapshot = _snapshot()
     postponed = snapshot["matches"][1]
     postponed["fixture_status"] = "POSTPONED"
-    postponed["kickoff_at_utc"] = "2000-06-12T01:00:00+00:00"
 
     html = build_preview_html(snapshot)
 
-    assert "比赛延期" in html
-    assert "等待官方公布补赛时间" in html
-    assert "上海海港 对 山东泰山" in html
-    assert "比赛已由官方确认延期，原开球时间和原首选均已失效" in html
-    assert "赛前首选（已封盘）" not in html
+    assert "上海海港 对 山东泰山" not in html
+    assert "墨西哥 对 南非" in html
+    assert "比赛列表 1场" in html
+    assert "比赛延期" not in html
+    assert len(snapshot["matches"]) == 2
+    assert snapshot["matches"][1]["fixture_status"] == "POSTPONED"
+
+
+def test_preview_does_not_invent_competition_option_when_all_rows_are_hidden():
+    snapshot = _snapshot()
+    for match in snapshot["matches"]:
+        match["fixture_status"] = "POSTPONED"
+    snapshot["finished"]["matches"] = []
+
+    html = build_preview_html(snapshot)
+
+    assert 'value="fifa_world_cup_2026"' not in html
+    assert 'value="csl_2026"' not in html
+    assert 'value="all"' in html
+    assert "比赛延期" not in html
+
+
+def test_preview_finished_identity_is_isolated_by_competition():
+    snapshot = _snapshot()
+    same_kickoff = "2099-06-11T19:00:00+00:00"
+    snapshot["matches"] = [
+        {
+            "kickoff_at_utc": same_kickoff,
+            "competition": {"id": "fifa_world_cup_2026", "name": "2026 世界杯"},
+            "home_team": "Shared Home",
+            "away_team": "Shared Away",
+            "match_decision": {"schema_version": 2, "label": "NO_CLEAN_MARKET"},
+        },
+        {
+            "kickoff_at_utc": same_kickoff,
+            "competition": {"id": "csl_2026", "name": "中超 2026"},
+            "home_team": "Shared Home",
+            "away_team": "Shared Away",
+            "match_decision": {"schema_version": 2, "label": "NO_CLEAN_MARKET"},
+        },
+    ]
+    snapshot["finished"] = {
+        "schema_version": 2,
+        "matches": [
+            {
+                "kickoff_at_utc": same_kickoff,
+                "competition": {"id": "fifa_world_cup_2026", "name": "2026 世界杯"},
+                "home_team": "Shared Home",
+                "away_team": "Shared Away",
+                "result": {"home_score": 1, "away_score": 0},
+                "closing_match_decision": {
+                    "schema_version": 2,
+                    "label": "MATCH_PICK",
+                    "market": "1X2",
+                    "selection": "home",
+                },
+            }
+        ],
+        "skipped_no_closing": 0,
+    }
+
+    html = build_preview_html(snapshot)
+
+    assert "比赛列表 1场" in html
+    assert 'data-league="csl_2026"' in html
+    assert "历史比赛 1场" in html
 
 
 def test_preview_restores_original_workbench_layout_without_grade_ui():

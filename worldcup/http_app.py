@@ -327,7 +327,7 @@ def handle_request(
         return _json_response(
             200,
             {
-                "match_count": len(snapshot.get("matches") or []),
+                "match_count": len(project_match_rows(snapshot)),
                 "schema_version": 1,
                 "service": "worldcup-analysis",
                 "status": "ready",
@@ -371,7 +371,7 @@ def handle_request(
         return _json_response(200, response_body, extra_headers=_ingest_headers(request_id))
 
     if method_upper == "GET" and route == "/api/snapshot/latest":
-        snapshot = _latest_or_404(db_path, store=store)
+        snapshot = _latest_view(db_path, store, view_cache)
         if snapshot is None:
             return _json_response(404, {"error": "snapshot_not_found"})
         return _json_response(200, {"snapshot": build_public_snapshot(snapshot)})

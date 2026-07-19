@@ -107,6 +107,8 @@ worldcup/
   pre_match_launch_agent.py     # 赛前首发轮询 LaunchAgent plist 生成器（不加载 launchd）
   odds_trend.py                 # 从 history 归档提取每场赔率走势点
   finished_record.py            # closing match_decision × 赛果定格，维护本地增量完赛 store
+  postmatch_publish.py          # 严格 90 分钟赛果 → 独立完整 snapshot → HMAC 发布（默认 dry-run）
+  postmatch_launch_agent.py     # 每天 16:40 赛后发布 LaunchAgent plist 生成器（不加载 launchd）
   differ.py                     # legacy 等级变化检测；当前通知不再调用
   pipeline.py                   # collector 输出对齐 + 兼容 facade
   pipeline_analysis.py          # 单场概率族、OU total shadow、lineup shadow 与分析输出
@@ -213,7 +215,7 @@ HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store �
 
 `worldcup.csl_scheduled_publish` 是中超自动刷新/发布入口。默认 dry-run 只读取本地 snapshot / quota 并输出决策，不读取 `.env`、不联网、不调用 The Odds API、不发布；只有显式 `--live` 且决策 due，或同时传 `--force`，才会读取 `.env`、刷新中超 odds、生成预测 snapshot 并 HMAC ingest 到线上。live due 时会先用 7M 赛程数组与中足联官方公开接口双源校验已完赛比分；只有日期、主客队和比分全部一致才原子更新本地 replay CSV。这两个公开源不消耗 The Odds API quota；抓取或校验失败时沿用旧 cache 并写质量警告，不阻断赔率刷新。每次成功构建的赛前 snapshot 还会自动归档到 ignored `data/local/diagnostics/csl_history/`，用于后续 closing join 和市场基准积累；归档失败会写质量警告，但不阻断当场首选发布。
 
-同一轮双源响应还会校验未完赛赛程的 `SCHEDULED` / `POSTPONED` 状态，成功后原子写入 ignored `data/cache/csl_fixture_status_csl_2026.json`；状态 cache 缺失时，runner 可以只读复用已经保存且双源一致的 `data/cache/csl_results_sources/` 原始响应。官方与 7M 对日期、主客队或状态存在分歧时不更新状态 cache，避免单源误撤首选。确认延期的场次会保留在公开比赛列表并输出 `fixture_status=POSTPONED`，页面显示“比赛延期”，`match_decision` 强制投影为 `NO_CLEAN_MARKET`；该场不参与赛前锚点/首选鲜度调度，也不会进入 closing 或赛后评估。官方出现同一主客队的新日期后，新赛程重新按新赔率计算，赔率源仍残留的更早旧事件会被压掉，避免旧、新场次重复。结果/状态刷新失败但本地 cache 可用时会在 `data_quality.stale_sources` 标记，不静默当作新鲜状态。
+同一轮双源响应还会校验未完赛赛程的 `SCHEDULED` / `POSTPONED` 状态，成功后原子写入 ignored `data/cache/csl_fixture_status_csl_2026.json`；状态 cache 缺失时，runner 可以只读复用已经保存且双源一致的 `data/cache/csl_results_sources/` 原始响应。官方与 7M 对日期、主客队或状态存在分歧时不更新状态 cache，避免单源误撤首选。确认延期的场次继续保留在内部 snapshot/cache/history 供诊断和补赛重排，但 `project_match_rows()`、公开 API、预览页和静态导出会整场隐藏，不再显示“比赛延期”占位行或公开延期计数；`/readyz.match_count` 也只统计公开可见场次。该场不参与赛前锚点/首选鲜度调度、closing 或赛后评估。官方出现同一主客队的新日期后，新赛程重新按新赔率计算，赔率源仍残留的更早旧事件会被压掉，避免旧、新场次重复。结果/状态刷新失败但本地 cache 可用时会在 `data_quality.stale_sources` 标记，不静默当作新鲜状态。
 
 中超自动刷新采用“单场 due 触发、全赛事统一刷新”的省额度策略：调度器扫描当前 `csl_2026` snapshot 里的所有未来比赛，任一比赛命中锚点或首选鲜度保底就刷新整个 `soccer_china_superleague` sport key 一次，避免按每场单独调用 The Odds API。默认锚点为 `T-90` 和 `T-25`，正常额度时另保证在 `valid_until` 前 20 分钟刷新；全局最短刷新间隔为 30 分钟；当 quota remaining 低于等于 30 时只保留 `T-25`；没有未来比赛时最多每 24 小时做一次 discovery refresh，用于发现新的 odds event 赛程。
 
@@ -553,6 +555,26 @@ python3 -m worldcup.elo_local --check
 当 openfootball 缓存里已有完赛比分时，snapshot 会给对应比赛附加 `result`；完赛页只结算赛前冻结的 `closing_match_decision`，胜平负 / 大小球显示“命中”或“未中”，亚洲让球保留“命中 / 未中 / 走水”及半赢/半输 settlement class。
 
 最新 refresh 富化后的 snapshot 包含顶层 `finished` schema v2：用开球前最后一轮 closing snapshot 的 `match_decision` 与本地 90 分钟赛果定格完赛场。`decision_tally` 统计 `hit / miss / push / no_pick`；走水和主动放弃都不进入命中率分母。`decision_coverage` 另列缺 closing、缺 decision、损坏 decision 和未解析赛果，避免把数据缺口包装成主动放弃。新记录不写 `closing_signals`；旧 store 中已有的等级数据保持原样但只读兼容，构建新 snapshot 时会被剥离。
+
+`worldcup.postmatch_publish` 是与赔率调度完全分离的世界杯赛后同步入口。默认执行是零副作用 dry-run：不读取 `.env`、不联网、不写 cache/results/store/state、不发布。显式 `--live` 且传入非占位 ingest endpoint 后才抓取 openfootball，并且结算严格只接受 `score.ft` 的 90 分钟非负整数比分；`score.et`、`score.p` 和顶层 legacy `score1/score2` 都不能进入这条公开结算链。runner 会把完整 fixture/result 源与既有 results/base finished/previous finished/store 做单调性和比分一致性校验，源缺行、比分修订或本地 finished 冲突都要求人工复核。单场缺 closing 时不得事后补造首选，但不会拖住其他已有 closing 的完赛场；发布产物必须用 `decision_coverage.missing_closing_count`、`skipped_no_closing` 和 `run.postmatch.partial_publish` 透明记录缺口。
+
+赛后产物固定写入独立的 ignored `data/cache/wc2026_postmatch_snapshot.json`，内容是“当前完整世界杯 analysis snapshot + 累计 finished”，不能发布 result patch、空 matches 或无明确世界杯身份的 snapshot。live runner 对 output/state/cache/results/store 所有共享写资源按固定顺序加独占文件锁，任一路径重叠都不能并发执行；`--now` 在任何 live 副作用前验证。它不覆盖 `analysis_snapshot.json`，不读写 quota ledger、不消耗额度，也不调用 The Odds API。cache/results/store 是三个文件分别原子替换、顺序提交，不是跨文件事务；异常中断后下次运行会重做单调性校验。候选 snapshot 先写入同目录、内容 hash 命名的不可变 prepared 文件，再持久化绑定 canonical owner、prepared 内容和 endpoint 的独立 pending；只有 HTTP 2xx 且 ingest 业务状态为 `stored` / `duplicate` 才视为成功，之后依次替换 canonical output、写独立 state、清 pending。pending 一旦落盘，后续任一步失败都保留 pending/prepared，下次重发同一 endpoint/run/snapshot，由 ingest idempotency 防止重复入库；pending 落盘前中断只可留下未引用 prepared，下次运行会先安全清理。finished fingerprint 只抑制“同 parent run + 同 finished”的正常重跑；base parent 变化且 base finished 未追平时会重新发布完整 snapshot。真实抓取、HMAC 发布、ECS 部署和 LaunchAgent 安装均属于显式授权的运维动作；每次实际执行结果与阻断原因记录在 `RECENT_WORK.md`。
+
+```bash
+# 零副作用 dry-run
+python3 -m worldcup.postmatch_publish
+
+# 仅在另行确认真实抓取与发布后使用，并显式传入线上 endpoint
+python3 -m worldcup.postmatch_publish --live \
+  --endpoint https://football.celab.xin/api/ingest/snapshot
+
+# 预览每天北京时间 16:40 的独立赛后 LaunchAgent；只输出 JSON，不写或加载 plist
+python3 -m worldcup.postmatch_launch_agent
+
+# 经确认后写入 plist；仍需显式 launchctl bootstrap 才会加载
+python3 -m worldcup.postmatch_launch_agent \
+  --out ~/Library/LaunchAgents/xin.celab.football.postmatch-publish.plist
+```
 
 赛后链路已由 LaunchAgent `xin.celab.football.daily-eval` 每天北京时间 16:30 自动执行 `python3 -m worldcup.daily_eval --notify --live-scores`：小组赛阶段可先调用 The Odds API scores 端点补抓赛果（每天约 2 credits，同 key 槽位轮换），再依次 `results_capture` → `eval_data` → `backtest` → `finished_record` 并推送研究日报（完赛数、评估样本、模型 vs 市场指标、本场首选命中/未中/走水/暂无首选）；无新增赛果不推送。淘汰赛阶段该 scores 补抓默认会被 `knockout_score_manual_review_required` 阻断，需人工确认 90 分钟比分口径后才可用 `--allow-knockout-scores` 放行。
 

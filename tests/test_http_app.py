@@ -187,7 +187,6 @@ def test_http_get_matches_returns_projected_rows():
             db_path=db_path,
             secret="test-hmac-secret",
         )
-
         body = json.loads(response["body"])
         assert response["status"] == 200
         assert response["headers"]["Content-Type"] == "application/json"
@@ -222,6 +221,79 @@ def test_http_latest_snapshot_returns_decision_only_public_projection():
     assert "grade" not in serialized.lower()
     assert "private-run" not in serialized
     assert "selected_option_id" not in serialized
+
+
+def test_http_public_match_routes_hide_postponed_and_confirmed_finished_rows():
+    snapshot = _snapshot("projection-filter")
+    postponed = deepcopy(snapshot["matches"][0])
+    postponed.update(
+        {
+            "kickoff_at_utc": "2099-06-12T19:00:00+00:00",
+            "home_team": "Hidden Postponed Home",
+            "away_team": "Hidden Postponed Away",
+            "fixture_status": "postponed",
+        }
+    )
+    snapshot["matches"].append(postponed)
+    snapshot["counts"]["matches"] = 2
+    snapshot["counts"]["postponed_matches"] = 1
+    snapshot["finished"] = {
+        "schema_version": 2,
+        "matches": [
+            {
+                "kickoff_at_utc": "2099-06-11T19:00:00+00:00",
+                "home_team": "Mexico",
+                "away_team": "South Africa",
+                "home_canonical": "mexico",
+                "away_canonical": "south_africa",
+                "result": {"home_score": 2, "away_score": 0},
+                "closing_match_decision": {
+                    "schema_version": 2,
+                    "label": "MATCH_PICK",
+                    "market": "1X2",
+                    "selection": "home",
+                },
+            }
+        ],
+        "skipped_no_closing": 0,
+    }
+    store = CountingRecentSnapshotStore(records=[{"snapshot": snapshot}])
+
+    matches_response = handle_request(
+        method="GET",
+        path="/api/matches",
+        headers={},
+        body="",
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        store=store,
+    )
+    snapshot_response = handle_request(
+        method="GET",
+        path="/api/snapshot/latest",
+        headers={},
+        body="",
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        store=store,
+    )
+    ready_response = handle_request(
+        method="GET",
+        path="/readyz",
+        headers={},
+        body="",
+        db_path="unused.db",
+        secret="test-hmac-secret",
+        store=store,
+    )
+
+    assert json.loads(matches_response["body"])["matches"] == []
+    public_snapshot = json.loads(snapshot_response["body"])["snapshot"]
+    assert public_snapshot["matches"] == []
+    assert public_snapshot["counts"]["matches"] == 0
+    assert "postponed_matches" not in public_snapshot["counts"]
+    assert json.loads(ready_response["body"])["match_count"] == 0
+    assert len(snapshot["matches"]) == 2
 
 
 def test_http_get_matches_returns_latest_rows_for_all_competitions():
@@ -269,14 +341,25 @@ def test_http_get_matches_returns_latest_rows_for_all_competitions():
             db_path=db_path,
             secret="test-hmac-secret",
         )
+        latest_response = handle_request(
+            method="GET",
+            path="/api/snapshot/latest",
+            headers={},
+            body="",
+            db_path=db_path,
+            secret="test-hmac-secret",
+        )
 
         body = json.loads(response["body"])
+        latest = json.loads(latest_response["body"])["snapshot"]
         assert response["status"] == 200
         assert [match["competition_id"] for match in body["matches"]] == [
             "fifa_world_cup_2026",
             "csl_2026",
         ]
         assert body["matches"][1]["match_label"] == "Shanghai Port vs Beijing Guoan"
+        assert latest["matches"] == body["matches"]
+        assert latest["counts"]["matches"] == len(body["matches"])
 
 
 def test_http_get_matches_uses_injected_store():

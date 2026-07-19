@@ -2,6 +2,25 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
+## 2026-07-19 世界杯赛后 live 首次执行受阻
+
+- 用户确认真实赛果抓取、HMAC 发布与部署/定时任务后，先完成零副作用 dry-run，再执行 `worldcup.postmatch_publish --live`。openfootball 返回 104 场 fixture、103 场严格 `score.ft` 完赛比分，本地新增英格兰 1–2 阿根廷与法国 4–6 英格兰两场；更新了 ignored `data/cache/openfootball_2026.json`、`data/local/results/wc2026_results.csv` 和 `data/local/finished_record_store.json`，未调用 The Odds API、未消耗 quota。
+- 英格兰 vs 阿根廷存在赛前 closing decision，可以形成第 102 条 finished；法国 vs 英格兰没有任何赛前 snapshot/closing，staged finished 明确记录 `finished_result_count=103`、`closing_available_count=102`、`missing_closing_count=1`。runner 按现有 all-or-nothing 契约返回 `new_result_missing_closing`，在构造 HMAC 请求和写 ECS 之前阻断，因此线上 finished 仍为 101，英格兰 vs 阿根廷仍未移出公开比赛列表。
+- 公网只读复核 `/api/matches` 仍有 10 场，包含英格兰 vs 阿根廷和 4 场延期中超；`/api/finished` 仍为 101 场。ECS `worldcup.service` / Nginx active，SSH 绑定当前 Wi-Fi `192.168.31.46` 可用。
+- 部署未执行：标准 `worldcup.ssh_deploy` 只允许归档可追踪 Git commit，当前工作区包含本轮未提交实现并会以 `dirty_worktree` 阻断。未绕过保护直接覆盖 active release，未安装/修改 LaunchAgent，未 commit/push；后续需明确确认“缺 closing 时透明记录并部分发布已有 closing 的完赛场”这一业务语义，以及允许本地 commit 后再走可回滚部署。
+- 用户随后明确确认部分发布、本地 commit + 可回滚 ECS 部署，以及每天北京时间 16:40 的独立赛后 LaunchAgent。`postmatch_publish` 现只把 closing 缺失降为透明覆盖缺口，仍阻断源回退/重复、比分修订、finished 冲突和比分不一致；缺 closing 的比赛不补造首选，其他已有 closing 的完赛场继续发布，并同步写 `decision_coverage.missing_closing_count`、`skipped_no_closing`、`run.postmatch.missing_closing_count` / `partial_publish`。
+- 新增 `worldcup.postmatch_launch_agent` 生成器，默认每天 16:40 执行独立 live runner，显式使用项目绝对路径和 HTTPS endpoint；生成器本身只输出/写 plist，不自行加载 launchd。TDD 聚焦回归 `31/31`，配置 runtime 完整回归（排除未安装的可选 FastAPI）`778/778`，系统 Python FastAPI `13/13`，合计 `791/791`；`compileall` 和 `git diff --check` 通过。
+- 使用真实 104 场 openfootball cache、103 条 results、101 场 base finished 和本地 closing history 的临时副本完成无网络/假 publish 演练：成功生成 102 场 finished，`missing_closing_count=1`、`partial_publish=true`，英格兰 vs 阿根廷进入 finished 且公开实时列表为 0；所有产物只写临时目录。实际 commit、部署、HMAC 发布和 LaunchAgent 加载结果待后续步骤追加。
+
+## 2026-07-17 延期公开隐藏与世界杯赛后同步
+
+- 定位截图中的两个问题：延期记录被内部 snapshot 直接投影到公开列表；世界杯赔率调度在开球后停止，日报链又只更新本地完赛产物而不发布新 snapshot，因此英格兰 vs 阿根廷有 closing 证据仍长时间显示“赛果待确认”。
+- 公开 `project_match_rows` 现整场排除 `POSTPONED` 和已进入 `finished.matches` 的比赛，但内部 snapshot/cache/history 保留原数据。`/api/snapshot/latest`、`/api/matches`、preview、静态导出和 `/readyz.match_count` 统一使用过滤后口径，公开 counts 不再携带延期计数；已开赛但没有确认赛果的场次仍保留“赛果待确认”，不按时间猜测完赛。跨赛事同队同时的 identity 已按 competition 隔离。
+- 新增独立 `worldcup.postmatch_publish`：默认零副作用 dry-run；live 只接受 openfootball `score.ft` 的 90 分钟非负整数比分，不调 The Odds API、不读写 quota ledger、不覆盖 `analysis_snapshot.json`。必须发布“完整世界杯 base + 累计 finished”，源回退/重复、比分修订、base/previous/store 冲突、closing 缺失或身份不明时阻断公开发布。
+- 发布可靠性使用全共享写路径独占锁、内容 hash 命名的不可变 prepared snapshot、绑定 owner/endpoint/hash 的 pending、`stored` / `duplicate` 业务成功判定，以及“canonical output → state → 清 pending”顺序。并发、HTTP 200 但业务拒绝、state 落盘失败、pending endpoint/路径篡改、孤儿 prepared、重复 identity 和 state/output hash 不一致均有故障注入回归。
+- 配置运行时排除可选 FastAPI 的完整回归 `775/775`，系统 Python FastAPI `13/13`，合计 `788/788`；`compileall`、`git diff --check` 和默认 dry-run 通过。使用当前 101 场本地基线与真实 closing history 在临时目录注入“英格兰 1–2 阿根廷”严格 `score.ft`，成功生成 102 场 finished 完整 snapshot，原始 analysis/openfootball/results/store 未改动。
+- 本轮没有读取 `.env`、没有联网、没有真实刷新或 HMAC 发布赛果、没有部署、没有安装/修改 LaunchAgent、没有 commit/push。浏览器调试 skill 按路由优先使用本地 CLI/静态 HTML 验证，未启动应用内浏览器或本地服务。
+
 ## 2026-07-15 单场最后/下次更新时间
 
 - 定位临近开赛仍显示“按24小时时间间隔刷新”的根因：最后一个赛前锚点执行后，调度器把通用 24 小时 cadence 当成下次更新；该时间已晚于开球，页面又直接展示策略说明，造成赛前还会等待 24 小时的误解。

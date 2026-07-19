@@ -153,3 +153,43 @@ def test_export_static_site_manifest_describes_outputs():
         assert "api/matches.json" in manifest["files"]
         assert "api/finished.json" in manifest["files"]
         assert result["manifest_path"] == str(out_dir / "manifest.json")
+
+
+def test_export_static_site_hides_postponed_matches_and_recounts_public_matches():
+    snapshot = _snapshot()
+    snapshot["counts"]["matches"] = 2
+    snapshot["counts"]["postponed_matches"] = 1
+    snapshot["matches"].append(
+        {
+            "kickoff_at_utc": "2099-06-12T19:00:00+00:00",
+            "stage": "Round 18",
+            "home_team": "Hidden Postponed Home",
+            "away_team": "Hidden Postponed Away",
+            "fixture_status": "POSTPONED",
+            "match_decision": {
+                "schema_version": 2,
+                "policy_version": "match_pick_v3",
+                "label": "NO_CLEAN_MARKET",
+            },
+        }
+    )
+
+    with TemporaryDirectory() as tmp:
+        out_dir = Path(tmp) / "site"
+        export_static_site(snapshot, out_dir)
+
+        html = (out_dir / "index.html").read_text(encoding="utf-8")
+        public_snapshot = json.loads(
+            (out_dir / "api" / "snapshot" / "latest.json").read_text(encoding="utf-8")
+        )["snapshot"]
+        public_matches = json.loads(
+            (out_dir / "api" / "matches.json").read_text(encoding="utf-8")
+        )["matches"]
+
+    assert "Hidden Postponed Home" not in html
+    assert [row["match_label"] for row in public_matches] == ["Mexico vs South Africa"]
+    assert public_snapshot["matches"] == public_matches
+    assert public_snapshot["counts"]["matches"] == 1
+    assert "postponed_matches" not in public_snapshot["counts"]
+    assert len(snapshot["matches"]) == 2
+    assert snapshot["matches"][1]["fixture_status"] == "POSTPONED"

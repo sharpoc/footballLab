@@ -438,7 +438,7 @@ def test_project_match_rows_returns_preview_safe_rows():
     assert "bet_amount" not in rows[0]
 
 
-def test_project_match_rows_exposes_postponed_status_and_never_exposes_pick():
+def test_project_match_rows_hides_postponed_match_without_mutating_snapshot():
     snapshot = _snapshot()
     snapshot["matches"][0]["fixture_status"] = "POSTPONED"
     snapshot["matches"][0]["match_decision"] = {
@@ -450,14 +450,60 @@ def test_project_match_rows_exposes_postponed_status_and_never_exposes_pick():
         "valid_until": "2099-06-11T19:00:00+00:00",
     }
 
-    row = project_match_rows(snapshot)[0]
+    rows = project_match_rows(snapshot)
 
-    assert row["fixture_status"] == "POSTPONED"
-    assert row["match_decision"] == {
+    assert [row["match_label"] for row in rows] == ["Canada vs Qatar"]
+    assert len(snapshot["matches"]) == 2
+    assert snapshot["matches"][0]["fixture_status"] == "POSTPONED"
+    assert snapshot["matches"][0]["match_decision"]["label"] == "MATCH_PICK"
+
+
+def test_project_match_rows_hides_confirmed_finished_match_but_not_started_unfinished_match():
+    finished_snapshot = _snapshot_with_finished()
+
+    finished_rows = project_match_rows(finished_snapshot)
+    unfinished_rows = project_match_rows(_snapshot())
+
+    assert [row["match_label"] for row in finished_rows] == ["Canada vs Qatar"]
+    assert [row["match_label"] for row in unfinished_rows] == [
+        "Mexico vs South Africa",
+        "Canada vs Qatar",
+    ]
+
+
+def test_public_projection_uses_top_level_competition_when_match_blocks_are_absent():
+    snapshot = _competition_snapshot(
+        "csl_2026",
+        "中超 2026",
+        "Shanghai Port",
+        "Beijing Guoan",
+        "csl-top-level-only",
+    )
+    match = snapshot["matches"][0]
+    match.pop("competition")
+    snapshot["finished"] = {
         "schema_version": 2,
-        "policy_version": "match_pick_v3",
-        "label": "NO_CLEAN_MARKET",
+        "matches": [
+            {
+                "kickoff_at_utc": match["kickoff_at_utc"],
+                "home_team": match["home_team"],
+                "away_team": match["away_team"],
+                "result": {"home_score": 1, "away_score": 0},
+                "closing_match_decision": {
+                    "schema_version": 2,
+                    "label": "MATCH_PICK",
+                    "market": "1X2",
+                    "selection": "home",
+                },
+            }
+        ],
+        "skipped_no_closing": 0,
     }
+
+    assert project_match_rows(snapshot) == []
+    finished = project_finished_rows(snapshot)
+    assert finished["matches"][0]["competition_id"] == "csl_2026"
+    assert finished["matches"][0]["competition_label"] == "中超 2026"
 
 
 def test_live_projection_never_repackages_legacy_or_expired_pick_as_current_pick():

@@ -30,10 +30,15 @@ def _quality_count(snapshot: dict[str, Any], key: str) -> int:
 
 
 def build_public_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    matches = project_match_rows(snapshot)
+    counts = dict(snapshot.get("counts") or {})
+    counts["matches"] = len(matches)
+    counts.pop("postponed", None)
+    counts.pop("postponed_matches", None)
     return {
         "schema_version": 2,
         "snapshot_at": snapshot.get("snapshot_at"),
-        "counts": dict(snapshot.get("counts") or {}),
+        "counts": counts,
         "data_quality": {
             "source_error_count": _quality_count(snapshot, "source_errors"),
             "stale_source_count": _quality_count(snapshot, "stale_sources"),
@@ -42,7 +47,7 @@ def build_public_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             "time_mismatch_count": _quality_count(snapshot, "time_mismatches"),
             "enrichment_error_count": _quality_count(snapshot, "enrichment_errors"),
         },
-        "matches": project_match_rows(snapshot),
+        "matches": matches,
         "finished": project_finished_rows(snapshot),
     }
 
@@ -55,11 +60,12 @@ def export_static_site(snapshot: dict[str, Any], out_dir: str | Path) -> dict[st
     finished_path = root / "api" / "finished.json"
     manifest_path = root / "manifest.json"
 
+    public_snapshot = build_public_snapshot(snapshot)
     index_path.parent.mkdir(parents=True, exist_ok=True)
     index_path.write_text(build_preview_html(snapshot), encoding="utf-8")
-    _write_json(snapshot_path, {"snapshot": build_public_snapshot(snapshot)})
-    _write_json(matches_path, {"matches": project_match_rows(snapshot)})
-    _write_json(finished_path, {"finished": project_finished_rows(snapshot)})
+    _write_json(snapshot_path, {"snapshot": public_snapshot})
+    _write_json(matches_path, {"matches": public_snapshot["matches"]})
+    _write_json(finished_path, {"finished": public_snapshot["finished"]})
 
     manifest = {
         "schema_version": 2,
