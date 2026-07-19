@@ -18,6 +18,7 @@
 - 部署后只重试原 pending，复用同一 prepared snapshot，没有重新抓取；第二次传输返回 HTTP 200 / ingest `stored`，本地 canonical postmatch snapshot/state 已落盘，pending/prepared 已清理。ECS SQLite 最新记录为 `20260719T133440Z-postmatch`，未调用 The Odds API、未消耗 quota、未打印 secret。
 - 公网最终验收：`/api/matches` 为 5 场，`POSTPONED=0`、英格兰 vs 阿根廷实时条目为 0；`/api/finished` 为 102 场，英格兰 1–2 阿根廷已结算，coverage 为 `finished_result_count=103`、`closing_available_count=102`、`missing_closing_count=1`、`skipped_no_closing=1`；`/preview` 目标行显示 `1 - 2` 与赛果结论，不再显示“赛果待确认”。研究免责声明和公开字段安全检查均通过。
 - 最终巡检发现 `ops_check` 仍拿旧 analysis finished=101 与 results=103 对账，属于新 postmatch 边界接入遗漏；现改为只优先使用 state/hash 验证通过的 postmatch snapshot，否则回退 analysis snapshot。TDD ops 回归 `28/28`，配置 runtime 全量 `779/779`、系统 FastAPI `13/13`，合计 `792/792`；真实 `ops_check` 为 `errors=0`、5 个既有 warning，远端日志敏感命中 0。
+- 巡检修复提交为 `dd972e6 fix: audit published postmatch snapshots`，已通过标准工具部署到 ECS `/opt/worldcup/releases/dd972e6e1626b8999ccee47ec3a837135180a288`，previous release 为 `ffd0cad8...`；current/service/Nginx/内部 warmup 与公网 smoke 全部通过，未触发回滚。最终复核仍为 matches=5、postponed=0、英格兰 vs 阿根廷实时条目=0、finished=102、目标比分 `1 - 2`、missing closing=1；LaunchAgent 保持 16:40、`runs=0`。全程未 push、未调用 The Odds API、未消耗 quota、未泄露 secret。
 
 ## 2026-07-17 延期公开隐藏与世界杯赛后同步
 
