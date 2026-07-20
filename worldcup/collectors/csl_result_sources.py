@@ -205,8 +205,17 @@ def parse_sevenm_fixture_result_rows(
     if len(lengths) != 1:
         raise ValueError("sevenm fixture arrays have inconsistent lengths")
 
+    _FINISHED_STAT = 4
+
     rows: list[dict[str, str]] = []
     for index, score_text in enumerate(arrays["Scores_Arr"]):
+        stat_raw = arrays["Stat_Arr"][index]
+        try:
+            stat_val = int(stat_raw)
+        except (TypeError, ValueError):
+            continue
+        if stat_val != _FINISHED_STAT:
+            continue
         score = _SCORE_RE.match(str(score_text or "").strip())
         if score is None:
             continue

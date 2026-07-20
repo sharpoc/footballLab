@@ -38,13 +38,25 @@ def _competition_id_like_patterns(competition_id: str) -> tuple[str, str]:
     return (f'%"id": {encoded_id}%', f'%"id":{encoded_id}%')
 
 
+_BUSY_TIMEOUT_MS = 5000
+
+
 class SQLiteSnapshotStore(SnapshotStore):
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
+        self._initialized = False
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path, timeout=_BUSY_TIMEOUT_MS / 1000)
+        conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+        return conn
 
     def initialize(self) -> None:
+        if self._initialized:
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS snapshots (
@@ -64,6 +76,7 @@ class SQLiteSnapshotStore(SnapshotStore):
                 ON snapshots(stored_at)
                 """
             )
+        self._initialized = True
 
     def put_snapshot(
         self,
@@ -76,7 +89,7 @@ class SQLiteSnapshotStore(SnapshotStore):
         payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         snapshot = payload.get("snapshot") or {}
         snapshot_json = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO snapshots (
@@ -108,13 +121,13 @@ class SQLiteSnapshotStore(SnapshotStore):
 
     def count_snapshots(self) -> int:
         self.initialize()
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             row = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()
         return int(row[0])
 
     def latest_snapshot(self) -> dict[str, Any] | None:
         self.initialize()
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 """
@@ -138,7 +151,7 @@ class SQLiteSnapshotStore(SnapshotStore):
     def list_recent_snapshots(self, limit: int = 2) -> list[dict[str, Any]]:
         self.initialize()
         bounded_limit = max(1, min(int(limit), 500))
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -173,7 +186,7 @@ class SQLiteSnapshotStore(SnapshotStore):
 
         records: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             for competition_id in requested_ids:
                 spaced_pattern, compact_pattern = _competition_id_like_patterns(competition_id)

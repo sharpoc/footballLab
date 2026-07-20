@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +22,24 @@ from worldcup.sources.eloratings import fetch_elo_files
 from worldcup.sources.openfootball import fetch_openfootball_2026
 from worldcup.sources.theoddsapi import SourceFetchError, fetch_worldcup_odds
 from worldcup.theoddsapi_keys import LEGACY_PROVIDER
+
+
+def _write_text_atomic(target: Path, content: str) -> None:
+    encoded = content.encode("utf-8")
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
+    try:
+        os.write(fd, encoded)
+        os.fsync(fd)
+        os.close(fd)
+        os.replace(tmp, str(target))
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def _count_results_applied(cache: Path) -> int:
@@ -145,7 +165,7 @@ def refresh_cache_and_build_snapshot(
 
     try:
         computed = compute_updated_world_tsv(cache)
-        elo_world_cache.write_text(computed, encoding="utf-8")
+        _write_text_atomic(elo_world_cache, computed)
         elo_quality["results_applied"] = _count_results_applied(cache)
     except Exception as exc:
         source_errors.append(_source_error("elo_local", exc))

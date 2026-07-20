@@ -52,7 +52,11 @@ def _selection(value: Any) -> str | None:
     return normalized or None
 
 
-def _settlement_unit(score_margin: float, line: float) -> float:
+def settlement_unit(score_margin: float, line: float) -> float:
+    """Canonical AH settlement: returns unit result in [-1, 1].
+
+    Handles integer, half-ball, and quarter-ball lines via recursive split.
+    """
     x4 = round(line * 4)
     if abs(line * 4 - x4) > 1e-9:
         raise ValueError("line must be a quarter increment")
@@ -63,10 +67,13 @@ def _settlement_unit(score_margin: float, line: float) -> float:
         if adjusted < -1e-9:
             return -1.0
         return 0.0
-    return 0.5 * _settlement_unit(score_margin, line - 0.25) + 0.5 * _settlement_unit(
+    return 0.5 * settlement_unit(score_margin, line - 0.25) + 0.5 * settlement_unit(
         score_margin,
         line + 0.25,
     )
+
+
+_settlement_unit = settlement_unit
 
 
 def _unit_result(unit: float) -> tuple[str, str]:

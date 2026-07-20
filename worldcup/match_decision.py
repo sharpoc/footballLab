@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Iterable
 
 from worldcup.engine import odds, poisson
 from worldcup.models import MarketType, OddsQuote
+from worldcup.decision_settlement import settlement_unit as _settlement_unit
 
 if TYPE_CHECKING:
     from worldcup.pipeline import MatchAnalysis
@@ -339,21 +340,6 @@ def _invert_dist(dist: dict[int, float]) -> dict[int, float]:
     return {-diff: prob for diff, prob in dist.items()}
 
 
-def _settlement_unit(score_margin: float, line: float) -> float:
-    x4 = round(line * 4)
-    if abs(line * 4 - x4) > 1e-9:
-        raise ValueError("line must be a quarter increment")
-    if x4 % 4 in (0, 2):
-        adjusted = score_margin + line
-        if adjusted > 1e-9:
-            return 1.0
-        if adjusted < -1e-9:
-            return -1.0
-        return 0.0
-    return 0.5 * _settlement_unit(score_margin, line - 0.25) + 0.5 * _settlement_unit(
-        score_margin,
-        line + 0.25,
-    )
 
 
 def _settlement_probabilities(
