@@ -116,12 +116,19 @@ def _check_html(root: Path, key: str, relative: str, required: bool) -> tuple[st
     return key, {"status": "ok", "path": relative}
 
 
-def _check_env(root: Path, name: str) -> tuple[str, dict[str, Any]]:
-    names = _read_env_names(root / ".env")
+def _check_env(env_path: Path, name: str) -> tuple[str, dict[str, Any]]:
+    entries = _read_env_entries(env_path)
     key = f"env_{name}"
-    if name in names:
-        return key, {"status": "ok", "name": name}
-    return key, {"status": "error", "name": name, "message": "missing"}
+    if name not in entries:
+        return key, {"status": "error", "name": name, "message": "missing"}
+    if name == "INGEST_HMAC_SECRET":
+        value = entries[name].strip('"').strip("'")
+        from worldcup.secrets import validate_hmac_secret
+        try:
+            validate_hmac_secret(value)
+        except ValueError:
+            return key, {"status": "error", "name": name, "message": "weak_secret"}
+    return key, {"status": "ok", "name": name}
 
 
 def _check_env_example(root: Path) -> tuple[str, dict[str, Any]]:
@@ -160,8 +167,8 @@ def _check_env_example(root: Path) -> tuple[str, dict[str, Any]]:
     return "env_example", {"status": "ok", "path": relative, "names": sorted(entries)}
 
 
-def _check_store_env(root: Path) -> tuple[str, dict[str, Any]]:
-    entries = _read_env_entries(root / ".env")
+def _check_store_env(env_path: Path) -> tuple[str, dict[str, Any]]:
+    entries = _read_env_entries(env_path)
     store = normalize_store_kind(entries.get("WORLDCUP_STORE"))
     if store not in {"sqlite", "postgres"}:
         return "env_store", {
@@ -187,14 +194,51 @@ def _check_ignore(root: Path, key: str, pattern: str) -> tuple[str, dict[str, An
     return key, {"status": "error", "pattern": pattern, "message": "not_ignored"}
 
 
-def run_readiness_checks(root: str | Path = ".") -> dict[str, Any]:
+PROFILES: dict[str, list[str]] = {
+    "full": [
+        "env_THE_ODDS_API_KEY",
+        "env_INGEST_HMAC_SECRET",
+        "env_example",
+        "env_store",
+        "cache_snapshot",
+        "cache_quota",
+        "cache_preview",
+        "static_site_index",
+        "ignored_env",
+        "ignored_data_cache",
+        "ignored_data_local",
+        "ignored_data_probe",
+    ],
+    "server": [
+        "env_INGEST_HMAC_SECRET",
+        "env_store",
+    ],
+    "publisher": [
+        "env_INGEST_HMAC_SECRET",
+        "env_THE_ODDS_API_KEY",
+        "cache_snapshot",
+        "cache_quota",
+    ],
+}
+
+
+def run_readiness_checks(
+    root: str | Path = ".",
+    *,
+    profile: str = "full",
+    env_path: str | Path | None = None,
+) -> dict[str, Any]:
+    if profile not in PROFILES:
+        raise ValueError(f"unknown profile: {profile}")
+
     project_root = Path(root)
-    checks: dict[str, dict[str, Any]] = {}
-    for key, check in [
-        _check_env(project_root, "THE_ODDS_API_KEY"),
-        _check_env(project_root, "INGEST_HMAC_SECRET"),
+    resolved_env_path = Path(env_path) if env_path is not None else project_root / ".env"
+
+    all_checks = [
+        _check_env(resolved_env_path, "THE_ODDS_API_KEY"),
+        _check_env(resolved_env_path, "INGEST_HMAC_SECRET"),
         _check_env_example(project_root),
-        _check_store_env(project_root),
+        _check_store_env(resolved_env_path),
         _check_snapshot(project_root),
         _check_quota(project_root),
         _check_html(project_root, "cache_preview", "data/cache/preview.html", required=False),
@@ -203,8 +247,13 @@ def run_readiness_checks(root: str | Path = ".") -> dict[str, Any]:
         _check_ignore(project_root, "ignored_data_cache", "data/cache/"),
         _check_ignore(project_root, "ignored_data_local", "data/local/"),
         _check_ignore(project_root, "ignored_data_probe", "data/probe/"),
-    ]:
-        checks[key] = check
+    ]
+
+    allowed = set(PROFILES[profile])
+    checks: dict[str, dict[str, Any]] = {}
+    for key, check in all_checks:
+        if key in allowed:
+            checks[key] = check
 
     errors = sum(1 for check in checks.values() if check["status"] == "error")
     warnings = sum(1 for check in checks.values() if check["status"] == "warn")
@@ -222,9 +271,11 @@ def run_readiness_checks(root: str | Path = ".") -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run local readiness checks without contacting the network.")
     parser.add_argument("--root", default=".")
+    parser.add_argument("--profile", choices=list(PROFILES.keys()), default="full")
+    parser.add_argument("--env-path", default=None, help="Full path to .env file (overrides root/.env)")
     args = parser.parse_args(argv)
 
-    result = run_readiness_checks(args.root)
+    result = run_readiness_checks(args.root, profile=args.profile, env_path=args.env_path)
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if result["ok"] else 1
 
