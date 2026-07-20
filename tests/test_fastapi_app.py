@@ -326,7 +326,7 @@ def test_fastapi_post_ingest_snapshot_rejects_bad_signature_without_writing():
         assert response.headers["x-request-id"] == "req-fastapi-bad-signature"
         assert body == {
             "error": {
-                "code": "signature_mismatch",
+                "code": "authentication_failed",
                 "request_id": "req-fastapi-bad-signature",
             }
         }

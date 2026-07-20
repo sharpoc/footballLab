@@ -12,6 +12,7 @@
 - 回滚点：`dd972e6-secretcheck-20260720T070131Z`（保留在 `/opt/worldcup/releases/`）。
 - 验证结果：healthz ok、server preflight ok (2/2)、/api/matches HTTP 200 (9 场)、/preview HTTP 200。
 - 未做：commit/push、修改 .env/DB/systemd/监控/LaunchAgent、ingest/publish、quota 消耗。
+- CI 修复（同阶段追加）：`tests/test_fastapi_app.py` bad-signature 断言对齐 `authentication_failed`；`tests/test_runner_resilience.py` 3 个测试改用虚拟包名隔离 optional module 可用性，不再依赖宿主是否安装 fastapi。CI venv 906/906 + 本地 893/893 + 1 skip 全绿。
 
 ## 2026-07-20 15:02 UTC+8 部署：INGEST_HMAC_SECRET 启动强校验上线
 

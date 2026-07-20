@@ -26,25 +26,16 @@ _RUNNER = Path(__file__).resolve().parent / "run_tests.py"
 _PYTHON = sys.executable
 
 
-def _run_runner_on(test_dir: str) -> dict:
+def _run_runner_on(test_dir: str, *, optional_deps: dict[str, set[str]] | None = None) -> dict:
     """Run the test runner pointing at a custom test directory, return parsed output."""
-    # We invoke run_tests.py via subprocess with a patched root
-    # The runner discovers test_*.py under its own parent; we'll invoke a wrapper
-    wrapper = dedent(f"""\
-        import sys, importlib.util
-        sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
-        spec = importlib.util.spec_from_file_location("run_tests", {str(_RUNNER)!r})
-        mod = importlib.util.module_from_spec(spec)
-        # Monkey-patch the root to our temp dir
-        import pathlib
-        _orig_file = mod.__file__
-        mod.__file__ = str(pathlib.Path({test_dir!r}) / "run_tests.py")
-        spec.loader.exec_module(mod)
-    """)
-    # Actually simpler: just run the runner as-is but from the temp dir
-    # We'll create a minimal runner copy that points at the temp dir
     runner_copy = Path(test_dir) / "run_tests.py"
-    runner_copy.write_text(_RUNNER.read_text())
+    runner_src = _RUNNER.read_text()
+    if optional_deps is not None:
+        runner_src = runner_src.replace(
+            '_OPTIONAL_DEPS: dict[str, set[str]] = {\n    "test_fastapi_app.py": {"fastapi"},\n}',
+            f"_OPTIONAL_DEPS: dict[str, set[str]] = {optional_deps!r}",
+        )
+    runner_copy.write_text(runner_src)
 
     result = subprocess.run(
         [_PYTHON, str(runner_copy)],
@@ -137,14 +128,12 @@ def test_missing_nonoptional_import_is_fail():
 # --- Test: allowed optional dependency produces SKIP ---
 
 def test_allowed_optional_skip():
-    td = _make_test_dir(("test_fastapi_app.py", dedent("""\
-        # optional_deps: fastapi
-        import fastapi
+    td = _make_test_dir(("test_optskip.py", dedent("""\
+        import _phantomlib_never_installed
         def test_x():
             pass
     """)))
-    r = _run_runner_on(td)
-    # With the new runner, this should SKIP (exit 0) not FAIL
+    r = _run_runner_on(td, optional_deps={"test_optskip.py": {"_phantomlib_never_installed"}})
     out = r["stdout"]
     assert "SKIP" in out or "skip" in out, f"Expected SKIP: {out}\n{r['stderr']}"
     assert r["returncode"] == 0, f"Only skips should exit 0: {out}"
@@ -169,9 +158,9 @@ def test_multi_module_continues_after_failure():
 def test_exit_zero_with_only_skips():
     td = _make_test_dir(
         ("test_ok.py", "def test_fine(): pass\n"),
-        ("test_fastapi_app.py", "# optional_deps: fastapi\nimport fastapi\ndef test_x(): pass\n"),
+        ("test_optskip.py", "import _phantomlib_never_installed\ndef test_x(): pass\n"),
     )
-    r = _run_runner_on(td)
+    r = _run_runner_on(td, optional_deps={"test_optskip.py": {"_phantomlib_never_installed"}})
     assert r["returncode"] == 0, f"Expected 0 with only pass+skip: {r['stdout']}\n{r['stderr']}"
 
 
@@ -245,11 +234,11 @@ def test_summary_counts_accurate():
     td = _make_test_dir(
         ("test_aaa_fail.py", "def test_x(): assert False\n"),
         ("test_bbb_pass.py", "def test_a(): pass\ndef test_b(): pass\n"),
-        ("test_fastapi_app.py", "import fastapi\ndef test_x(): pass\n"),
+        ("test_optskip.py", "import _phantomlib_never_installed\ndef test_x(): pass\n"),
     )
-    r = _run_runner_on(td)
+    r = _run_runner_on(td, optional_deps={"test_optskip.py": {"_phantomlib_never_installed"}})
     out = r["stdout"]
-    # 2 pass (test_a, test_b), 1 fail (test_x), 1 skip (fastapi module)
+    # 2 pass (test_a, test_b), 1 fail (test_x), 1 skip (optskip module)
     assert "2/3 tests passed" in out, f"Wrong count: {out}"
     assert "1 module(s) skipped" in out, f"Skip count missing: {out}"
     assert r["returncode"] == 1
