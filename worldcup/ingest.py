@@ -148,6 +148,11 @@ def main(argv: list[str] | None = None) -> int:
     secret = _load_env(args.env).get(args.secret_env)
     if not secret:
         raise SystemExit(f"{args.secret_env} is missing in {args.env}")
+    try:
+        from worldcup.secrets import validate_hmac_secret
+        validate_hmac_secret(secret)
+    except ValueError:
+        raise SystemExit(f"{args.secret_env} does not meet minimum requirements")
 
     result = build_ingest_dry_run(
         snapshot_path=args.snapshot_path,

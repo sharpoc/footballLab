@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import re
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -313,6 +314,31 @@ def handle_request(
             },
         )
 
+    try:
+        return _handle_store_routes(
+            method_upper, route, headers, body,
+            db_path, secret, now, store, max_ingest_body_bytes, view_cache,
+        )
+    except sqlite3.OperationalError:
+        return _json_response(
+            503,
+            {"error": {"code": "service_unavailable"}},
+        )
+
+
+def _handle_store_routes(
+    method_upper: str,
+    route: str,
+    headers: Mapping[str, str],
+    body: str,
+    db_path: str | Path,
+    secret: str,
+    now: str | None,
+    store: SnapshotStore | None,
+    max_ingest_body_bytes: int,
+    view_cache: SnapshotViewCache | None,
+) -> dict[str, Any]:
+
     if method_upper == "GET" and route == "/readyz":
         snapshot = _latest_view(db_path, store, view_cache)
         if snapshot is None:
@@ -359,11 +385,10 @@ def handle_request(
             store=store,
         )
         if result["status"] == "rejected":
-            return _ingest_error_response(
-                _ingest_rejection_status(result["reason"]),
-                result["reason"],
-                request_id,
-            )
+            reason = result["reason"]
+            status_code = _ingest_rejection_status(reason)
+            external_code = "authentication_failed" if status_code == 401 else reason
+            return _ingest_error_response(status_code, external_code, request_id)
         if view_cache is not None:
             view_cache.clear()
         response_body = dict(result)
@@ -466,6 +491,11 @@ def main(argv: list[str] | None = None) -> int:
     secret = _load_env(args.env).get(args.secret_env)
     if not secret:
         raise SystemExit(f"{args.secret_env} is missing in {args.env}")
+    try:
+        from worldcup.secrets import validate_hmac_secret
+        validate_hmac_secret(secret)
+    except ValueError:
+        raise SystemExit(f"{args.secret_env} does not meet minimum requirements")
 
     server = ThreadingHTTPServer((args.host, args.port), make_handler(args.db, secret))
     print(f"serving http://{args.host}:{args.port}")

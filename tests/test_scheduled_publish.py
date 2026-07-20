@@ -64,7 +64,7 @@ def test_scheduled_publish_skips_publish_when_refresh_is_not_due():
             quota_path=quota_path,
             endpoint="https://football.celab.xin/api/ingest/snapshot",
             api_key="fake-key",
-            secret="fake-secret",
+            secret="fake-secret-that-is-at-least-32-bytes-long!!",
             refresh_fn=refresh_fn,
             publish_fn=publish_fn,
         )
@@ -126,7 +126,7 @@ def test_scheduled_publish_retries_pending_snapshot_without_refreshing_again():
             snapshot_path=snapshot_path,
             quota_path=quota_path,
             api_key="fake-key",
-            secret="fake-secret",
+            secret="fake-secret-that-is-at-least-32-bytes-long!!",
             refresh_fn=refresh_fn,
             publish_fn=publish_fn,
         )
@@ -138,7 +138,7 @@ def test_scheduled_publish_retries_pending_snapshot_without_refreshing_again():
             snapshot_path=snapshot_path,
             quota_path=quota_path,
             api_key="fake-key",
-            secret="fake-secret",
+            secret="fake-secret-that-is-at-least-32-bytes-long!!",
             refresh_fn=lambda **_kwargs: (_ for _ in ()).throw(
                 AssertionError("pending publish retry must not refresh")
             ),
@@ -179,7 +179,7 @@ def test_scheduled_publish_generates_utc_timestamp_when_now_is_omitted():
             snapshot_path=snapshot_path,
             quota_path=quota_path,
             api_key="fake-key",
-            secret="fake-secret",
+            secret="fake-secret-that-is-at-least-32-bytes-long!!",
             refresh_fn=refresh_fn,
             publish_fn=publish_fn,
         )
@@ -210,7 +210,7 @@ def test_scheduled_publish_generates_utc_timestamp_for_pending_retry():
                 cache_dir=root / "cache",
                 snapshot_path=snapshot_path,
                 quota_path=quota_path,
-                secret="fake-secret",
+                secret="fake-secret-that-is-at-least-32-bytes-long!!",
                 publish_fn=publish_fn,
             )
         finally:
@@ -296,7 +296,7 @@ def test_scheduled_publish_refreshes_then_publishes_when_due():
         env_path.write_text(
             "THE_ODDS_API_KEY_PRIMARY=primary-key\n"
             "THE_ODDS_API_KEY_SECONDARY=secondary-key\n"
-            "INGEST_HMAC_SECRET=fake-secret\n",
+            "INGEST_HMAC_SECRET=fake-secret-that-is-at-least-32-bytes-long!!\n",
             encoding="utf-8",
         )
 
@@ -317,7 +317,7 @@ def test_scheduled_publish_refreshes_then_publishes_when_due():
     assert result["publish"]["ingest_status"] == "stored"
     assert refresh_calls[0]["api_key"] == "secondary-key"
     assert refresh_calls[0]["theoddsapi_provider"] == SECONDARY_PROVIDER
-    assert publish_calls[0]["secret"] == "fake-secret"
+    assert publish_calls[0]["secret"] == "fake-secret-that-is-at-least-32-bytes-long!!"
     assert publish_calls[0]["live"] is True
     assert publish_calls[0]["endpoint"] == "https://football.celab.xin/api/ingest/snapshot"
 
@@ -351,7 +351,7 @@ def test_scheduled_publish_blocks_empty_refreshed_snapshot():
             quota_path=quota_path,
             endpoint="https://football.celab.xin/api/ingest/snapshot",
             api_key="fake-key",
-            secret="fake-secret",
+            secret="fake-secret-that-is-at-least-32-bytes-long!!",
             refresh_fn=refresh_fn,
             publish_fn=publish_fn,
         )
@@ -455,7 +455,7 @@ def test_scheduled_publish_notifies_significant_changes_after_publish():
             quota_path=quota_path,
             endpoint="https://football.celab.xin/api/ingest/snapshot",
             api_key="fake-key",
-            secret="fake-secret",
+            secret="fake-secret-that-is-at-least-32-bytes-long!!",
             refresh_fn=refresh_fn,
             publish_fn=publish_fn,
             notify_fn=notify_fn,
@@ -517,7 +517,7 @@ def test_scheduled_publish_skips_notification_without_changes():
             quota_path=quota_path,
             endpoint="https://football.celab.xin/api/ingest/snapshot",
             api_key="fake-key",
-            secret="fake-secret",
+            secret="fake-secret-that-is-at-least-32-bytes-long!!",
             refresh_fn=refresh_fn,
             publish_fn=publish_fn,
             notify_fn=notify_fn,
@@ -573,7 +573,7 @@ def _run_publish_with_quota(root, before, after, notify=True):
         quota_path=quota_path,
         endpoint="https://football.celab.xin/api/ingest/snapshot",
         api_key="fake-key",
-        secret="fake-secret",
+        secret="fake-secret-that-is-at-least-32-bytes-long!!",
         notify=notify,
         refresh_fn=refresh_fn,
         publish_fn=publish_fn,

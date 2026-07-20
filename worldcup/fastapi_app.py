@@ -125,6 +125,11 @@ def load_secret(env_path: str | Path = ".env", secret_env: str = "INGEST_HMAC_SE
     secret = _load_env(str(env_path)).get(secret_env)
     if not secret:
         raise SystemExit(f"{secret_env} is missing in {env_path}")
+    try:
+        from worldcup.secrets import validate_hmac_secret
+        validate_hmac_secret(secret)
+    except ValueError:
+        raise SystemExit(f"{secret_env} does not meet minimum requirements")
     return secret
 
 

@@ -128,6 +128,19 @@ def run_scheduled_publish(
     notify_fn: Callable[..., dict] = send_wxpusher_notification,
 ) -> dict:
     env = _load_env(env_path) if live else {}
+
+    # Fail-fast: validate secret before any refresh/publish/network side effects
+    resolved_secret: str | None = None
+    if live:
+        resolved_secret = secret or env.get("INGEST_HMAC_SECRET")
+        if not resolved_secret:
+            raise ValueError("INGEST_HMAC_SECRET is missing")
+        from worldcup.secrets import validate_hmac_secret
+        try:
+            validate_hmac_secret(resolved_secret)
+        except ValueError:
+            raise ValueError("weak_ingest_hmac_secret")
+
     watched_providers = _watched_providers(env) if live and notify else []
     quota_before = _quota_by_provider(quota_path, watched_providers) if live and notify else {}
     previous_snapshot = load_snapshot_if_exists(snapshot_path) if live and notify else None
@@ -156,9 +169,6 @@ def run_scheduled_publish(
                     "notification": None,
                     "quota_alert": None,
                 }
-            resolved_secret = secret or env.get("INGEST_HMAC_SECRET")
-            if not resolved_secret:
-                raise ValueError("INGEST_HMAC_SECRET is missing")
             retried = attempt_publish(
                 snapshot_path=snapshot_path,
                 endpoint=endpoint,
@@ -197,10 +207,6 @@ def run_scheduled_publish(
             "notification": None,
             "quota_alert": None,
         }
-
-    resolved_secret = secret or env.get("INGEST_HMAC_SECRET")
-    if not resolved_secret:
-        raise ValueError("INGEST_HMAC_SECRET is missing")
 
     attempted = attempt_publish(
         snapshot_path=refresh["refresh"]["snapshot_path"],

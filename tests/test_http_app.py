@@ -1032,7 +1032,7 @@ def test_http_post_ingest_snapshot_returns_structured_error_for_bad_signature():
     assert response["headers"]["X-Request-Id"] == "req-bad-signature"
     assert body == {
         "error": {
-            "code": "signature_mismatch",
+            "code": "authentication_failed",
             "request_id": "req-bad-signature",
         }
     }

@@ -262,7 +262,7 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
         def fake_load_env(path):
             return {
                 "THE_ODDS_API_KEY_SECONDARY": "test-key",
-                "INGEST_HMAC_SECRET": "test-secret",
+                "INGEST_HMAC_SECRET": "test-secret-long-enough-for-validation!!",
             }
 
         def fake_refresh(**kwargs):
@@ -293,7 +293,7 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
 
         def fake_publish(**kwargs):
             calls["publish"] += 1
-            assert kwargs["secret"] == "test-secret"
+            assert kwargs["secret"] == "test-secret-long-enough-for-validation!!"
             assert kwargs["live"] is True
             assert Path(kwargs["snapshot_path"]) == snapshot_path
             return {
@@ -360,7 +360,7 @@ def test_archive_failure_warns_but_does_not_block_current_publish():
             quota_path=quota_path,
             snapshot_path=snapshot_path,
             diagnostics_snapshot_path=diagnostics_path,
-            load_env=lambda _path: {"INGEST_HMAC_SECRET": "test-secret"},
+            load_env=lambda _path: {"INGEST_HMAC_SECRET": "test-secret-long-enough-for-validation!!"},
             results_refresh_fn=lambda **_kwargs: {"status": "updated"},
             refresh_fn=lambda **_kwargs: {
                 "status": "fetched",
@@ -403,7 +403,7 @@ def test_results_failure_marks_cached_fixture_status_stale_without_blocking_odds
             quota_path=quota_path,
             snapshot_path=snapshot_path,
             diagnostics_snapshot_path=diagnostics_path,
-            load_env=lambda _path: {"INGEST_HMAC_SECRET": "test-secret"},
+            load_env=lambda _path: {"INGEST_HMAC_SECRET": "test-secret-long-enough-for-validation!!"},
             results_refresh_fn=lambda **_kwargs: {
                 "status": "error",
                 "reason": "results_refresh_failed_using_existing_cache",
@@ -439,7 +439,7 @@ def test_csl_publish_retries_pending_snapshot_without_consuming_refresh_again():
     def fake_load_env(_path):
         return {
             "THE_ODDS_API_KEY_SECONDARY": "test-key",
-            "INGEST_HMAC_SECRET": "test-secret",
+            "INGEST_HMAC_SECRET": "test-secret-long-enough-for-validation!!",
         }
 
     def fake_refresh(**_kwargs):

@@ -532,6 +532,31 @@ def run_csl_scheduled_publish(
             "publish": None,
         }
 
+    # Fail-fast: validate secret before any refresh/publish/network side effects
+    env = load_env(env_path)
+    resolved_secret = env.get("INGEST_HMAC_SECRET")
+    if not resolved_secret:
+        return {
+            "status": "blocked",
+            "reason": "missing_ingest_hmac_secret",
+            "force": force,
+            "decision": decision,
+            "refresh": None,
+            "publish": None,
+        }
+    from worldcup.secrets import validate_hmac_secret
+    try:
+        validate_hmac_secret(resolved_secret)
+    except ValueError:
+        return {
+            "status": "blocked",
+            "reason": "weak_ingest_hmac_secret",
+            "force": force,
+            "decision": decision,
+            "refresh": None,
+            "publish": None,
+        }
+
     pending = load_pending_publish(snapshot_path)
     if not force and not decision["should_refresh"] and pending is not None:
         if pending.get("status") != "pending":
@@ -543,21 +568,10 @@ def run_csl_scheduled_publish(
                 "refresh": None,
                 "publish": None,
             }
-        env = load_env(env_path)
-        secret = env.get("INGEST_HMAC_SECRET")
-        if not secret:
-            return {
-                "status": "blocked",
-                "reason": "missing_ingest_hmac_secret",
-                "force": force,
-                "decision": decision,
-                "refresh": None,
-                "publish": None,
-            }
         retried = attempt_publish(
             snapshot_path=snapshot_path,
             endpoint=endpoint,
-            secret=secret,
+            secret=resolved_secret,
             timestamp=observed,
             publish_fn=publish_fn,
             stage=False,
@@ -580,7 +594,6 @@ def run_csl_scheduled_publish(
             "publish": None,
         }
 
-    env = load_env(env_path)
     try:
         results_refresh = _safe_results_refresh(
             results_refresh_fn(
@@ -693,22 +706,10 @@ def run_csl_scheduled_publish(
         write_snapshot(built, snapshot_path)
         write_snapshot(_runner_diagnostic(built), runner_path)
 
-    secret = env.get("INGEST_HMAC_SECRET")
-    if not secret:
-        return {
-            "status": "blocked",
-            "reason": "missing_ingest_hmac_secret",
-            "force": force,
-            "decision": decision,
-            "results_refresh": results_refresh,
-            "archive": archive,
-            "refresh": refresh,
-            "publish": None,
-        }
     attempted = attempt_publish(
         snapshot_path=snapshot_path,
         endpoint=endpoint,
-        secret=secret,
+        secret=resolved_secret,
         timestamp=observed,
         publish_fn=publish_fn,
         stage=True,

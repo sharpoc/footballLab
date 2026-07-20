@@ -619,6 +619,11 @@ def _run_postmatch_publish_unlocked(
     )
     if not resolved_secret:
         return {"status": "blocked", "reason": "missing_ingest_hmac_secret"}
+    from worldcup.secrets import validate_hmac_secret
+    try:
+        validate_hmac_secret(resolved_secret)
+    except ValueError:
+        return {"status": "blocked", "reason": "weak_ingest_hmac_secret"}
 
     pending = load_pending_publish(output_path)
     if pending is not None:
