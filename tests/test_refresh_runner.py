@@ -206,6 +206,7 @@ def test_refresh_uses_stale_odds_cache_when_theoddsapi_times_out():
             elo_transport=elo_transport,
             theoddsapi_transport=fail_theoddsapi,
             history_dir=root / "history",
+            observed_at="2026-06-08T05:00:00+00:00",
         )
 
         assert result.snapshot["counts"]["matches"] == 1
@@ -217,12 +218,10 @@ def test_refresh_uses_stale_odds_cache_when_theoddsapi_times_out():
         assert result.snapshot["data_quality"]["source_errors"][0]["attempts"] == 2
         assert "handshake timed out" in result.snapshot["data_quality"]["source_errors"][0]["error"]
         assert "fake-key" not in json.dumps(result.snapshot["data_quality"]["source_errors"][0])
-        home_signal = next(
-            signal
-            for signal in result.snapshot["matches"][0]["signals"]
-            if signal["market_type"] == "1X2_90min" and signal["selection"] == "home"
-        )
-        assert "unconfirmed_backup" in home_signal["reasons"]
+        match = result.snapshot["matches"][0]
+        assert "signals" not in match
+        assert match["match_decision"]["label"] == "NO_CLEAN_MARKET"
+        assert match["match_decision"]["reasons"] == ["stale_odds:theoddsapi"]
         assert result.odds_raw_archive_path is None
         assert list((root / "history").glob("odds_raw_*.json.gz")) == []
 
@@ -255,6 +254,7 @@ def _elo_cache_fixture(root: Path) -> Path:
                 "bookmakers": [
                     {
                         "key": "bk1",
+                        "last_update": "2026-06-08T00:00:00Z",
                         "markets": [
                             {
                                 "key": "h2h",
@@ -308,12 +308,12 @@ def test_refresh_elo_fetch_failure_records_error_without_stale():
         assert "parsed 0 rows" in result.snapshot["data_quality"]["source_errors"][0]["error"]
         assert result.snapshot["data_quality"]["stale_sources"] == []
         assert result.snapshot["run"]["stale_sources"] == []
-        home_signal = next(
-            signal
-            for signal in result.snapshot["matches"][0]["signals"]
-            if signal["market_type"] == "1X2_90min" and signal["selection"] == "home"
+        match = result.snapshot["matches"][0]
+        assert "signals" not in match
+        assert all(
+            not str(reason).startswith("stale_odds:")
+            for reason in match["match_decision"]["reasons"]
         )
-        assert "unconfirmed_backup" not in home_signal["reasons"]
 
 
 def test_refresh_applies_finished_results_to_local_elo():
@@ -440,7 +440,12 @@ def test_refresh_attaches_trend_and_finished_block():
         assert match["odds_movement"]["window"] == "captured_history"
         assert match["odds_movement"]["1x2"]["home"]["first_odds"] == 1.8
         assert "finished" in result.snapshot
-        assert result.snapshot["finished"]["tally"]["S"] == {"hit": 0, "miss": 0, "push": 0}
+        assert result.snapshot["finished"]["decision_tally"] == {
+            "hit": 0,
+            "miss": 0,
+            "push": 0,
+            "no_pick": 0,
+        }
 
 
 def test_refresh_survives_enrichment_failure(monkeypatch=None):

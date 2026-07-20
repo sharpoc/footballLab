@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import sqlite3
 import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
@@ -11,6 +14,7 @@ from typing import Any, Mapping
 
 from worldcup.ingest_app import process_local_ingest
 from worldcup.preview import build_preview_html
+from worldcup.export import build_public_snapshot
 from worldcup.query import (
     load_latest_snapshot,
     load_latest_snapshot_view,
@@ -33,10 +37,11 @@ _AUTH_REJECTION_REASONS = {
 class SnapshotViewCache:
     """Small process-local cache for expensive multi-snapshot public views."""
 
-    def __init__(self) -> None:
+    def __init__(self, preview_cache_path: str | Path | None = None) -> None:
         self._lock = Lock()
         self._recent: dict[tuple[str, int | None, int], list[dict[str, Any]]] = {}
-        self._preview_html: dict[tuple[str, int | None], str] = {}
+        self._preview_html: dict[tuple[str, int | None, int], str] = {}
+        self._preview_cache_path = Path(preview_cache_path) if preview_cache_path else None
 
     def clear(self) -> None:
         with self._lock:
@@ -70,12 +75,72 @@ class SnapshotViewCache:
         recent = self.recent_views(db_path, store, limit=1)
         return recent[0] if recent else None
 
+    def _preview_meta_path(self) -> Path | None:
+        if self._preview_cache_path is None:
+            return None
+        return self._preview_cache_path.with_suffix(self._preview_cache_path.suffix + ".meta.json")
+
+    def _preview_signature(self, recent: list[dict[str, Any]], time_bucket: int) -> str:
+        payload = json.dumps(
+            {"recent": recent, "time_bucket": time_bucket},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _preview_time_bucket(self) -> int:
+        # A cached page may contain a pick whose odds validity expires without a
+        # new ingest. Re-render at least every five minutes so stale picks cannot
+        # survive indefinitely in process or disk cache.
+        return int(datetime.now(timezone.utc).timestamp() // 300)
+
+    def _read_preview_disk_cache(self, signature: str) -> str | None:
+        html_path = self._preview_cache_path
+        meta_path = self._preview_meta_path()
+        if html_path is None or meta_path is None:
+            return None
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if meta.get("signature") != signature:
+                return None
+            return html_path.read_text(encoding="utf-8")
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _write_preview_disk_cache(self, signature: str, html: str) -> None:
+        html_path = self._preview_cache_path
+        meta_path = self._preview_meta_path()
+        if html_path is None or meta_path is None:
+            return
+        try:
+            html_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_html = html_path.with_suffix(html_path.suffix + ".tmp")
+            tmp_meta = meta_path.with_suffix(meta_path.suffix + ".tmp")
+            tmp_html.write_text(html, encoding="utf-8")
+            tmp_meta.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "signature": signature,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            tmp_html.replace(html_path)
+            tmp_meta.replace(meta_path)
+        except OSError:
+            return
+
     def preview_html(
         self,
         db_path: str | Path,
         store: SnapshotStore | None,
     ) -> str | None:
-        key = (str(db_path), id(store) if store is not None else None)
+        time_bucket = self._preview_time_bucket()
+        key = (str(db_path), id(store) if store is not None else None, time_bucket)
         with self._lock:
             cached = self._preview_html.get(key)
             if cached is not None:
@@ -83,8 +148,15 @@ class SnapshotViewCache:
         recent = self.recent_views(db_path, store, limit=2)
         if not recent:
             return None
+        signature = self._preview_signature(recent, time_bucket)
+        disk_cached = self._read_preview_disk_cache(signature)
+        if disk_cached is not None:
+            with self._lock:
+                self._preview_html[key] = disk_cached
+            return disk_cached
         previous = recent[1] if len(recent) > 1 else None
         rendered = build_preview_html(recent[0], previous_snapshot=previous)
+        self._write_preview_disk_cache(signature, rendered)
         with self._lock:
             cached = self._preview_html.get(key)
             if cached is None:
@@ -114,6 +186,10 @@ def _html_response(status: int, body: str) -> dict[str, Any]:
         "headers": {"Content-Type": "text/html; charset=utf-8"},
         "body": body,
     }
+
+
+def _default_preview_cache_path(db_path: str | Path) -> Path:
+    return Path(db_path).with_suffix(".preview.html")
 
 
 def _latest_or_404(db_path: str | Path, store: SnapshotStore | None = None) -> dict[str, Any] | None:
@@ -238,6 +314,52 @@ def handle_request(
             },
         )
 
+    try:
+        return _handle_store_routes(
+            method_upper, route, headers, body,
+            db_path, secret, now, store, max_ingest_body_bytes, view_cache,
+        )
+    except sqlite3.OperationalError:
+        return _json_response(
+            503,
+            {"error": {"code": "service_unavailable"}},
+        )
+
+
+def _handle_store_routes(
+    method_upper: str,
+    route: str,
+    headers: Mapping[str, str],
+    body: str,
+    db_path: str | Path,
+    secret: str,
+    now: str | None,
+    store: SnapshotStore | None,
+    max_ingest_body_bytes: int,
+    view_cache: SnapshotViewCache | None,
+) -> dict[str, Any]:
+
+    if method_upper == "GET" and route == "/readyz":
+        snapshot = _latest_view(db_path, store, view_cache)
+        if snapshot is None:
+            return _json_response(
+                503,
+                {
+                    "schema_version": 1,
+                    "service": "worldcup-analysis",
+                    "status": "not_ready",
+                },
+            )
+        return _json_response(
+            200,
+            {
+                "match_count": len(project_match_rows(snapshot)),
+                "schema_version": 1,
+                "service": "worldcup-analysis",
+                "status": "ready",
+            },
+        )
+
     if method_upper == "POST" and route == "/api/ingest/snapshot":
         request_id = _request_id(headers)
         normalized_headers = _normalize_headers(headers)
@@ -263,11 +385,10 @@ def handle_request(
             store=store,
         )
         if result["status"] == "rejected":
-            return _ingest_error_response(
-                _ingest_rejection_status(result["reason"]),
-                result["reason"],
-                request_id,
-            )
+            reason = result["reason"]
+            status_code = _ingest_rejection_status(reason)
+            external_code = "authentication_failed" if status_code == 401 else reason
+            return _ingest_error_response(status_code, external_code, request_id)
         if view_cache is not None:
             view_cache.clear()
         response_body = dict(result)
@@ -275,10 +396,10 @@ def handle_request(
         return _json_response(200, response_body, extra_headers=_ingest_headers(request_id))
 
     if method_upper == "GET" and route == "/api/snapshot/latest":
-        snapshot = _latest_or_404(db_path, store=store)
+        snapshot = _latest_view(db_path, store, view_cache)
         if snapshot is None:
             return _json_response(404, {"error": "snapshot_not_found"})
-        return _json_response(200, {"snapshot": snapshot})
+        return _json_response(200, {"snapshot": build_public_snapshot(snapshot)})
 
     if method_upper == "GET" and route == "/api/matches":
         snapshot = _latest_view(db_path, store, view_cache)
@@ -302,7 +423,7 @@ def handle_request(
 
 
 def make_handler(db_path: str | Path, secret: str):
-    view_cache = SnapshotViewCache()
+    view_cache = SnapshotViewCache(preview_cache_path=_default_preview_cache_path(db_path))
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, response: dict[str, Any]) -> None:
@@ -370,6 +491,11 @@ def main(argv: list[str] | None = None) -> int:
     secret = _load_env(args.env).get(args.secret_env)
     if not secret:
         raise SystemExit(f"{args.secret_env} is missing in {args.env}")
+    try:
+        from worldcup.secrets import validate_hmac_secret
+        validate_hmac_secret(secret)
+    except ValueError:
+        raise SystemExit(f"{args.secret_env} does not meet minimum requirements")
 
     server = ThreadingHTTPServer((args.host, args.port), make_handler(args.db, secret))
     print(f"serving http://{args.host}:{args.port}")

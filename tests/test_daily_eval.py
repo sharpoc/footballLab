@@ -41,6 +41,16 @@ def _seed_project(root: Path, with_score: bool) -> dict:
                             "1x2": {"odds": {"home": 1.8, "draw": 3.6, "away": 4.8}},
                             "ou_2_5": {"odds": {"over": 1.9, "under": 2.0}},
                         },
+                        "match_decision": {
+                            "schema_version": 2,
+                            "label": "MATCH_PICK",
+                            "market": "1X2",
+                            "selection": "home",
+                            "line": None,
+                            "odds": 1.8,
+                            "p_hit_safe": 0.61,
+                            "p_no_loss_safe": 0.61,
+                        },
                     }
                 ],
             }
@@ -90,7 +100,7 @@ def test_daily_eval_runs_chain_and_builds_digest():
         assert digest["eval"]["joined"] == 1
         assert digest["backtest"]["n_matches"] == 1
         assert digest["backtest"]["model_1x2"]["n"] == 1
-        assert digest["signal_tally"]["S"] == {"命中": 1}
+        assert digest["decision_tally"] == {"hit": 1, "miss": 0, "push": 0, "no_pick": 0}
         assert Path(paths["report_out"]).exists()
 
 
@@ -140,7 +150,8 @@ def test_daily_eval_notify_sends_digest_once():
         assert code == 0
         assert len(calls) == 1
         assert "赛后日报" in calls[0]["summary"]
-        assert "S 级" in calls[0]["content"]
+        assert "本场首选" in calls[0]["content"]
+        assert "S 级" not in calls[0]["content"]
         assert "命中" in calls[0]["content"]
         assert "研究" in calls[0]["content"]
 

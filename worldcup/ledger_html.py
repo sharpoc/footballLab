@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any
 
@@ -12,8 +12,12 @@ from worldcup.ledger import (
     build_summary_metrics,
     competition_options,
     derive_quality_status,
+    format_match_decision_market_label,
+    format_probability,
+    format_team_label,
     project_signal_rows,
 )
+from worldcup.query import project_finished_rows, project_match_decision, project_match_rows
 
 
 def _text(value: Any) -> str:
@@ -174,6 +178,19 @@ def _format_snapshot_time(value: Any) -> str:
     return f"{display.year} 年 {display.month} 月 {display.day} 日 {weekday} {display:%H:%M}"
 
 
+def _format_compact_update_time(value: Any) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    display = parsed.astimezone(BEIJING_TZ)
+    return f"{display.month}/{display.day} {display:%H:%M}"
+
+
 def _quality_values(snapshot: dict[str, Any], key: str) -> list[Any]:
     data_quality = snapshot.get("data_quality") or {}
     run = snapshot.get("run") or {}
@@ -194,6 +211,7 @@ def _render_summary(snapshot: dict[str, Any]) -> str:
     metrics = build_summary_metrics(snapshot)
     preferred = [
         "upcoming_matches",
+        "match_decision_record",
         "record_s",
         "record_a",
         "strong_signals",
@@ -377,8 +395,12 @@ def _render_view_tabs() -> str:
     """
 
 
-def _render_primary_nav() -> str:
-    items = ["研究台账", "赛程", "数据", "模型", "价值分歧", "设置"]
+def _render_primary_nav(*, decision_only: bool = False) -> str:
+    items = (
+        ["研究台账", "赛程", "数据", "模型", "本场首选", "设置"]
+        if decision_only
+        else ["研究台账", "赛程", "数据", "模型", "价值分歧", "设置"]
+    )
     links = []
     for index, label in enumerate(items):
         active = " active" if index == 0 else ""
@@ -1909,19 +1931,749 @@ def _render_finished_section(
     )
 
 
+def _decision_parse_at(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _decision_date_parts(value: Any) -> tuple[str, str, str]:
+    parsed = _decision_parse_at(value)
+    if parsed is None:
+        return "", "日期待确认", "待确认"
+    local = parsed.astimezone(BEIJING_TZ)
+    weekday = WEEKDAY_LABELS[local.weekday()]
+    return local.date().isoformat(), f"{local.year} 年 {local.month} 月 {local.day} 日 {weekday}", local.strftime("%H:%M")
+
+
+def _decision_odds_label(value: Any) -> str:
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _decision_display(decision: Any, fixture_status: Any = None) -> dict[str, str]:
+    if str(fixture_status or "").upper() == "POSTPONED":
+        return {
+            "state": "postponed",
+            "title": "比赛延期",
+            "market": "等待官方公布补赛时间",
+            "probability": "—",
+            "no_loss": "—",
+            "odds": "—",
+        }
+    if not isinstance(decision, dict) or decision.get("label") == "NO_CLEAN_MARKET":
+        return {
+            "state": "none",
+            "title": "暂无可靠首选",
+            "market": "没有有效、新鲜、可结算的主盘口",
+            "probability": "—",
+            "no_loss": "—",
+            "odds": "—",
+        }
+    market = format_match_decision_market_label(decision)
+    if not market or market == "—":
+        return {
+            "state": "none",
+            "title": "暂无可靠首选",
+            "market": "首选记录不完整",
+            "probability": "—",
+            "no_loss": "—",
+            "odds": "—",
+        }
+    return {
+        "state": "pick",
+        "title": "本场首选",
+        "market": market,
+        "probability": format_probability(decision.get("p_hit_safe")),
+        "no_loss": format_probability(decision.get("p_no_loss_safe")),
+        "odds": _decision_odds_label(decision.get("odds")),
+    }
+
+
+def _decision_match_identity(
+    value: dict[str, Any],
+    snapshot: dict[str, Any],
+) -> tuple[str, str, str, str]:
+    competition = value.get("competition") if isinstance(value.get("competition"), dict) else {}
+    snapshot_competition = (
+        snapshot.get("competition")
+        if isinstance(snapshot.get("competition"), dict)
+        else {}
+    )
+    competition_id = str(
+        competition.get("id")
+        or value.get("competition_id")
+        or snapshot_competition.get("id")
+        or "fifa_world_cup_2026"
+    )
+    kickoff_raw = str(value.get("kickoff_at_utc") or "")
+    kickoff = _decision_parse_at(kickoff_raw)
+    return (
+        competition_id,
+        kickoff.isoformat() if kickoff is not None else kickoff_raw,
+        str(value.get("home_team") or "").casefold(),
+        str(value.get("away_team") or "").casefold(),
+    )
+
+
+def _decision_finished_keys(snapshot: dict[str, Any]) -> set[tuple[str, str, str, str]]:
+    return {
+        _decision_match_identity(record, snapshot)
+        for record in ((snapshot.get("finished") or {}).get("matches") or [])
+        if isinstance(record, dict)
+    }
+
+
+def _decision_competition_options(
+    snapshot: dict[str, Any],
+    live_rows: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    finished_rows = (project_finished_rows(snapshot).get("matches") or [])
+    seen: set[str] = set()
+    options: list[dict[str, str]] = []
+    for row in [*live_rows, *finished_rows]:
+        competition_id = str(row.get("competition_id") or "").strip()
+        if not competition_id or competition_id in seen:
+            continue
+        seen.add(competition_id)
+        options.append(
+            {
+                "id": competition_id,
+                "label": str(row.get("competition_label") or competition_id),
+            }
+        )
+    return options
+
+
+def _decision_live_rows(
+    snapshot: dict[str, Any],
+    previous_snapshot: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    finished_keys = _decision_finished_keys(snapshot)
+    source_match_indexes = []
+    for source_snapshot in (snapshot, previous_snapshot):
+        if not isinstance(source_snapshot, dict):
+            continue
+        source_match_indexes.append(
+            {
+                _decision_match_identity(match, source_snapshot): match
+                for match in source_snapshot.get("matches") or []
+                if isinstance(match, dict)
+            }
+        )
+    now_at = datetime.now(timezone.utc)
+    rows = []
+    for projected in project_match_rows(snapshot):
+        key = _decision_match_identity(projected, snapshot)
+        kickoff = _decision_parse_at(projected.get("kickoff_at_utc"))
+        if key in finished_keys:
+            continue
+        postponed = str(projected.get("fixture_status") or "").upper() == "POSTPONED"
+        awaiting_result = not postponed and kickoff is not None and kickoff <= now_at
+        if awaiting_result:
+            for source_matches in source_match_indexes:
+                source_match = source_matches.get(key) or {}
+                frozen_decision = project_match_decision(
+                    source_match.get("match_decision"),
+                    as_of=kickoff - timedelta(microseconds=1),
+                )
+                if (frozen_decision or {}).get("label") == "MATCH_PICK":
+                    projected = {**projected, "match_decision": frozen_decision}
+                    break
+        date_iso, date_label, kickoff_time = _decision_date_parts(projected.get("kickoff_at_utc"))
+        home_source = str(projected.get("home_team") or "")
+        away_source = str(projected.get("away_team") or "")
+        home = format_team_label(home_source)
+        away = format_team_label(away_source)
+        decision = projected.get("match_decision")
+        view = _decision_display(decision, projected.get("fixture_status"))
+        stage_group = " · ".join(
+            str(part)
+            for part in (projected.get("stage"), projected.get("group"))
+            if part
+        )
+        search_text = " ".join(
+            str(part)
+            for part in (
+                home_source,
+                away_source,
+                home,
+                away,
+                projected.get("competition_label"),
+                stage_group,
+                "已开赛 赛果待确认 赛前首选已封盘" if awaiting_result else "待开赛",
+                view["title"],
+                view["market"],
+            )
+            if part
+        ).casefold()
+        rows.append(
+            {
+                **projected,
+                "home_team_display": home,
+                "away_team_display": away,
+                "kickoff_date_iso": date_iso,
+                "kickoff_date": date_label,
+                "kickoff_time": kickoff_time,
+                "stage_group": stage_group,
+                "search_text": search_text,
+                "match_state": (
+                    "postponed" if postponed else "awaiting_result" if awaiting_result else "upcoming"
+                ),
+                "decision_view": view,
+            }
+        )
+    return sorted(rows, key=lambda row: str(row.get("kickoff_at_utc") or ""))
+
+
+def _decision_next_update_text(
+    row: dict[str, Any],
+    *,
+    awaiting_result: bool,
+    postponed: bool,
+) -> str:
+    if awaiting_result:
+        return "等待赛果确认"
+    if postponed:
+        return "等待官方公布补赛时间"
+
+    next_update = _decision_parse_at(row.get("next_update_at"))
+    kickoff = _decision_parse_at(row.get("kickoff_at_utc"))
+    if next_update is not None and kickoff is not None and next_update >= kickoff:
+        return "临场更新已完成"
+    if next_update is not None:
+        return _format_compact_update_time(next_update)
+    return str(
+        row.get("next_update_label")
+        or row.get("next_update_description")
+        or "等待调度"
+    )
+
+
+def _render_decision_filter_row(
+    *,
+    search_id: str,
+    league_id: str,
+    competitions: list[dict[str, Any]] | None,
+) -> str:
+    return """
+      <div class="ledger-filter-row workbench-filter-row">
+        <div class="filter-group decision-filter-group" aria-label="展示口径">
+          <span class="filter-label">每场有有效新鲜主盘就展示一个首选；概率偏低会保留为观察风险</span>
+        </div>
+        <div class="workbench-tools">
+          <label class="search-label">
+            <span>搜索</span>
+            <input type="search" id="{search_id}" data-search-control aria-label="搜索球队" placeholder="搜索球队、赛事、首选" autocomplete="off">
+          </label>
+          <label class="league-label">
+            <span>赛事筛选</span>
+            <select id="{league_id}" data-league-filter-control aria-label="筛选赛事" autocomplete="off">
+              {competition_options}
+            </select>
+          </label>
+        </div>
+      </div>
+    """.format(
+        search_id=_text(search_id),
+        league_id=_text(league_id),
+        competition_options=_competition_filter_options(competitions),
+    )
+
+
+def _render_decision_date_strip(rows: list[dict[str, Any]], *, history: bool = False) -> str:
+    dates: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        date_iso = str(row.get("kickoff_date_iso") or "")
+        if not date_iso:
+            continue
+        entry = dates.setdefault(
+            date_iso,
+            {"label": row.get("kickoff_date") or "日期待确认", "count": 0},
+        )
+        entry["count"] += 1
+    cards = [
+        (
+            '<button class="date-card active" data-date-filter="all" type="button" '
+            'aria-pressed="true"><span>全部 日期</span><strong>{count}场</strong></button>'
+        ).format(count=_text(len(rows)))
+    ]
+    for date_iso in sorted(dates, reverse=history):
+        entry = dates[date_iso]
+        cards.append(
+            (
+                '<button class="date-card" data-date-filter="{date_iso}" type="button" '
+                'aria-pressed="false"><span>{label}</span><strong>{count}场</strong></button>'
+            ).format(
+                date_iso=_text(date_iso),
+                label=_text(_date_button_label(str(entry["label"]))),
+                count=_text(entry["count"]),
+            )
+        )
+    aria = "历史日期" if history else "比赛日期"
+    return '<section class="date-strip" aria-label="{aria}">{cards}</section>'.format(
+        aria=aria,
+        cards="".join(cards),
+    )
+
+
+def _render_decision_summary(snapshot: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    picks = sum(1 for row in rows if row["decision_view"]["state"] == "pick")
+    awaiting_result = sum(1 for row in rows if row.get("match_state") == "awaiting_result")
+    upcoming = len(rows) - awaiting_result
+    no_pick = len(rows) - picks
+    stale = bool((snapshot.get("data_quality") or {}).get("stale_sources"))
+    errors = bool((snapshot.get("data_quality") or {}).get("source_errors"))
+    quality = "需注意" if stale or errors else "正常"
+    tone = "error" if errors else "warn" if stale else "ok"
+    metrics = (
+        ("待开赛", upcoming, "neutral"),
+        ("赛果待确认", awaiting_result, "warn" if awaiting_result else "neutral"),
+        ("本场首选", picks, "neutral"),
+        ("暂无可靠首选", no_pick, "neutral"),
+        ("数据质量", quality, tone),
+    )
+    return '<section class="summary-grid" aria-label="首选摘要">{cards}</section>'.format(
+        cards="".join(
+            '<div class="metric-card" data-tone="{tone}"><span>{label}</span><strong>{value}</strong></div>'.format(
+                tone=_text(metric_tone),
+                label=_text(label),
+                value=_text(value),
+            )
+            for label, value, metric_tone in metrics
+        )
+    )
+
+
+def _render_decision_workbench(
+    rows: list[dict[str, Any]],
+    competitions: list[dict[str, Any]] | None,
+) -> str:
+    filters = _render_decision_filter_row(
+        search_id="ledger-search",
+        league_id="league-filter",
+        competitions=competitions,
+    )
+    if not rows:
+        return """
+        <section class="workbench-shell premium-intelligence-workbench">
+          {date_strip}{filters}
+          <section class="ledger-workbench">
+            <aside class="match-list-panel"><div class="empty-state"><h2>当前没有待开赛场次。</h2><p>等待下一轮赛程更新。</p></div></aside>
+            <section class="signal-detail-panel"><div class="empty-state"><p>暂无比赛详情。</p></div></section>
+          </section>
+        </section>
+        """.format(date_strip=_render_decision_date_strip(rows), filters=filters)
+
+    list_rows = []
+    detail_panels = []
+    for index, row in enumerate(rows):
+        detail_id = f"workbench-match-{index}"
+        active_class = " active" if index == 0 else ""
+        decision = row["decision_view"]
+        matchup_html = _render_matchup_teams(
+            row.get("home_team_display"),
+            row.get("away_team_display"),
+            row.get("home_team"),
+            row.get("away_team"),
+            separator="对",
+            fallback=row.get("match_label"),
+        )
+        title_html = _render_matchup_teams(
+            row.get("home_team_display"),
+            row.get("away_team_display"),
+            row.get("home_team"),
+            row.get("away_team"),
+            separator="vs",
+            inline=True,
+            fallback=row.get("match_label"),
+        )
+        stage = " · ".join(
+            str(part)
+            for part in (row.get("competition_label"), row.get("stage_group"))
+            if part
+        )
+        awaiting_result = row.get("match_state") == "awaiting_result"
+        postponed = row.get("match_state") == "postponed"
+        status_label = "待赛果" if awaiting_result else decision["title"]
+        detail_status_label = "已开赛·赛果待确认" if awaiting_result else decision["title"]
+        badge_state = (
+            "freshness-stale"
+            if awaiting_result
+            else "freshness-fresh" if decision["state"] == "pick" else "freshness-pending"
+        )
+        state_badge = '<span class="freshness-badge {state}">{label}</span>'.format(
+            state=badge_state,
+            label=_text(status_label),
+        )
+        detail_state_badge = '<span class="freshness-badge {state}">{label}</span>'.format(
+            state=badge_state,
+            label=_text(detail_status_label),
+        )
+        list_rows.append(
+            '<tr class="match-list-row{active}" role="button" tabindex="0" aria-expanded="{expanded}" '
+            'data-workbench-match-target="{detail_id}" data-date="{date}" data-date-iso="{date_iso}" '
+            'data-league="{competition_id}" data-search="{search}">'
+            '<td class="match-kickoff-cell"><span>{compact_date}</span><strong>{kickoff}</strong></td>'
+            '<td><strong>{matchup}</strong></td><td>{stage}</td><td><strong>{market}</strong><span>{badge}</span></td>'
+            '<td><strong>{probability}</strong><span>安全命中率</span></td></tr>'.format(
+                active=active_class,
+                expanded="true" if index == 0 else "false",
+                detail_id=_text(detail_id),
+                date=_text(row.get("kickoff_date")),
+                date_iso=_text(row.get("kickoff_date_iso")),
+                competition_id=_text(row.get("competition_id")),
+                search=_text(row.get("search_text")),
+                compact_date=_text(_compact_date_label(row)),
+                kickoff=_text(row.get("kickoff_time")),
+                matchup=matchup_html,
+                stage=_text(stage or "赛程"),
+                market=_text(decision["market"]),
+                badge=state_badge,
+                probability=_text(decision["probability"]),
+            )
+        )
+        last_update = (
+            _format_compact_update_time(row.get("last_update_at")) or "待确认"
+        )
+        next_update = _decision_next_update_text(
+            row,
+            awaiting_result=awaiting_result,
+            postponed=postponed,
+        )
+        detail_heading = (
+            "比赛延期" if postponed else "赛前首选（已封盘）" if awaiting_result else "本场首选"
+        )
+        detail_note = (
+            "比赛已开赛，赛果尚未确认；下列内容为赛前定格首选，不是滚球建议。"
+            if awaiting_result
+            else "比赛已由官方确认延期，原开球时间和原首选均已失效；等待补赛时间确认后重新计算。"
+            if postponed
+            else "每场只保留一个通过概率、赔率和数据质量门槛的方向；不够可靠时主动留空。"
+        )
+        detail_panels.append(
+            '<section class="workbench-detail{active}" id="{detail_id}" data-workbench-detail="{detail_id}" {hidden}>'
+            '<div class="detail-title-row"><h2>{title} · {detail_heading}</h2></div>'
+            '<p class="muted history-workbench-note">{detail_note}</p>'
+            '<div class="detail-metrics decision-detail-metrics">'
+            '<div><span>当前状态</span><strong>{badge}</strong></div>'
+            '<div><span>安全命中率</span><strong>{probability}</strong></div>'
+            '<div><span>不亏概率</span><strong>{no_loss}</strong></div>'
+            '<div><span>参考赔率</span><strong>{odds}</strong></div>'
+            '<div><span>最后更新</span><strong>{last_update}</strong></div>'
+            '<div class="detail-metric-next-update"><span>下次更新</span><strong>{next_update}</strong></div>'
+            '</div>'
+            '<div class="workbench-table-wrap"><table class="workbench-signal-table">'
+            '<thead><tr><th>首选盘口</th><th>安全命中率</th><th>不亏概率</th><th>参考赔率</th><th>数据状态</th></tr></thead>'
+            '<tbody><tr><td><strong>{market}</strong></td><td>{probability}</td><td>{no_loss}</td><td>{odds}</td><td>{freshness}</td></tr></tbody>'
+            '</table></div></section>'.format(
+                active=active_class,
+                detail_id=_text(detail_id),
+                hidden="" if index == 0 else "hidden",
+                title=title_html,
+                detail_heading=_text(detail_heading),
+                detail_note=_text(detail_note),
+                badge=detail_state_badge,
+                probability=_text(decision["probability"]),
+                no_loss=_text(decision["no_loss"]),
+                odds=_text(decision["odds"]),
+                last_update=_text(last_update),
+                next_update=_text(next_update),
+                market=_text(decision["market"]),
+                freshness=(
+                    "赛前首选已封盘"
+                    if awaiting_result
+                    else "比赛延期"
+                    if postponed
+                    else "缓存" if row.get("stale") else "正常"
+                ),
+            )
+        )
+
+    return """
+    <section class="workbench-shell premium-intelligence-workbench">
+      {date_strip}{filters}
+      <section class="ledger-workbench">
+        <aside class="match-list-panel">
+          <div class="panel-heading"><h2 data-workbench-visible-count data-count-label="比赛列表">比赛列表 {match_count}场</h2></div>
+          <div class="match-list-scroll"><table class="match-list-table">
+            <thead><tr><th>开赛时间</th><th>对阵</th><th>赛事 / 阶段</th><th>本场首选</th><th>安全概率</th></tr></thead>
+            <tbody>{list_rows}</tbody>
+          </table></div>
+          <p class="workbench-no-results" hidden>没有符合当前筛选的比赛。</p>
+        </aside>
+        <section class="signal-detail-panel">{detail_panels}</section>
+      </section>
+    </section>
+    """.format(
+        date_strip=_render_decision_date_strip(rows),
+        filters=filters,
+        match_count=_text(len(rows)),
+        list_rows="".join(list_rows),
+        detail_panels="".join(detail_panels),
+    )
+
+
+def _decision_record_label(summary: dict[str, Any]) -> str:
+    tally = summary.get("decision_tally") or {}
+    hit = int(tally.get("hit") or 0)
+    miss = int(tally.get("miss") or 0)
+    push = int(tally.get("push") or 0)
+    decided = hit + miss
+    rate = f"{hit * 100 / decided:.0f}%" if decided else "—"
+    return f"命中 {hit} · 未中 {miss} · 走水 {push} · 命中率 {rate}"
+
+
+def _decision_history_rows(snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    projected = project_finished_rows(snapshot)
+    rows = []
+    for match in projected.get("matches") or []:
+        date_iso, date_label, kickoff_time = _decision_date_parts(match.get("kickoff_at_utc"))
+        home_source = str(match.get("home_team") or "")
+        away_source = str(match.get("away_team") or "")
+        decision = match.get("closing_match_decision")
+        outcome = match.get("decision_outcome") or {}
+        view = _decision_display(decision)
+        status = str(outcome.get("status") or "unknown")
+        if status == "missing_decision":
+            decision_text = "历史首选未记录"
+        else:
+            decision_text = view["market"] if view["state"] == "pick" else view["title"]
+            if isinstance(decision, dict) and decision.get("policy_version") == "legacy_match_decision_v1":
+                decision_text = f"{decision_text}（旧算法记录）"
+        home = format_team_label(home_source)
+        away = format_team_label(away_source)
+        stage_group = " · ".join(
+            str(part) for part in (match.get("stage"), match.get("group")) if part
+        )
+        rows.append(
+            {
+                **match,
+                "home_team_display": home,
+                "away_team_display": away,
+                "kickoff_date_iso": date_iso,
+                "kickoff_date": date_label,
+                "kickoff_time": kickoff_time,
+                "stage_group": stage_group,
+                "decision_view": view,
+                "decision_text": decision_text,
+                "outcome": outcome,
+                "search_text": " ".join(
+                    str(part)
+                    for part in (
+                        home_source,
+                        away_source,
+                        home,
+                        away,
+                        match.get("competition_label"),
+                        decision_text,
+                        outcome.get("label"),
+                    )
+                    if part
+                ).casefold(),
+            }
+        )
+    rows.sort(key=lambda row: str(row.get("kickoff_at_utc") or ""), reverse=True)
+    return rows, projected.get("summary") or {}
+
+
+def _render_decision_history(
+    snapshot: dict[str, Any],
+    competitions: list[dict[str, Any]] | None,
+) -> str:
+    rows, summary = _decision_history_rows(snapshot)
+    sample = summary.get("sample") or {}
+    sample_note = "样本不足，仅作观察" if sample.get("sample_too_small") else "样本达到观察门槛"
+    review = (
+        '<div class="history-review-notes"><p><strong>本场首选战绩</strong>：{record} · {sample_note}</p></div>'
+    ).format(record=_text(_decision_record_label(summary)), sample_note=_text(sample_note))
+    filters = _render_decision_filter_row(
+        search_id="history-ledger-search",
+        league_id="history-league-filter",
+        competitions=competitions,
+    )
+    if not rows:
+        return (
+            '<div data-view-panel="history" hidden><section class="workbench-shell history-workbench-shell premium-intelligence-workbench">'
+            '{date_strip}{filters}{review}<section class="ledger-workbench">'
+            '<aside class="match-list-panel"><div class="empty-state"><h2>暂无历史回顾</h2><p>还没有已完赛的首选记录。</p></div></aside>'
+            '<section class="signal-detail-panel"><div class="empty-state"><p>暂无比赛详情。</p></div></section>'
+            '</section></section></div>'
+        ).format(
+            date_strip=_render_decision_date_strip(rows, history=True),
+            filters=filters,
+            review=review,
+        )
+
+    list_rows = []
+    detail_panels = []
+    for index, row in enumerate(rows):
+        detail_id = f"history-match-{index}"
+        active_class = " active" if index == 0 else ""
+        matchup_html = _render_matchup_teams(
+            row.get("home_team_display"),
+            row.get("away_team_display"),
+            row.get("home_team"),
+            row.get("away_team"),
+            separator="对",
+            fallback=row.get("match_label"),
+        )
+        title_html = _render_matchup_teams(
+            row.get("home_team_display"),
+            row.get("away_team_display"),
+            row.get("home_team"),
+            row.get("away_team"),
+            separator="vs",
+            inline=True,
+            fallback=row.get("match_label"),
+        )
+        outcome = row["outcome"]
+        status = str(outcome.get("status") or "unknown")
+        outcome_html = '<span class="outcome outcome-{status}">{label}</span>'.format(
+            status=_text(status),
+            label=_text(outcome.get("label") or "待确认"),
+        )
+        stage = " · ".join(
+            str(part)
+            for part in (row.get("competition_label"), row.get("stage_group"))
+            if part
+        )
+        list_rows.append(
+            '<tr class="match-list-row{active} history-match-row" role="button" tabindex="0" aria-expanded="{expanded}" '
+            'data-workbench-match-target="{detail_id}" data-date="{date}" data-date-iso="{date_iso}" '
+            'data-league="{competition_id}" data-search="{search}">'
+            '<td class="match-kickoff-cell"><span>{compact_date}</span><strong>{kickoff}</strong></td>'
+            '<td><strong>{matchup}</strong></td><td>{stage}</td><td><strong>{decision}</strong></td>'
+            '<td><strong>{score}</strong><span>{outcome}</span></td></tr>'.format(
+                active=active_class,
+                expanded="true" if index == 0 else "false",
+                detail_id=_text(detail_id),
+                date=_text(row.get("kickoff_date")),
+                date_iso=_text(row.get("kickoff_date_iso")),
+                competition_id=_text(row.get("competition_id")),
+                search=_text(row.get("search_text")),
+                compact_date=_text(_compact_date_label(row)),
+                kickoff=_text(row.get("kickoff_time")),
+                matchup=matchup_html,
+                stage=_text(stage or "已完赛"),
+                decision=_text(row.get("decision_text")),
+                score=_text(row.get("score_label") or "—"),
+                outcome=outcome_html,
+            )
+        )
+        view = row["decision_view"]
+        detail_panels.append(
+            '<section class="workbench-detail{active} history-workbench-detail" id="{detail_id}" data-workbench-detail="{detail_id}" {hidden}>'
+            '<div class="detail-title-row"><h2>{title} · 历史回顾</h2></div>'
+            '<p class="muted history-workbench-note">使用开球前最后一轮记录定格，赛后按实际比分复盘。</p>'
+            '<div class="detail-metrics">'
+            '<div><span>收盘首选</span><strong>{decision}</strong></div>'
+            '<div><span>赛果</span><strong>{score}</strong></div>'
+            '<div><span>结果</span><strong>{outcome}</strong></div>'
+            '<div><span>安全命中率</span><strong>{probability}</strong></div>'
+            '<div><span>参考赔率</span><strong>{odds}</strong></div>'
+            '</div>'
+            '<div class="workbench-table-wrap"><table class="workbench-signal-table">'
+            '<thead><tr><th>收盘首选</th><th>安全命中率</th><th>不亏概率</th><th>参考赔率</th><th>赛果说明</th></tr></thead>'
+            '<tbody><tr><td>{decision}</td><td>{probability}</td><td>{no_loss}</td><td>{odds}</td><td>{detail}</td></tr></tbody>'
+            '</table></div></section>'.format(
+                active=active_class,
+                detail_id=_text(detail_id),
+                hidden="" if index == 0 else "hidden",
+                title=title_html,
+                decision=_text(row.get("decision_text")),
+                score=_text(row.get("score_label") or "—"),
+                outcome=outcome_html,
+                probability=_text(view["probability"]),
+                no_loss=_text(view["no_loss"]),
+                odds=_text(view["odds"]),
+                detail=_text(outcome.get("detail") or outcome.get("label") or "待确认"),
+            )
+        )
+
+    return """
+    <div data-view-panel="history" hidden>
+      <section class="workbench-shell history-workbench-shell premium-intelligence-workbench">
+        {date_strip}{filters}{review}
+        <section class="ledger-workbench">
+          <aside class="match-list-panel">
+            <div class="panel-heading"><h2 data-workbench-visible-count data-count-label="历史比赛">历史比赛 {match_count}场</h2></div>
+            <div class="match-list-scroll"><table class="match-list-table">
+              <thead><tr><th>开赛时间</th><th>对阵</th><th>赛事 / 阶段</th><th>收盘首选</th><th>赛果</th></tr></thead>
+              <tbody>{list_rows}</tbody>
+            </table></div>
+            <p class="workbench-no-results" hidden>没有符合当前筛选的历史比赛。</p>
+          </aside>
+          <section class="signal-detail-panel">{detail_panels}</section>
+        </section>
+      </section>
+    </div>
+    """.format(
+        date_strip=_render_decision_date_strip(rows, history=True),
+        filters=filters,
+        review=review,
+        match_count=_text(len(rows)),
+        list_rows="".join(list_rows),
+        detail_panels="".join(detail_panels),
+    )
+
+
+def _render_decision_right_rail(snapshot: dict[str, Any]) -> str:
+    return """
+    <aside class="right-rail">
+      <section class="rail-card">
+        <h2>首选规则</h2>
+        <p>每场有开赛前有效、新鲜、可结算的主盘口时展示一个首选。</p>
+        <p>比赛开赛后保留赛前首选并标记已封盘；赛果确认后转入历史，不作为滚球建议。</p>
+      </section>
+      <section class="rail-card">
+        <h2>注意事项</h2>
+        <ul><li>模型输出只作为研究分析，可能出错。</li><li>数据过期或输入缺失会降低可信度。</li></ul>
+      </section>
+      <section class="rail-card"><h2>更新时间</h2><p>{snapshot_at}</p></section>
+    </aside>
+    """.format(snapshot_at=_text(_format_snapshot_time(snapshot.get("snapshot_at"))))
+
+
 def build_research_ledger_html(
     snapshot: dict[str, Any],
     previous_snapshot: dict[str, Any] | None = None,
+    *,
+    decision_only: bool = False,
 ) -> str:
     snapshot_at = _format_snapshot_time(snapshot.get("snapshot_at"))
-    signal_rows = project_signal_rows(snapshot, previous_snapshot=previous_snapshot)
-    competitions = competition_options(snapshot)
-    return """<!doctype html>
+    if decision_only:
+        decision_rows = _decision_live_rows(snapshot, previous_snapshot=previous_snapshot)
+        competitions = _decision_competition_options(snapshot, decision_rows)
+        controls = ""
+        table = _render_decision_workbench(decision_rows, competitions)
+        finished_section = _render_decision_history(snapshot, competitions)
+        right_rail = _render_decision_right_rail(snapshot)
+        summary = _render_decision_summary(snapshot, decision_rows)
+    else:
+        competitions = competition_options(snapshot)
+        signal_rows = project_signal_rows(snapshot, previous_snapshot=previous_snapshot)
+        controls = _render_controls(signal_rows)
+        table = _render_live_ledger(signal_rows, competitions=competitions)
+        finished_section = _render_finished_section(snapshot, competitions=competitions)
+        right_rail = _render_right_rail(snapshot)
+        summary = _render_summary(snapshot)
+    html = """<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>2026 世界杯 | 研究台账</title>
+  <title>足球研究台账</title>
   <link rel="icon" href="data:,">
   <style>
     :root {{
@@ -2551,6 +3303,16 @@ def build_research_ledger_html(
       line-height: 1.2;
     }}
     .detail-metric-next-update strong {{ white-space: nowrap; }}
+    .detail-metrics.decision-detail-metrics {{
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }}
+    .detail-metrics.decision-detail-metrics div:nth-child(3n) {{ border-right: 0; }}
+    .detail-metrics.decision-detail-metrics div:nth-child(-n+3) {{
+      border-bottom: 1px solid var(--line-soft);
+    }}
+    .detail-metrics.decision-detail-metrics .detail-metric-next-update strong {{
+      white-space: normal;
+    }}
     .detail-metrics div:nth-child(2) strong {{ color: var(--accent-strong); }}
     .market-tabs {{
       display: flex;
@@ -3193,6 +3955,16 @@ def build_research_ledger_html(
       .detail-metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .detail-metrics div:nth-child(2n) {{ border-right: 0; }}
       .detail-metrics div:nth-child(-n+2) {{ border-bottom: 1px solid #edf1f5; }}
+      .detail-metrics.decision-detail-metrics {{
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }}
+      .detail-metrics.decision-detail-metrics div:nth-child(3n) {{
+        border-right: 1px solid var(--line-soft);
+      }}
+      .detail-metrics.decision-detail-metrics div:nth-child(2n) {{ border-right: 0; }}
+      .detail-metrics.decision-detail-metrics div:nth-child(-n+4) {{
+        border-bottom: 1px solid #edf1f5;
+      }}
       .ledger-mode-bar {{ align-items: stretch; flex-direction: column; }}
       .mode-tabs {{ width: 100%; }}
       .mode-tab {{ flex: 1; }}
@@ -3205,7 +3977,7 @@ def build_research_ledger_html(
     <header>
       <div>
         <div class="brand-row">
-          <div class="brand-title">2026 世界杯</div>
+          <div class="brand-title">足球研究台账</div>
           {primary_nav}
         </div>
         <h1 class="screen-title">研究台账</h1>
@@ -3401,6 +4173,14 @@ def build_research_ledger_html(
         return control ? control.value.trim().toLowerCase() : '';
       }}
 
+      function syncWorkbenchVisibleCount(visible) {{
+        var panel = getActiveViewPanel();
+        var heading = panel ? panel.querySelector('[data-workbench-visible-count]') : null;
+        if (!heading) return;
+        var label = heading.dataset.countLabel || '比赛列表';
+        heading.textContent = label + ' ' + visible + '场';
+      }}
+
       function workbenchView(element) {{
         var panel = element ? element.closest('[data-view-panel]') : null;
         return panel ? (panel.dataset.viewPanel || 'live') : 'live';
@@ -3532,6 +4312,7 @@ def build_research_ledger_html(
             workbenchVisible += 1;
           }}
         }});
+        syncWorkbenchVisibleCount(workbenchVisible);
         syncWorkbenchDecisionRows();
         workbenchNoResults.forEach(function (empty) {{
           if (workbenchView(empty) !== activeView) return;
@@ -3741,11 +4522,17 @@ def build_research_ledger_html(
 </html>
 """.format(
         snapshot_at=_text(snapshot_at),
-    primary_nav=_render_primary_nav(),
-    view_tabs=_render_view_tabs(),
-        summary=_render_summary(snapshot),
-        controls=_render_controls(signal_rows),
-        table=_render_live_ledger(signal_rows, competitions=competitions),
-        finished_section=_render_finished_section(snapshot, competitions=competitions),
-        right_rail=_render_right_rail(snapshot),
+        primary_nav=_render_primary_nav(decision_only=decision_only),
+        view_tabs=_render_view_tabs(),
+        summary=summary,
+        controls=controls,
+        table=table,
+        finished_section=finished_section,
+        right_rail=right_rail,
     )
+    if decision_only:
+        # The shared stylesheet still defines unused legacy selectors. Rename those
+        # selectors in the decision-only document so neither markup nor source
+        # advertises the retired grading contract.
+        html = html.replace("grade", "tier").replace("Grade", "Tier")
+    return html

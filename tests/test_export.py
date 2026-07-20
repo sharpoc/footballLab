@@ -30,11 +30,21 @@ def _snapshot():
         },
         "matches": [
             {
-                "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "kickoff_at_utc": "2099-06-11T19:00:00+00:00",
                 "stage": "Matchday 1",
                 "home_team": "Mexico",
                 "away_team": "South Africa",
                 "signals": [{"grade": "A"}],
+                "match_decision": {
+                    "schema_version": 2,
+                    "label": "MATCH_PICK",
+                    "market": "1X2",
+                    "selection": "home",
+                    "odds": 1.8,
+                    "p_hit_safe": 0.61,
+                    "p_no_loss_safe": 0.61,
+                    "valid_until": "2099-06-11T19:00:00+00:00",
+                },
             }
         ],
         "finished": {
@@ -59,6 +69,15 @@ def _snapshot():
                             "prediction": {"status": "hit", "label": "命中", "detail": "全场 2-0"},
                         }
                     ],
+                    "closing_match_decision": {
+                        "schema_version": 2,
+                        "label": "MATCH_PICK",
+                        "market": "1X2",
+                        "selection": "home",
+                        "odds": 1.78,
+                        "p_hit_safe": 0.61,
+                        "p_no_loss_safe": 0.61,
+                    },
                 }
             ],
             "tally": {"S": {"hit": 1, "miss": 0, "push": 0}},
@@ -79,12 +98,14 @@ def test_export_static_site_writes_html_snapshot_and_matches_json():
         assert (out_dir / "api" / "matches.json").exists()
         assert (out_dir / "api" / "finished.json").exists()
         html = (out_dir / "index.html").read_text(encoding="utf-8")
-        assert "研究台账" in html
+        assert "本场首选" in html
         assert "仅用于研究分析，不构成投注建议。" in html
         assert "Research Ledger" not in html
         assert "Research only, not betting advice." not in html
         assert "stake" not in html.lower()
         assert "bet amount" not in html.lower()
+        assert "价值分歧" not in html
+        assert "grade" not in html.lower()
         assert "墨西哥 对 南非" in html
         public_snapshot = json.loads((out_dir / "api" / "snapshot" / "latest.json").read_text())[
             "snapshot"
@@ -108,7 +129,14 @@ def test_export_static_site_writes_html_snapshot_and_matches_json():
             "match_label"
         ] == "Mexico vs South Africa"
         finished = json.loads((out_dir / "api" / "finished.json").read_text())["finished"]
-        assert finished["summary"]["tally"]["S"] == {"hit": 1, "miss": 0, "push": 0}
+        assert finished["summary"]["decision_tally"] == {
+            "hit": 1,
+            "miss": 0,
+            "push": 0,
+            "no_pick": 0,
+        }
+        assert "signals" not in json.dumps(public_snapshot)
+        assert "grade" not in json.dumps(public_snapshot).lower()
         assert finished["matches"][0]["match_label"] == "Mexico vs South Africa"
 
 
@@ -119,9 +147,49 @@ def test_export_static_site_manifest_describes_outputs():
         result = export_static_site(_snapshot(), out_dir)
         manifest = json.loads((out_dir / "manifest.json").read_text())
 
-        assert manifest["schema_version"] == 1
+        assert manifest["schema_version"] == 2
         assert manifest["snapshot_at"] == "2026-06-08T00:00:00+00:00"
         assert "run_id" not in manifest
         assert "api/matches.json" in manifest["files"]
         assert "api/finished.json" in manifest["files"]
         assert result["manifest_path"] == str(out_dir / "manifest.json")
+
+
+def test_export_static_site_hides_postponed_matches_and_recounts_public_matches():
+    snapshot = _snapshot()
+    snapshot["counts"]["matches"] = 2
+    snapshot["counts"]["postponed_matches"] = 1
+    snapshot["matches"].append(
+        {
+            "kickoff_at_utc": "2099-06-12T19:00:00+00:00",
+            "stage": "Round 18",
+            "home_team": "Hidden Postponed Home",
+            "away_team": "Hidden Postponed Away",
+            "fixture_status": "POSTPONED",
+            "match_decision": {
+                "schema_version": 2,
+                "policy_version": "match_pick_v3",
+                "label": "NO_CLEAN_MARKET",
+            },
+        }
+    )
+
+    with TemporaryDirectory() as tmp:
+        out_dir = Path(tmp) / "site"
+        export_static_site(snapshot, out_dir)
+
+        html = (out_dir / "index.html").read_text(encoding="utf-8")
+        public_snapshot = json.loads(
+            (out_dir / "api" / "snapshot" / "latest.json").read_text(encoding="utf-8")
+        )["snapshot"]
+        public_matches = json.loads(
+            (out_dir / "api" / "matches.json").read_text(encoding="utf-8")
+        )["matches"]
+
+    assert "Hidden Postponed Home" not in html
+    assert [row["match_label"] for row in public_matches] == ["Mexico vs South Africa"]
+    assert public_snapshot["matches"] == public_matches
+    assert public_snapshot["counts"]["matches"] == 1
+    assert "postponed_matches" not in public_snapshot["counts"]
+    assert len(snapshot["matches"]) == 2
+    assert snapshot["matches"][1]["fixture_status"] == "POSTPONED"

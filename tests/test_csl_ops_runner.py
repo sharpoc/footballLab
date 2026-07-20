@@ -289,6 +289,42 @@ def test_dry_run_quota_uses_secondary_when_primary_is_exhausted():
         assert "\"providers\"" not in serialized
 
 
+def test_dry_run_quota_prefers_fresh_tertiary_over_low_secondary():
+    import worldcup.csl_ops_runner as runner
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        cache_dir = root / "data/cache"
+        quota_path = root / "custom/quota.json"
+        _write_csl_odds_cache(cache_dir)
+        _write_results(cache_dir)
+        quota_path.parent.mkdir(parents=True)
+        quota_path.write_text(
+            json.dumps(
+                {
+                    "providers": {
+                        "theoddsapi_primary": {"remaining": 0},
+                        "theoddsapi_secondary": {"remaining": 26},
+                        "theoddsapi_tertiary": {"remaining": 497},
+                    }
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+
+        summary = runner.run_csl_ops(
+            root=root,
+            generated_at="2026-07-14T10:15:00Z",
+            quota_path="custom/quota.json",
+        )
+
+    assert summary["steps"]["local_state"]["quota_remaining"] == 497
+    serialized = json.dumps(summary, ensure_ascii=False, sort_keys=True)
+    assert "theoddsapi_tertiary" not in serialized
+    assert "\"providers\"" not in serialized
+
+
 def test_dry_run_quota_ignores_non_finite_remaining():
     import worldcup.csl_ops_runner as runner
 
@@ -431,6 +467,10 @@ def test_run_local_writes_snapshot_archive_observation_and_summary():
         assert summary["steps"]["snapshot"]["matches"] == 1
         assert summary["steps"]["archive"]["status"] in {"created", "duplicate"}
         assert summary["steps"]["observation"]["matches"] == 1
+        assert summary["steps"]["observation"]["match_picks"] == 1
+        assert summary["steps"]["observation"]["postponed"] == 0
+        assert summary["steps"]["observation"]["no_pick"] == 0
+        assert summary["steps"]["observation"]["missing_decisions"] == 0
         assert summary["paths"]["snapshot"] == str(snapshot)
         assert summary["paths"]["archive"] == str(archive)
         assert summary["paths"]["observation"] == str(observation)
@@ -441,6 +481,9 @@ def test_run_local_writes_snapshot_archive_observation_and_summary():
         serialized = json.dumps(summary, ensure_ascii=False, sort_keys=True)
         for forbidden in ("must-not-leak", "bookmaker", "api_key", "secret", "下注金额"):
             assert forbidden.lower() not in serialized.lower()
+        observation_text = observation.read_text(encoding="utf-8").lower()
+        assert "signals" not in observation_text
+        assert "grade" not in observation_text
 
 
 def test_cli_run_local_writes_artifacts_and_prints_safe_summary():

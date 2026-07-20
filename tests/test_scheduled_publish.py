@@ -1,9 +1,12 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import urllib.error
 
 import worldcup.scheduled_publish as scheduled_publish
+from worldcup.publish_outbox import stage_pending_publish
 from worldcup.scheduled_publish import run_scheduled_publish
 from worldcup.theoddsapi_keys import PRIMARY_PROVIDER, SECONDARY_PROVIDER
 
@@ -61,7 +64,7 @@ def test_scheduled_publish_skips_publish_when_refresh_is_not_due():
             quota_path=quota_path,
             endpoint="https://football.celab.xin/api/ingest/snapshot",
             api_key="fake-key",
-            secret="fake-secret",
+            secret="fake-secret-that-is-at-least-32-bytes-long!!",
             refresh_fn=refresh_fn,
             publish_fn=publish_fn,
         )
@@ -69,6 +72,154 @@ def test_scheduled_publish_skips_publish_when_refresh_is_not_due():
     assert result["status"] == "skipped"
     assert result["refresh"]["status"] == "skipped"
     assert result["publish"] is None
+
+
+def test_scheduled_publish_retries_pending_snapshot_without_refreshing_again():
+    calls = {"refresh": 0, "publish": 0}
+
+    def refresh_fn(**kwargs):
+        calls["refresh"] += 1
+        path = Path(kwargs["snapshot_path"])
+        path.write_text(
+            json.dumps(
+                {
+                    "snapshot_at": kwargs["observed_at"],
+                    "run": {
+                        "run_id": "20260710T083215Z-live",
+                        "observed_at": kwargs["observed_at"],
+                    },
+                    "counts": {"matches": 1},
+                    "matches": [
+                        {
+                            "kickoff_at_utc": "2026-07-12T19:00:00+00:00",
+                            "home_team": "Home",
+                            "away_team": "Away",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return FakeRefreshResult(
+            snapshot_path=path,
+            snapshot={"counts": {"matches": 1}},
+            run_metadata={"run_id": "20260710T083215Z-live"},
+        )
+
+    def publish_fn(**_kwargs):
+        calls["publish"] += 1
+        if calls["publish"] == 1:
+            raise urllib.error.URLError("temporary tls failure")
+        return {"status": "sent", "http_status": 200, "ingest_status": "stored"}
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot_path, quota_path = _write_not_due_snapshot(root)
+        pending_path = root / "cache" / "analysis_snapshot.publish_pending.json"
+
+        first = run_scheduled_publish(
+            now="2026-07-10T08:32:15+00:00",
+            live=True,
+            force=True,
+            notify=False,
+            cache_dir=root / "cache",
+            snapshot_path=snapshot_path,
+            quota_path=quota_path,
+            api_key="fake-key",
+            secret="fake-secret-that-is-at-least-32-bytes-long!!",
+            refresh_fn=refresh_fn,
+            publish_fn=publish_fn,
+        )
+        second = run_scheduled_publish(
+            now="2026-07-10T08:37:15+00:00",
+            live=True,
+            notify=False,
+            cache_dir=root / "cache",
+            snapshot_path=snapshot_path,
+            quota_path=quota_path,
+            api_key="fake-key",
+            secret="fake-secret-that-is-at-least-32-bytes-long!!",
+            refresh_fn=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("pending publish retry must not refresh")
+            ),
+            publish_fn=publish_fn,
+        )
+
+        pending_exists_after = pending_path.exists()
+
+    assert first["status"] == "publish_pending"
+    assert second["status"] == "republished"
+    assert calls == {"refresh": 1, "publish": 2}
+    assert pending_exists_after is False
+
+
+def test_scheduled_publish_generates_utc_timestamp_when_now_is_omitted():
+    publish_calls = []
+
+    def refresh_fn(**kwargs):
+        return FakeRefreshResult(
+            snapshot_path=Path(kwargs["snapshot_path"]),
+            snapshot={"counts": {"matches": 1}},
+            run_metadata={"run_id": "generated-time-live"},
+        )
+
+    def publish_fn(**kwargs):
+        publish_calls.append(kwargs)
+        return {"status": "sent", "http_status": 200, "ingest_status": "stored"}
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot_path, quota_path = _write_not_due_snapshot(root)
+
+        result = run_scheduled_publish(
+            live=True,
+            force=True,
+            notify=False,
+            cache_dir=root / "cache",
+            snapshot_path=snapshot_path,
+            quota_path=quota_path,
+            api_key="fake-key",
+            secret="fake-secret-that-is-at-least-32-bytes-long!!",
+            refresh_fn=refresh_fn,
+            publish_fn=publish_fn,
+        )
+
+    generated = datetime.fromisoformat(publish_calls[0]["timestamp"])
+    assert result["status"] == "published"
+    assert generated.tzinfo is not None
+    assert generated.utcoffset() == timezone.utc.utcoffset(generated)
+
+
+def test_scheduled_publish_generates_utc_timestamp_for_pending_retry():
+    publish_calls = []
+
+    def publish_fn(**kwargs):
+        publish_calls.append(kwargs)
+        return {"status": "sent", "http_status": 200, "ingest_status": "stored"}
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot_path, quota_path = _write_not_due_snapshot(root)
+        stage_pending_publish(snapshot_path, staged_at="2026-07-10T08:32:15+00:00")
+        old_run_scheduled_refresh = scheduled_publish.run_scheduled_refresh
+        scheduled_publish.run_scheduled_refresh = lambda **_kwargs: {"status": "skipped"}
+        try:
+            result = run_scheduled_publish(
+                live=True,
+                notify=False,
+                cache_dir=root / "cache",
+                snapshot_path=snapshot_path,
+                quota_path=quota_path,
+                secret="fake-secret-that-is-at-least-32-bytes-long!!",
+                publish_fn=publish_fn,
+            )
+        finally:
+            scheduled_publish.run_scheduled_refresh = old_run_scheduled_refresh
+
+    generated = datetime.fromisoformat(publish_calls[0]["timestamp"])
+    assert result["status"] == "republished"
+    assert generated.tzinfo is not None
+    assert generated.utcoffset() == timezone.utc.utcoffset(generated)
 
 
 def test_scheduled_publish_dry_run_does_not_load_env_or_publish():
@@ -145,7 +296,7 @@ def test_scheduled_publish_refreshes_then_publishes_when_due():
         env_path.write_text(
             "THE_ODDS_API_KEY_PRIMARY=primary-key\n"
             "THE_ODDS_API_KEY_SECONDARY=secondary-key\n"
-            "INGEST_HMAC_SECRET=fake-secret\n",
+            "INGEST_HMAC_SECRET=fake-secret-that-is-at-least-32-bytes-long!!\n",
             encoding="utf-8",
         )
 
@@ -166,7 +317,7 @@ def test_scheduled_publish_refreshes_then_publishes_when_due():
     assert result["publish"]["ingest_status"] == "stored"
     assert refresh_calls[0]["api_key"] == "secondary-key"
     assert refresh_calls[0]["theoddsapi_provider"] == SECONDARY_PROVIDER
-    assert publish_calls[0]["secret"] == "fake-secret"
+    assert publish_calls[0]["secret"] == "fake-secret-that-is-at-least-32-bytes-long!!"
     assert publish_calls[0]["live"] is True
     assert publish_calls[0]["endpoint"] == "https://football.celab.xin/api/ingest/snapshot"
 
@@ -200,7 +351,7 @@ def test_scheduled_publish_blocks_empty_refreshed_snapshot():
             quota_path=quota_path,
             endpoint="https://football.celab.xin/api/ingest/snapshot",
             api_key="fake-key",
-            secret="fake-secret",
+            secret="fake-secret-that-is-at-least-32-bytes-long!!",
             refresh_fn=refresh_fn,
             publish_fn=publish_fn,
         )
@@ -212,7 +363,7 @@ def test_scheduled_publish_blocks_empty_refreshed_snapshot():
     assert publish_calls == []
 
 
-def _write_change_snapshot(path: Path, *, grade: str, ev: float, odds: float, run_id: str) -> None:
+def _write_change_snapshot(path: Path, *, p_hit_safe: float, odds: float, run_id: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
@@ -232,16 +383,15 @@ def _write_change_snapshot(path: Path, *, grade: str, ev: float, odds: float, ru
                             }
                         },
                         "model": {"combined_1x2": {"home": 0.61, "draw": 0.23, "away": 0.16}},
-                        "signals": [
-                            {
-                                "market_type": "1X2_90min",
-                                "selection": "home",
-                                "grade": grade,
-                                "ev": ev,
-                                "edge": 0.041,
-                                "status": "OK",
-                            }
-                        ],
+                        "match_decision": {
+                            "schema_version": 2,
+                            "label": "MATCH_PICK",
+                            "market": "1X2",
+                            "selection": "home",
+                            "odds": odds,
+                            "p_hit_safe": p_hit_safe,
+                            "p_no_loss_safe": p_hit_safe,
+                        },
                     }
                 ],
             },
@@ -258,8 +408,7 @@ def test_scheduled_publish_notifies_significant_changes_after_publish():
     def refresh_fn(**kwargs):
         _write_change_snapshot(
             Path(kwargs["snapshot_path"]),
-            grade="S",
-            ev=0.092,
+            p_hit_safe=0.63,
             odds=1.85,
             run_id="20260609T100000Z-live",
         )
@@ -288,8 +437,7 @@ def test_scheduled_publish_notifies_significant_changes_after_publish():
         quota_path = root / "cache" / "quota.json"
         _write_change_snapshot(
             snapshot_path,
-            grade="A",
-            ev=0.052,
+            p_hit_safe=0.59,
             odds=2.0,
             run_id="20260609T080000Z-live",
         )
@@ -307,7 +455,7 @@ def test_scheduled_publish_notifies_significant_changes_after_publish():
             quota_path=quota_path,
             endpoint="https://football.celab.xin/api/ingest/snapshot",
             api_key="fake-key",
-            secret="fake-secret",
+            secret="fake-secret-that-is-at-least-32-bytes-long!!",
             refresh_fn=refresh_fn,
             publish_fn=publish_fn,
             notify_fn=notify_fn,
@@ -315,9 +463,10 @@ def test_scheduled_publish_notifies_significant_changes_after_publish():
 
     assert result["status"] == "published"
     assert result["notification"]["status"] == "sent"
-    assert notify_calls[0]["summary"] == "世界杯信号更新：1 条变化"
-    assert "墨西哥 对 南非 | 胜平负 - 主队" in notify_calls[0]["content"]
-    assert "等级 A → S" in notify_calls[0]["content"]
+    assert notify_calls[0]["summary"] == "世界杯本场首选更新：1 场变化"
+    assert "墨西哥 对 南非" in notify_calls[0]["content"]
+    assert "安全命中率 59.0% → 63.0%" in notify_calls[0]["content"]
+    assert "等级" not in notify_calls[0]["content"]
     assert publish_calls
 
 
@@ -327,8 +476,7 @@ def test_scheduled_publish_skips_notification_without_changes():
     def refresh_fn(**kwargs):
         _write_change_snapshot(
             Path(kwargs["snapshot_path"]),
-            grade="A",
-            ev=0.052,
+            p_hit_safe=0.59,
             odds=2.0,
             run_id="20260609T100000Z-live",
         )
@@ -351,8 +499,7 @@ def test_scheduled_publish_skips_notification_without_changes():
         quota_path = root / "cache" / "quota.json"
         _write_change_snapshot(
             snapshot_path,
-            grade="A",
-            ev=0.052,
+            p_hit_safe=0.59,
             odds=2.0,
             run_id="20260609T080000Z-live",
         )
@@ -370,7 +517,7 @@ def test_scheduled_publish_skips_notification_without_changes():
             quota_path=quota_path,
             endpoint="https://football.celab.xin/api/ingest/snapshot",
             api_key="fake-key",
-            secret="fake-secret",
+            secret="fake-secret-that-is-at-least-32-bytes-long!!",
             refresh_fn=refresh_fn,
             publish_fn=publish_fn,
             notify_fn=notify_fn,
@@ -426,7 +573,7 @@ def _run_publish_with_quota(root, before, after, notify=True):
         quota_path=quota_path,
         endpoint="https://football.celab.xin/api/ingest/snapshot",
         api_key="fake-key",
-        secret="fake-secret",
+        secret="fake-secret-that-is-at-least-32-bytes-long!!",
         notify=notify,
         refresh_fn=refresh_fn,
         publish_fn=publish_fn,

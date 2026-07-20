@@ -26,11 +26,12 @@ TREND_MARKET_KEYS = {
     "AsianHandicap_90min": "ah_main",
 }
 MATCH_DECISION_LABELS = {
+    "MATCH_PICK": "本场首选",
     "STRONG_VALUE": "强价值",
     "VALUE_CANDIDATE": "候选价值",
     "HIGH_CONFIDENCE_LEAN": "高胜率倾向",
     "LOW_CONFIDENCE_LEAN": "低置信倾向",
-    "NO_CLEAN_MARKET": "无干净盘口",
+    "NO_CLEAN_MARKET": "暂无可靠首选",
 }
 TEAM_LABELS_ZH = {
     "Algeria": "阿尔及利亚",
@@ -93,6 +94,27 @@ TEAM_LABELS_ZH = {
     "USA": "美国",
     "Uzbekistan": "乌兹别克斯坦",
     "Wales": "威尔士",
+    "Beijing FC": "北京国安",
+    "Beijing Guoan": "北京国安",
+    "Beijing Guoan FC": "北京国安",
+    "Chengdu Rongcheng FC": "成都蓉城",
+    "Chongqing Tonglianglong FC": "重庆铜梁龙",
+    "Dalian Yingbo": "大连英博",
+    "Henan": "河南队",
+    "Henan FC": "河南队",
+    "Liaoning Tieren FC": "辽宁铁人",
+    "Qingdao Hainiu FC": "青岛海牛",
+    "Qingdao West Coast FC": "青岛西海岸",
+    "Shandong Luneng Taishan FC": "山东泰山",
+    "Shandong Taishan": "山东泰山",
+    "Shanghai Port": "上海海港",
+    "Shanghai SIPG FC": "上海海港",
+    "Shanghai Shenhua FC": "上海申花",
+    "Shenzhen Peng City FC": "深圳新鹏城",
+    "Tianjin Jinmen Tiger FC": "天津津门虎",
+    "Wuhan Three Towns": "武汉三镇",
+    "Yunnan Yukun": "云南玉昆",
+    "Zhejiang": "浙江队",
 }
 
 
@@ -554,6 +576,28 @@ def _match_finished_identity(match: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _snapshot_reference_date(snapshot: dict[str, Any]) -> Any | None:
+    run = snapshot.get("run") or {}
+    raw = run.get("observed_at") or snapshot.get("snapshot_at")
+    display = _to_beijing_time(_parse_datetime(raw))
+    return display.date() if display is not None else None
+
+
+def _has_finished_result(match: dict[str, Any]) -> bool:
+    result = match.get("result")
+    return isinstance(result, dict) and result.get("status") == "finished"
+
+
+def _is_stale_unfinished_match(snapshot: dict[str, Any], match: dict[str, Any]) -> bool:
+    if _has_finished_result(match):
+        return False
+    reference_date = _snapshot_reference_date(snapshot)
+    kickoff = _to_beijing_time(_parse_datetime(match.get("kickoff_at_utc")))
+    if reference_date is None or kickoff is None:
+        return False
+    return kickoff.date() < reference_date
+
+
 def _line_key(line: Any) -> str:
     if line is None:
         return ""
@@ -663,6 +707,98 @@ def _prediction_result(match: dict[str, Any], signal: dict[str, Any]) -> dict[st
         "status": status,
         "label": labels[status],
         "detail": _score_detail(match, home_score, away_score, direction),
+    }
+
+
+def _finished_record_score(record: dict[str, Any]) -> tuple[int, int] | None:
+    result = record.get("result") or {}
+    try:
+        return int(result["home_score"]), int(result["away_score"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _handicap_settlement_status(margin: int, line: float) -> str | None:
+    try:
+        realized = ev_handicap({margin: 1.0}, line, 2.0)
+    except ValueError:
+        return None
+    if realized > 1e-9:
+        return "hit"
+    if realized < -1e-9:
+        return "miss"
+    return "push"
+
+
+def _match_decision_record_status(record: dict[str, Any]) -> str | None:
+    decision = record.get("closing_match_decision")
+    if not isinstance(decision, dict):
+        return None
+    raw_label = str(decision.get("label") or "")
+    market = str(decision.get("market") or "")
+    selection = _selection_key(decision.get("selection"))
+    if raw_label == "NO_CLEAN_MARKET" or not market or selection is None:
+        return "no_pick"
+    score = _finished_record_score(record)
+    if score is None:
+        return None
+    home_score, away_score = score
+    if market == "1X2":
+        if selection not in {"home", "draw", "away"}:
+            return None
+        actual = "home" if home_score > away_score else "away" if away_score > home_score else "draw"
+        return "hit" if selection == actual else "miss"
+    if market in {"DNB", "AH"}:
+        if selection not in {"home", "away"}:
+            return None
+        line = _as_float(decision.get("line"))
+        if line is None:
+            line = 0.0 if market == "DNB" else None
+        if line is None:
+            return None
+        margin = home_score - away_score if selection == "home" else away_score - home_score
+        return _handicap_settlement_status(margin, line)
+    if market == "OU":
+        if selection not in {"over", "under"}:
+            return None
+        line = _as_float(decision.get("line"))
+        if line is None:
+            return None
+        total_goals = home_score + away_score
+        if selection == "under":
+            return _handicap_settlement_status(-total_goals, line)
+        return _handicap_settlement_status(total_goals, -line)
+    return None
+
+
+def _record_metric_value(hit: int, miss: int, push: int) -> str:
+    decided = hit + miss
+    rate = f"{round(hit * 100 / decided)}%" if decided else EM_DASH
+    return f"命中 {hit} · 未中 {miss} · 走水 {push} · 命中率 {rate}"
+
+
+def _match_decision_record_metric(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    counts: Counter[str] = Counter()
+    for record in ((snapshot.get("finished") or {}).get("matches")) or []:
+        status = _match_decision_record_status(record)
+        if status:
+            counts[status] += 1
+    actionable = counts["hit"] + counts["miss"] + counts["push"]
+    if actionable == 0 and counts["no_pick"] == 0:
+        return None
+    detail = {
+        "hit": counts["hit"],
+        "miss": counts["miss"],
+        "push": counts["push"],
+        "no_pick": counts["no_pick"],
+        "actionable": actionable,
+        "decided": counts["hit"] + counts["miss"],
+    }
+    return {
+        "label": "本场首选战绩",
+        "value": _record_metric_value(counts["hit"], counts["miss"], counts["push"]),
+        "tone": "neutral",
+        "detail": detail,
     }
 
 
@@ -874,6 +1010,8 @@ def project_signal_rows(
     for match in snapshot.get("matches", []):
         if _match_finished_identity(match) in finished_ids:
             continue
+        if _is_stale_unfinished_match(snapshot, match):
+            continue
         match_id = _match_identity(match)
         kickoff_at_utc = match.get("kickoff_at_utc", "")
         parsed_kickoff = _parse_datetime(kickoff_at_utc)
@@ -1014,6 +1152,7 @@ def build_summary_metrics(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]
         match
         for match in (snapshot.get("matches") or [])
         if _match_finished_identity(match) not in finished_ids
+        and not _is_stale_unfinished_match(snapshot, match)
     ]
     metrics = {
         "upcoming_matches": {"label": "即将比赛", "value": len(upcoming)},
@@ -1049,10 +1188,11 @@ def build_summary_metrics(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]
         hit = entry.get("hit", 0)
         miss = entry.get("miss", 0)
         push = entry.get("push", 0)
-        decided = hit + miss
-        rate = f"{round(hit * 100 / decided)}%" if decided else EM_DASH
-        return f"命中 {hit} · 未中 {miss} · 走水 {push} · 命中率 {rate}"
+        return _record_metric_value(hit, miss, push)
 
+    match_decision_record = _match_decision_record_metric(snapshot)
+    if match_decision_record:
+        metrics["match_decision_record"] = match_decision_record
     if tally:
         metrics["record_s"] = {"label": "S 级战绩", "value": _record_value("S")}
         metrics["record_a"] = {"label": "A 级战绩", "value": _record_value("A")}

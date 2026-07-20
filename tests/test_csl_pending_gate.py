@@ -357,8 +357,11 @@ def test_build_pending_gate_report_keeps_no_lift_without_market_odds():
             "has_market_odds": False,
         }
         assert report["metrics"]["model_1x2"]["n"] == 4
+        assert report["metrics"]["season_1x2"]["2026"]["model"]["n"] == 4
+        assert report["checks"]["latest_season_sample_size_ok"] is False
         assert report["metrics"]["market_baseline"]["n"] == 0
         assert report["checks"]["market_baseline_available"] is False
+        assert report["checks"]["market_baseline_sufficient"] is False
         assert "can_lift" not in report["decision"]
         assert report["decision"]["can_lift_club_rating_pending"] is False
         assert report["decision"]["status"] in {"observe_only_no_lift", "keep_pending"}
@@ -389,6 +392,7 @@ def test_build_pending_gate_report_reflects_market_baseline_without_lifting():
 
         assert report["sample"]["has_market_odds"] is True
         assert report["checks"]["market_baseline_available"] is True
+        assert report["checks"]["market_baseline_sufficient"] is False
         assert report["metrics"]["market_baseline"] == {
             "n": 12,
             "brier": 0.51,
@@ -397,6 +401,7 @@ def test_build_pending_gate_report_reflects_market_baseline_without_lifting():
         assert report["decision"]["can_lift_club_rating_pending"] is False
         assert report["can_lift_club_rating_pending"] is False
         assert "historical_market_odds_missing" not in report["decision"]["reasons"]
+        assert "historical_market_odds_sample_too_small" in report["decision"]["reasons"]
 
 
 def test_pending_gate_marks_small_sample_as_keep_pending():

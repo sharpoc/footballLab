@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
@@ -19,6 +22,10 @@ def _to_int(value: str | None) -> int | None:
         return None
 
 
+def _lock_path(ledger_path: Path) -> Path:
+    return ledger_path.with_suffix(ledger_path.suffix + ".lock")
+
+
 def load_quota_ledger(path: str | Path) -> dict:
     ledger_path = Path(path)
     if not ledger_path.exists():
@@ -29,7 +36,26 @@ def load_quota_ledger(path: str | Path) -> dict:
 def save_quota_ledger(path: str | Path, ledger: dict) -> None:
     ledger_path = Path(path)
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    ledger_path.write_text(json.dumps(ledger, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    content = json.dumps(ledger, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+    fd, tmp = tempfile.mkstemp(dir=str(ledger_path.parent), suffix=".tmp")
+    try:
+        os.write(fd, content)
+        os.fsync(fd)
+        os.close(fd)
+        os.replace(tmp, str(ledger_path))
+    except BaseException:
+        os.close(fd) if not _fd_closed(fd) else None
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def _fd_closed(fd: int) -> bool:
+    try:
+        os.fstat(fd)
+        return False
+    except OSError:
+        return True
 
 
 def update_quota_from_headers(
@@ -39,6 +65,10 @@ def update_quota_from_headers(
     estimated_last: int | None = None,
     observed_at: str | None = None,
 ) -> dict:
+    ledger_path = Path(path)
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = _lock_path(ledger_path)
+
     normalized = {key.lower(): value for key, value in headers.items()}
     entry = {
         "used": _to_int(normalized.get("x-requests-used")),
@@ -49,7 +79,14 @@ def update_quota_from_headers(
     if entry["last"] is None:
         entry["last"] = estimated_last
 
-    ledger = load_quota_ledger(path)
-    ledger.setdefault("providers", {})[provider] = entry
-    save_quota_ledger(path, ledger)
+    lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        ledger = load_quota_ledger(ledger_path)
+        ledger.setdefault("providers", {})[provider] = entry
+        save_quota_ledger(ledger_path, ledger)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
     return entry

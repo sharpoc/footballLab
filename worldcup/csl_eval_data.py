@@ -52,6 +52,8 @@ def closing_match_entry(
         for entry in snapshot.get("matches") or []:
             if not isinstance(entry, dict):
                 continue
+            if str(entry.get("fixture_status") or "").upper() == "POSTPONED":
+                continue
             entry_competition_id = str(
                 ((entry.get("competition") or {}).get("id"))
                 or ((snapshot.get("competition") or {}).get("id"))

@@ -66,25 +66,39 @@ def parse_openfootball_fixtures(raw: dict[str, Any]) -> list[Fixture]:
     return fixtures
 
 
-def _extract_score(match: dict[str, Any]) -> tuple[int, int] | None:
-    score1, score2 = match.get("score1"), match.get("score2")
-    if isinstance(score1, int) and isinstance(score2, int):
-        return score1, score2
+def _extract_score(
+    match: dict[str, Any],
+    *,
+    require_score_ft: bool = False,
+) -> tuple[int, int] | None:
     score = match.get("score")
     if isinstance(score, dict):
         ft = score.get("ft")
-        if isinstance(ft, list) and len(ft) == 2 and all(isinstance(v, int) for v in ft):
+        if (
+            isinstance(ft, list)
+            and len(ft) == 2
+            and all(type(value) is int and value >= 0 for value in ft)
+        ):
             return ft[0], ft[1]
+    if require_score_ft:
+        return None
+    score1, score2 = match.get("score1"), match.get("score2")
+    if type(score1) is int and score1 >= 0 and type(score2) is int and score2 >= 0:
+        return score1, score2
     return None
 
 
-def parse_openfootball_results(raw: dict[str, Any]) -> list[MatchResult]:
+def parse_openfootball_results(
+    raw: dict[str, Any],
+    *,
+    require_score_ft: bool = False,
+) -> list[MatchResult]:
     results: list[MatchResult] = []
     fixtures = parse_openfootball_fixtures(raw)
     for fixture, match in zip(fixtures, raw.get("matches", [])):
         if fixture.has_placeholder_team:
             continue
-        score = _extract_score(match)
+        score = _extract_score(match, require_score_ft=require_score_ft)
         if score is None:
             continue
         results.append(

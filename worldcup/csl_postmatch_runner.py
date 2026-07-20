@@ -14,6 +14,7 @@ from typing import Any
 from worldcup import backtest, csl_eval_data, csl_pending_gate
 from worldcup.club_rating import load_club_results_csv
 from worldcup.config import load_config
+from worldcup.league_runner import competition_analysis_config
 
 DEFAULT_COMPETITION_ID = "csl_2026"
 DEFAULT_HISTORY = "data/local/diagnostics/csl_history"
@@ -73,9 +74,16 @@ def run_postmatch(
     eval_rows, skipped = csl_eval_data.build_rows(snapshots, result_rows)
     csl_eval_data.write_csv(eval_rows, eval_path)
 
+    loaded_config = load_config(config_path)
+    analysis_config = competition_analysis_config(loaded_config, competition_id)
+    model_config = (
+        loaded_config.get("csl_model")
+        if isinstance(loaded_config.get("csl_model"), dict)
+        else {}
+    )
     backtest_report = backtest.run_backtest(
         backtest.load_matches(eval_path),
-        load_config(config_path),
+        analysis_config,
         min_sample=min_sample,
     )
     _write_json(backtest_report, report_path)
@@ -87,6 +95,11 @@ def run_postmatch(
         generated_at=generated_at,
         warmup_matches=warmup_matches,
         min_eval_matches=min_eval_matches,
+        cfg=analysis_config,
+        home_adv=float(model_config.get("home_adv", analysis_config["elo"]["home_adv"])),
+        rating_k=float(model_config.get("rating_k", 30)),
+        min_latest_season_matches=int(model_config.get("latest_season_min_matches", 100)),
+        min_market_baseline_matches=int(model_config.get("market_baseline_min_matches", 200)),
         market_report=backtest_report,
     )
     gate_path = (

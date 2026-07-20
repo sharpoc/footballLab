@@ -50,12 +50,22 @@ def _snapshot():
         "data_quality": {"stale_sources": [], "source_errors": []},
         "matches": [
             {
-                "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "kickoff_at_utc": "2099-06-11T19:00:00+00:00",
                 "stage": "Matchday 1",
                 "group": "Group A",
                 "home_team": "Mexico",
                 "away_team": "South Africa",
                 "signals": [{"grade": "A"}],
+                "match_decision": {
+                    "schema_version": 2,
+                    "label": "MATCH_PICK",
+                    "market": "1X2",
+                    "selection": "home",
+                    "odds": 1.8,
+                    "p_hit_safe": 0.61,
+                    "p_no_loss_safe": 0.61,
+                    "valid_until": "2099-06-11T19:00:00+00:00",
+                },
             }
         ],
     }
@@ -89,6 +99,15 @@ def _snapshot_with_finished():
                         "prediction": {"status": "hit", "label": "命中", "detail": "全场 2-0"},
                     }
                 ],
+                "closing_match_decision": {
+                    "schema_version": 2,
+                    "label": "MATCH_PICK",
+                    "market": "1X2",
+                    "selection": "home",
+                    "odds": 1.78,
+                    "p_hit_safe": 0.61,
+                    "p_no_loss_safe": 0.61,
+                },
             }
         ],
         "tally": {"S": {"hit": 1, "miss": 0, "push": 0}},
@@ -159,6 +178,24 @@ def test_fastapi_healthz_does_not_require_db_or_secret():
         }
 
 
+def test_fastapi_readyz_returns_lightweight_ready_summary():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        _store_snapshot(db_path)
+        app = create_fastapi_app(db_path=db_path, secret="test-hmac-secret")
+        client = TestClient(app)
+
+        response = client.get("/readyz")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "match_count": 1,
+            "schema_version": 1,
+            "service": "worldcup-analysis",
+            "status": "ready",
+        }
+
+
 def test_fastapi_get_matches_returns_safe_projection():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "worldcup.db"
@@ -171,6 +208,9 @@ def test_fastapi_get_matches_returns_safe_projection():
         assert response.status_code == 200
         row = response.json()["matches"][0]
         assert row["match_label"] == "Mexico vs South Africa"
+        assert row["match_decision"]["label"] == "MATCH_PICK"
+        assert "signals" not in response.text
+        assert "grade" not in response.text.lower()
         assert "stake" not in row
         assert "bet_amount" not in row
 
@@ -198,11 +238,14 @@ def test_fastapi_get_finished_returns_safe_projection():
     body = response.json()
     assert body["finished"]["summary"]["match_count"] == 1
     assert body["finished"]["matches"][0]["match_label"] == "Mexico vs South Africa"
+    assert body["finished"]["matches"][0]["decision_outcome"]["status"] == "hit"
     serialized = response.text
     assert "run-secret" not in serialized
     assert "quota" not in serialized
     assert "private-provider" not in serialized
     assert "stake" not in serialized.lower()
+    assert "signals" not in serialized
+    assert "grade" not in serialized.lower()
 
 
 def test_fastapi_get_preview_returns_disclaimer_html():
@@ -283,7 +326,7 @@ def test_fastapi_post_ingest_snapshot_rejects_bad_signature_without_writing():
         assert response.headers["x-request-id"] == "req-fastapi-bad-signature"
         assert body == {
             "error": {
-                "code": "signature_mismatch",
+                "code": "authentication_failed",
                 "request_id": "req-fastapi-bad-signature",
             }
         }

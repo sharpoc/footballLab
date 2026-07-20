@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import urllib.error
 
 from worldcup.publish import publish_snapshot
 
@@ -77,3 +78,38 @@ def test_publish_snapshot_live_uses_sender_and_returns_redacted_result():
     assert "very-secret-value" not in serialized
     assert "sha256=" not in serialized
     assert "body" not in result["request"]
+
+
+def test_publish_snapshot_retries_transient_transport_failure_without_resigning_secret():
+    calls = []
+
+    def sender(request):
+        calls.append(request)
+        if len(calls) == 1:
+            raise urllib.error.URLError("temporary tls failure")
+        return {
+            "http_status": 200,
+            "body": json.dumps({"status": "stored"}),
+        }
+
+    with TemporaryDirectory() as tmp:
+        snapshot_path = Path(tmp) / "snapshot.json"
+        snapshot_path.write_text(json.dumps(_snapshot()), encoding="utf-8")
+
+        result = publish_snapshot(
+            snapshot_path=snapshot_path,
+            endpoint="https://football.celab.xin/api/ingest/snapshot",
+            secret="very-secret-value",
+            timestamp="2026-06-08T00:01:00+00:00",
+            live=True,
+            sender=sender,
+            max_attempts=3,
+            retry_delay_seconds=0,
+        )
+
+    assert result["status"] == "sent"
+    assert result["attempts"] == 2
+    assert len(calls) == 2
+    assert calls[0]["headers"]["X-Worldcup-Idempotency-Key"] == calls[1]["headers"][
+        "X-Worldcup-Idempotency-Key"
+    ]

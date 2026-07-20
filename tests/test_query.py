@@ -267,6 +267,58 @@ def test_load_latest_snapshot_view_merges_latest_snapshot_per_competition():
         assert project_match_rows(snapshot)[1]["competition_id"] == "csl_2026"
 
 
+def test_load_latest_snapshot_view_keeps_competition_after_many_newer_snapshots():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        store = SQLiteSnapshotStore(db_path)
+        store.put_snapshot(
+            idempotency_key="csl-live:csl-live-snapshot",
+            payload={
+                "run_id": "csl-live",
+                "snapshot_id": "csl-live-snapshot",
+                "snapshot_at": "2026-06-08T00:00:00+00:00",
+                "snapshot": _competition_snapshot(
+                    "csl_2026",
+                    "中超 2026",
+                    "Shanghai Port",
+                    "Beijing Guoan",
+                    "csl-live",
+                ),
+            },
+            stored_at="2026-06-08T00:01:00+00:00",
+        )
+        for index in range(75):
+            run_id = f"wc-live-{index}"
+            store.put_snapshot(
+                idempotency_key=f"{run_id}:{run_id}-snapshot",
+                payload={
+                    "run_id": run_id,
+                    "snapshot_id": f"{run_id}-snapshot",
+                    "snapshot_at": f"2026-06-08T01:{index:02d}:00+00:00",
+                    "snapshot": _competition_snapshot(
+                        "fifa_world_cup_2026",
+                        "2026 世界杯",
+                        f"World Cup Home {index}",
+                        f"World Cup Away {index}",
+                        run_id,
+                    ),
+                },
+                stored_at=f"2026-06-08T01:{index:02d}:00+00:00",
+            )
+
+        snapshot = load_latest_snapshot_view(db_path)
+
+        assert snapshot["competition"]["id"] == "multi_competition"
+        assert [match["competition"]["id"] for match in snapshot["matches"]] == [
+            "fifa_world_cup_2026",
+            "csl_2026",
+        ]
+        assert [match["home_team"] for match in snapshot["matches"]] == [
+            "World Cup Home 74",
+            "Shanghai Port",
+        ]
+
+
 def test_load_recent_snapshot_views_compares_each_competition_with_own_previous_snapshot():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "worldcup.db"
@@ -347,32 +399,200 @@ def test_load_recent_snapshots_falls_back_to_latest_for_minimal_store():
 def test_project_match_rows_returns_preview_safe_rows():
     snapshot = _snapshot()
     snapshot["matches"][0]["match_decision"] = {
-        "schema_version": 1,
-        "label": "HIGH_CONFIDENCE_LEAN",
+        "schema_version": 2,
+        "policy_version": "match_pick_v2",
+        "label": "MATCH_PICK",
         "market": "DNB",
         "selection": "home",
         "line": 0.0,
         "p_hit_safe": 0.59,
         "p_no_loss_safe": 0.73,
+        "computed_at": "2026-06-08T00:10:00+00:00",
+        "odds_latest_at": "2026-06-08T00:09:00+00:00",
+        "valid_until": "2099-06-11T19:00:00+00:00",
     }
 
     rows = project_match_rows(snapshot)
 
     assert len(rows) == 2
     assert rows[0]["match_label"] == "Mexico vs South Africa"
-    assert rows[0]["match_decision"]["label"] == "HIGH_CONFIDENCE_LEAN"
-    assert rows[0]["top_grade"] == "A"
-    assert rows[0]["signal_count"] == 2
+    assert rows[0]["match_decision"]["label"] == "MATCH_PICK"
+    assert "top_grade" not in rows[0]
+    assert "signal_count" not in rows[0]
     assert rows[0]["next_update_at"] == "2026-06-11T17:30:00+00:00"
     assert rows[0]["next_update_label"] == "T-1小时30分"
     assert rows[0]["next_update_description"] == "阵容/伤停预热"
+    assert rows[0]["last_update_at"] == "2026-06-08T00:09:00+00:00"
+    assert rows[0]["last_update_label"] == "赔率更新"
+    assert rows[1]["last_update_at"] == "2026-06-08T00:00:00+00:00"
+    assert rows[1]["last_update_label"] == "分析更新"
     assert rows[0]["stale"] is True
     assert rows[0]["competition_id"] == "fifa_world_cup_2026"
     assert rows[0]["competition_label"] == "2026 世界杯"
-    assert rows[1]["top_grade"] == ""
-    assert rows[1]["signal_count"] == 0
+    assert rows[1]["match_decision"] == {
+        "schema_version": 2,
+        "policy_version": "match_pick_v2",
+        "label": "NO_CLEAN_MARKET",
+    }
     assert "stake" not in rows[0]
     assert "bet_amount" not in rows[0]
+
+
+def test_project_match_rows_hides_postponed_match_without_mutating_snapshot():
+    snapshot = _snapshot()
+    snapshot["matches"][0]["fixture_status"] = "POSTPONED"
+    snapshot["matches"][0]["match_decision"] = {
+        "schema_version": 2,
+        "policy_version": "match_pick_v3",
+        "label": "MATCH_PICK",
+        "market": "1X2",
+        "selection": "home",
+        "valid_until": "2099-06-11T19:00:00+00:00",
+    }
+
+    rows = project_match_rows(snapshot)
+
+    assert [row["match_label"] for row in rows] == ["Canada vs Qatar"]
+    assert len(snapshot["matches"]) == 2
+    assert snapshot["matches"][0]["fixture_status"] == "POSTPONED"
+    assert snapshot["matches"][0]["match_decision"]["label"] == "MATCH_PICK"
+
+
+def test_project_match_rows_hides_confirmed_finished_match_but_not_started_unfinished_match():
+    finished_snapshot = _snapshot_with_finished()
+
+    finished_rows = project_match_rows(finished_snapshot)
+    unfinished_rows = project_match_rows(_snapshot())
+
+    assert [row["match_label"] for row in finished_rows] == ["Canada vs Qatar"]
+    assert [row["match_label"] for row in unfinished_rows] == [
+        "Mexico vs South Africa",
+        "Canada vs Qatar",
+    ]
+
+
+def test_public_projection_uses_top_level_competition_when_match_blocks_are_absent():
+    snapshot = _competition_snapshot(
+        "csl_2026",
+        "中超 2026",
+        "Shanghai Port",
+        "Beijing Guoan",
+        "csl-top-level-only",
+    )
+    match = snapshot["matches"][0]
+    match.pop("competition")
+    snapshot["finished"] = {
+        "schema_version": 2,
+        "matches": [
+            {
+                "kickoff_at_utc": match["kickoff_at_utc"],
+                "home_team": match["home_team"],
+                "away_team": match["away_team"],
+                "result": {"home_score": 1, "away_score": 0},
+                "closing_match_decision": {
+                    "schema_version": 2,
+                    "label": "MATCH_PICK",
+                    "market": "1X2",
+                    "selection": "home",
+                },
+            }
+        ],
+        "skipped_no_closing": 0,
+    }
+
+    assert project_match_rows(snapshot) == []
+    finished = project_finished_rows(snapshot)
+    assert finished["matches"][0]["competition_id"] == "csl_2026"
+    assert finished["matches"][0]["competition_label"] == "中超 2026"
+
+
+def test_live_projection_never_repackages_legacy_or_expired_pick_as_current_pick():
+    snapshot = _snapshot()
+    snapshot["data_quality"]["stale_sources"] = []
+    snapshot["matches"][0]["match_decision"] = {
+        "schema_version": 1,
+        "label": "LOW_CONFIDENCE_LEAN",
+        "market": "1X2",
+        "selection": "home",
+    }
+    snapshot["matches"][1]["match_decision"] = {
+        "schema_version": 2,
+        "label": "MATCH_PICK",
+        "market": "1X2",
+        "selection": "home",
+        "valid_until": "2000-01-01T00:00:00+00:00",
+    }
+
+    rows = project_match_rows(snapshot)
+
+    assert {row["match_decision"]["label"] for row in rows} == {"NO_CLEAN_MARKET"}
+
+
+def test_expired_v3_pick_keeps_v3_policy_version_when_projected_as_no_pick():
+    snapshot = _snapshot()
+    snapshot["data_quality"]["stale_sources"] = []
+    snapshot["matches"][0]["match_decision"] = {
+        "schema_version": 2,
+        "policy_version": "match_pick_v3",
+        "label": "MATCH_PICK",
+        "market": "1X2",
+        "selection": "home",
+        "valid_until": "2000-01-01T00:00:00+00:00",
+    }
+
+    row = project_match_rows(snapshot)[0]
+
+    assert row["match_decision"] == {
+        "schema_version": 2,
+        "policy_version": "match_pick_v3",
+        "label": "NO_CLEAN_MARKET",
+    }
+
+
+def test_pending_club_rating_forces_public_no_pick_even_for_malformed_legacy_snapshot():
+    snapshot = _snapshot()
+    snapshot["data_quality"] = {"warnings": ["club_rating_pending"]}
+    snapshot["matches"][0]["competition"] = {
+        "id": "csl_2026",
+        "name": "中超 2026",
+        "rating_policy": "club_rating_pending",
+    }
+    snapshot["matches"][0]["match_decision"] = {
+        "schema_version": 2,
+        "label": "MATCH_PICK",
+        "market": "1X2",
+        "selection": "home",
+        "valid_until": "2099-01-01T00:00:00+00:00",
+    }
+
+    row = project_match_rows(snapshot)[0]
+
+    assert row["match_decision"]["label"] == "NO_CLEAN_MARKET"
+
+
+def test_pending_club_rating_allows_explicit_v3_market_fallback_pick():
+    snapshot = _snapshot()
+    snapshot["data_quality"] = {"warnings": ["club_rating_pending"]}
+    snapshot["matches"][0]["competition"] = {
+        "id": "csl_2026",
+        "name": "中超 2026",
+        "rating_policy": "club_rating_pending",
+    }
+    snapshot["matches"][0]["match_decision"] = {
+        "schema_version": 2,
+        "policy_version": "match_pick_v3",
+        "label": "MATCH_PICK",
+        "market": "1X2",
+        "selection": "home",
+        "p_hit_safe": 0.48,
+        "p_no_loss_safe": 0.48,
+        "valid_until": "2099-01-01T00:00:00+00:00",
+    }
+
+    row = project_match_rows(snapshot)[0]
+
+    assert row["match_decision"]["label"] == "MATCH_PICK"
+    assert row["match_decision"]["policy_version"] == "match_pick_v3"
 
 
 def test_project_match_rows_ignores_probability_families_for_public_summary():
@@ -414,12 +634,18 @@ def test_project_match_rows_ignores_probability_families_for_public_summary():
             "match_label": "Mexico vs South Africa",
             "competition_id": "fifa_world_cup_2026",
             "competition_label": "2026 世界杯",
-            "signal_count": 1,
-            "top_grade": "A",
+            "fixture_status": "SCHEDULED",
+            "last_update_at": "2026-06-08T00:00:00+00:00",
+            "last_update_label": "分析更新",
             "next_update_at": "2026-06-09T00:00:00+00:00",
             "next_update_label": "常规",
             "next_update_description": None,
             "stale": False,
+            "match_decision": {
+                "schema_version": 2,
+                "policy_version": "match_pick_v2",
+                "label": "NO_CLEAN_MARKET",
+            },
         }
     ]
 
@@ -438,18 +664,28 @@ def test_project_finished_rows_returns_public_safe_review_projection():
 
     finished = project_finished_rows(snapshot)
 
-    assert finished["schema_version"] == 1
+    assert finished["schema_version"] == 2
     assert finished["summary"]["match_count"] == 1
-    assert finished["summary"]["signal_count"] == 2
     assert finished["summary"]["skipped_no_closing"] == 1
     assert finished["summary"]["coverage"]["missing_closing_count"] == 1
     assert finished["summary"]["sample"]["sample_too_small"] is True
-    assert finished["summary"]["tally"]["S"] == {"hit": 1, "miss": 0, "push": 0}
+    assert finished["summary"]["decision_tally"] == {
+        "hit": 0,
+        "miss": 0,
+        "push": 0,
+        "no_pick": 0,
+    }
+    assert finished["summary"]["coverage"]["legacy_decision_count"] == 1
     assert finished["matches"][0]["match_label"] == "Mexico vs South Africa"
     assert finished["matches"][0]["score_label"] == "2 - 0"
-    assert finished["matches"][0]["closing_match_decision"]["label"] == "HIGH_CONFIDENCE_LEAN"
-    assert finished["matches"][0]["signals"][0]["outcome"] == "命中"
-    assert finished["matches"][0]["signals"][0]["prediction_status"] == "hit"
+    assert finished["matches"][0]["closing_match_decision"]["label"] == "MATCH_PICK"
+    assert (
+        finished["matches"][0]["closing_match_decision"]["policy_version"]
+        == "legacy_match_decision_v1"
+    )
+    assert finished["matches"][0]["decision_outcome"]["status"] == "hit"
+    assert "signals" not in finished["matches"][0]
+    assert "grade" not in str(finished).lower()
 
     serialized = str(finished)
     assert "run_id" not in serialized

@@ -54,3 +54,87 @@ def test_parse_results_extracts_only_finished_real_matches():
 def test_parse_results_keeps_kickoff_utc():
     results = parse_openfootball_results(DOC)
     assert results[0].kickoff_at_utc.isoformat() == "2026-06-11T19:00:00+00:00"
+
+
+def test_parse_results_prefers_90_minute_ft_over_extra_time_and_legacy_scores():
+    raw = {
+        "matches": [
+            {
+                "round": "Semi-final",
+                "date": "2026-07-15",
+                "time": "15:00 UTC-4",
+                "team1": "England",
+                "team2": "Argentina",
+                "score1": 2,
+                "score2": 1,
+                "score": {"ft": [1, 1], "et": [2, 1], "p": [4, 3]},
+            }
+        ]
+    }
+
+    compatible = parse_openfootball_results(raw)
+    strict = parse_openfootball_results(raw, require_score_ft=True)
+
+    assert (compatible[0].home_score, compatible[0].away_score) == (1, 1)
+    assert (strict[0].home_score, strict[0].away_score) == (1, 1)
+
+
+def test_strict_parse_ignores_legacy_score_without_ft():
+    raw = {
+        "matches": [
+            {
+                "round": "Semi-final",
+                "date": "2026-07-15",
+                "time": "15:00 UTC-4",
+                "team1": "England",
+                "team2": "Argentina",
+                "score1": 2,
+                "score2": 1,
+            }
+        ]
+    }
+
+    assert len(parse_openfootball_results(raw)) == 1
+    assert parse_openfootball_results(raw, require_score_ft=True) == []
+
+
+def test_strict_parse_ignores_invalid_ft_instead_of_falling_back_to_other_periods():
+    raw = {
+        "matches": [
+            {
+                "round": "Semi-final",
+                "date": "2026-07-15",
+                "time": "15:00 UTC-4",
+                "team1": "England",
+                "team2": "Argentina",
+                "score": {"ft": ["1", 1], "et": [2, 1], "p": [4, 3]},
+            }
+        ]
+    }
+
+    assert parse_openfootball_results(raw, require_score_ft=True) == []
+
+
+def test_strict_parse_rejects_boolean_and_negative_scores():
+    raw = {
+        "matches": [
+            {
+                "round": "Semi-final",
+                "date": "2026-07-15",
+                "time": "15:00 UTC-4",
+                "team1": "England",
+                "team2": "Argentina",
+                "score": {"ft": [True, False]},
+            },
+            {
+                "round": "Semi-final",
+                "date": "2026-07-16",
+                "time": "15:00 UTC-4",
+                "team1": "Spain",
+                "team2": "Brazil",
+                "score": {"ft": [-1, 0]},
+            },
+        ]
+    }
+
+    assert parse_openfootball_results(raw, require_score_ft=True) == []

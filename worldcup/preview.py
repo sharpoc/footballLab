@@ -12,7 +12,11 @@ def build_preview_html(
     snapshot: dict[str, Any],
     previous_snapshot: dict[str, Any] | None = None,
 ) -> str:
-    return build_research_ledger_html(snapshot, previous_snapshot=previous_snapshot)
+    return build_research_ledger_html(
+        snapshot,
+        previous_snapshot=previous_snapshot,
+        decision_only=True,
+    )
 
 
 def write_preview(snapshot: dict[str, Any], output_path: str | Path) -> None:

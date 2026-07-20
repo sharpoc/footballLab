@@ -12,9 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from worldcup.query import project_match_decision
+
 RESEARCH_NOTICE = "仅用于研究分析，不构成投注建议。"
-KNOWN_GRADES = {"S", "A", "B", "C", "D"}
-STRONG_GRADES = {"S", "A"}
 DEFAULT_SNAPSHOT = "data/local/diagnostics/csl_live_league_snapshot.json"
 SAFE_TEXT_PATTERN = re.compile(r"^[A-Za-z0-9_.:+-]+$")
 SAFE_TEXT_ALLOWLIST = {"odds_event_only"}
@@ -67,15 +67,6 @@ def _round4(value: Any) -> float | None:
 
 def _list(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else []
-
-
-def _safe_grade(value: Any) -> str:
-    grade = str(value or "").upper()
-    return grade if grade in KNOWN_GRADES else ""
-
-
-def _strong(value: Any) -> bool:
-    return _safe_grade(value) in STRONG_GRADES
 
 
 def _contains_price_like_decimal(value: str) -> bool:
@@ -175,20 +166,25 @@ def _safe_ou(match: dict[str, Any]) -> dict[str, float | None]:
     }
 
 
-def _signal_reportable(signal: dict[str, Any]) -> bool:
-    return _strong(signal.get("grade")) or _strong(signal.get("raw_grade"))
-
-
-def _safe_signal(signal: dict[str, Any]) -> dict[str, Any]:
+def _safe_match_decision(value: Any) -> dict[str, Any] | None:
+    decision = project_match_decision(value)
+    if decision is None:
+        return None
+    if decision.get("label") == "NO_CLEAN_MARKET":
+        return {"schema_version": 2, "label": "NO_CLEAN_MARKET"}
+    market = _safe_text(decision.get("market"))
+    selection = _safe_text(decision.get("selection"))
+    if not market or not selection:
+        return None
     return {
-        "market_type": _safe_text(signal.get("market_type")),
-        "selection": _safe_text(signal.get("selection")),
-        "grade": _safe_grade(signal.get("grade")),
-        "raw_grade": _safe_grade(signal.get("raw_grade")),
-        "ev": _round4(signal.get("ev")),
-        "edge": _round4(signal.get("edge")),
-        "status": _safe_text(signal.get("status")),
-        "reasons": _safe_text_list(signal.get("reasons")),
+        "schema_version": 2,
+        "label": "MATCH_PICK",
+        "market": market,
+        "selection": selection,
+        "line": _round4(decision.get("line")),
+        "odds": _round4(decision.get("odds")),
+        "p_hit_safe": _round4(decision.get("p_hit_safe")),
+        "p_no_loss_safe": _round4(decision.get("p_no_loss_safe")),
     }
 
 
@@ -201,31 +197,47 @@ def _safe_match(match: dict[str, Any]) -> dict[str, Any]:
         if isinstance(market_1x2.get("market_probs"), dict)
         else {}
     )
-    signals = [
-        _safe_signal(signal)
-        for signal in match.get("signals") or []
-        if isinstance(signal, dict) and _signal_reportable(signal)
-    ]
     return {
         "source_event_id": _safe_text(match.get("source_event_id")),
         "kickoff_at_utc": match.get("kickoff_at_utc"),
+        "fixture_status": (
+            "POSTPONED"
+            if str(match.get("fixture_status") or "").upper() == "POSTPONED"
+            else "SCHEDULED"
+        ),
         "home_team": match.get("home_team"),
         "away_team": match.get("away_team"),
         "elo": _safe_elo(match),
         "model_1x2": _rounded_probs(model.get("combined_1x2"), ("home", "draw", "away")),
         "market_1x2": _rounded_probs(market_probs, ("home", "draw", "away")),
         "ou_2_5": _safe_ou(match),
-        "signals": signals,
+        "match_decision": _safe_match_decision(match.get("match_decision")),
     }
 
 
-def _all_signals(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
-    signals: list[dict[str, Any]] = []
-    for match in snapshot.get("matches") or []:
-        if not isinstance(match, dict):
-            continue
-        signals.extend(signal for signal in match.get("signals") or [] if isinstance(signal, dict))
-    return signals
+def _decision_counts(matches: list[dict[str, Any]]) -> dict[str, int]:
+    postponed = sum(
+        1 for match in matches if match.get("fixture_status") == "POSTPONED"
+    )
+    match_picks = sum(
+        1
+        for match in matches
+        if match.get("fixture_status") != "POSTPONED"
+        if (match.get("match_decision") or {}).get("label") == "MATCH_PICK"
+    )
+    no_pick = sum(
+        1
+        for match in matches
+        if match.get("fixture_status") != "POSTPONED"
+        if (match.get("match_decision") or {}).get("label") == "NO_CLEAN_MARKET"
+    )
+    return {
+        "matches": len(matches),
+        "match_picks": match_picks,
+        "postponed": postponed,
+        "no_pick": no_pick,
+        "missing_decisions": len(matches) - match_picks - no_pick - postponed,
+    }
 
 
 def build_observation_report(
@@ -233,9 +245,6 @@ def build_observation_report(
     *,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
-    signals = _all_signals(snapshot)
-    final_strong_grades = sum(1 for signal in signals if _strong(signal.get("grade")))
-    raw_strong_candidates = sum(1 for signal in signals if _strong(signal.get("raw_grade")))
     data_quality = (
         snapshot.get("data_quality") if isinstance(snapshot.get("data_quality"), dict) else {}
     )
@@ -245,21 +254,18 @@ def build_observation_report(
         for match in snapshot.get("matches") or []
         if isinstance(match, dict)
     ]
-    status = "warn" if warnings or final_strong_grades or raw_strong_candidates else "ok"
+    counts = _decision_counts(matches)
+    status = "warn" if warnings or counts["missing_decisions"] else "ok"
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "mode": "local_csl_observation",
         "generated_at": _utc_iso(generated_at),
         "research_notice": RESEARCH_NOTICE,
         "competition": _safe_competition(snapshot),
         "snapshot_at": snapshot.get("snapshot_at"),
         "status": status,
-        "counts": {
-            "matches": len(matches),
-            "final_strong_grades": final_strong_grades,
-            "raw_strong_candidates": raw_strong_candidates,
-        },
+        "counts": counts,
         "warnings": warnings,
         "data_quality": _safe_data_quality(snapshot),
         "matches": matches,
@@ -288,6 +294,19 @@ def _join_values(values: list[Any]) -> str:
     return ", ".join(str(value) for value in values) if values else "none"
 
 
+def _format_decision(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "missing"
+    if value.get("label") == "NO_CLEAN_MARKET":
+        return "NO_CLEAN_MARKET"
+    return (
+        f"MATCH_PICK {value.get('market')} {value.get('selection')} "
+        f"line={_fmt_line(value.get('line'))} odds={_fmt4(value.get('odds'))} "
+        f"p_hit_safe={_fmt4(value.get('p_hit_safe'))} "
+        f"p_no_loss_safe={_fmt4(value.get('p_no_loss_safe'))}"
+    )
+
+
 def format_observation_markdown(report: dict[str, Any]) -> str:
     counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
     competition = report.get("competition") if isinstance(report.get("competition"), dict) else {}
@@ -305,8 +324,10 @@ def format_observation_markdown(report: dict[str, Any]) -> str:
         f"snapshot_at: {report.get('snapshot_at')}",
         f"status: {report.get('status')}",
         f"matches: {counts.get('matches', 0)}",
-        f"raw strong candidates: {counts.get('raw_strong_candidates', 0)}",
-        f"final strong grades: {counts.get('final_strong_grades', 0)}",
+        f"match picks: {counts.get('match_picks', 0)}",
+        f"postponed: {counts.get('postponed', 0)}",
+        f"no pick: {counts.get('no_pick', 0)}",
+        f"missing decisions: {counts.get('missing_decisions', 0)}",
         "",
         "## Competition",
         f"- id: {competition.get('id')}",
@@ -355,24 +376,9 @@ def format_observation_markdown(report: dict[str, Any]) -> str:
                 f"line={_fmt_line(ou.get('line'))} "
                 f"model_over={_fmt4(ou.get('model_over'))} "
                 f"market_over={_fmt4(ou.get('market_over'))}",
+                f"- match_decision: {_format_decision(match.get('match_decision'))}",
             ]
         )
-        signals = match.get("signals") if isinstance(match.get("signals"), list) else []
-        if signals:
-            lines.append("- signals:")
-            for signal in signals:
-                if not isinstance(signal, dict):
-                    continue
-                reasons = _join_values(_list(signal.get("reasons")))
-                lines.append(
-                    "  - "
-                    f"{signal.get('market_type')} {signal.get('selection')} "
-                    f"grade={signal.get('grade')} raw={signal.get('raw_grade')} "
-                    f"EV={_fmt4(signal.get('ev'))} Edge={_fmt4(signal.get('edge'))} "
-                    f"status={signal.get('status')} reasons={reasons}"
-                )
-        else:
-            lines.append("- signals: none")
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -418,8 +424,10 @@ def main(argv: list[str] | None = None) -> int:
         "research_notice": report["research_notice"],
         "status": report["status"],
         "matches": report["counts"]["matches"],
-        "raw_strong_candidates": report["counts"]["raw_strong_candidates"],
-        "final_strong_grades": report["counts"]["final_strong_grades"],
+        "match_picks": report["counts"]["match_picks"],
+        "postponed": report["counts"]["postponed"],
+        "no_pick": report["counts"]["no_pick"],
+        "missing_decisions": report["counts"]["missing_decisions"],
         "format": args.format,
         "path": str(written),
     }

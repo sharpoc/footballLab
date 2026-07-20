@@ -463,6 +463,72 @@ def test_match_plan_uses_pre_6h_checkpoint_anchor():
     assert plan["should_refresh"] is False
 
 
+def test_match_plan_refreshes_before_current_pick_expires():
+    match = _match("2026-07-10T19:00:00+00:00")
+    match["match_decision"] = {
+        "policy_version": "match_pick_v3",
+        "label": "MATCH_PICK",
+        "valid_until": "2026-07-10T12:02:00+00:00",
+    }
+
+    plan = scheduler.build_match_refresh_plan(
+        now="2026-07-10T09:45:00+00:00",
+        last_refresh_at="2026-07-10T08:32:00+00:00",
+        match=match,
+        quota_remaining=176,
+    )
+
+    assert plan["next_update_at"] == "2026-07-10T11:42:00+00:00"
+    assert plan["policy_reason"] == "pick_expiry_guard"
+    assert plan["should_refresh"] is False
+
+
+def test_match_plan_ends_after_final_pre_match_refresh():
+    match = _match(
+        "2026-07-14T19:00:00+00:00",
+        home_team="France",
+        away_team="Spain",
+    )
+    match["match_decision"] = {
+        "schema_version": 2,
+        "policy_version": "match_pick_v3",
+        "label": "MATCH_PICK",
+        "valid_until": "2026-07-14T19:00:00+00:00",
+    }
+
+    plan = scheduler.build_match_refresh_plan(
+        now="2026-07-14T18:44:38+00:00",
+        last_refresh_at="2026-07-14T18:44:38+00:00",
+        match=match,
+        quota_remaining=470,
+    )
+
+    assert plan["next_update_at"] is None
+    assert plan["policy_reason"] == "pre_match_refresh_complete"
+    assert plan["label"] == "临场更新已完成"
+    assert plan["description"] == "等待开赛，赛前不再自动刷新"
+    assert plan["should_refresh"] is False
+
+
+def test_match_plan_does_not_spend_low_quota_only_for_pick_expiry():
+    match = _match("2026-07-10T19:00:00+00:00")
+    match["match_decision"] = {
+        "policy_version": "match_pick_v3",
+        "label": "MATCH_PICK",
+        "valid_until": "2026-07-10T12:02:00+00:00",
+    }
+
+    plan = scheduler.build_match_refresh_plan(
+        now="2026-07-10T09:45:00+00:00",
+        last_refresh_at="2026-07-10T08:32:00+00:00",
+        match=match,
+        quota_remaining=30,
+    )
+
+    assert plan["policy_reason"] != "pick_expiry_guard"
+    assert plan["next_update_at"] == "2026-07-10T17:30:00+00:00"
+
+
 def test_match_plan_skips_removed_t70_anchor_between_t90_and_t55():
     plan = scheduler.build_match_refresh_plan(
         now="2026-06-11T17:40:00+00:00",

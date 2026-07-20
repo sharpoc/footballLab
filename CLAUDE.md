@@ -10,7 +10,7 @@
 ## 项目定位
 
 - 这是 2026 世界杯研究/分析站。
-- 目标是做数据采集、量化分析、价值信号展示。
+- 目标是做数据采集、量化分析和每场唯一“本场首选”展示；只要存在开赛前有效、可结算的主盘口，每场必须输出一个首选，不能靠删除低置信场次提高表面命中率。
 - 不构成投注建议。
 - 不显示下注金额。
 - 不做追损、重注、串关喊单或任何无风控建议。
@@ -19,21 +19,33 @@
 
 - Plan 1 引擎核心已完成第一版。
 - Plan 0 核心数据源探测已完成第一轮。
-- Plan 2 已启动，当前完成纯离线解析层、单场模型/市场输出、价值信号输出、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、低频调度策略、run metadata、调度执行包装、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照。
+- Plan 2 已启动，当前完成纯离线解析层、单场模型/市场输出、覆盖率与市场证据优先的每场唯一 `match_decision` 输出、本地快照 runner、可注入请求层、quota ledger、refresh runner、source fallback policy、低频调度策略、run metadata、调度执行包装、云端 ingest HMAC dry-run、本地服务端验签/幂等、SQLite 持久化、只读查询、静态预览页、标准库 HTTP/ASGI 适配层、`/healthz`、静态站点导出、本地 readiness check、`.env.example` 安全检查和 HMAC secret helper；首次 live refresh 已成功生成 72 场本地分析快照。
 - Plan 2 collectors 必须基于 `docs/superpowers/data-contract.md` 和 `data/probe/` 保存样例写离线解析测试，不能按假接口写。
 - Plan 3 云端与调度等阿里云资源确认后再细化。
 
 ## 开发规则
 
 - 优先最小可行实现，不提前上 ML。
-- 本届 MVP 只做 Elo + Poisson + 赔率去水 + EV/Edge + 等级状态。
+- 本届 MVP 只做 Elo + Poisson + 赔率去水 + 市场证据优先的每场唯一首选；公开产品只允许 `MATCH_PICK`（本场首选）或 `NO_CLEAN_MARKET`（无法计算）。
+- S/A/B/C、EV/Edge 价值信号及旧 decision label 只允许作为 legacy compatibility 读取旧 snapshot/store；不得参与新 `match_decision` 选择，不得出现在公开 API、预览页、通知或新完赛统计中。
+- 新 snapshot 每场最多一个 `match_decision`；概率偏低、书商偏少、离散度偏高、模型分歧或俱乐部评级 pending/missing 时改为风险扣分和市场共识兜底，不得删除整场。只有赔率全部无效/过期、比赛已开始或不存在任何可结算盘口时才允许 `NO_CLEAN_MARKET`。
+- 当前公开策略版本为 `match_pick_v3`：世界杯市场/模型权重为 0.80/0.20；安全概率相近（默认 2 个百分点内）的候选继续比较书商覆盖、盘口质量和模型/市场一致性。中超俱乐部评级未完成时不得使用占位 1500 影响方向，改用赔率去水后的市场共识并附加内部风险扣分。
+- 新完赛契约以 `closing_match_decision` 结算，统计使用 `decision_tally`（`hit/miss/push/no_pick`）、`decision_sample` 和 `decision_coverage`；旧等级 tally 不再是正式契约。
 - 当前实现以 2026 世界杯为首个 competition adapter，但新增通用数据结构、snapshot 字段、概率族、赔率/盘口移动诊断和回测接口时，应尽量使用可迁移到联赛的命名与边界，避免继续把新能力写死为世界杯专用语义；已有 `stage` / `group` 等世界杯字段保持兼容，不为未来联赛提前大重构。
 - 引擎层必须保持纯函数，不联网、不连数据库、不依赖云。
 - 采集层使用保存的样例响应做离线解析测试。
 - source refresh 失败但本地缓存存在时，可以继续用上一轮缓存生成快照；必须在 `data_quality.source_errors` 和 `data_quality.stale_sources` 标记，不能静默当作新鲜数据。
-- Elo 来源为本地基线重放：`data/cache/elo_baseline_*.tsv` + openfootball 完赛比分按 eloratings 公式（K=60、中立场）增量重放生成 `elo_world.tsv`；eloratings 抓取仅用于重新锚定基线，抓取失败只记 `data_quality.source_errors`，不标 `stale_sources`、不降级信号。重放计算失败时回退沿用现有 `elo_world.tsv` 并记 `elo_local` 错误。常量与实现见 `worldcup/elo_local.py`。
+- Elo 来源为本地基线重放：`data/cache/elo_baseline_*.tsv` + openfootball 完赛比分按 eloratings 公式（K=60、中立场）增量重放生成 `elo_world.tsv`；eloratings 抓取仅用于重新锚定基线，抓取失败只记 `data_quality.source_errors`，不标 `stale_sources`、不因此单独强制取消本场首选。重放计算失败时回退沿用现有 `elo_world.tsv` 并记 `elo_local` 错误。常量与实现见 `worldcup/elo_local.py`。
+- 中超俱乐部评级使用独立 `csl_model` 配置边界，当前仍为 `shadow_only` / `club_rating_pending`。除全局 replay 样本外，每场双方都必须达到逐队最小样本（默认 30 场）；未达标时必须使用 1500 结构占位并走市场兜底，不得让小样本 rating 影响首选方向。
+- 中超 replay 赛果 live 更新必须同时通过 7M + 中足联官方公开接口的日期/主客队/比分全量一致校验，并且不得删除或改写已接受的赛果；否则沿用旧 cache 并记质量错误。解除 pending 还必须同时通过最新赛季主场先验和同样本市场基准门槛，不能只看全历史聚合 Brier。
+- 中超 scheduled publish 每次成功构建赛前 snapshot 后必须自动归档到 ignored `data/local/diagnostics/csl_history/`，用于 closing join 和市场基准积累；归档失败记 `snapshot_archive_failed`，但不阻断当场有效首选发布。
+- 明确 `fixture_status=POSTPONED` 的场次只从公开 `project_match_rows` / API / preview / static export 隐藏，内部 snapshot/cache/history 必须保留；已进入 `finished.matches` 的比赛同样从公开实时列表移除。不得仅按开球时间推断完赛，已开赛但未确认赛果的场次仍展示“赛果待确认”。
+- 世界杯赛后公开同步必须使用独立 `postmatch_publish` 产物和 state/outbox，不得覆盖 `analysis_snapshot.json` 或影响 odds scheduler/quota；live 必须显式传入非占位 endpoint 并持有单实例文件锁，公开结算严格只接受 openfootball `score.ft` 的 90 分钟非负整数比分，忽略 `score.et`、`score.p` 和 legacy `score1/score2`。源回退/重复、比分修订、finished 回退/冲突或比分不一致必须阻断发布；单场 closing 缺失不得补造首选，也不得拖住其他已有 closing 的完赛场，必须在 `decision_coverage.missing_closing_count`、`skipped_no_closing` 和 `run.postmatch.partial_publish` 中透明记录。pending 必须绑定 endpoint，只有 ingest 返回 `stored` / `duplicate` 才算成功，之后先落 state、再清 pending。
 - scheduler 默认 dry-run，只读取本地 snapshot / quota 并输出 JSON 决策；The Odds API 按免费额度使用，低额度时必须降频。
+- The Odds API 使用 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY` / `THE_ODDS_API_KEY_TERTIARY` 三个显式槽位依次轮换；当前槽位剩余额度降到 30 或以下时，优先切换到仍未探测或剩余大于 30 的下一槽位并保留低额度应急余额。只有三个槽位都没有新鲜额度时才按低额度锚点降频，全部耗尽时暂停刷新。真实 token 只允许写入 ignored `.env`，不得进入代码、文档、日志或回复。
 - scheduled refresh 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会调用 refresh runner。
+- 正常额度时，世界杯与中超调度都必须把 `match_decision.valid_until - 20 分钟` 作为刷新候选，避免有效首选先过期再等下一个赛前锚点；quota 低于等于 30 时允许按既有低额度锚点降级。
+- scheduled publish 对瞬时 TLS/网络/5xx 做有限重试；仍失败时必须保留不含 secret 的 `*.publish_pending.json` 状态，下次唤醒只重试发布现有 snapshot，不重复刷新或消耗 quota。
 - ingest 默认 dry-run；只构造请求体、HMAC 签名头和 body hash，不发送线上请求，不能打印 HMAC secret。
 - 云端 ingest 必须使用 HMAC + timestamp + run_id/snapshot_id，并做幂等与防重放；当前默认防重放窗口为 300 秒。
 - 本地 SQLite / preview 输出必须写入被忽略的 `data/local/` 或 `data/cache/`；预览页必须保留研究免责声明，不显示资金相关字段。
@@ -47,7 +59,7 @@
 
 - 赛后复盘必须区分：数据事实、暂时观察、可确认结论、工程问题。
 - 当 `sample_too_small=true` 或样本数低于 `min_sample` 时，只能给观察结论，不能建议调参。
-- 赛后复盘必须检查：是否被小样本或单场极端结果拉偏、模型是否弱于市场基准、S/A 级信号样本是否不足、`daily_eval.signal_tally` 与 `finished.tally` 是否一致、是否存在 `skipped_no_closing`、closing snapshot 是否完整、是否混淆 90 分钟/加时/点球或比分来源、The Odds API scores 与 openfootball 是否可能不同步、东道主/准主场/中立场/Elo 口径是否可能影响判断。
+- 赛后复盘必须检查：是否被小样本或单场极端结果拉偏、模型是否弱于市场基准、当前首选策略的已结算样本是否不足、`daily_eval.decision_tally` 与 `finished.decision_tally` 是否一致、`decision_coverage` 中是否存在缺失/无效/未结算决策、是否存在 `skipped_no_closing`、closing snapshot 是否完整、是否将 legacy 决策与当前策略绩效混算、是否混淆 90 分钟/加时/点球或比分来源、The Odds API scores 与 openfootball 是否可能不同步、东道主/准主场/中立场/Elo 口径是否可能影响判断。
 - 自审发现问题时，必须把结论降级为“观察”或“需修数据链路”，不得硬给模型结论。
 - 写实现计划、架构方案、调度/部署方案、数据链路方案或模型调整方案时，必须加入“对抗性自审”段落。
 - 项目计划自审重点检查：是否解决根因、是否范围膨胀、是否改变业务语义/接口契约/结算口径、是否触发联网/额度/密钥/线上写入/部署风险、是否可 dry-run、是否有验证和回滚方式。

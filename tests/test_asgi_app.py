@@ -15,11 +15,21 @@ def _snapshot():
         "data_quality": {"stale_sources": [], "source_errors": []},
         "matches": [
             {
-                "kickoff_at_utc": "2026-06-11T19:00:00+00:00",
+                "kickoff_at_utc": "2099-06-11T19:00:00+00:00",
                 "stage": "Matchday 1",
                 "home_team": "Mexico",
                 "away_team": "South Africa",
                 "signals": [{"grade": "A"}],
+                "match_decision": {
+                    "schema_version": 2,
+                    "label": "MATCH_PICK",
+                    "market": "1X2",
+                    "selection": "home",
+                    "odds": 1.8,
+                    "p_hit_safe": 0.61,
+                    "p_no_loss_safe": 0.61,
+                    "valid_until": "2099-06-11T19:00:00+00:00",
+                },
             }
         ],
     }
@@ -47,6 +57,15 @@ def _snapshot_with_finished():
                         "prediction": {"status": "hit", "label": "命中", "detail": "全场 2-0"},
                     }
                 ],
+                "closing_match_decision": {
+                    "schema_version": 2,
+                    "label": "MATCH_PICK",
+                    "market": "1X2",
+                    "selection": "home",
+                    "odds": 1.78,
+                    "p_hit_safe": 0.61,
+                    "p_no_loss_safe": 0.61,
+                },
             }
         ],
         "tally": {"S": {"hit": 1, "miss": 0, "push": 0}},
@@ -119,7 +138,11 @@ def test_asgi_app_get_matches_returns_json():
         status, body = _call_asgi(app, "GET", "/api/matches")
 
         assert status == 200
-        assert json.loads(body)["matches"][0]["match_label"] == "Mexico vs South Africa"
+        match = json.loads(body)["matches"][0]
+        assert match["match_label"] == "Mexico vs South Africa"
+        assert match["match_decision"]["label"] == "MATCH_PICK"
+        assert "signals" not in body
+        assert "grade" not in body.lower()
 
 
 def test_asgi_app_get_finished_returns_safe_projection():
@@ -134,6 +157,9 @@ def test_asgi_app_get_finished_returns_safe_projection():
         finished = json.loads(body)["finished"]
         assert finished["summary"]["match_count"] == 1
         assert finished["matches"][0]["score_label"] == "2 - 0"
+        assert finished["matches"][0]["decision_outcome"]["status"] == "hit"
+        assert "signals" not in body
+        assert "grade" not in body.lower()
         assert "run-1" not in body
         assert "quota" not in body
         assert "private-provider" not in body
@@ -147,6 +173,24 @@ def test_asgi_app_healthz_returns_ok_without_snapshot():
 
         assert status == 200
         assert json.loads(body)["status"] == "ok"
+
+
+def test_asgi_app_readyz_returns_lightweight_ready_summary():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        _store_snapshot(db_path)
+        app = create_asgi_app(db_path=db_path, secret="test-secret")
+
+        status, body = _call_asgi(app, "GET", "/readyz")
+
+        payload = json.loads(body)
+        assert status == 200
+        assert payload == {
+            "match_count": 1,
+            "schema_version": 1,
+            "service": "worldcup-analysis",
+            "status": "ready",
+        }
 
 
 def test_asgi_app_get_preview_returns_html():

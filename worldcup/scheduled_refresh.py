@@ -60,7 +60,8 @@ def run_scheduled_refresh(
         selected = choose_key_slot(env, report.get("quota") or {})
         if selected is None:
             raise ValueError(
-                "THE_ODDS_API_KEY_PRIMARY, THE_ODDS_API_KEY_SECONDARY, or THE_ODDS_API_KEY is missing or exhausted"
+                "THE_ODDS_API_KEY_PRIMARY, THE_ODDS_API_KEY_SECONDARY, "
+                "THE_ODDS_API_KEY_TERTIARY, or THE_ODDS_API_KEY is missing or exhausted"
             )
         key = selected.api_key
         provider = selected.provider

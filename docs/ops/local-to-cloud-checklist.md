@@ -38,10 +38,17 @@
 
 ## 上线前人工配置
 
-1. 运行 `python3 -m worldcup.secrets` 生成 `INGEST_HMAC_SECRET=<value>`。
+1. 运行 `python3 -m worldcup.secrets` 生成 `INGEST_HMAC_SECRET=<value>`（默认 64 lowercase hex = 32 bytes entropy，推荐继续使用此格式）。
+   - 运行时要求：secret 的 UTF-8 编码字节长度 ≥ 32，否则所有 live 入口启动即拒绝。
+   - 上线前验证：`python3 -m worldcup.secrets --check --env-file /etc/worldcup/.env`，仅输出布尔 JSON，退出码 0/1。
+   - 注意：长度/格式检查不等于熵保证；使用 `python3 -m worldcup.secrets` 生成可确保足够随机性。
 2. 单服务器 MVP 默认设置 `WORLDCUP_STORE=sqlite`，SQLite DB 放在持久化路径，例如 `/var/lib/worldcup/worldcup.db`。
 3. 不把 secret、DSN、密码写进文档、代码、提交信息或聊天。
 4. 运行 `python3 -m worldcup.readiness --root .`，确认 readiness 全绿。
+   - 支持 `--profile` 选择检查范围：`full`（默认，12 项全检）、`server`（仅 HMAC + store）、`publisher`（HMAC + odds key + snapshot/quota chain）。
+   - 支持 `--env-path /path/to/.env` 指定外部 `.env` 文件位置（覆盖 root/.env）。
+   - 生产服务器推荐：`python3 -m worldcup.readiness --profile server --env-path /etc/worldcup/.env`。
+   - 注意：readiness 是静态配置 preflight，不做 DB 连接、网络请求或进程健康检查；运行时健康仍由 `/healthz` 和业务探针验证。
 5. 只有明确决定升级 PostgreSQL/RDS 时，才设置 `WORLDCUP_STORE=postgres` 和 `DATABASE_URL`，并先运行 `python3 -m worldcup.postgres_smoke --env .env --snapshot data/cache/analysis_snapshot.json --endpoint https://preprod.example.invalid/api/ingest/snapshot`，确认返回 `dry_run_ready` 且输出不含敏感值。
 
 ## ECS Dry-Run Checklist

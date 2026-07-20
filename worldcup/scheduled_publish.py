@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -11,6 +12,7 @@ from worldcup.notifications import (
     send_wxpusher_notification,
 )
 from worldcup.publish import publish_snapshot
+from worldcup.publish_outbox import attempt_publish, load_pending_publish
 from worldcup.quota import load_quota_ledger
 from worldcup.refresh_runner import _load_env, refresh_cache_and_build_snapshot
 from worldcup.scheduled_refresh import run_scheduled_refresh
@@ -18,6 +20,7 @@ from worldcup.theoddsapi_keys import (
     LEGACY_PROVIDER,
     PRIMARY_PROVIDER,
     SECONDARY_PROVIDER,
+    TERTIARY_PROVIDER,
     configured_key_slots,
 )
 
@@ -26,8 +29,13 @@ QUOTA_ALERT_THRESHOLDS = (100, 30, 10, 0)
 _SLOT_LABELS = {
     PRIMARY_PROVIDER: "PRIMARY",
     SECONDARY_PROVIDER: "SECONDARY",
+    TERTIARY_PROVIDER: "TERTIARY",
     LEGACY_PROVIDER: "LEGACY",
 }
+
+
+def _now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _watched_providers(env: dict[str, str]) -> list[str]:
@@ -90,7 +98,8 @@ def _build_quota_alert(
             )
     lines += [
         "处理：申请新免费 key 替换 .env 中耗尽槽位的",
-        "THE_ODDS_API_KEY_PRIMARY / THE_ODDS_API_KEY_SECONDARY，",
+        "THE_ODDS_API_KEY_PRIMARY / THE_ODDS_API_KEY_SECONDARY / "
+        "THE_ODDS_API_KEY_TERTIARY，",
         "再经确认执行一次 python3 -m worldcup.scheduled_publish --live --force",
         "让新额度写回 quota 台账（耗尽状态下调度不会自行恢复该槽位）。",
     ]
@@ -119,6 +128,19 @@ def run_scheduled_publish(
     notify_fn: Callable[..., dict] = send_wxpusher_notification,
 ) -> dict:
     env = _load_env(env_path) if live else {}
+
+    # Fail-fast: validate secret before any refresh/publish/network side effects
+    resolved_secret: str | None = None
+    if live:
+        resolved_secret = secret or env.get("INGEST_HMAC_SECRET")
+        if not resolved_secret:
+            raise ValueError("INGEST_HMAC_SECRET is missing")
+        from worldcup.secrets import validate_hmac_secret
+        try:
+            validate_hmac_secret(resolved_secret)
+        except ValueError:
+            raise ValueError("weak_ingest_hmac_secret")
+
     watched_providers = _watched_providers(env) if live and notify else []
     quota_before = _quota_by_provider(quota_path, watched_providers) if live and notify else {}
     previous_snapshot = load_snapshot_if_exists(snapshot_path) if live and notify else None
@@ -135,6 +157,37 @@ def run_scheduled_publish(
     )
 
     if refresh["status"] != "refreshed":
+        pending = load_pending_publish(snapshot_path) if live else None
+        if pending is not None:
+            if pending.get("status") != "pending":
+                return {
+                    "status": "publish_pending_invalid",
+                    "reason": pending.get("reason"),
+                    "force": force,
+                    "refresh": refresh,
+                    "publish": None,
+                    "notification": None,
+                    "quota_alert": None,
+                }
+            retried = attempt_publish(
+                snapshot_path=snapshot_path,
+                endpoint=endpoint,
+                secret=resolved_secret,
+                timestamp=now or _now_utc_iso(),
+                publish_fn=publish_fn,
+                stage=False,
+            )
+            return {
+                "status": "republished"
+                if retried["status"] == "published"
+                else retried["status"],
+                "force": force,
+                "refresh": refresh,
+                "publish": retried.get("publish"),
+                "pending": retried.get("pending"),
+                "notification": {"status": "skipped", "reason": "retry_publish"},
+                "quota_alert": None,
+            }
         return {
             "status": refresh["status"],
             "force": force,
@@ -155,17 +208,25 @@ def run_scheduled_publish(
             "quota_alert": None,
         }
 
-    resolved_secret = secret or env.get("INGEST_HMAC_SECRET")
-    if not resolved_secret:
-        raise ValueError("INGEST_HMAC_SECRET is missing")
-
-    publish = publish_fn(
+    attempted = attempt_publish(
         snapshot_path=refresh["refresh"]["snapshot_path"],
         endpoint=endpoint,
         secret=resolved_secret,
-        timestamp=now,
-        live=live,
+        timestamp=now or _now_utc_iso(),
+        publish_fn=publish_fn,
+        stage=True,
     )
+    if attempted["status"] != "published":
+        return {
+            "status": attempted["status"],
+            "force": force,
+            "refresh": refresh,
+            "publish": attempted.get("publish"),
+            "pending": attempted.get("pending"),
+            "notification": None,
+            "quota_alert": None,
+        }
+    publish = attempted["publish"]
     notification_result = None
     if notify:
         current_snapshot = load_snapshot_if_exists(refresh["refresh"]["snapshot_path"])

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import re
 import shlex
@@ -13,7 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from worldcup.collectors.league_odds import parse_league_odds_events
-from worldcup.query import summarize_finished_block
+from worldcup.query import project_match_decision, summarize_finished_block
 from worldcup.refresh_audit import DEFAULT_LAUNCH_AGENT, inspect_launch_agent, summarize_history
 
 DEFAULT_PUBLIC_BASE_URL = "https://football.celab.xin"
@@ -30,6 +31,8 @@ DEFAULT_PRE_MATCH_LOGS = (
     Path.home() / "Library" / "Logs" / "worldcup" / "pre-match.err.log",
 )
 DEFAULT_LINEUP_AUDIT_PATH = Path("data/local/diagnostics/lineup_audit.json")
+DEFAULT_POSTMATCH_SNAPSHOT_PATH = Path("data/cache/wc2026_postmatch_snapshot.json")
+DEFAULT_POSTMATCH_STATE_PATH = Path("data/cache/wc2026_postmatch_state.json")
 DEFAULT_CSL_COMPETITION_ID = "csl_2026"
 DEFAULT_CSL_LIVE_ODDS_CACHE_PATH = Path("data/cache/theoddsapi_csl_2026_odds.json")
 DEFAULT_CSL_LIVE_REFRESH_DIAGNOSTIC_PATH = Path(
@@ -37,6 +40,9 @@ DEFAULT_CSL_LIVE_REFRESH_DIAGNOSTIC_PATH = Path(
 )
 DEFAULT_CSL_LIVE_RUNNER_CHECK_PATH = Path(
     "data/local/diagnostics/csl_live_league_runner_check.json"
+)
+DEFAULT_CSL_LIVE_SNAPSHOT_PATH = Path(
+    "data/local/diagnostics/csl_live_league_snapshot.json"
 )
 SAFE_QUOTA_FIELDS = ("remaining", "used", "last")
 CSL_RUNNER_BLOCKING_WARNINGS = {
@@ -50,6 +56,7 @@ ALLOWED_QUOTA_PROVIDERS = {
     "theoddsapi",
     "theoddsapi_primary",
     "theoddsapi_secondary",
+    "theoddsapi_tertiary",
 }
 ALLOWED_CSL_SPORT_KEYS = {
     "soccer_china_superleague",
@@ -70,7 +77,6 @@ ALLOWED_DIAGNOSTIC_CODES = {
     "runner_failed",
     "no_valid_rows",
 }
-ALLOWED_STRONG_GRADES = {"S", "A", "B", "C", "D"}
 ALLOWED_RUNNER_COUNT_KEYS = {"fixtures", "odds_events", "match_inputs", "matches"}
 ALLOWED_REFRESH_CACHE_PATHS = {
     "data/cache/theoddsapi_csl_2026_odds.json",
@@ -95,6 +101,28 @@ FORBIDDEN_PUBLIC_TERMS = [
     "串关",
     "喊单",
 ]
+LEGACY_OUTPUT_KEYS = {
+    "signals",
+    "grade",
+    "official_grade",
+    "raw_grade",
+    "candidate_grade",
+    "signal_count",
+    "top_grade",
+    "closing_signals",
+    "match_level_tally",
+    "tally",
+}
+LEGACY_OUTPUT_VALUES = {
+    "STRONG_VALUE",
+    "VALUE_CANDIDATE",
+    "HIGH_CONFIDENCE_LEAN",
+    "LOW_CONFIDENCE_LEAN",
+    "official_value_signal",
+    "candidate_value_signal",
+    "no_official_edge",
+}
+LEGACY_HTML_MARKERS = ("S/A", "价值分歧", "grade-pill", "data-grade", "条信号")
 SENSITIVE_RE = re.compile(
     r"api[_-]?key|the_odds_api_key|ingest_hmac_secret|hmac secret|database_url|"
     r"x-worldcup-signature|authorization|cookie|token|password|private[-_ ]?key|"
@@ -355,6 +383,60 @@ def _safe_club_rating(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _match_decision_counts(snapshot: Any) -> dict[str, int] | None:
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("matches"), list):
+        return None
+    matches = [match for match in snapshot["matches"] if isinstance(match, dict)]
+    match_picks = 0
+    rating_fallback_picks = 0
+    no_pick = 0
+    for match in matches:
+        decision = project_match_decision(match.get("match_decision"))
+        if (decision or {}).get("label") == "MATCH_PICK":
+            match_picks += 1
+            raw_decision = (
+                match.get("match_decision")
+                if isinstance(match.get("match_decision"), dict)
+                else {}
+            )
+            risks = (
+                raw_decision.get("risks")
+                if isinstance(raw_decision.get("risks"), list)
+                else []
+            )
+            if (
+                "market_only_rating_fallback" in risks
+                and "model_settlement" not in raw_decision
+            ):
+                rating_fallback_picks += 1
+        elif (decision or {}).get("label") == "NO_CLEAN_MARKET":
+            no_pick += 1
+    return {
+        "match_picks": match_picks,
+        "rating_fallback_picks": rating_fallback_picks,
+        "rating_unsafe_picks": match_picks - rating_fallback_picks,
+        "no_pick": no_pick,
+        "missing_decisions": len(matches) - match_picks - no_pick,
+    }
+
+
+def _runner_decision_counts(root: Path, payload: dict[str, Any]) -> dict[str, int]:
+    snapshot_counts = _match_decision_counts(_read_json(root / DEFAULT_CSL_LIVE_SNAPSHOT_PATH))
+    if snapshot_counts is not None:
+        return snapshot_counts
+    return {
+        key: int(payload[key])
+        for key in (
+            "match_picks",
+            "rating_fallback_picks",
+            "rating_unsafe_picks",
+            "no_pick",
+            "missing_decisions",
+        )
+        if _is_safe_number(payload.get(key))
+    }
+
+
 def _safe_runner_check(root: Path) -> dict[str, Any]:
     path = root / DEFAULT_CSL_LIVE_RUNNER_CHECK_PATH
     payload = _read_json(path)
@@ -380,9 +462,7 @@ def _safe_runner_check(root: Path) -> dict[str, Any]:
     result["club_alias_unmatched"] = _safe_team_label_list(payload.get("club_alias_unmatched"))
     if _is_safe_number(payload.get("invalid_odds_count")):
         result["invalid_odds_count"] = payload["invalid_odds_count"]
-    if _is_safe_number(payload.get("signals")):
-        result["signals"] = payload["signals"]
-    result["strong_grades"] = _safe_allowed_string_list(payload.get("strong_grades"), ALLOWED_STRONG_GRADES)
+    result.update(_runner_decision_counts(root, payload))
     club_rating = payload.get("club_rating")
     if isinstance(club_rating, dict):
         result["club_rating"] = _safe_club_rating(club_rating)
@@ -484,20 +564,12 @@ def _snapshot_summary(path: Path) -> dict[str, Any]:
     }
 
 
-def _zero_tally() -> dict[str, int]:
-    return {"hit": 0, "miss": 0, "push": 0}
-
-
-def _normalize_tally(tally: dict[str, Any], grades: set[str]) -> dict[str, dict[str, int]]:
-    normalized: dict[str, dict[str, int]] = {}
-    for grade in sorted(grades):
-        entry = tally.get(grade) if isinstance(tally.get(grade), dict) else {}
-        normalized[grade] = {
-            "hit": _as_int(entry.get("hit")),
-            "miss": _as_int(entry.get("miss")),
-            "push": _as_int(entry.get("push")),
-        }
-    return normalized
+def _normalize_decision_tally(value: Any) -> dict[str, int]:
+    tally = value if isinstance(value, dict) else {}
+    return {
+        key: _as_int(tally.get(key))
+        for key in ("hit", "miss", "push", "no_pick")
+    }
 
 
 def _as_int(value: Any) -> int:
@@ -505,24 +577,6 @@ def _as_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
-
-
-def _recompute_finished_tally(records: list[Any]) -> dict[str, dict[str, int]]:
-    tally: dict[str, dict[str, int]] = {}
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        for signal in record.get("closing_signals") or []:
-            if not isinstance(signal, dict):
-                continue
-            grade = str(signal.get("grade") or "")
-            if grade not in {"S", "A"}:
-                continue
-            status = str((signal.get("prediction") or {}).get("status") or "")
-            if status not in {"hit", "miss", "push"}:
-                continue
-            tally.setdefault(grade, _zero_tally())[status] += 1
-    return tally
 
 
 def _csv_row_count(path: Path) -> dict[str, Any]:
@@ -536,22 +590,41 @@ def _csv_row_count(path: Path) -> dict[str, Any]:
     return {"status": "ok", "path": str(path), "count": len(rows)}
 
 
+def _canonical_json_sha256(value: Any) -> str:
+    canonical = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _finished_snapshot(root: Path) -> tuple[dict[str, Any] | None, Path, str]:
+    postmatch_path = root / DEFAULT_POSTMATCH_SNAPSHOT_PATH
+    state = _read_json(root / DEFAULT_POSTMATCH_STATE_PATH)
+    postmatch = _read_json(postmatch_path)
+    if (
+        postmatch is not None
+        and state is not None
+        and state.get("schema_version") == 1
+        and state.get("status") == "published"
+        and state.get("snapshot_sha256") == _canonical_json_sha256(postmatch)
+    ):
+        return postmatch, postmatch_path, "postmatch"
+
+    analysis_path = root / "data/cache/analysis_snapshot.json"
+    return _read_json(analysis_path), analysis_path, "analysis"
+
+
 def _finished_consistency(root: Path) -> dict[str, Any]:
-    snapshot = _read_json(root / "data/cache/analysis_snapshot.json")
+    snapshot, snapshot_path, snapshot_source = _finished_snapshot(root)
     if snapshot is None:
         return {"status": "missing_snapshot"}
 
     finished = snapshot.get("finished") or {}
-    records = finished.get("matches") if isinstance(finished.get("matches"), list) else []
     summary = summarize_finished_block(snapshot)
     if not finished:
         return {"status": "missing", "summary": summary}
 
-    declared_raw = finished.get("tally") if isinstance(finished.get("tally"), dict) else {}
-    recomputed_raw = _recompute_finished_tally(records)
-    grades = set(declared_raw) | set(recomputed_raw) | {"S", "A"}
-    declared = _normalize_tally(declared_raw, grades)
-    recomputed = _normalize_tally(recomputed_raw, grades)
+    declared_present = isinstance(finished.get("decision_tally"), dict)
+    declared = _normalize_decision_tally(finished.get("decision_tally"))
+    recomputed = _normalize_decision_tally(summary.get("decision_tally"))
 
     results = _csv_row_count(root / "data/local/results/wc2026_results.csv")
     if results.get("status") == "ok":
@@ -561,10 +634,12 @@ def _finished_consistency(root: Path) -> dict[str, Any]:
 
     return {
         "status": "ok",
+        "snapshot_path": str(snapshot_path),
+        "snapshot_source": snapshot_source,
         "summary": summary,
-        "declared_tally": declared,
-        "recomputed_tally": recomputed,
-        "tally_matches": declared == recomputed,
+        "declared_decision_tally": declared if declared_present else None,
+        "recomputed_decision_tally": recomputed,
+        "decision_tally_matches": declared == recomputed if declared_present else None,
         "results": results,
     }
 
@@ -698,6 +773,21 @@ def _forbidden_hits(text: str) -> list[str]:
     return [term for term in FORBIDDEN_PUBLIC_TERMS if term.lower() in lower]
 
 
+def _legacy_output_in_json(value: Any) -> bool:
+    if isinstance(value, dict):
+        if any(str(key) in LEGACY_OUTPUT_KEYS for key in value):
+            return True
+        return any(_legacy_output_in_json(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_legacy_output_in_json(item) for item in value)
+    return isinstance(value, str) and value in LEGACY_OUTPUT_VALUES
+
+
+def _legacy_output_in_html(text: str) -> bool:
+    lowered = text.casefold()
+    return any(marker.casefold() in lowered for marker in LEGACY_HTML_MARKERS)
+
+
 def _last_update(text: str) -> str | None:
     match = re.search(r"最后更新\s*(?:<br\s*/?>)?\s*([^<]+)", text, flags=re.I)
     return match.group(1).strip() if match else None
@@ -715,6 +805,7 @@ def _public_json_check(base_url: str, path: str, fetcher: Fetcher, timeout: int)
         parsed = json.loads(body) if body else None
     except json.JSONDecodeError:
         parsed = None
+    result["legacy_output_detected"] = _legacy_output_in_json(parsed)
     if path == "/api/matches" and isinstance(parsed, dict):
         matches = parsed.get("matches")
         result["count"] = len(matches) if isinstance(matches, list) else None
@@ -738,6 +829,7 @@ def _public_html_check(base_url: str, path: str, fetcher: Fetcher, timeout: int)
         "content_type": _header(response.get("headers") or {}, "content-type"),
         "has_disclaimer": DISCLAIMER in body,
         "forbidden_hits": _forbidden_hits(body),
+        "legacy_output_detected": _legacy_output_in_html(body),
         "last_update": _last_update(body),
     }
 
@@ -897,6 +989,17 @@ def _runner_has_blocking_warning(runner: dict[str, Any]) -> bool:
     return bool(warnings & CSL_RUNNER_BLOCKING_WARNINGS)
 
 
+def _runner_decision_count_mismatch(runner: dict[str, Any]) -> bool:
+    keys = ("match_picks", "no_pick", "missing_decisions")
+    if not all(_is_safe_number(runner.get(key)) for key in keys):
+        return False
+    counts = runner.get("counts") if isinstance(runner.get("counts"), dict) else {}
+    matches = counts.get("matches")
+    if not _is_safe_number(matches):
+        return False
+    return sum(_as_int(runner.get(key)) for key in keys) != _as_int(matches)
+
+
 def _csl_runner_has_error(runner: dict[str, Any]) -> bool:
     if runner.get("status") == "missing":
         return False
@@ -910,7 +1013,9 @@ def _csl_runner_has_error(runner: dict[str, Any]) -> bool:
         or _as_int(runner.get("invalid_odds_count")) > 0
         or _as_int(runner.get("errors_count")) > 0
         or _as_int(club_rating.get("errors_count")) > 0
-        or bool(_list_values(runner.get("strong_grades")))
+        or _as_int(runner.get("missing_decisions")) > 0
+        or _runner_decision_count_mismatch(runner)
+        or _as_int(runner.get("rating_unsafe_picks")) > 0
     )
 
 
@@ -952,7 +1057,7 @@ def _count_issues(result: dict[str, Any]) -> dict[str, int]:
         errors += int(log.get("sensitive_hits", 0) > 0)
         warnings += int(log.get("error_hits", 0) > 0)
     finished = local.get("finished") or {}
-    errors += int(finished.get("tally_matches") is False)
+    errors += int(finished.get("decision_tally_matches") is False)
     results = finished.get("results") if isinstance(finished.get("results"), dict) else {}
     errors += int(results.get("matches_finished_result_count") is False)
 
@@ -961,13 +1066,17 @@ def _count_issues(result: dict[str, Any]) -> dict[str, int]:
         errors += int((public.get("healthz") or {}).get("http_status") != 200)
         errors += int((public.get("matches") or {}).get("http_status") != 200)
         errors += int(bool((public.get("matches") or {}).get("forbidden_hits")))
+        errors += int((public.get("matches") or {}).get("legacy_output_detected") is True)
         errors += int((public.get("finished") or {}).get("http_status") != 200)
         errors += int(bool((public.get("finished") or {}).get("forbidden_hits")))
+        errors += int((public.get("finished") or {}).get("legacy_output_detected") is True)
+        errors += int((public.get("snapshot_latest") or {}).get("legacy_output_detected") is True)
         for key in ("home", "preview"):
             item = public.get(key) or {}
             errors += int(item.get("http_status") != 200)
             errors += int(item.get("has_disclaimer") is not True)
             errors += int(bool(item.get("forbidden_hits")))
+            errors += int(item.get("legacy_output_detected") is True)
 
     remote = result.get("remote") or {}
     errors += int(remote.get("status") == "error")
@@ -1044,8 +1153,12 @@ def _report_csl_issue_codes(csl: dict[str, Any], runner: dict[str, Any]) -> list
         club_rating = runner.get("club_rating") if isinstance(runner.get("club_rating"), dict) else {}
         if _as_int(club_rating.get("errors_count")) > 0:
             issues.append("runner_club_rating_errors")
-        if _list_values(runner.get("strong_grades")):
-            issues.append("runner_strong_grades_present")
+        if _as_int(runner.get("missing_decisions")) > 0:
+            issues.append("runner_missing_decisions")
+        if _runner_decision_count_mismatch(runner):
+            issues.append("runner_decision_count_mismatch")
+        if _as_int(runner.get("rating_unsafe_picks")) > 0:
+            issues.append("runner_pick_without_market_rating_fallback")
     return issues
 
 
@@ -1089,7 +1202,9 @@ def _report_csl_live_odds(csl: dict[str, Any]) -> dict[str, Any]:
         "runner_matches": counts.get("matches"),
         "runner_warnings": runner.get("warnings") or [],
         "runner_errors_count": _as_int(runner.get("errors_count")),
-        "runner_strong_grades": runner.get("strong_grades") or [],
+        "runner_match_picks": runner.get("match_picks"),
+        "runner_no_pick": runner.get("no_pick"),
+        "runner_missing_decisions": runner.get("missing_decisions"),
         "rating_policy": runner.get("rating_policy"),
         "club_rating_mode": club_rating.get("mode"),
         "club_rating_matches_replayed": club_rating.get("matches_replayed"),
@@ -1161,7 +1276,9 @@ def format_ops_report(report: dict[str, Any]) -> str:
         ),
         (
             f"  warnings={_format_list(csl.get('runner_warnings'))} "
-            f"strong_grades={_format_list(csl.get('runner_strong_grades'))}"
+            f"picks={csl.get('runner_match_picks', 'n/a')} "
+            f"no_pick={csl.get('runner_no_pick', 'n/a')} "
+            f"missing_decisions={csl.get('runner_missing_decisions', 'n/a')}"
         ),
     ]
     return "\n".join(lines)

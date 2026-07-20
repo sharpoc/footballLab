@@ -83,6 +83,21 @@ def _write_club_results_cache(cache_dir: Path, rows: list[dict[str, str]]) -> No
             writer.writerow(row)
 
 
+def _write_fixture_status_cache(cache_dir: Path, fixtures: list[dict]) -> None:
+    (cache_dir / "csl_fixture_status_csl_2026.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "competition_id": "csl_2026",
+                "observed_at": "2026-07-10T12:00:00+00:00",
+                "source": "cfl_official+sevenm",
+                "fixtures": fixtures,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_cap_signals_for_pending_club_rating_caps_strong_grades():
     signals = [
         Signal(MarketType.X12, "home", Grade.S, 0.12, 0.08, "OK", ["value_edge"]),
@@ -134,9 +149,95 @@ def test_build_league_snapshot_from_cache_builds_local_csl_snapshot():
         assert match["home_team"] == "Shanghai Port"
         assert match["away_team"] == "Shandong Taishan"
         assert match["elo"] == {"home": 1500, "away": 1500}
-        assert match["signals"]
-        assert all(signal["grade"] not in ("S", "A") for signal in match["signals"])
-        assert any("club_rating_pending" in signal["reasons"] for signal in match["signals"])
+        assert "signals" not in match
+        assert match["match_decision"]["label"] == "MATCH_PICK"
+        assert match["match_decision"]["policy_version"] == "match_pick_v3"
+        assert "market_consensus_rating_fallback" in match["match_decision"]["reasons"]
+        assert "club_rating_pending" in match["match_decision"]["risks"]
+        assert "club_rating_missing" in match["match_decision"]["risks"]
+
+
+def test_build_league_snapshot_marks_postponed_and_suppresses_superseded_odds_event():
+    with TemporaryDirectory() as tmp:
+        cache_dir = Path(tmp) / "cache"
+        _write_csl_odds_cache(cache_dir)
+        odds_path = cache_dir / "theoddsapi_csl_2026_odds.json"
+        odds_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "zhejiang-old",
+                        "sport_key": "soccer_china_superleague",
+                        "commence_time": "2026-07-11T11:00:00Z",
+                        "home_team": "Zhejiang",
+                        "away_team": "Qingdao Hainiu FC",
+                        "bookmakers": [],
+                    },
+                    {
+                        "id": "shenhua-postponed",
+                        "sport_key": "soccer_china_superleague",
+                        "commence_time": "2026-07-11T11:35:00Z",
+                        "home_team": "Shanghai Shenhua FC",
+                        "away_team": "Beijing FC",
+                        "bookmakers": [],
+                    },
+                    {
+                        "id": "zhejiang-rescheduled",
+                        "sport_key": "soccer_china_superleague",
+                        "commence_time": "2026-07-14T11:35:00Z",
+                        "home_team": "Zhejiang",
+                        "away_team": "Qingdao Hainiu FC",
+                        "bookmakers": [],
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+        _write_fixture_status_cache(
+            cache_dir,
+            [
+                {
+                    "season": "2026",
+                    "round": "18",
+                    "kickoff_at_utc": "2026-07-11T11:35:00+00:00",
+                    "home_team": "上海申花",
+                    "away_team": "北京国安",
+                    "home_canonical": "shanghai_shenhua",
+                    "away_canonical": "beijing_guoan",
+                    "status": "POSTPONED",
+                    "source_match_ids": {"cfl_official": "official-1", "sevenm": "7001"},
+                },
+                {
+                    "season": "2026",
+                    "round": "18",
+                    "kickoff_at_utc": "2026-07-14T11:35:00+00:00",
+                    "home_team": "浙江队",
+                    "away_team": "青岛海牛",
+                    "home_canonical": "zhejiang_professional",
+                    "away_canonical": "qingdao_hainiu",
+                    "status": "SCHEDULED",
+                    "source_match_ids": {"cfl_official": "official-2", "sevenm": "7002"},
+                },
+            ],
+        )
+
+        snapshot = build_league_snapshot_from_cache(
+            cache_dir,
+            snapshot_at="2026-07-10T13:00:00+00:00",
+        )
+
+    assert snapshot["counts"]["matches"] == 2
+    assert snapshot["counts"]["postponed_matches"] == 1
+    assert snapshot["data_quality"]["fixture_status"]["superseded_odds_events"] == 1
+    assert {match["source_event_id"] for match in snapshot["matches"]} == {
+        "shenhua-postponed",
+        "zhejiang-rescheduled",
+    }
+    postponed = next(
+        match for match in snapshot["matches"] if match["fixture_status"] == "POSTPONED"
+    )
+    assert postponed["match_decision"]["label"] == "NO_CLEAN_MARKET"
+    assert postponed["match_decision"]["reasons"] == ["fixture_postponed"]
 
 
 def test_build_league_snapshot_reports_missing_club_rating_quality():
@@ -227,6 +328,7 @@ def test_build_league_snapshot_uses_sample_club_ratings_but_keeps_signal_cap():
             cache_dir,
             snapshot_at="2026-06-22T09:00:00+00:00",
             club_rating_min_matches=2,
+            club_rating_min_team_matches=1,
         )
 
         club_quality = snapshot["data_quality"]["club_rating"]
@@ -239,9 +341,56 @@ def test_build_league_snapshot_uses_sample_club_ratings_but_keeps_signal_cap():
         match = snapshot["matches"][0]
         assert match["elo"]["home"] > 1500
         assert match["elo"]["away"] < 1500
-        assert match["signals"]
-        assert all(signal["grade"] not in ("S", "A") for signal in match["signals"])
-        assert any("club_rating_pending" in signal["reasons"] for signal in match["signals"])
+        assert "signals" not in match
+        assert match["match_decision"]["label"] == "MATCH_PICK"
+        assert "market_consensus_rating_fallback" in match["match_decision"]["reasons"]
+        assert "club_rating_pending" in match["match_decision"]["risks"]
+
+
+def test_build_league_snapshot_marks_fixture_team_with_too_few_rating_matches():
+    with TemporaryDirectory() as tmp:
+        cache_dir = Path(tmp) / "cache"
+        _write_csl_odds_cache(cache_dir)
+        _write_club_results_cache(
+            cache_dir,
+            [
+                {
+                    "competition_id": "csl_2026",
+                    "season": "2026",
+                    "date": "2026-03-01",
+                    "home_team": "Shanghai Port",
+                    "away_team": "Shandong Taishan",
+                    "home_score": "2",
+                    "away_score": "0",
+                    "neutral": "0",
+                },
+                {
+                    "competition_id": "csl_2026",
+                    "season": "2026",
+                    "date": "2026-03-08",
+                    "home_team": "Shanghai Port",
+                    "away_team": "Beijing Guoan",
+                    "home_score": "1",
+                    "away_score": "0",
+                    "neutral": "0",
+                },
+            ],
+        )
+
+        snapshot = build_league_snapshot_from_cache(
+            cache_dir,
+            snapshot_at="2026-06-22T09:00:00+00:00",
+            club_rating_min_matches=2,
+            club_rating_min_team_matches=2,
+        )
+
+    match = snapshot["matches"][0]
+    quality = snapshot["data_quality"]["club_rating"]
+    assert match["elo"] == {"home": 1500, "away": 1500}
+    assert "club_rating_team_sample_too_small" in match["match_decision"]["risks"]
+    assert quality["min_team_matches"] == 2
+    assert quality["fixture_ineligible_teams"] == ["shandong_taishan"]
+    assert "club_rating_team_sample_too_small" in snapshot["data_quality"]["warnings"]
 
 
 def test_build_league_snapshot_falls_back_when_fixture_team_missing_rating():
@@ -277,7 +426,10 @@ def test_build_league_snapshot_falls_back_when_fixture_team_missing_rating():
 
         match = snapshot["matches"][0]
         assert match["elo"] == {"home": 1500, "away": 1500}
-        assert all(signal["grade"] not in ("S", "A") for signal in match["signals"])
+        assert "signals" not in match
+        assert match["match_decision"]["label"] == "MATCH_PICK"
+        assert "market_consensus_rating_fallback" in match["match_decision"]["reasons"]
+        assert "club_rating_missing_team" in match["match_decision"]["risks"]
 
 
 def test_ratings_for_fixture_falls_back_when_canonical_is_missing_without_recording_none():
@@ -331,7 +483,8 @@ def test_build_league_snapshot_reports_invalid_league_odds_quality():
         assert example["source_path"] == str(odds_path)
 
         match = snapshot["matches"][0]
-        assert match["signals"]
+        assert "signals" not in match
+        assert match["match_decision"]["label"] == "MATCH_PICK"
         assert match["market"]["ou_2_5"]["n_books_by_selection"]["over"] == 2
         assert match["market"]["ou_2_5"]["n_books_by_selection"]["under"] == 3
 

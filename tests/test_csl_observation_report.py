@@ -101,6 +101,18 @@ def _snapshot() -> dict:
                         "stake": "must-not-leak-stake",
                     },
                 },
+                "match_decision": {
+                    "schema_version": 2,
+                    "label": "MATCH_PICK",
+                    "market": "1X2",
+                    "selection": "home",
+                    "line": None,
+                    "odds": 1.87,
+                    "p_hit_safe": 0.601234,
+                    "p_no_loss_safe": 0.601234,
+                    "reasons": ["must-not-leak-internal-reason"],
+                },
+                # Legacy payload proves the observation projection ignores it.
                 "signals": [
                     {
                         "market_type": "1X2_90min",
@@ -180,20 +192,22 @@ def _assert_markdown_forbidden_terms_absent(markdown: str) -> None:
         assert forbidden not in markdown
 
 
-def test_build_observation_report_sanitizes_snapshot_and_counts_caps():
+def test_build_observation_report_sanitizes_snapshot_and_counts_decisions():
     report = build_observation_report(
         _snapshot(),
         generated_at="2026-06-29T10:40:00Z",
     )
 
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == 2
     assert report["mode"] == "local_csl_observation"
     assert report["generated_at"] == "2026-06-29T10:40:00Z"
     assert report["status"] == "warn"
     assert report["competition"]["id"] == "csl_2026"
     assert report["counts"]["matches"] == 1
-    assert report["counts"]["final_strong_grades"] == 0
-    assert report["counts"]["raw_strong_candidates"] == 1
+    assert report["counts"]["match_picks"] == 1
+    assert report["counts"]["postponed"] == 0
+    assert report["counts"]["no_pick"] == 0
+    assert report["counts"]["missing_decisions"] == 0
     assert report["warnings"] == ["club_rating_pending", "odds_event_only"]
     assert report["data_quality"]["club_rating"]["mode"] == "sample_replay"
     assert report["data_quality"]["club_rating"]["missing_teams"] == ["shanghai_shenhua"]
@@ -205,21 +219,20 @@ def test_build_observation_report_sanitizes_snapshot_and_counts_caps():
     assert match["model_1x2"]["home"] == 0.4741
     assert match["market_1x2"]["away"] == 0.3517
     assert match["ou_2_5"] == {"line": 2.5, "model_over": 0.5701, "market_over": 0.6051}
-    assert match["signals"] == [
-        {
-            "market_type": "1X2_90min",
-            "selection": "home",
-            "grade": "B",
-            "raw_grade": "S",
-            "ev": 0.1335,
-            "edge": 0.0904,
-            "status": "OK",
-            "reasons": ["ah_not_supporting_1x2"],
-        }
-    ]
+    assert match["match_decision"] == {
+        "schema_version": 2,
+        "label": "MATCH_PICK",
+        "market": "1X2",
+        "selection": "home",
+        "line": None,
+        "odds": 1.87,
+        "p_hit_safe": 0.6012,
+        "p_no_loss_safe": 0.6012,
+    }
 
     text = json.dumps(report, ensure_ascii=False, sort_keys=True)
-    assert "\"odds\"" not in text
+    assert "signals" not in text
+    assert "grade" not in text.lower()
     _assert_forbidden_terms_absent(text)
 
 
@@ -235,10 +248,14 @@ def test_format_observation_markdown_is_reviewable_and_research_only():
     assert "仅用于研究分析，不构成投注建议。" in markdown
     assert "status: warn" in markdown
     assert "matches: 1" in markdown
-    assert "raw strong candidates: 1" in markdown
-    assert "final strong grades: 0" in markdown
+    assert "match picks: 1" in markdown
+    assert "no pick: 0" in markdown
+    assert "missing decisions: 0" in markdown
     assert "Yunnan Yukun vs Henan FC" in markdown
-    assert "1X2_90min home grade=B raw=S EV=0.1335 Edge=0.0904" in markdown
+    assert "MATCH_PICK 1X2 home" in markdown
+    assert "p_hit_safe=0.6012" in markdown
+    assert "signals" not in markdown.lower()
+    assert "grade" not in markdown.lower()
     assert "club_rating_pending" in markdown
     _assert_markdown_forbidden_terms_absent(markdown)
 
@@ -251,6 +268,40 @@ def test_default_observation_report_path_uses_cache_timestamp():
     )
 
     assert path == Path("/tmp/worldcup/data/cache/csl_observation_report_20260629T104000Z.md")
+
+
+def test_observation_report_counts_no_pick_and_missing_decision_separately():
+    snapshot = _snapshot()
+    pick = snapshot["matches"][0]
+    no_pick = json.loads(json.dumps(pick, ensure_ascii=False))
+    no_pick["source_event_id"] = "csl-event-2"
+    no_pick["home_team"] = "Shanghai Port"
+    no_pick["away_team"] = "Shandong Taishan"
+    no_pick["match_decision"] = {"schema_version": 2, "label": "NO_CLEAN_MARKET"}
+    missing = json.loads(json.dumps(pick, ensure_ascii=False))
+    missing["source_event_id"] = "csl-event-3"
+    missing["home_team"] = "Beijing Guoan"
+    missing["away_team"] = "Chengdu Rongcheng"
+    missing.pop("match_decision")
+    postponed = json.loads(json.dumps(no_pick, ensure_ascii=False))
+    postponed["source_event_id"] = "csl-event-4"
+    postponed["fixture_status"] = "POSTPONED"
+    snapshot["matches"] = [pick, no_pick, missing, postponed]
+
+    report = build_observation_report(snapshot, generated_at="2026-06-29T10:40:00Z")
+
+    assert report["counts"] == {
+        "matches": 4,
+        "match_picks": 1,
+        "postponed": 1,
+        "no_pick": 1,
+        "missing_decisions": 1,
+    }
+    assert report["matches"][1]["match_decision"] == {
+        "schema_version": 2,
+        "label": "NO_CLEAN_MARKET",
+    }
+    assert report["matches"][2]["match_decision"] is None
 
 
 def test_observation_report_cli_writes_default_markdown_path():
@@ -281,8 +332,10 @@ def test_observation_report_cli_writes_default_markdown_path():
             "research_notice": "仅用于研究分析，不构成投注建议。",
             "status": "warn",
             "matches": 1,
-            "raw_strong_candidates": 1,
-            "final_strong_grades": 0,
+            "match_picks": 1,
+            "postponed": 0,
+            "no_pick": 0,
+            "missing_decisions": 0,
             "format": "markdown",
             "path": str(out),
         }
@@ -291,7 +344,7 @@ def test_observation_report_cli_writes_default_markdown_path():
         _assert_markdown_forbidden_terms_absent(content)
 
 
-def test_observation_report_sanitizes_scalar_event_and_grade_fields():
+def test_observation_report_ignores_legacy_payload_and_rejects_old_decision():
     snapshot = _snapshot()
     leaking_match = json.loads(json.dumps(snapshot["matches"][0], ensure_ascii=False))
     leaking_match["source_event_id"] = "provider_payload_event"
@@ -317,36 +370,33 @@ def test_observation_report_sanitizes_scalar_event_and_grade_fields():
             "reasons": [],
         },
     ]
+    leaking_match["match_decision"] = {
+        "schema_version": 1,
+        "label": "STRONG_VALUE",
+        "market": "AH",
+        "selection": "away",
+        "line": 0.5,
+        "odds": 1.91,
+        "p_hit_safe": 0.62,
+        "p_no_loss_safe": 0.7,
+        "reasons": ["official_value_signal", "provider_payload"],
+    }
     snapshot["matches"] = [leaking_match]
 
     report = build_observation_report(snapshot, generated_at="2026-06-29T10:40:00Z")
 
     match = report["matches"][0]
     assert match["source_event_id"] in (None, "")
-    assert match["signals"] == [
-        {
-            "market_type": "1X2_90min",
-            "selection": "home",
-            "grade": "",
-            "raw_grade": "S",
-            "ev": 0.12,
-            "edge": 0.08,
-            "status": "OK",
-            "reasons": ["ah_not_supporting_1x2"],
-        },
-        {
-            "market_type": "1X2_90min",
-            "selection": "away",
-            "grade": "S",
-            "raw_grade": "",
-            "ev": 0.09,
-            "edge": 0.04,
-            "status": "OK",
-            "reasons": [],
-        },
-    ]
+    assert match["match_decision"] == {
+        "schema_version": 2,
+        "label": "NO_CLEAN_MARKET",
+    }
 
     report_text = json.dumps(report, ensure_ascii=False, sort_keys=True)
+    assert "signals" not in report_text
+    assert "grade" not in report_text.lower()
+    assert "STRONG_VALUE" not in report_text
+    assert "official_value_signal" not in report_text
     _assert_forbidden_terms_absent(report_text)
     markdown = format_observation_markdown(report)
     _assert_markdown_forbidden_terms_absent(markdown)
@@ -381,10 +431,11 @@ def load_tests(loader, tests, pattern):
     return unittest.TestSuite(
         unittest.FunctionTestCase(test_func)
         for test_func in (
-            test_build_observation_report_sanitizes_snapshot_and_counts_caps,
+            test_build_observation_report_sanitizes_snapshot_and_counts_decisions,
             test_format_observation_markdown_is_reviewable_and_research_only,
             test_default_observation_report_path_uses_cache_timestamp,
+            test_observation_report_counts_no_pick_and_missing_decision_separately,
             test_observation_report_cli_writes_default_markdown_path,
-            test_observation_report_sanitizes_scalar_event_and_grade_fields,
+            test_observation_report_ignores_legacy_payload_and_rejects_old_decision,
         )
     )

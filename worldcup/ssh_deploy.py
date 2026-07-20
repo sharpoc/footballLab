@@ -21,6 +21,7 @@ DEFAULT_NGINX_SERVICE = "nginx"
 DEFAULT_REF = "HEAD"
 DEFAULT_SSH_TIMEOUT = 15
 DEFAULT_HTTP_TIMEOUT = 15
+DEFAULT_REMOTE_READYZ_URL = "http://127.0.0.1:8788/readyz"
 DEFAULT_REMOTE_PY_COMPILE = ("worldcup/query.py", "worldcup/http_app.py")
 DISCLAIMER = "仅用于研究分析，不构成投注建议"
 FORBIDDEN_PUBLIC_TERMS = (
@@ -187,6 +188,7 @@ def _deploy_script(
     service: str,
     nginx_service: str,
     py_compile_files: tuple[str, ...],
+    readyz_url: str,
     rollback_on_fail: bool,
 ) -> str:
     tmp = f"{release}.tmp.deploy"
@@ -217,11 +219,37 @@ def _deploy_script(
             'ln -sfn "$release" "$current"',
             'systemctl restart "$service"',
             'service_status=$(systemctl is-active "$service")',
+            (
+                "python3 - "
+                f"{shlex.quote(readyz_url)} <<'PY'\n"
+                "import json\n"
+                "import sys\n"
+                "import time\n"
+                "from urllib.request import urlopen\n"
+                "url = sys.argv[1]\n"
+                "deadline = time.monotonic() + 30\n"
+                "last_error = 'not_attempted'\n"
+                "while time.monotonic() < deadline:\n"
+                "    try:\n"
+                "        with urlopen(url, timeout=3) as response:\n"
+                "            payload = json.loads(response.read(20000).decode('utf-8'))\n"
+                "        if response.status == 200 and payload.get('status') == 'ready':\n"
+                "            break\n"
+                "        last_error = f'status={response.status}; payload_status={payload.get(\"status\")}'\n"
+                "    except Exception as exc:\n"
+                "        last_error = type(exc).__name__\n"
+                "    time.sleep(1)\n"
+                "else:\n"
+                "    raise SystemExit(f'readyz_warmup_failed: {last_error}')\n"
+                "PY"
+            ),
+            'readyz_warmup=ok',
             'nginx_status=$(systemctl is-active "$nginx_service")',
             'current_target=$(readlink -f "$current" 2>/dev/null || true)',
             'printf "previous_release=%s\\n" "$previous"',
             'printf "release=%s\\n" "$release"',
             'printf "service_status=%s\\n" "$service_status"',
+            'printf "readyz_warmup=%s\\n" "$readyz_warmup"',
             'printf "nginx_status=%s\\n" "$nginx_status"',
             'printf "current_target=%s\\n" "$current_target"',
         ]
@@ -399,6 +427,7 @@ def run_ssh_deploy(
         service=service,
         nginx_service=nginx_service,
         py_compile_files=DEFAULT_REMOTE_PY_COMPILE,
+        readyz_url=DEFAULT_REMOTE_READYZ_URL,
         rollback_on_fail=rollback_on_fail,
     )
     ssh_args = [

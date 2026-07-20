@@ -9,6 +9,7 @@ from worldcup.ledger import (
     competition_label_for_match,
     competition_options,
     derive_quality_status,
+    format_team_label,
     format_market_label,
     format_percent,
     format_probability,
@@ -168,6 +169,43 @@ def test_build_summary_metrics_counts_signal_grades():
     assert metrics["stale_sources"]["value"] == 1
     assert metrics["overall_quality"]["value"] == "预警"
     assert metrics["grade_counts"]["value"] == {"A": 1}
+
+
+def test_project_signal_rows_hides_stale_unfinished_matches_from_live_view():
+    snapshot = _snapshot()
+    snapshot["snapshot_at"] = "2026-07-05T23:42:38+00:00"
+    stale = deepcopy(snapshot["matches"][0])
+    stale.update(
+        {
+            "competition": {"id": "csl_2026", "name": "中超 2026"},
+            "kickoff_at_utc": "2026-07-03T12:00:00+00:00",
+            "home_team": "Yunnan Yukun",
+            "away_team": "Henan FC",
+        }
+    )
+    upcoming = deepcopy(stale)
+    upcoming.update(
+        {
+            "kickoff_at_utc": "2026-07-06T12:00:00+00:00",
+            "home_team": "Beijing FC",
+            "away_team": "Shandong Luneng Taishan FC",
+        }
+    )
+    snapshot["matches"] = [stale, upcoming]
+
+    rows = project_signal_rows(snapshot)
+    metrics = build_summary_metrics(snapshot)
+
+    assert [row["matchup"] for row in rows] == ["北京国安 对 山东泰山"]
+    assert metrics["upcoming_matches"]["value"] == 1
+
+
+def test_format_team_label_uses_csl_chinese_names():
+    assert format_team_label("Yunnan Yukun") == "云南玉昆"
+    assert format_team_label("Henan FC") == "河南队"
+    assert format_team_label("Shanghai SIPG FC") == "上海海港"
+    assert format_team_label("Beijing FC") == "北京国安"
+    assert format_team_label("Shandong Luneng Taishan FC") == "山东泰山"
 
 
 def test_project_signal_rows_expands_signals_without_money_fields():
@@ -694,12 +732,84 @@ def test_summary_metrics_include_sa_record_when_finished_present():
     assert metrics["upcoming_matches"]["value"] == 1
 
 
+def test_summary_metrics_include_match_decision_record():
+    snapshot = _snapshot_with_finished()
+    base = deepcopy(snapshot["finished"]["matches"][0])
+    snapshot["finished"]["matches"] = [
+        {
+            **deepcopy(base),
+            "closing_match_decision": {
+                "label": "HIGH_CONFIDENCE_LEAN",
+                "market": "1X2",
+                "selection": "home",
+            },
+        },
+        {
+            **deepcopy(base),
+            "kickoff_at_utc": "2026-06-12T19:00:00+00:00",
+            "home_team": "Canada",
+            "away_team": "Qatar",
+            "result": {"home_score": 1, "away_score": 1},
+            "closing_match_decision": {
+                "label": "VALUE_CANDIDATE",
+                "market": "OU",
+                "selection": "over",
+                "line": 2.5,
+            },
+        },
+        {
+            **deepcopy(base),
+            "kickoff_at_utc": "2026-06-13T19:00:00+00:00",
+            "home_team": "Brazil",
+            "away_team": "Japan",
+            "result": {"home_score": 1, "away_score": 0},
+            "closing_match_decision": {
+                "label": "HIGH_CONFIDENCE_LEAN",
+                "market": "AH",
+                "selection": "away",
+                "line": 1.0,
+            },
+        },
+        {
+            **deepcopy(base),
+            "kickoff_at_utc": "2026-06-14T19:00:00+00:00",
+            "home_team": "England",
+            "away_team": "Wales",
+            "result": {"home_score": 0, "away_score": 0},
+            "closing_match_decision": {"label": "NO_CLEAN_MARKET"},
+        },
+    ]
+
+    metrics = build_summary_metrics(snapshot)
+
+    assert metrics["match_decision_record"]["label"] == "本场首选战绩"
+    assert (
+        metrics["match_decision_record"]["value"]
+        == "命中 1 · 未中 1 · 走水 1 · 命中率 50%"
+    )
+    assert metrics["match_decision_record"]["detail"] == {
+        "hit": 1,
+        "miss": 1,
+        "push": 1,
+        "no_pick": 1,
+        "actionable": 3,
+        "decided": 2,
+    }
+
+
 def test_build_finished_view_groups_by_beijing_day():
     view = build_finished_view(_snapshot_with_finished())
 
     assert len(view["days"]) == 1
     assert view["summary"]["match_count"] == 1
-    assert view["summary"]["signal_count"] == 2
+    assert "signal_count" not in view["summary"]
+    assert view["summary"]["decision_tally"] == {
+        "hit": 0,
+        "miss": 0,
+        "push": 0,
+        "no_pick": 0,
+    }
+    assert view["summary"]["coverage"]["missing_decision_count"] == 1
     assert view["summary"]["skipped_no_closing"] == 0
     assert view["summary"]["sample"]["sample_too_small"] is True
     day = view["days"][0]

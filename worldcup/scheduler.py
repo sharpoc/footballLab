@@ -16,6 +16,9 @@ DEFAULT_INTERVAL_SECONDS = 86400
 QUOTA_LOW_REMAINING = 30
 QUOTA_LOW_INTERVAL_SECONDS = 86400
 POST_INFORMATION_ODDS_REASON = "post_information_odds_required"
+PICK_EXPIRY_REASON = "pick_expiry_guard"
+PRE_MATCH_COMPLETE_REASON = "pre_match_refresh_complete"
+PICK_EXPIRY_REFRESH_LEAD_SECONDS = 20 * 60
 CRITICAL_LOW_QUOTA_ANCHORS = {
     "pre_90m_lineup_warmup",
     "pre_55m_lineup_main",
@@ -155,6 +158,30 @@ def _post_information_odds_payload(match: dict[str, Any], now: datetime) -> dict
     }
 
 
+def _pick_expiry_guard_at(
+    match: dict[str, Any],
+    *,
+    kickoff_at: datetime,
+    last_refresh_at: datetime | None,
+    quota_remaining: int | None,
+) -> datetime | None:
+    if quota_remaining is not None and quota_remaining <= QUOTA_LOW_REMAINING:
+        return None
+    decision = match.get("match_decision")
+    if not isinstance(decision, dict) or decision.get("label") != "MATCH_PICK":
+        return None
+    valid_until = _parse_optional_utc(decision.get("valid_until"))
+    if valid_until is None:
+        return None
+    guard_at = min(
+        valid_until - timedelta(seconds=PICK_EXPIRY_REFRESH_LEAD_SECONDS),
+        kickoff_at,
+    )
+    if last_refresh_at is not None and last_refresh_at >= guard_at:
+        return None
+    return guard_at
+
+
 def _align_cadence_due_to_kickoff_clock(
     cadence_due: datetime,
     kickoff_at: datetime,
@@ -260,15 +287,33 @@ def build_match_refresh_plan(
     cadence_due = last_dt + timedelta(seconds=interval_seconds)
     cadence_next = _align_cadence_due_to_kickoff_clock(cadence_due, kickoff_dt)
     cadence_label, cadence_description = _cadence_label(cadence_reason, interval_seconds)
-    candidates.append(
-        (
-            cadence_next,
-            1,
-            cadence_reason,
-            cadence_label,
-            cadence_description,
+    if cadence_next < kickoff_dt:
+        candidates.append(
+            (
+                cadence_next,
+                1,
+                cadence_reason,
+                cadence_label,
+                cadence_description,
+            )
         )
+
+    expiry_guard_at = _pick_expiry_guard_at(
+        match,
+        kickoff_at=kickoff_dt,
+        last_refresh_at=last_dt,
+        quota_remaining=quota_remaining,
     )
+    if expiry_guard_at is not None and expiry_guard_at < kickoff_dt:
+        candidates.append(
+            (
+                now_dt if expiry_guard_at <= now_dt else expiry_guard_at,
+                -1,
+                PICK_EXPIRY_REASON,
+                "首选鲜度保底",
+                "在当前首选过期前刷新赔率并重新发布",
+            )
+        )
 
     low_quota = quota_remaining is not None and 0 < quota_remaining <= QUOTA_LOW_REMAINING
     for offset_seconds, reason, label, description in MATCH_ANCHORS:
@@ -286,6 +331,17 @@ def build_match_refresh_plan(
                 description,
             )
         )
+
+    if not candidates:
+        return {
+            **base,
+            "next_update_at": None,
+            "policy_reason": PRE_MATCH_COMPLETE_REASON,
+            "label": "临场更新已完成",
+            "description": "等待开赛，赛前不再自动刷新",
+            "interval_seconds": interval_seconds,
+            "should_refresh": False,
+        }
 
     next_dt, _priority, reason, label, description = min(candidates, key=lambda item: (item[0], item[1]))
     return {

@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from worldcup.collectors.team_aliases import canonicalize_team
 from worldcup.notifications import send_wxpusher_notification
+from worldcup.query import project_match_decision
 
 DEFAULT_LINEUPS_PATH = "data/cache/lineups_wc2026.json"
 DEFAULT_SNAPSHOT_PATH = "data/cache/analysis_snapshot.json"
@@ -141,10 +142,6 @@ def _first_post_information_entry(
     return None
 
 
-def _strong_signal_count(match: dict[str, Any]) -> int:
-    return sum(1 for signal in match.get("signals") or [] if signal.get("grade") in ("S", "A"))
-
-
 def _starting_count(match: dict[str, Any], side: str) -> int:
     block = match.get(side) if isinstance(match.get(side), dict) else {}
     starting = block.get("starting")
@@ -163,6 +160,7 @@ def _lineup_row(lineup_match: dict[str, Any], snapshots: list[dict[str, Any]]) -
     first_post = _first_post_information_entry(entries)
     shadow_snapshot, shadow_match, shadow = first_shadow if first_shadow is not None else ({}, {}, {})
     post_snapshot, post_match, post_shadow = first_post if first_post is not None else ({}, {}, {})
+    decision_match = post_match or shadow_match
 
     entered_snapshot = first_shadow is not None
     post_information = first_post is not None
@@ -196,7 +194,7 @@ def _lineup_row(lineup_match: dict[str, Any], snapshots: list[dict[str, Any]]) -
         "odds_observed_at": post_shadow.get("odds_observed_at") or shadow.get("odds_observed_at"),
         "latest_matched_snapshot_at": entries[-1][0].get("snapshot_at") if entries else None,
         "latest_matched_odds_updated_at": entries[-1][1].get("odds_updated_at") if entries else None,
-        "strong_signal_count": _strong_signal_count(post_match or shadow_match),
+        "match_decision": project_match_decision(decision_match.get("match_decision")),
         "issue_flags": issue_flags,
     }
 

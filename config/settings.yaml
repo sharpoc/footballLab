@@ -21,9 +21,44 @@ ensemble:
   w_elo: 0.5
   w_poisson: 0.5
 
+csl_model:
+  rating_activation: shadow_only
+  min_total_matches: 300
+  min_team_matches: 30
+  rating_k: 30
+  home_adv: 100
+  mu_total: 2.6
+  mu_market_weight: 0.7
+  w_elo: 0.5
+  w_poisson: 0.5
+  latest_season_min_matches: 100
+  market_baseline_min_matches: 200
+
 odds:
   min_books: 3
   outlier_ratio: 2.0
+
+match_decision:
+  min_books: 3
+  odds_max_age_seconds: 12600
+  future_quote_tolerance_seconds: 300
+  dispersion_ratio_max: 1.18
+  min_odds: 1.30
+  max_odds: 2.20
+  min_p_hit_safe: 0.58
+  min_p_no_loss_safe: 0.62
+  worldcup_model_weight: 0.20
+  worldcup_market_weight: 0.80
+  default_model_weight: 0.45
+  default_market_weight: 0.55
+  thin_market_penalty: 0.03
+  dispersion_unknown_penalty: 0.03
+  severe_dispersion_penalty: 0.04
+  internal_disagreement_penalty: 0.03
+  quarter_line_penalty: 0.03
+  extreme_handicap_penalty: 0.04
+  rating_fallback_penalty: 0.04
+  near_top_hit_tolerance: 0.02
 
 quality:
   disagreement_prob_delta: 0.12
