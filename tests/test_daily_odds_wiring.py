@@ -64,7 +64,7 @@ def _payload():
         ],
         "skipped": {},
         "excluded_rescheduled_events": [],
-        "opaque_provider_data": {"items": [{"key": "redacted"}]},
+        "raw_bookmaker_payload": {"bookmakers": [{"key": "secret-book"}]},
     }
 
 
@@ -81,8 +81,8 @@ def test_daily_snapshot_writer_is_atomic_isolated_and_does_not_store_raw_bookmak
         assert stored["namespace"] == "daily_odds"
         assert stored["requests"][0]["sport_key"] == "soccer_china_superleague"
         assert stored["requests"][0]["internal"]["odds_movement"]["activation"] == "shadow_only"
-        assert "opaque_provider_data" not in json.dumps(stored)
-        assert "bookmaker" not in json.dumps(stored).lower()
+        assert "raw_bookmaker_payload" not in json.dumps(stored)
+        assert "bookmakers" not in json.dumps(stored)
         assert not list(path.parent.glob("*.tmp"))
         assert not (root / "analysis_snapshot.json").exists()
 
@@ -206,7 +206,7 @@ def test_scheduled_daily_odds_explicit_live_calls_injected_odds_and_writer_only(
         sports_fetcher=lambda: [{"key": "soccer_china_superleague", "active": True}],
         events_fetcher=lambda sport_key: _events()[sport_key],
         odds_fetcher=lambda sport_key, markets: calls.append((sport_key, markets))
-        or {"opaque_provider_data": [{"key": "redacted"}]},
+        or {"bookmakers": [{"key": "raw"}]},
         snapshot_writer=lambda payload: writes.append(payload),
         quota_remaining_by_key={"soccer_china_superleague": 10},
     )
@@ -214,6 +214,5 @@ def test_scheduled_daily_odds_explicit_live_calls_injected_odds_and_writer_only(
     assert result["status"] == "refreshed"
     assert calls == [("soccer_china_superleague", ("h2h",))]
     assert len(writes) == 1
-    assert "opaque_provider_data" not in json.dumps(writes[0])
-    assert "bookmaker" not in json.dumps(writes[0]).lower()
+    assert "bookmakers" not in json.dumps(writes[0])
     assert writes[0]["requests"][0]["fixtures"][0]["event_id"] == "event-1"
