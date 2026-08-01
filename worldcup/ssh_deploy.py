@@ -22,7 +22,11 @@ DEFAULT_REF = "HEAD"
 DEFAULT_SSH_TIMEOUT = 15
 DEFAULT_HTTP_TIMEOUT = 15
 DEFAULT_REMOTE_READYZ_URL = "http://127.0.0.1:8788/readyz"
-DEFAULT_REMOTE_PY_COMPILE = ("worldcup/query.py", "worldcup/http_app.py")
+DEFAULT_REMOTE_PY_COMPILE = ("worldcup/query.py", "worldcup/http_app.py", "worldcup/nginx_routes.py")
+DEFAULT_NGINX_SITE_CONFIG = "/etc/nginx/sites-available/football.celab.xin.conf"
+DEFAULT_NGINX_SNIPPET_PATH = "/etc/nginx/snippets/worldcup-daily-picks.conf"
+DEFAULT_NGINX_BACKUP_DIR = "/root/nginx-backups"
+DEFAULT_NGINX_TEMPLATE_PATH = "deploy/nginx/worldcup-daily-picks.conf"
 DISCLAIMER = "仅用于研究分析，不构成投注建议"
 FORBIDDEN_PUBLIC_TERMS = (
     "stake",
@@ -190,8 +194,13 @@ def _deploy_script(
     py_compile_files: tuple[str, ...],
     readyz_url: str,
     rollback_on_fail: bool,
+    nginx_site_config: str = DEFAULT_NGINX_SITE_CONFIG,
+    nginx_snippet_path: str = DEFAULT_NGINX_SNIPPET_PATH,
+    nginx_backup_dir: str = DEFAULT_NGINX_BACKUP_DIR,
+    nginx_template_path: str = DEFAULT_NGINX_TEMPLATE_PATH,
 ) -> str:
     tmp = f"{release}.tmp.deploy"
+    nginx_template = f"{release}/{nginx_template_path}"
     compile_paths = " ".join(f'"$tmp/{path}"' for path in py_compile_files)
     rollback_trap = ""
     if rollback_on_fail:
@@ -245,6 +254,14 @@ def _deploy_script(
             ),
             'readyz_warmup=ok',
             'nginx_status=$(systemctl is-active "$nginx_service")',
+            (
+                "PYTHONPATH=\"$release\" python3 -m worldcup.nginx_routes --install "
+                f"--site-config {shlex.quote(nginx_site_config)} "
+                f"--snippet-path {shlex.quote(nginx_snippet_path)} "
+                f"--snippet-source {shlex.quote(nginx_template)} "
+                f"--backup-dir {shlex.quote(nginx_backup_dir)} "
+                f"--nginx-service \"$nginx_service\""
+            ),
             'current_target=$(readlink -f "$current" 2>/dev/null || true)',
             'printf "previous_release=%s\\n" "$previous"',
             'printf "release=%s\\n" "$release"',

@@ -4,6 +4,15 @@
 
 历史归档：[docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md](docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md)（164 条）
 
+## 2026-08-01 生产 Nginx 每日精选路由纳入 Git
+
+- 新增版本化模板 `deploy/nginx/worldcup-daily-picks.conf`，只声明 `/api/daily-picks`、`/daily-picks`、`/api/daily-picks-sidecar`、`/daily-picks-sidecar` 四个 `location =`，统一代理到 `127.0.0.1:8788`；不扩大 `location /`，不含证书、secret、token、账号或 `.env`。
+- 新增 `worldcup.nginx_routes`：只在目标 `server_name football.celab.xin` 中移除这四个旧 exact location 并加入一个 managed include；snippet/site 原子替换，先备份到 `/root/nginx-backups`，幂等时无副作用，`nginx -t` 失败不 reload 并恢复旧文件，reload 失败也恢复旧文件并尝试旧配置恢复 reload。
+- `worldcup.ssh_deploy` live 远端流程接入 release 内模板和安装器；保持既有 bind-address、release/current 原子切换、旧路由、service restart、readyz warmup、公网 smoke 与 rollback 语义不变。dry-run 仍只读 Git，不 archive、SSH、写远端 Nginx 或 reload。
+- TDD 新增 `tests/test_nginx_routes.py`，覆盖四个 exact route、模板安全、规范化幂等、备份/原子安装、`nginx -t` 失败恢复且不 reload、reload 失败恢复、ssh deploy 接线和 dry-run 无副作用。
+- 验证：定向 Nginx 测试 `9/9` 通过；项目 runtime `951/951 passed, 1 optional fastapi skipped`；未访问生产、未 live deploy、未调用 provider、未读取 `.env`、未消耗 credits。
+
+
 ## 2026-07-20 15:36 UTC+8 readiness profile 拆分 + 部署 + RECENT_WORK 归档
 
 - 本地功能：`worldcup/readiness.py` 新增 `--profile` (full/server/publisher) 和 `--env-path` 参数；893 tests passed，1 optional module skipped (fastapi)。

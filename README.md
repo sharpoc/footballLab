@@ -541,7 +541,7 @@ python3 -m worldcup.ops_daily_report --format json
 python3 -m worldcup.ssh_deploy
 ```
 
-真实部署必须显式加 `--live`；部署使用本地 `git archive` 通过 SSH stdin 上传到 `/opt/worldcup/releases/<commit>`，远端 `py_compile` 关键 HTTP/query 文件后原子切换 `/opt/worldcup/current`，重启 `worldcup.service`，先在 ECS 本机请求 `http://127.0.0.1:8788/readyz` warmup 最新 public view，再公网 smoke `/healthz`、`/api/matches` 和 `/preview`；这样不需要把 `/readyz` 加到 Nginx 公网白名单，也能降低重启后第一波重页面请求风险。如需 smoke 失败自动回滚到上一 release：
+真实部署必须显式加 `--live`；部署使用本地 `git archive` 通过 SSH stdin 上传到 `/opt/worldcup/releases/<commit>`，远端 `py_compile` 关键 HTTP/query 文件后原子切换 `/opt/worldcup/current`，重启 `worldcup.service`，先在 ECS 本机请求 `http://127.0.0.1:8788/readyz` warmup 最新 public view，再由版本化 `deploy/nginx/worldcup-daily-picks.conf` 通过 `worldcup.nginx_routes` 只管理四个 Nginx exact route：`/api/daily-picks`、`/daily-picks`、`/api/daily-picks-sidecar`、`/daily-picks-sidecar`。Nginx 安装器只改目标 `server_name football.celab.xin` 中这四个 route，使用原子替换、`/root/nginx-backups` 备份、`nginx -t`，仅测试成功后 reload；幂等时不备份、不 reload，测试或 reload 失败会恢复旧 site/snippet。最后再公网 smoke `/healthz`、`/api/matches` 和 `/preview`；这样不需要把 `/readyz` 加到 Nginx 公网白名单，也能降低重启后第一波重页面请求风险。如需 smoke 失败自动回滚到上一 release：
 
 ```bash
 python3 -m worldcup.ssh_deploy --live --rollback-on-fail
@@ -663,7 +663,7 @@ DATABASE_URL=
 ## 下一步
 
 1. Gate C HTTPS 已完成：`https://football.celab.xin/` 对外展示研究台账。
-2. 公网开放 `/`、`/preview`、`/api/matches`、`/api/finished`、`/daily-picks`、`/api/daily-picks`、`/healthz`、`/api/ingest/snapshot`；`/api/snapshot/latest` 返回 404；`/readyz` 是应用内部 warmup 路由，当前不经 Nginx 公网开放。
+2. 公网开放 `/`、`/preview`、`/api/matches`、`/api/finished`、`/daily-picks`、`/api/daily-picks`、`/daily-picks-sidecar`、`/api/daily-picks-sidecar`、`/healthz`、`/api/ingest/snapshot`；`/api/snapshot/latest` 返回 404；`/readyz` 是应用内部 warmup 路由，当前不经 Nginx 公网开放。
 3. 本机 `launchd` 已启用 `xin.celab.football.scheduled-publish`，每 15 分钟唤醒一次；真正刷新/发布仍由 scheduler due 判断控制。
 4. 本机 `launchd` 已启用 `xin.celab.football.pre-match`，每 300 秒运行 lineups-only 赛前首发轮询和首发链路审计通知；不带 `--live-refresh`，不会自动刷新 odds。
 5. 下一步观察首轮 due 后的刷新、线上 ingest、Nginx/systemd 日志、certbot 自动续期和赛前首发轮询日志。
