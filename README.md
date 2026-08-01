@@ -67,6 +67,17 @@
 - 当前 HMAC secret helper 只打印 `INGEST_HMAC_SECRET=<value>`，不会写 `.env`
 - 当前公网 MVP 使用 HTTP app + SQLite + Nginx HTTPS；FastAPI、PostgreSQL/RDS、OSS/CDN 都是可选升级，不是单用户 MVP 首发必需项
 
+### 每日精选（动态主路径）
+
+- 当前每日精选公开入口为 `/daily-picks` 与 `/api/daily-picks`，主路径是动态 HTTP/FastAPI；它们复用现有 snapshot、`project_match_rows()` 等 public safe projection 和 scheduled refresh/publish，不重新生成或改变旧单场 `match_decision`。
+- 每个推荐周期按 `Asia/Shanghai` 计算为 `[18:00, 次日18:00)`，内部统一使用 timezone-aware UTC；Top 4 是当前周期内所有“已启用且已验证真实数据链路”的联赛候选中的全局 Top 4，不是每个联赛各取 4 场。
+- `2串1` 与 `3串1` 只从同一组全局 Top 4 生成，过滤同场多个玩法和同一球队重复；页面显示“独立性近似组合分数”，不是校准后的联合概率，不显示金额，也不提供下注或执行建议。
+- 当前 20 个联赛覆盖目录状态为：17 个已完成真实 provider `/sports` + `/events` 验证并进入 `enabled`（中超、英超、英冠、德甲、德乙、法甲、意甲、西甲、瑞典超、挪超、丹超、芬超、墨西哥超、J 联赛、K 联赛、巴西甲、美职联）；墨西哥甲、澳超、阿根廷超继续 `code_reserved` / fail-closed。英超确认使用 `soccer_epl`，德甲确认使用 `soccer_germany_bundesliga`；未知 provider ID / sport key 仍不猜测、不模拟。
+- 每日精选不自动启动独立赔率 scheduler、quota ledger 或 LaunchAgent；新增的 `worldcup.daily_odds_refresh` 是默认不运行的注入式 sidecar：先读取 `/sports` 的 exact active `sport_key`，再读取 `/events` 发现未来赛程；同一 `sport_key` 的相近比赛在同一调度波次只调用一次 `/odds`，不同 key 分别调用。T-6h/T-90m 只取 `h2h`，T-25m 取 `h2h,spreads,totals`；每 key/anchor 幂等去重，已开赛、无未来赛程、inactive/provider_unavailable、改期 kickoff 不一致或 quota 不足时 fail-closed。该 sidecar 只生成可注入的赔率刷新/风险元数据，`odds_movement` 保持 `shadow_only`，不参与 Top4/组合排序、tie-break 或旧单场 `match_decision`，也不公开 raw bookmaker/odds；静态 export 尚未扩展。
+- 每日精选 sidecar 现支持独立 `daily_odds_snapshot.json` production pipeline：显式 `enabled=True, live=True` 时，同一 `sport_key + anchor` 只调用一次注入式 `odds_fetcher`，该响应同时生成标准化 event rows、全局 Top4、2串1、3串1 和 sidecar 菜单；T-6/T-90 只请求 `h2h`，T-25 请求 `h2h,spreads,totals`。标准化结果写入 `data/cache/daily_odds/daily_odds_snapshot.json`，使用原子替换并只保存 schema、北京时间周期、event/球队、必要 markets、model/market probability、edge、selection reason、last update、quota 摘要和 fail-closed 原因，不保存 raw provider payload、bookmaker 明细、API key 或 secret。
+- sidecar 使用独立 `daily_odds_state.json` 提交 `sport_key|anchor` 幂等键：只有 snapshot writer 成功后才提交，进程重启可复用已提交键；provider response 不完整、h2h 缺失、event identity/重复 ID/改期、赔率过期、quota unknown/不足或日预算不足时 fail-closed，部分失败只保留失败 key 重跑。默认 dry-run/disabled，不注册旧 scheduler 或 LaunchAgent，也不改变旧 `analysis_snapshot.json`、`project_daily_picks(snapshot)`、旧 `/api/daily-picks` 和 `/daily-picks`。
+- sidecar 只读入口为 `/api/daily-picks-sidecar` 与 `/daily-picks-sidecar`，页面刷新只读取已生成快照，不联网；旧单场菜单和 API 保持原契约。sidecar 的组合只来自同一全局 Top4，过滤同 event/同球队冲突，显示独立性近似组合分数，不显示资金或执行建议。
+
 ## 目录结构
 
 ```text
@@ -652,7 +663,7 @@ DATABASE_URL=
 ## 下一步
 
 1. Gate C HTTPS 已完成：`https://football.celab.xin/` 对外展示研究台账。
-2. 公网开放 `/`、`/preview`、`/api/matches`、`/healthz`、`/api/ingest/snapshot`；`/api/snapshot/latest` 返回 404；`/readyz` 是应用内部 warmup 路由，当前不经 Nginx 公网开放。
+2. 公网开放 `/`、`/preview`、`/api/matches`、`/api/finished`、`/daily-picks`、`/api/daily-picks`、`/healthz`、`/api/ingest/snapshot`；`/api/snapshot/latest` 返回 404；`/readyz` 是应用内部 warmup 路由，当前不经 Nginx 公网开放。
 3. 本机 `launchd` 已启用 `xin.celab.football.scheduled-publish`，每 15 分钟唤醒一次；真正刷新/发布仍由 scheduler due 判断控制。
 4. 本机 `launchd` 已启用 `xin.celab.football.pre-match`，每 300 秒运行 lineups-only 赛前首发轮询和首发链路审计通知；不带 `--live-refresh`，不会自动刷新 odds。
 5. 下一步观察首轮 due 后的刷新、线上 ingest、Nginx/systemd 日志、certbot 自动续期和赛前首发轮询日志。

@@ -397,14 +397,44 @@ def _render_view_tabs() -> str:
 
 def _render_primary_nav(*, decision_only: bool = False) -> str:
     items = (
-        ["研究台账", "赛程", "数据", "模型", "本场首选", "设置"]
+        [
+            ("单场分析", "/preview"),
+            ("赛程", None),
+            ("数据", None),
+            ("模型", None),
+            ("每日精选", "/daily-picks"),
+            ("设置", None),
+        ]
         if decision_only
-        else ["研究台账", "赛程", "数据", "模型", "价值分歧", "设置"]
+        else [
+            ("单场分析", "/preview"),
+            ("赛程", None),
+            ("数据", None),
+            ("模型", None),
+            ("价值分歧", None),
+            ("设置", None),
+        ]
     )
     links = []
-    for index, label in enumerate(items):
+    for index, (label, href) in enumerate(items):
         active = " active" if index == 0 else ""
-        links.append('<span class="primary-nav-item{active}">{label}</span>'.format(active=active, label=_text(label)))
+        current = ' aria-current="page"' if index == 0 else ""
+        if href:
+            links.append(
+                '<a class="primary-nav-item{active}"{current} href="{href}">{label}</a>'.format(
+                    active=active,
+                    current=current,
+                    href=_text(href),
+                    label=_text(label),
+                )
+            )
+        else:
+            links.append(
+                '<span class="primary-nav-item{active}">{label}</span>'.format(
+                    active=active,
+                    label=_text(label),
+                )
+            )
     return '<nav class="primary-nav" aria-label="主导航">{}</nav>'.format("".join(links))
 
 

@@ -129,7 +129,33 @@ def _store_snapshot(db_path: Path):
     )
 
 
-def test_fastapi_build_store_from_env_defaults_to_sqlite():
+def test_fastapi_get_daily_picks_returns_safe_projection_and_html_route():
+    store = MemorySnapshotStore(latest={"snapshot": _snapshot()})
+    app = create_fastapi_app(db_path="unused.db", secret="test-hmac-secret", store=store)
+    client = TestClient(app)
+
+    api_response = client.get("/api/daily-picks")
+    html_response = client.get("/daily-picks")
+
+    assert api_response.status_code == 200
+    body = api_response.json()
+    assert body["selected_count"] == 0
+    assert "coverage" in body
+    assert "signals" not in api_response.text
+    assert "grade" not in api_response.text.lower()
+    assert html_response.status_code == 200
+    assert html_response.headers["content-type"].startswith("text/html")
+    assert "每日精选" in html_response.text
+    assert 'href="/preview"' in html_response.text
+
+
+def test_fastapi_daily_picks_missing_snapshot_returns_404_for_both_routes():
+    app = create_fastapi_app(db_path="unused.db", secret="test-hmac-secret", store=MemorySnapshotStore())
+    client = TestClient(app)
+    assert client.get("/api/daily-picks").status_code == 404
+    assert client.get("/daily-picks").status_code == 404
+
+
     store = build_store_from_env(
         env={},
         db_path="data/local/worldcup.db",
