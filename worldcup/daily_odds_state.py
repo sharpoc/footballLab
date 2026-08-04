@@ -4,7 +4,6 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
 
 
 class DailyOddsState:
@@ -26,8 +25,7 @@ class DailyOddsState:
     def __contains__(self, key: str) -> bool:
         return key in self.keys
 
-    def commit(self, key: str) -> None:
-        self.keys.add(str(key))
+    def persist(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "schema_version": 1,
@@ -56,6 +54,10 @@ class DailyOddsState:
             except OSError:
                 pass
             raise
+
+    def commit(self, key: str) -> None:
+        self.keys.add(str(key))
+        self.persist()
 
 
 def default_daily_odds_state_path(cache_dir: str | Path = "data/cache") -> Path:

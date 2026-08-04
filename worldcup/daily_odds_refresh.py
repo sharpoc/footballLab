@@ -693,6 +693,8 @@ def refresh_daily_odds(
         written = True
     for state_key in successful:
         _state_add(state, state_key)
+    if hasattr(state, "persist"):
+        state.persist()
     return DailyOddsRefreshResult(
         generated_at=now_dt.isoformat(),
         provider_catalog=plan.provider_catalog,

@@ -137,8 +137,8 @@ def test_http_reader_uses_explicit_daily_data_dir():
 
 
 def test_systemd_sidecar_assets_are_installed_but_timer_disabled_by_default():
-    service = Path("deploy/systemd/worldcup-daily-odds.service").read_text(encoding="utf-8")
-    timer = Path("deploy/systemd/worldcup-daily-odds.timer").read_text(encoding="utf-8")
+    service = Path("deploy/systemd/worldcup-daily-sidecar.service").read_text(encoding="utf-8")
+    timer = Path("deploy/systemd/worldcup-daily-sidecar.timer").read_text(encoding="utf-8")
     assert "worldcup.daily_sidecar" in service
     assert "/var/lib/worldcup/daily_odds" in service
     assert "--live" in service

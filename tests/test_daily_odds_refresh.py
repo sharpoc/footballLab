@@ -286,3 +286,34 @@ def test_source_events_url_preserves_existing_odds_url_contract():
     assert parse_qs(events.query) == {"apiKey": ["key"]}
     odds = urlparse(build_worldcup_odds_url("key"))
     assert parse_qs(odds.query)["markets"] == ["h2h,spreads,totals"]
+
+
+def test_zero_due_wave_atomically_persists_empty_daily_odds_state():
+    import json
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+
+    from worldcup.daily_odds_state import DailyOddsState
+
+    with TemporaryDirectory() as tmp:
+        state_path = Path(tmp) / "daily_odds_state.json"
+        state = DailyOddsState(state_path)
+        result = refresh_daily_odds(
+            now="2026-08-04T03:00:00+00:00",
+            sports_fetcher=lambda: _sports(("soccer_china_superleague", True, "CSL")),
+            events_fetcher=lambda _sport_key: [],
+            odds_fetcher=lambda *_args: (_ for _ in ()).throw(
+                AssertionError("zero due wave must not call odds")
+            ),
+            snapshot_writer=lambda _payload: None,
+            state=state,
+            quota_remaining_by_key={"soccer_china_superleague": 85},
+        )
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        assert result.request_count == 0
+        assert payload == {
+            "committed_keys": [],
+            "namespace": "daily_odds_state",
+            "schema_version": 1,
+        }
+        assert not list(state_path.parent.glob("*.tmp"))
