@@ -7,7 +7,7 @@
 - 在基线 `648b042` 上新增 `worldcup.daily_sidecar` production CLI：默认 dry-run 零 provider 调用；显式 `--live` 才读取三槽 key、按 quota 选择 provider，并接入 `/sports`、`/events`、`/odds` 到既有 `run_daily_odds_refresh` / `refresh_daily_odds`。daily budget 上限 85，provider/凭证/校验失败 fail-closed，输出只报槽位与 present/absent，不输出 secret。
 - 新增显式 `--data-dir` / `WORLDCUP_DAILY_ODDS_DATA_DIR`：生产使用 `/var/lib/worldcup/daily_odds`，HTTP reader 与 writer 同一路径；保留 atomic snapshot/state、单实例 lock 与旧 `analysis_snapshot.json` / `/api/daily-picks` 链路隔离。
 - 新增 Git 管理的 `deploy/systemd/worldcup-daily-sidecar.service` / `.timer`；SSH release 部署安装 unit、创建持久目录、`daemon-reload` 并明确 `disable` timer，不自动启用。live 成功、公网验收后才 enable。
-- TDD 红灯先验证缺失 production module；实现后 sidecar/deploy 聚焦回归通过，待完整 runner、commit 与授权 ECS live 验收。
+- TDD 红灯先验证缺失 production module；实现后 sidecar/deploy 聚焦回归通过，完整 runner 最终 `954/954 passed`（1 个可选 FastAPI 模块跳过）。本地提交依次为 `9e247e1`、`b001495`、`48558db`、`9d16749`，最终 release `/opt/worldcup/releases/9d167494be68d97cfab1252127a84709e3ccbd07` 已部署并保留前一 release `/opt/worldcup/releases/48558db62bc46477aca3bc49a240e41feb1ed0aa` 作为回滚点；远端三槽凭证均 present、HMAC present、sidecar snapshot/state 权限为 `worldcup:worldcup`，zero-due live 验收 `estimated_credits=0`，公网 sidecar/旧路由与 readyz 通过，timer 已 enable 且 active。
 
 历史归档：[docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md](docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md)（164 条）
 
