@@ -1,0 +1,11 @@
+[Unit]
+Description=Run worldcup daily odds sidecar refresh
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+RandomizedDelaySec=60
+Unit=worldcup-daily-sidecar.service
+
+[Install]
+WantedBy=timers.target

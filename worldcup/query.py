@@ -510,10 +510,19 @@ def project_finished_rows(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_daily_sidecar_snapshot(
-    path: str | Path = "data/cache/daily_odds/daily_odds_snapshot.json",
+    path: str | Path | None = None,
 ) -> dict[str, Any] | None:
     from worldcup.daily_odds_refresh import load_daily_odds_payload
 
+    if path is None:
+        import os
+
+        configured = os.environ.get("WORLDCUP_DAILY_ODDS_DATA_DIR", "").strip()
+        path = (
+            Path(configured) / "daily_odds_snapshot.json"
+            if configured
+            else Path("data/cache/daily_odds/daily_odds_snapshot.json")
+        )
     return load_daily_odds_payload(path)
 
 

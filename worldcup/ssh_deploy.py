@@ -22,11 +22,17 @@ DEFAULT_REF = "HEAD"
 DEFAULT_SSH_TIMEOUT = 15
 DEFAULT_HTTP_TIMEOUT = 15
 DEFAULT_REMOTE_READYZ_URL = "http://127.0.0.1:8788/readyz"
-DEFAULT_REMOTE_PY_COMPILE = ("worldcup/query.py", "worldcup/http_app.py", "worldcup/nginx_routes.py")
+DEFAULT_REMOTE_PY_COMPILE = ("worldcup/query.py", "worldcup/http_app.py", "worldcup/nginx_routes.py", "worldcup/daily_sidecar.py")
 DEFAULT_NGINX_SITE_CONFIG = "/etc/nginx/sites-available/football.celab.xin.conf"
 DEFAULT_NGINX_SNIPPET_PATH = "/etc/nginx/snippets/worldcup-daily-picks.conf"
 DEFAULT_NGINX_BACKUP_DIR = "/root/nginx-backups"
 DEFAULT_NGINX_TEMPLATE_PATH = "deploy/nginx/worldcup-daily-picks.conf"
+DEFAULT_SIDECAR_SERVICE = "worldcup-daily-sidecar.service"
+DEFAULT_SIDECAR_TIMER = "worldcup-daily-sidecar.timer"
+DEFAULT_SIDECAR_DATA_DIR = "/var/lib/worldcup/daily_odds"
+DEFAULT_SIDECAR_UNIT_SERVICE = "deploy/systemd/worldcup-daily-sidecar.service"
+DEFAULT_SIDECAR_UNIT_TIMER = "deploy/systemd/worldcup-daily-sidecar.timer"
+DEFAULT_SIDECAR_DROPIN = "deploy/systemd/worldcup.service.d/daily-odds.conf"
 DISCLAIMER = "仅用于研究分析，不构成投注建议"
 FORBIDDEN_PUBLIC_TERMS = (
     "stake",
@@ -198,9 +204,18 @@ def _deploy_script(
     nginx_snippet_path: str = DEFAULT_NGINX_SNIPPET_PATH,
     nginx_backup_dir: str = DEFAULT_NGINX_BACKUP_DIR,
     nginx_template_path: str = DEFAULT_NGINX_TEMPLATE_PATH,
+    sidecar_service: str = DEFAULT_SIDECAR_SERVICE,
+    sidecar_timer: str = DEFAULT_SIDECAR_TIMER,
+    sidecar_data_dir: str = DEFAULT_SIDECAR_DATA_DIR,
+    sidecar_unit_service: str = DEFAULT_SIDECAR_UNIT_SERVICE,
+    sidecar_unit_timer: str = DEFAULT_SIDECAR_UNIT_TIMER,
+    sidecar_dropin: str = DEFAULT_SIDECAR_DROPIN,
 ) -> str:
     tmp = f"{release}.tmp.deploy"
     nginx_template = f"{release}/{nginx_template_path}"
+    sidecar_service_source = f"{release}/{sidecar_unit_service}"
+    sidecar_timer_source = f"{release}/{sidecar_unit_timer}"
+    sidecar_dropin_source = f"{release}/{sidecar_dropin}"
     compile_paths = " ".join(f'"$tmp/{path}"' for path in py_compile_files)
     rollback_trap = ""
     if rollback_on_fail:
@@ -226,6 +241,14 @@ def _deploy_script(
             f"python3 -m py_compile {compile_paths}",
             'if [ ! -d "$release" ]; then mv "$tmp" "$release"; else rm -rf "$tmp"; fi',
             'ln -sfn "$release" "$current"',
+            f'mkdir -p {shlex.quote(sidecar_data_dir)}',
+            f'chown worldcup:worldcup {shlex.quote(sidecar_data_dir)}',
+            f'install -o root -g root -m 0644 {shlex.quote(sidecar_service_source)} /etc/systemd/system/{shlex.quote(sidecar_service)}',
+            f'install -o root -g root -m 0644 {shlex.quote(sidecar_timer_source)} /etc/systemd/system/{shlex.quote(sidecar_timer)}',
+            f'install -d -o root -g root -m 0755 /etc/systemd/system/worldcup.service.d',
+            f'install -o root -g root -m 0644 {shlex.quote(sidecar_dropin_source)} /etc/systemd/system/worldcup.service.d/daily-odds.conf',
+            'systemctl daemon-reload',
+            f'systemctl disable {shlex.quote(sidecar_timer)} || true',
             'systemctl restart "$service"',
             'service_status=$(systemctl is-active "$service")',
             (
@@ -389,6 +412,10 @@ def run_ssh_deploy(
     service: str = DEFAULT_SERVICE,
     nginx_service: str = DEFAULT_NGINX_SERVICE,
     rollback_on_fail: bool = False,
+    sidecar_service: str = DEFAULT_SIDECAR_SERVICE,
+    sidecar_timer: str = DEFAULT_SIDECAR_TIMER,
+    sidecar_data_dir: str = DEFAULT_SIDECAR_DATA_DIR,
+    sidecar_dropin: str = DEFAULT_SIDECAR_DROPIN,
     ssh_timeout: int = DEFAULT_SSH_TIMEOUT,
     http_timeout: int = DEFAULT_HTTP_TIMEOUT,
     command_timeout: int = 60,
@@ -446,6 +473,10 @@ def run_ssh_deploy(
         py_compile_files=DEFAULT_REMOTE_PY_COMPILE,
         readyz_url=DEFAULT_REMOTE_READYZ_URL,
         rollback_on_fail=rollback_on_fail,
+        sidecar_service=sidecar_service,
+        sidecar_timer=sidecar_timer,
+        sidecar_data_dir=sidecar_data_dir,
+        sidecar_dropin=sidecar_dropin,
     )
     ssh_args = [
             "ssh",
@@ -514,6 +545,9 @@ def main(
     parser.add_argument("--current", default=DEFAULT_CURRENT_SYMLINK)
     parser.add_argument("--service", default=DEFAULT_SERVICE)
     parser.add_argument("--nginx-service", default=DEFAULT_NGINX_SERVICE)
+    parser.add_argument("--sidecar-service", default=DEFAULT_SIDECAR_SERVICE)
+    parser.add_argument("--sidecar-timer", default=DEFAULT_SIDECAR_TIMER)
+    parser.add_argument("--sidecar-data-dir", default=DEFAULT_SIDECAR_DATA_DIR)
     parser.add_argument("--ssh-timeout", type=int, default=DEFAULT_SSH_TIMEOUT)
     parser.add_argument("--http-timeout", type=int, default=DEFAULT_HTTP_TIMEOUT)
     parser.add_argument("--command-timeout", type=int, default=60)
@@ -537,6 +571,9 @@ def main(
         service=args.service,
         nginx_service=args.nginx_service,
         rollback_on_fail=args.rollback_on_fail,
+        sidecar_service=args.sidecar_service,
+        sidecar_timer=args.sidecar_timer,
+        sidecar_data_dir=args.sidecar_data_dir,
         ssh_timeout=args.ssh_timeout,
         http_timeout=args.http_timeout,
         command_timeout=args.command_timeout,

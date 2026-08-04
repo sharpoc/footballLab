@@ -148,6 +148,12 @@ def test_live_deploy_uploads_archive_restarts_and_smokes_public_routes() -> None
     assert "time.monotonic() + 30" in remote_script
     assert "time.sleep(1)" in remote_script
     assert "systemctl restart" in remote_script
+    assert "worldcup-daily-sidecar.service" in remote_script
+    assert "worldcup-daily-sidecar.timer" in remote_script
+    assert "/var/lib/worldcup/daily_odds" in remote_script
+    assert "systemctl daemon-reload" in remote_script
+    assert 'systemctl disable worldcup-daily-sidecar.timer' in remote_script
+    assert 'systemctl enable "$sidecar_timer"' not in remote_script
 
 
 def test_live_deploy_does_not_require_public_readyz_route() -> None:
