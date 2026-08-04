@@ -150,7 +150,8 @@ def test_live_deploy_uploads_archive_restarts_and_smokes_public_routes() -> None
     assert "systemctl restart" in remote_script
     assert "worldcup-daily-sidecar.service" in remote_script
     assert "worldcup-daily-sidecar.timer" in remote_script
-    assert "/var/lib/worldcup/daily_odds" in remote_script
+    assert "chmod 0750 /var/lib/worldcup/daily_odds" in remote_script
+    assert "find /var/lib/worldcup/daily_odds -maxdepth 1 -type f" in remote_script
     assert "systemctl daemon-reload" in remote_script
     assert 'systemctl disable worldcup-daily-sidecar.timer' in remote_script
     assert 'systemctl enable "$sidecar_timer"' not in remote_script

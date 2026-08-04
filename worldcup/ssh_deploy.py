@@ -243,6 +243,8 @@ def _deploy_script(
             'ln -sfn "$release" "$current"',
             f'mkdir -p {shlex.quote(sidecar_data_dir)}',
             f'chown worldcup:worldcup {shlex.quote(sidecar_data_dir)}',
+            f'chmod 0750 {shlex.quote(sidecar_data_dir)}',
+            f'find {shlex.quote(sidecar_data_dir)} -maxdepth 1 -type f -exec chown worldcup:worldcup {{}} + -exec chmod 0640 {{}} +',
             f'install -o root -g root -m 0644 {shlex.quote(sidecar_service_source)} /etc/systemd/system/{shlex.quote(sidecar_service)}',
             f'install -o root -g root -m 0644 {shlex.quote(sidecar_timer_source)} /etc/systemd/system/{shlex.quote(sidecar_timer)}',
             f'install -d -o root -g root -m 0755 /etc/systemd/system/worldcup.service.d',
