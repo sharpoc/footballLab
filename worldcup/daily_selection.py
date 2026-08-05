@@ -252,6 +252,27 @@ def _sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def filter_daily_candidates(
+    rows: Iterable[dict[str, Any]],
+    *,
+    now: str | datetime,
+    enabled_competition_ids: Iterable[str],
+) -> tuple[tuple[dict[str, Any], ...], int]:
+    now_utc = _now_utc(now)
+    window = compute_daily_selection_window(now_utc)
+    enabled = {str(value) for value in enabled_competition_ids}
+    candidates: list[dict[str, Any]] = []
+    excluded = 0
+    for original in rows:
+        row = original if isinstance(original, dict) else {}
+        reason = _exclude_reason(row, now_utc, window, enabled)
+        if reason is not None:
+            excluded += 1
+            continue
+        candidates.append(deepcopy(row))
+    return tuple(candidates), excluded
+
+
 def select_daily_top4(
     rows: Iterable[dict[str, Any]],
     *,
@@ -260,16 +281,12 @@ def select_daily_top4(
 ) -> DailySelectionResult:
     now_utc = _now_utc(now)
     window = compute_daily_selection_window(now_utc)
-    enabled = {str(value) for value in enabled_competition_ids}
-    selected: list[dict[str, Any]] = []
-    excluded = 0
-    for original in rows:
-        row = original if isinstance(original, dict) else {}
-        reason = _exclude_reason(row, now_utc, window, enabled)
-        if reason is not None:
-            excluded += 1
-            continue
-        selected.append(_public_selection_row(row))
+    candidates, excluded = filter_daily_candidates(
+        rows,
+        now=now_utc,
+        enabled_competition_ids=enabled_competition_ids,
+    )
+    selected = [_public_selection_row(row) for row in candidates]
     selected.sort(key=_sort_key)
     candidate_count = len(selected)
     selected = selected[:4]

@@ -14,7 +14,7 @@ from worldcup.daily_competitions import (
     daily_competition_catalog,
     resolve_provider_catalog,
 )
-from worldcup.daily_selection import compute_daily_selection_window
+from worldcup.daily_selection import compute_daily_selection_window, filter_daily_candidates
 from worldcup.combination_selection import build_combination_research
 from worldcup.daily_selection import select_daily_top4
 from worldcup.engine.odds import aggregate_market
@@ -68,6 +68,7 @@ class DailyOddsRefreshResult:
     successful_keys: tuple[str, ...] = ()
     failed_keys: tuple[str, ...] = ()
     estimated_credits: int = 0
+    combinations: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +86,7 @@ class DailyOddsRefreshResult:
             "top4": [dict(item) for item in self.top4],
             "successful_keys": list(self.successful_keys),
             "failed_keys": list(self.failed_keys),
+            "combinations": dict(self.combinations or {"parlay_2": [], "parlay_3": []}),
         }
 
 
@@ -145,6 +147,43 @@ def _safe_event_identity(event: dict[str, Any]) -> tuple[str, datetime, str, str
     )
 
 
+def _event_is_invalidated(raw: Mapping[str, Any]) -> bool:
+    status = str(raw.get("fixture_status") or raw.get("status") or "").strip().upper()
+    return (
+        status in {"POSTPONED", "CANCELLED", "CANCELED", "FINISHED", "COMPLETED"}
+        or raw.get("cancelled") is True
+        or raw.get("canceled") is True
+        or raw.get("is_cancelled") is True
+    )
+
+
+def _observed_event_state(
+    events_by_sport: Mapping[str, Any],
+) -> tuple[dict[str, set[tuple[str, datetime, str, str]]], set[str]]:
+    identities: dict[str, set[tuple[str, datetime, str, str]]] = {}
+    invalidated: set[str] = set()
+    for raw_events in events_by_sport.values():
+        if not isinstance(raw_events, Iterable) or isinstance(raw_events, (str, bytes, Mapping)):
+            continue
+        for raw in raw_events:
+            if not isinstance(raw, Mapping):
+                continue
+            event_id = str(raw.get("id") or raw.get("event_id") or "").strip()
+            if not event_id:
+                continue
+            identity = _safe_event_identity(dict(raw))
+            if identity is None:
+                invalidated.add(event_id)
+                continue
+            identities.setdefault(event_id, set()).add(identity)
+            if _event_is_invalidated(raw):
+                invalidated.add(event_id)
+    for event_id, values in identities.items():
+        if len(values) > 1:
+            invalidated.add(event_id)
+    return identities, invalidated
+
+
 def _future_events(
     events: Iterable[dict[str, Any]],
     now: datetime,
@@ -152,7 +191,7 @@ def _future_events(
     by_id: dict[str, set[datetime]] = {}
     identities: dict[tuple[str, datetime], tuple[str, str]] = {}
     invalid = 0
-    local_date = now.astimezone(BEIJING_ZONE).date()
+    window = compute_daily_selection_window(now)
     for raw in events:
         if not isinstance(raw, dict):
             invalid += 1
@@ -170,7 +209,7 @@ def _future_events(
         if event_id in rescheduled:
             continue
         kickoff = next(iter(kickoffs))
-        if kickoff <= now or kickoff.astimezone(BEIJING_ZONE).date() != local_date:
+        if kickoff <= now or not (window.start_at_utc <= kickoff < window.end_at_utc):
             continue
         home, away = identities[(event_id, kickoff)]
         if not home or not away:
@@ -179,6 +218,74 @@ def _future_events(
         valid.append((event_id, kickoff, home, away))
     valid.sort(key=lambda item: (item[1], item[0]))
     return valid, rescheduled, invalid
+
+
+def _load_previous_cycle_events(
+    snapshot_path: str | Path | None,
+    *,
+    now_dt: datetime,
+    enabled_competition_ids: Iterable[str],
+) -> list[dict[str, Any]]:
+    if snapshot_path is None:
+        return []
+    previous = load_daily_odds_payload(snapshot_path)
+    if previous is None:
+        return []
+    cycle = previous.get("cycle")
+    if not isinstance(cycle, Mapping):
+        return []
+    current_cycle = compute_daily_selection_window(now_dt)
+    if (
+        str(cycle.get("start_at_utc") or "") != current_cycle.start_at_utc.isoformat()
+        or str(cycle.get("end_at_utc") or "") != current_cycle.end_at_utc.isoformat()
+    ):
+        return []
+    candidates, _excluded = filter_daily_candidates(
+        previous.get("events") or [],
+        now=now_dt,
+        enabled_competition_ids=enabled_competition_ids,
+    )
+    return [dict(item) for item in candidates]
+
+
+def _merge_daily_events(
+    previous: Iterable[dict[str, Any]],
+    current: Iterable[dict[str, Any]],
+    *,
+    invalidated_event_ids: Iterable[str] = (),
+) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
+    merged: dict[str, dict[str, Any]] = {}
+    excluded_rescheduled: set[str] = set()
+    invalidated = {str(value) for value in invalidated_event_ids if str(value)}
+    for row in previous:
+        identity = _safe_event_identity(row)
+        if identity is None:
+            continue
+        event_id = identity[0]
+        if event_id in invalidated:
+            continue
+        merged.setdefault(event_id, dict(row))
+    for row in current:
+        identity = _safe_event_identity(row)
+        if identity is None:
+            continue
+        event_id = identity[0]
+        if event_id in invalidated:
+            continue
+        old = merged.get(event_id)
+        if old is not None and _safe_event_identity(old) != identity:
+            merged.pop(event_id, None)
+            excluded_rescheduled.add(event_id)
+            continue
+        merged[event_id] = dict(row)
+    result = sorted(
+        merged.values(),
+        key=lambda item: (
+            _parse_utc(item.get("kickoff_at_utc")) or datetime.max.replace(tzinfo=UTC),
+            str(item.get("event_id") or ""),
+        ),
+    )
+    return result, tuple(sorted(excluded_rescheduled))
 
 
 def _current_anchor(kickoff: datetime, now: datetime) -> tuple[str, tuple[str, ...]] | None:
@@ -612,6 +719,7 @@ def refresh_daily_odds(
     state: Any = None,
     catalog: Iterable[DailyCompetition] | None = None,
     daily_budget_credits: int | None = None,
+    snapshot_path: str | Path | None = None,
 ) -> DailyOddsRefreshResult:
     """Run one explicit, injected daily odds refresh wave without auto scheduling."""
     now_dt = _require_utc(now)
@@ -642,6 +750,7 @@ def refresh_daily_odds(
     events: list[dict[str, Any]] = []
     successful: list[str] = []
     failed: list[str] = []
+    observed_identities, invalidated_event_ids = _observed_event_state(events_by_sport)
     for request in plan.requests:
         sport_key = str(request["sport_key"])
         state_key = str(
@@ -656,7 +765,10 @@ def refresh_daily_odds(
         if error is not None:
             _add_skip(skipped, sport_key, error)
             failed.append(state_key)
+            invalidated_event_ids.update(str(value) for value in request.get("event_ids") or [])
             rows = []
+        if error is None and not rows:
+            invalidated_event_ids.update(str(value) for value in request.get("event_ids") or [])
         request_copy = {
             key: value
             for key, value in request.items()
@@ -678,7 +790,30 @@ def refresh_daily_odds(
         if error is None:
             successful.append(state_key)
 
-    payload, top4, _result_payload = _build_daily_payload(
+    enabled_ids = tuple(
+        item.competition_id
+        for item in plan.provider_catalog
+        if item.status == "enabled" and item.competition_id
+    )
+    previous_events = _load_previous_cycle_events(
+        snapshot_path,
+        now_dt=now_dt,
+        enabled_competition_ids=enabled_ids,
+    )
+    for previous in previous_events:
+        identity = _safe_event_identity(previous)
+        if identity is None:
+            continue
+        observed = observed_identities.get(identity[0])
+        if observed and identity not in observed:
+            invalidated_event_ids.add(identity[0])
+    events, carried_rescheduled = _merge_daily_events(
+        previous_events,
+        events,
+        invalidated_event_ids=excluded_rescheduled | invalidated_event_ids,
+    )
+    excluded_rescheduled.update(carried_rescheduled)
+    payload, top4, result_payload = _build_daily_payload(
         now_dt=now_dt,
         plan=plan,
         requests=requests,
@@ -708,6 +843,7 @@ def refresh_daily_odds(
         successful_keys=tuple(successful),
         failed_keys=tuple(failed),
         estimated_credits=sum(int(item.get("estimated_credits") or 0) for item in requests),
+        combinations=result_payload["combinations"],
     )
 
 

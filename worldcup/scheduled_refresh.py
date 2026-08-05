@@ -193,6 +193,7 @@ def run_daily_odds_refresh(
         state=committed_state,
         catalog=catalog,
         daily_budget_credits=daily_budget_credits,
+        snapshot_path=snapshot_path or default_daily_odds_snapshot_path(cache_dir),
     )
     return {
         "status": "refreshed",

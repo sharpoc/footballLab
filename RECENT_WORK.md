@@ -2,7 +2,12 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
-## 2026-08-04 每日精选 sidecar production adapter
+## 2026-08-05 daily sidecar cycle candidate carry-forward
+
+- 修正 `worldcup.daily_odds_refresh._future_events`：按与 selection 共用的 `Asia/Shanghai` `[18:00, 次日18:00)` 半开 cycle 过滤，仍要求 `kickoff > now`；cycle 外、改期冲突和无效 identity 继续 fail-closed。
+- 每 wave 使用同 cycle 旧 `daily_odds_snapshot.json` 的 event rows 作为候选池：先复用现有 selection gate 清除已开赛、过期、延期/取消、改期、cycle 外和不再可结算候选，再按稳定 event identity 合并本 wave rows，重新生成 Top4、2串1、3串1；不复制旧最终榜单，provider 解析/identity/market 失败或空响应不复活旧 event，跨 cycle 不复用。
+- 新增/更新 daily 离线回归，覆盖次日凌晨 discovery、cycle 外排除、zero-due 保留并重算、过期/开赛/切 cycle 清理、延期/失败不复活、同 event 替换去重；本阶段未联网、未读取真实 `.env`、未调用 provider、未改旧单场 `/api/daily-picks`、旧 scheduler 或 LaunchAgent。
+
 
 - 在基线 `648b042` 上新增 `worldcup.daily_sidecar` production CLI：默认 dry-run 零 provider 调用；显式 `--live` 才读取三槽 key、按 quota 选择 provider，并接入 `/sports`、`/events`、`/odds` 到既有 `run_daily_odds_refresh` / `refresh_daily_odds`。daily budget 上限 85，provider/凭证/校验失败 fail-closed，输出只报槽位与 present/absent，不输出 secret。
 - 新增显式 `--data-dir` / `WORLDCUP_DAILY_ODDS_DATA_DIR`：生产使用 `/var/lib/worldcup/daily_odds`，HTTP reader 与 writer 同一路径；保留 atomic snapshot/state、单实例 lock 与旧 `analysis_snapshot.json` / `/api/daily-picks` 链路隔离。

@@ -68,14 +68,14 @@ def test_verified_seventeen_leagues_resolve_when_all_exact_provider_keys_are_act
 def test_same_sport_key_two_events_are_one_request_and_one_snapshot_wave():
     calls = []
     writes = []
-    now = "2026-08-01T06:00:00+00:00"
+    now = "2026-08-01T12:00:00+00:00"
 
     result = refresh_daily_odds(
         now=now,
         sports_fetcher=lambda: _sports(("soccer_china_superleague", True, "CSL")),
         events_fetcher=lambda sport_key: [
-            _event("a", "2026-08-01T11:00:00Z"),
-            _event("b", "2026-08-01T11:30:00Z"),
+            _event("a", "2026-08-01T18:00:00Z"),
+            _event("b", "2026-08-01T18:30:00Z"),
         ],
         odds_fetcher=lambda sport_key, markets: calls.append((sport_key, markets)) or {"events": []},
         snapshot_writer=lambda payload: writes.append(payload),
@@ -113,9 +113,9 @@ def test_writer_failure_does_not_commit_idempotency_state():
         raise OSError("disk full")
 
     kwargs = dict(
-        now="2026-08-01T06:00:00+00:00",
+        now="2026-08-01T12:00:00+00:00",
         sports_fetcher=lambda: _sports(("soccer_china_superleague", True, "CSL")),
-        events_fetcher=lambda sport_key: [_event("same", "2026-08-01T11:00:00Z")],
+        events_fetcher=lambda sport_key: [_event("same", "2026-08-01T18:00:00Z")],
         odds_fetcher=lambda sport_key, markets: calls.append((sport_key, markets)) or {"events": []},
         snapshot_writer=writer,
         quota_remaining_by_key={"soccer_china_superleague": 10},
@@ -136,20 +136,20 @@ def test_writer_failure_does_not_commit_idempotency_state():
 def test_refresh_result_and_snapshot_include_standardized_daily_fields():
     writes = []
     result = refresh_daily_odds(
-        now="2026-08-01T06:00:00+00:00",
+        now="2026-08-01T12:00:00+00:00",
         sports_fetcher=lambda: _sports(("soccer_china_superleague", True, "CSL")),
-        events_fetcher=lambda sport_key: [_event("same", "2026-08-01T11:00:00Z")],
+        events_fetcher=lambda sport_key: [_event("same", "2026-08-01T18:00:00Z")],
         odds_fetcher=lambda sport_key, markets: {
             "events": [
                 {
                     "id": "same",
-                    "commence_time": "2026-08-01T11:00:00Z",
+                    "commence_time": "2026-08-01T18:00:00Z",
                     "home_team": "A",
                     "away_team": "B",
                     "bookmakers": [
                         {
                             "key": "book-a",
-                            "last_update": "2026-08-01T05:59:00Z",
+                            "last_update": "2026-08-01T11:59:00Z",
                             "markets": [
                                 {
                                     "key": "h2h",
@@ -180,12 +180,12 @@ def test_refresh_result_and_snapshot_include_standardized_daily_fields():
 def test_different_sport_keys_are_separate_requests_in_one_wave():
     calls = []
     events = {
-        "soccer_china_superleague": [_event("csl", "2026-08-01T11:00:00Z")],
-        "soccer_epl": [_event("epl", "2026-08-01T11:00:00Z")],
+        "soccer_china_superleague": [_event("csl", "2026-08-01T18:00:00Z")],
+        "soccer_epl": [_event("epl", "2026-08-01T18:00:00Z")],
     }
 
     result = refresh_daily_odds(
-        now="2026-08-01T06:00:00+00:00",
+        now="2026-08-01T12:00:00+00:00",
         sports_fetcher=lambda: _sports(
             ("soccer_china_superleague", True, "CSL"),
             ("soccer_epl", True, "EPL"),
@@ -207,7 +207,7 @@ def test_different_sport_keys_are_separate_requests_in_one_wave():
 
 def test_anchor_markets_are_h2h_then_full_markets_at_t25():
     calls = []
-    event = _event("same", "2026-08-01T12:00:00Z")
+    event = _event("same", "2026-08-01T18:00:00Z")
     state = set()
     base = dict(
         sports_fetcher=lambda: _sports(("soccer_china_superleague", True, "CSL")),
@@ -217,9 +217,9 @@ def test_anchor_markets_are_h2h_then_full_markets_at_t25():
         state=state,
     )
 
-    refresh_daily_odds(now="2026-08-01T06:00:00+00:00", **base)
-    refresh_daily_odds(now="2026-08-01T10:30:00+00:00", **base)
-    refresh_daily_odds(now="2026-08-01T11:35:00+00:00", **base)
+    refresh_daily_odds(now="2026-08-01T12:00:00+00:00", **base)
+    refresh_daily_odds(now="2026-08-01T16:30:00+00:00", **base)
+    refresh_daily_odds(now="2026-08-01T17:35:00+00:00", **base)
 
     assert calls == [
         ("h2h",),
@@ -233,15 +233,15 @@ def test_started_empty_duplicate_rescheduled_and_quota_blocked_events_are_safe()
     events = {
         "soccer_china_superleague": [
             _event("started", "2026-08-01T05:00:00Z"),
-            _event("duplicate", "2026-08-01T12:00:00Z"),
-            _event("duplicate", "2026-08-01T12:30:00Z"),
-            _event("quota", "2026-08-01T11:00:00Z"),
+            _event("duplicate", "2026-08-01T18:00:00Z"),
+            _event("duplicate", "2026-08-01T18:30:00Z"),
+            _event("quota", "2026-08-01T18:00:00Z"),
         ],
         "soccer_epl": [],
     }
 
     result = refresh_daily_odds(
-        now="2026-08-01T06:00:00+00:00",
+        now="2026-08-01T12:00:00+00:00",
         sports_fetcher=lambda: _sports(
             ("soccer_china_superleague", True, "CSL"),
             ("soccer_epl", True, "EPL"),
@@ -262,9 +262,9 @@ def test_each_sport_anchor_is_idempotent_with_state():
     calls = []
     state = set()
     kwargs = dict(
-        now="2026-08-01T06:00:00+00:00",
+        now="2026-08-01T12:00:00+00:00",
         sports_fetcher=lambda: _sports(("soccer_china_superleague", True, "CSL")),
-        events_fetcher=lambda sport_key: [_event("same", "2026-08-01T11:00:00Z")],
+        events_fetcher=lambda sport_key: [_event("same", "2026-08-01T18:00:00Z")],
         odds_fetcher=lambda sport_key, markets: calls.append((sport_key, markets)) or [],
         quota_remaining_by_key={"soccer_china_superleague": 10},
         state=state,
