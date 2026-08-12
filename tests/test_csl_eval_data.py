@@ -10,15 +10,17 @@ from tempfile import TemporaryDirectory
 from worldcup.club_rating import ClubResult
 from worldcup.csl_eval_data import (
     build_rows,
+    closing_match,
     closing_match_entry,
     main as csl_eval_main,
     write_csv,
 )
 
 
-def _snapshot(snapshot_at: str, odds_home: float) -> dict:
+def _snapshot(snapshot_at: str, odds_home: float, *, run_id: str | None = None) -> dict:
     return {
         "snapshot_at": snapshot_at,
+        "run": {"run_id": run_id} if run_id is not None else {},
         "competition": {"id": "csl_2026"},
         "matches": [
             {
@@ -74,6 +76,83 @@ def test_closing_picks_last_csl_snapshot_before_kickoff():
 
     assert entry is not None
     assert entry["market"]["1x2"]["odds"]["home"] == 2.4
+
+
+def test_closing_match_returns_latest_prematch_snapshot_metadata():
+    snapshots = [
+        _snapshot("2026-07-03T08:00:00+00:00", 2.2, run_id="early"),
+        _snapshot("2026-07-03T11:30:00+00:00", 2.4, run_id="closing"),
+        _snapshot("2026-07-03T12:30:00+00:00", 2.8, run_id="post-kickoff"),
+    ]
+
+    selected = closing_match(
+        snapshots,
+        "2026-07-03",
+        "yunnan_yukun",
+        "henan",
+        competition_id="csl_2026",
+    )
+
+    assert selected is not None
+    assert selected.snapshot_at == "2026-07-03T11:30:00+00:00"
+    assert selected.snapshot_run_id == "closing"
+    assert selected.entry["market"]["1x2"]["odds"]["home"] == 2.4
+
+
+def test_closing_match_entry_remains_a_dict_compatibility_wrapper():
+    snapshots = [_snapshot("2026-07-03T11:30:00+00:00", 2.4, run_id="closing")]
+
+    selected = closing_match(
+        snapshots,
+        "2026-07-03",
+        "yunnan_yukun",
+        "henan",
+        competition_id="csl_2026",
+    )
+
+    assert selected is not None
+    assert closing_match_entry(
+        snapshots,
+        "2026-07-03",
+        "yunnan_yukun",
+        "henan",
+        competition_id="csl_2026",
+    ) == selected.entry
+
+
+def test_closing_match_rejects_ineligible_snapshot_or_match_identity():
+    cases: list[tuple[str, dict, str, str, str]] = []
+
+    at_kickoff = _snapshot("2026-07-03T12:00:00+00:00", 2.4)
+    cases.append(("at kickoff", at_kickoff, "2026-07-03", "yunnan_yukun", "henan"))
+
+    after_kickoff = _snapshot("2026-07-03T12:01:00+00:00", 2.4)
+    cases.append(("after kickoff", after_kickoff, "2026-07-03", "yunnan_yukun", "henan"))
+
+    postponed = _snapshot("2026-07-03T11:30:00+00:00", 2.4)
+    postponed["matches"][0]["fixture_status"] = "POSTPONED"
+    cases.append(("postponed", postponed, "2026-07-03", "yunnan_yukun", "henan"))
+
+    other_competition = _snapshot("2026-07-03T11:30:00+00:00", 2.4)
+    other_competition["competition"] = {"id": "epl_2026_27"}
+    cases.append(
+        ("other competition", other_competition, "2026-07-03", "yunnan_yukun", "henan")
+    )
+
+    reversed_teams = _snapshot("2026-07-03T11:30:00+00:00", 2.4)
+    cases.append(("reversed teams", reversed_teams, "2026-07-03", "henan", "yunnan_yukun"))
+
+    other_date = _snapshot("2026-07-03T11:30:00+00:00", 2.4)
+    cases.append(("other date", other_date, "2026-07-04", "yunnan_yukun", "henan"))
+
+    for name, snapshot, date, home, away in cases:
+        assert closing_match(
+            [snapshot],
+            date,
+            home,
+            away,
+            competition_id="csl_2026",
+        ) is None, name
 
 
 def test_closing_never_uses_postponed_snapshot_entry():

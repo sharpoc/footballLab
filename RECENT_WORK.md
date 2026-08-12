@@ -4,6 +4,14 @@
 
 历史归档：[docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md](docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md)（164 条）
 
+## 2026-08-12 中超本地 postmatch shadow 闭环
+
+- 新增 `worldcup.csl_postmatch_shadow`：只结算 2026 赛季已验证赛果，严格选择开球前最后一份合法 closing，复用 `settle_match_decision()` / `summarize_decision_records()` 产出 decision-only tally、coverage、分组和 `p_hit_safe` Brier 校准；2023–2025 replay 仍只供评级/pending gate，不误记为当季 closing 缺口。
+- CLI 默认 dry-run 零写入；显式 `--write` 先 staging 生成 eval/backtest/gate/shadow，交叉校验后逐文件原子提升，report 倒数第二、state 最后提交，并用 report hash + input fingerprint 绑定完整成功。相同输入返回 `unchanged`，提升失败回滚旧产物并只保留安全错误码。
+- `csl_scheduled_publish` 在双源赛果接受后、odds refresh 前触发 shadow；源阻断时不运行，shadow 异常只记 `csl_postmatch_shadow_failed` warning，不阻断赛前 snapshot 生成/发布，不把 shadow 摘要持久化进常规发布 snapshot。
+- 真实 ignored 数据验收：2026 赛季 171 场已验证赛果，43 场有 closing，35 场当前策略可结算，`17 hit / 18 miss / 0 push / 0 no_pick`，命中率 48.57%，`sample_too_small=true`；8 月 9 日三场均为 `OU over 2.5`，结算 `2 hit / 1 miss`。重复写入返回 `unchanged`，report/state hash 一致，敏感/原始 provider 字段扫描为空。
+- 验证：聚焦回归 `61/61`，项目 runtime `968/968 passed, 1 optional fastapi skipped`，`py_compile` 和 `git diff --check` 通过。本阶段未读取 `.env`、未联网、未调用 The Odds API、未消耗 quota、未修改公开 API/preview、未发布、未部署、未改 LaunchAgent、未 commit/push。
+
 ## 2026-08-01 生产 Nginx 每日精选路由纳入 Git
 
 - 新增版本化模板 `deploy/nginx/worldcup-daily-picks.conf`，只声明 `/api/daily-picks`、`/daily-picks`、`/api/daily-picks-sidecar`、`/daily-picks-sidecar` 四个 `location =`，统一代理到 `127.0.0.1:8788`；不扩大 `location /`，不含证书、secret、token、账号或 `.env`。

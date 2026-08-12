@@ -109,6 +109,7 @@ worldcup/
   postmatch_diagnostics.py      # legacy 完赛等级诊断；不进入当前产品链路
   csl_results_probe.py          # 中超历史赛果本地样例清洗与双源诊断 CLI
   csl_eval_data.py              # 中超本地 snapshot × 完赛赛果 join 成回测 CSV
+  csl_postmatch_shadow.py       # 中超封盘首选结算、指纹幂等和本地 shadow 产物
   csl_ops_runner.py             # 中超本地实战闭环：dry-run、snapshot、归档、观察报告、postmatch
   lineup_audit.py               # 官方首发抓取 × snapshot/post-information odds 本地审计
   scores_capture.py             # The Odds API scores → 本地 results CSV（默认 dry-run）
@@ -224,7 +225,7 @@ HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store �
 
 ### CSL Scheduled Publish
 
-`worldcup.csl_scheduled_publish` 是中超自动刷新/发布入口。默认 dry-run 只读取本地 snapshot / quota 并输出决策，不读取 `.env`、不联网、不调用 The Odds API、不发布；只有显式 `--live` 且决策 due，或同时传 `--force`，才会读取 `.env`、刷新中超 odds、生成预测 snapshot 并 HMAC ingest 到线上。live due 时会先用 7M 赛程数组与中足联官方公开接口双源校验已完赛比分；只有日期、主客队和比分全部一致才原子更新本地 replay CSV。这两个公开源不消耗 The Odds API quota；抓取或校验失败时沿用旧 cache 并写质量警告，不阻断赔率刷新。每次成功构建的赛前 snapshot 还会自动归档到 ignored `data/local/diagnostics/csl_history/`，用于后续 closing join 和市场基准积累；归档失败会写质量警告，但不阻断当场首选发布。
+`worldcup.csl_scheduled_publish` 是中超自动刷新/发布入口。默认 dry-run 只读取本地 snapshot / quota 并输出决策，不读取 `.env`、不联网、不调用 The Odds API、不发布；只有显式 `--live` 且决策 due，或同时传 `--force`，才会读取 `.env`、刷新中超 odds、生成预测 snapshot 并 HMAC ingest 到线上。live due 时会先用 7M 赛程数组与中足联官方公开接口双源校验已完赛比分；只有日期、主客队和比分全部一致才原子更新本地 replay CSV。这两个公开源不消耗 The Odds API quota；抓取或校验失败时沿用旧 cache 并写质量警告，不阻断赔率刷新。已接受的双源赛果会在 odds refresh 前触发本地 postmatch shadow；shadow 失败只增加 `csl_postmatch_shadow_failed` warning，不改变后续刷新、发布或 quota 行为。每次成功构建的赛前 snapshot 还会自动归档到 ignored `data/local/diagnostics/csl_history/`，用于后续 closing join 和市场基准积累；归档失败会写质量警告，但不阻断当场首选发布。
 
 同一轮双源响应还会校验未完赛赛程的 `SCHEDULED` / `POSTPONED` 状态，成功后原子写入 ignored `data/cache/csl_fixture_status_csl_2026.json`；状态 cache 缺失时，runner 可以只读复用已经保存且双源一致的 `data/cache/csl_results_sources/` 原始响应。官方与 7M 对日期、主客队或状态存在分歧时不更新状态 cache，避免单源误撤首选。确认延期的场次继续保留在内部 snapshot/cache/history 供诊断和补赛重排，但 `project_match_rows()`、公开 API、预览页和静态导出会整场隐藏，不再显示“比赛延期”占位行或公开延期计数；`/readyz.match_count` 也只统计公开可见场次。该场不参与赛前锚点/首选鲜度调度、closing 或赛后评估。官方出现同一主客队的新日期后，新赛程重新按新赔率计算，赔率源仍残留的更早旧事件会被压掉，避免旧、新场次重复。结果/状态刷新失败但本地 cache 可用时会在 `data_quality.stale_sources` 标记，不静默当作新鲜状态。
 
@@ -370,6 +371,8 @@ Gate report 除聚合样本外，还分赛季报告 model / uniform / home-prior
 
 P9.15 新增中超本地赛后评估闭环，用于把已归档的 CSL league snapshot 与本地完赛赛果 join 成现有 `worldcup.backtest` 可读取的 CSV，再计算模型 vs 市场的 Brier / Log Loss / 校准等研究指标。该链路只读本地 history/results，输出到 ignored `data/local/backtest/`，不联网、不读取 `.env`、不调用 The Odds API、不消耗 quota、不发布、不部署、不更新 LaunchAgent，也不解除 `club_rating_pending`。
 
+`worldcup.csl_postmatch_shadow` 在此基础上固化 2026 赛季 decision-only 结算：每场只取严格早于开球时间的最后合法 snapshot，复用统一 `settle_match_decision()`，通过赛果、实际 closing 和安全 decision 投影生成稳定指纹。相同指纹不重算 eval/backtest/gate；state 中的 canonical report hash 与报告实际 hash 一致时，才视为一轮完整成功。它不把 2023–2025 评级 replay 误记为当季 closing 缺口，不将 legacy 等级混入当前首选命中率。
+
 要让 CSL 评估有效，必须先在赛前持续保留 opening/closing 候选 snapshot；没有开球前 snapshot 的完赛场会计入 `skipped_no_closing`，不能用来声称准确率。
 
 ```bash
@@ -393,7 +396,17 @@ P9.15 新增中超本地赛后评估闭环，用于把已归档的 CSL league sn
   --min-sample 30 \
   --warmup-matches 300 \
   --min-eval-matches 200
+
+# 3) 默认只读：计算 shadow 候选摘要，不写任何产物
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.csl_postmatch_shadow
+
+# 4) 显式本地写入：更新 ignored shadow/eval/backtest/gate/state
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.csl_postmatch_shadow --write
 ```
+
+shadow canonical 报告为 `data/local/diagnostics/csl_postmatch_shadow.json`，状态为 `csl_postmatch_shadow_state.json`，并同步更新 `data/local/backtest/csl_2026_eval.csv`、`csl_2026_report.json` 与 `data/local/diagnostics/csl_pending_gate_latest.json`。这些都是本地 ignored 研究产物，不进 `/api/finished`、preview 或线上数据库。`decision_sample.sample_too_small=true` 时只能作观察，不自动调参或解除 `club_rating_pending`。
 
 判断“准确率”时必须同时看覆盖率和命中率：优先看 `csl_2026_report.json` 中 `sample.sample_too_small`、`markets.1x2.model_matched` vs `markets.1x2.market`、`markets.1x2.uniform`、校准分箱，以及 `csl_pending_gate` 的 `checks.market_baseline_sufficient`、`checks.latest_season_model_beats_home_prior_brier`。样本不足、closing snapshot 覆盖不足或模型弱于市场/最新赛季主场先验时，只能作为观察，不能调参或解除 `club_rating_pending`；公开首选继续使用明确标记风险的市场共识兜底。
 

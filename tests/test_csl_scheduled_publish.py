@@ -255,7 +255,8 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
         diagnostics_path = root / "csl_live_league_snapshot.json"
         runner_diagnostics_path = root / "csl_live_league_runner_check.json"
         quota_path = root / "quota.json"
-        calls = {"results": 0, "refresh": 0, "publish": 0}
+        calls = {"results": 0, "shadow": 0, "refresh": 0, "publish": 0}
+        events = []
 
         _write_json(quota_path, {"providers": {"theoddsapi_secondary": {"remaining": 200}}})
 
@@ -267,6 +268,7 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
 
         def fake_refresh(**kwargs):
             calls["refresh"] += 1
+            events.append("odds")
             assert kwargs["live"] is True
             assert kwargs["competition_id"] == "csl_2026"
             return {
@@ -278,6 +280,7 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
 
         def fake_results_refresh(**kwargs):
             calls["results"] += 1
+            events.append("results")
             assert kwargs["live"] is True
             assert kwargs["write"] is True
             return {
@@ -285,6 +288,25 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
                 "verified_current_season_matches": 136,
                 "total_matches": 856,
                 "latest_result_date": "2026-07-05",
+            }
+
+        def fake_shadow(**kwargs):
+            calls["shadow"] += 1
+            events.append("shadow")
+            assert kwargs["write"] is True
+            assert kwargs["competition_id"] == "csl_2026"
+            assert kwargs["season"] == "2026"
+            assert kwargs["source_status"] == "updated"
+            assert Path(kwargs["history"]) == root / "csl_history"
+            assert Path(kwargs["results"]) == root / "club_results_csl_2026.csv"
+            return {
+                "status": "stored",
+                "competition_id": "csl_2026",
+                "results": 136,
+                "closing_available": 35,
+                "decided": 35,
+                "sample_too_small": True,
+                "input_fingerprint_prefix": "123456789abc",
             }
 
         def fake_builder(cache_dir, competition_id, snapshot_at):
@@ -317,6 +339,8 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
             runner_diagnostics_path=runner_diagnostics_path,
             load_env=fake_load_env,
             results_refresh_fn=fake_results_refresh,
+            postmatch_shadow_fn=fake_shadow,
+            postmatch_shadow_root=root,
             refresh_fn=fake_refresh,
             snapshot_builder=fake_builder,
             publish_fn=fake_publish,
@@ -328,11 +352,14 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
         archived = list((root / "csl_history").glob("snapshot_*-live.json"))
 
     assert result["status"] == "published"
-    assert calls == {"results": 1, "refresh": 1, "publish": 1}
+    assert calls == {"results": 1, "shadow": 1, "refresh": 1, "publish": 1}
+    assert events[:3] == ["results", "shadow", "odds"]
     assert result["results_refresh"]["status"] == "updated"
+    assert result["postmatch_shadow"]["status"] == "stored"
     assert result["archive"]["status"] == "created"
     assert len(archived) == 1
     assert written["run"]["run_id"] == "20260710T103000Z-csl-live"
+    assert "csl_postmatch_shadow" not in written["data_quality"]
     assert diagnostics["run"]["run_id"] == "20260710T103000Z-csl-live"
     assert runner_diagnostics["match_picks"] == 0
     assert runner_diagnostics["missing_decisions"] == 1
@@ -362,6 +389,10 @@ def test_archive_failure_warns_but_does_not_block_current_publish():
             diagnostics_snapshot_path=diagnostics_path,
             load_env=lambda _path: {"INGEST_HMAC_SECRET": "test-secret-long-enough-for-validation!!"},
             results_refresh_fn=lambda **_kwargs: {"status": "updated"},
+            postmatch_shadow_fn=lambda **_kwargs: {
+                "status": "unchanged",
+                "competition_id": "csl_2026",
+            },
             refresh_fn=lambda **_kwargs: {
                 "status": "fetched",
                 "events": 1,
@@ -395,6 +426,9 @@ def test_results_failure_marks_cached_fixture_status_stale_without_blocking_odds
         quota_path = root / "quota.json"
         _write_json(quota_path, {"providers": {"theoddsapi_secondary": {"remaining": 200}}})
 
+        def forbidden_shadow(**_kwargs):
+            raise AssertionError("blocked result source must not run postmatch shadow")
+
         result = run_csl_scheduled_publish(
             now="2026-07-10T10:30:00+00:00",
             live=True,
@@ -408,6 +442,7 @@ def test_results_failure_marks_cached_fixture_status_stale_without_blocking_odds
                 "status": "error",
                 "reason": "results_refresh_failed_using_existing_cache",
             },
+            postmatch_shadow_fn=forbidden_shadow,
             refresh_fn=lambda **_kwargs: {
                 "status": "fetched",
                 "events": 1,
@@ -426,6 +461,10 @@ def test_results_failure_marks_cached_fixture_status_stale_without_blocking_odds
         written = json.loads(snapshot_path.read_text(encoding="utf-8"))
 
     assert result["status"] == "published"
+    assert result["postmatch_shadow"] == {
+        "status": "blocked",
+        "reason": "result_source_not_accepted",
+    }
     assert "club_results_refresh_failed" in written["data_quality"]["warnings"]
     assert written["data_quality"]["stale_sources"] == [
         "csl_results",
@@ -433,8 +472,122 @@ def test_results_failure_marks_cached_fixture_status_stale_without_blocking_odds
     ]
 
 
+def test_shadow_failure_warns_without_blocking_odds_publish_or_leaking_message():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot_path = root / "csl_publish_snapshot.json"
+        diagnostics_path = root / "csl_live_league_snapshot.json"
+        quota_path = root / "quota.json"
+        calls = {"refresh": 0, "publish": 0}
+        _write_json(quota_path, {"providers": {"theoddsapi_secondary": {"remaining": 200}}})
+
+        def broken_shadow(**_kwargs):
+            raise RuntimeError("private shadow path and payload must not leak")
+
+        def fake_refresh(**_kwargs):
+            calls["refresh"] += 1
+            return {
+                "status": "fetched",
+                "events": 1,
+                "quota_entry": {"remaining": 197, "used": 303, "last": 3},
+                "theoddsapi_provider": "theoddsapi_secondary",
+            }
+
+        def fake_publish(**_kwargs):
+            calls["publish"] += 1
+            return {"status": "sent", "http_status": 200, "ingest_status": "stored"}
+
+        result = run_csl_scheduled_publish(
+            now="2026-07-10T10:30:00+00:00",
+            live=True,
+            force=True,
+            cache_dir=root,
+            quota_path=quota_path,
+            snapshot_path=snapshot_path,
+            diagnostics_snapshot_path=diagnostics_path,
+            load_env=lambda _path: {
+                "INGEST_HMAC_SECRET": "test-secret-long-enough-for-validation!!"
+            },
+            results_refresh_fn=lambda **_kwargs: {"status": "updated"},
+            postmatch_shadow_fn=broken_shadow,
+            refresh_fn=fake_refresh,
+            snapshot_builder=lambda _cache_dir, competition_id, snapshot_at: _snapshot(
+                ["2026-07-10T12:00:00+00:00"], observed_at=snapshot_at
+            ),
+            publish_fn=fake_publish,
+        )
+        written = json.loads(snapshot_path.read_text(encoding="utf-8"))
+
+    assert result["status"] == "published"
+    assert calls == {"refresh": 1, "publish": 1}
+    assert result["postmatch_shadow"] == {
+        "status": "error",
+        "reason": "csl_postmatch_shadow_failed",
+        "error_type": "RuntimeError",
+    }
+    assert written["data_quality"]["warnings"].count(
+        "csl_postmatch_shadow_failed"
+    ) == 1
+    assert "private shadow path" not in json.dumps(result)
+    assert "private shadow path" not in json.dumps(written)
+
+
+def test_shadow_runs_before_odds_refresh_failure_and_summary_is_preserved():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        quota_path = root / "quota.json"
+        events = []
+        _write_json(quota_path, {"providers": {"theoddsapi_secondary": {"remaining": 200}}})
+
+        def fake_results(**_kwargs):
+            events.append("results")
+            return {"status": "updated"}
+
+        def fake_shadow(**_kwargs):
+            events.append("shadow")
+            return {
+                "status": "stored",
+                "competition_id": "csl_2026",
+                "decided": 35,
+            }
+
+        def blocked_refresh(**_kwargs):
+            events.append("odds")
+            return {"status": "blocked", "reason": "quota_exhausted"}
+
+        result = run_csl_scheduled_publish(
+            now="2026-07-10T10:30:00+00:00",
+            live=True,
+            force=True,
+            cache_dir=root,
+            quota_path=quota_path,
+            snapshot_path=root / "csl_publish_snapshot.json",
+            diagnostics_snapshot_path=root / "csl_live_league_snapshot.json",
+            load_env=lambda _path: {
+                "INGEST_HMAC_SECRET": "test-secret-long-enough-for-validation!!"
+            },
+            results_refresh_fn=fake_results,
+            postmatch_shadow_fn=fake_shadow,
+            refresh_fn=blocked_refresh,
+            snapshot_builder=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("blocked odds refresh must not build snapshot")
+            ),
+            publish_fn=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("blocked odds refresh must not publish")
+            ),
+        )
+
+    assert result["status"] == "blocked"
+    assert events == ["results", "shadow", "odds"]
+    assert result["postmatch_shadow"] == {
+        "status": "stored",
+        "competition_id": "csl_2026",
+        "decided": 35,
+    }
+
+
 def test_csl_publish_retries_pending_snapshot_without_consuming_refresh_again():
-    calls = {"refresh": 0, "publish": 0}
+    calls = {"shadow": 0, "refresh": 0, "publish": 0}
 
     def fake_load_env(_path):
         return {
@@ -458,6 +611,12 @@ def test_csl_publish_retries_pending_snapshot_without_consuming_refresh_again():
             "total_matches": 856,
             "latest_result_date": "2026-07-05",
         }
+
+    def fake_shadow(**_kwargs):
+        calls["shadow"] += 1
+        if calls["shadow"] > 1:
+            raise AssertionError("pending publish retry must not rerun shadow")
+        return {"status": "stored", "competition_id": "csl_2026"}
 
     def fake_builder(_cache_dir, competition_id, snapshot_at):
         return _snapshot(["2026-07-12T12:00:00+00:00"], observed_at=snapshot_at)
@@ -486,6 +645,7 @@ def test_csl_publish_retries_pending_snapshot_without_consuming_refresh_again():
             diagnostics_snapshot_path=diagnostics_path,
             load_env=fake_load_env,
             results_refresh_fn=fake_results_refresh,
+            postmatch_shadow_fn=fake_shadow,
             refresh_fn=fake_refresh,
             snapshot_builder=fake_builder,
             publish_fn=fake_publish,
@@ -498,6 +658,7 @@ def test_csl_publish_retries_pending_snapshot_without_consuming_refresh_again():
             snapshot_path=snapshot_path,
             diagnostics_snapshot_path=diagnostics_path,
             load_env=fake_load_env,
+            postmatch_shadow_fn=fake_shadow,
             refresh_fn=lambda **_kwargs: (_ for _ in ()).throw(
                 AssertionError("pending publish retry must not refresh")
             ),
@@ -509,5 +670,5 @@ def test_csl_publish_retries_pending_snapshot_without_consuming_refresh_again():
 
     assert first["status"] == "publish_pending"
     assert second["status"] == "republished"
-    assert calls == {"refresh": 1, "publish": 2}
+    assert calls == {"shadow": 1, "refresh": 1, "publish": 2}
     assert pending_exists_after is False

@@ -15,6 +15,7 @@ from worldcup.quota import load_quota_ledger
 from worldcup.refresh_runner import _load_env
 from worldcup.scheduler import make_run_id
 from worldcup.csl_results_refresh import run_csl_results_refresh
+from worldcup.csl_postmatch_shadow import run_csl_postmatch_shadow
 from worldcup.csl_snapshot_archive import archive_snapshot
 from worldcup.theoddsapi_keys import LOW_QUOTA_SWITCH_THRESHOLD
 
@@ -43,6 +44,7 @@ SnapshotBuilder = Callable[..., dict[str, Any]]
 PublishFn = Callable[..., dict[str, Any]]
 ResultsRefreshFn = Callable[..., dict[str, Any]]
 ArchiveFn = Callable[..., dict[str, Any]]
+PostmatchShadowFn = Callable[..., dict[str, Any]]
 
 
 def _now_utc_iso() -> str:
@@ -408,6 +410,26 @@ def _safe_archive_summary(value: Any) -> dict[str, Any]:
     return safe
 
 
+def _safe_postmatch_shadow(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"status": "error", "reason": "invalid_postmatch_shadow_result"}
+    safe: dict[str, Any] = {"status": str(value.get("status") or "error")}
+    for key in (
+        "reason",
+        "competition_id",
+        "input_fingerprint_prefix",
+        "error_type",
+    ):
+        if value.get(key) is not None:
+            safe[key] = str(value[key])
+    for key in ("results", "closing_available", "decided"):
+        if isinstance(value.get(key), int) and not isinstance(value.get(key), bool):
+            safe[key] = value[key]
+    if isinstance(value.get("sample_too_small"), bool):
+        safe["sample_too_small"] = value["sample_too_small"]
+    return safe
+
+
 def _attach_run_metadata(
     snapshot: dict[str, Any],
     *,
@@ -509,6 +531,8 @@ def run_csl_scheduled_publish(
     snapshot_builder: SnapshotBuilder = build_league_snapshot_from_cache,
     publish_fn: PublishFn = publish_snapshot,
     results_refresh_fn: ResultsRefreshFn = run_csl_results_refresh,
+    postmatch_shadow_fn: PostmatchShadowFn = run_csl_postmatch_shadow,
+    postmatch_shadow_root: str | Path = ".",
     archive_fn: ArchiveFn = archive_snapshot,
     archive_history_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -594,6 +618,11 @@ def run_csl_scheduled_publish(
             "publish": None,
         }
 
+    history_path = (
+        Path(archive_history_path)
+        if archive_history_path is not None
+        else Path(diagnostics_snapshot_path).with_name("csl_history")
+    )
     try:
         results_refresh = _safe_results_refresh(
             results_refresh_fn(
@@ -609,6 +638,33 @@ def run_csl_scheduled_publish(
             "status": "error",
             "reason": "results_refresh_failed_using_existing_cache",
             "error_type": type(exc).__name__,
+        }
+    result_source_status = str(results_refresh.get("status") or "error")
+    if result_source_status in {"updated", "verified"}:
+        try:
+            postmatch_shadow = _safe_postmatch_shadow(
+                postmatch_shadow_fn(
+                    root=postmatch_shadow_root,
+                    history=history_path,
+                    results=Path(cache_dir)
+                    / f"club_results_{DEFAULT_COMPETITION_ID}.csv",
+                    competition_id=DEFAULT_COMPETITION_ID,
+                    season="2026",
+                    generated_at=observed,
+                    source_status=result_source_status,
+                    write=True,
+                )
+            )
+        except Exception as exc:
+            postmatch_shadow = {
+                "status": "error",
+                "reason": "csl_postmatch_shadow_failed",
+                "error_type": type(exc).__name__,
+            }
+    else:
+        postmatch_shadow = {
+            "status": "blocked",
+            "reason": "result_source_not_accepted",
         }
     refresh = refresh_fn(
         live=True,
@@ -626,6 +682,7 @@ def run_csl_scheduled_publish(
             "force": force,
             "decision": decision,
             "results_refresh": results_refresh,
+            "postmatch_shadow": postmatch_shadow,
             "refresh": refresh,
             "publish": None,
         }
@@ -642,6 +699,7 @@ def run_csl_scheduled_publish(
             "force": force,
             "decision": decision,
             "results_refresh": results_refresh,
+            "postmatch_shadow": postmatch_shadow,
             "refresh": refresh,
             "publish": None,
         }
@@ -655,6 +713,13 @@ def run_csl_scheduled_publish(
     data_quality = built.setdefault("data_quality", {})
     if isinstance(data_quality, dict):
         data_quality["club_results_refresh"] = results_refresh
+        if postmatch_shadow.get("status") == "error":
+            warnings = data_quality.setdefault("warnings", [])
+            if (
+                isinstance(warnings, list)
+                and "csl_postmatch_shadow_failed" not in warnings
+            ):
+                warnings.append("csl_postmatch_shadow_failed")
         if results_refresh.get("status") not in {"updated", "verified"}:
             warnings = data_quality.setdefault("warnings", [])
             if isinstance(warnings, list) and "club_results_refresh_failed" not in warnings:
@@ -676,11 +741,6 @@ def run_csl_scheduled_publish(
         else Path(diagnostics_snapshot_path).with_name("csl_live_league_runner_check.json")
     )
     write_snapshot(_runner_diagnostic(built), runner_path)
-    history_path = (
-        Path(archive_history_path)
-        if archive_history_path is not None
-        else Path(diagnostics_snapshot_path).with_name("csl_history")
-    )
     try:
         archive = _safe_archive_summary(
             archive_fn(
@@ -720,6 +780,7 @@ def run_csl_scheduled_publish(
             "force": force,
             "decision": decision,
             "results_refresh": results_refresh,
+            "postmatch_shadow": postmatch_shadow,
             "archive": archive,
             "refresh": refresh,
             "publish": attempted.get("publish"),
@@ -731,6 +792,7 @@ def run_csl_scheduled_publish(
         "force": force,
         "decision": decision,
         "results_refresh": results_refresh,
+        "postmatch_shadow": postmatch_shadow,
         "archive": archive,
         "refresh": {
             "status": refresh.get("status"),
