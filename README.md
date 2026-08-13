@@ -110,6 +110,8 @@ worldcup/
   csl_results_probe.py          # 中超历史赛果本地样例清洗与双源诊断 CLI
   csl_eval_data.py              # 中超本地 snapshot × 完赛赛果 join 成回测 CSV
   csl_postmatch_shadow.py       # 中超封盘首选结算、指纹幂等和本地 shadow 产物
+  csl_closing_coverage.py       # 中超 observed closing coverage 纯函数契约与全量 reconciliation
+  csl_closing_coverage_runner.py # 中超 closing coverage 本地 dry-run/ignored 原子写入 CLI
   csl_ops_runner.py             # 中超本地实战闭环：dry-run、snapshot、归档、观察报告、postmatch
   lineup_audit.py               # 官方首发抓取 × snapshot/post-information odds 本地审计
   scores_capture.py             # The Odds API scores → 本地 results CSV（默认 dry-run）
@@ -245,6 +247,25 @@ HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store �
   --env .env \
   --endpoint https://football.celab.xin/api/ingest/snapshot
 ```
+
+### CSL Closing Coverage Audit
+
+`worldcup.csl_closing_coverage_runner` 从完整已接受 `csl_2026` 赛果、双源赛程和本地 observed history 重建覆盖率报告。初始 128 个 match ID 是一次性冻结的历史重建资格 membership；`2026-06-29` 仅是生成初始清单时的 bootstrap cutoff，后续 membership 必须按固定 ID 读取，不能按日期扩张。默认命令只读本地数据、零写入，不读取 `.env`、不联网、不调用 provider、不消耗 quota、不发布也不写数据库：
+
+```bash
+# 默认 dry-run：全量读取已接受赛果、双源赛程和 observed history，零写入
+python3 -m worldcup.csl_closing_coverage_runner
+
+# 一次性冻结初始 128 场 match ID 清单（ignored 本地产物）
+python3 -m worldcup.csl_closing_coverage_runner --initial-manifest --write-initial-manifest
+
+# 原子更新 observed-only coverage 报告与 pending 恢复状态
+python3 -m worldcup.csl_closing_coverage_runner --write
+```
+
+固定清单位于 `data/local/backfill/csl_2026/initial_missing_manifest.json`；canonical `data/local/diagnostics/csl_closing_coverage.json` 每次都做 full reconciliation，`data/local/diagnostics/csl_closing_coverage_pending.json` 只承接失败恢复。只有 canonical 已成功提交或确认同 fingerprint `unchanged`，且 pending owner 仍与本次 `attempt_id` 一致、cleanup unlink 成功时才清除 pending；owner 变化或 unlink 失败时必须保留 recovery pending，返回 `stored_pending_cleanup` / `unchanged_pending_cleanup` 安全 warning，不回滚已成功的 canonical，也不阻断已有有效首选。canonical 的安全 `operational_events` / `operational_event_counts` 区分 quota、provider、archive、validation 与尚未解决的 closing gap；同一精确 UTC kickoff、canonical 主客队和 issue code 的重复唤醒只保留最早一次观察。
+
+正式 headline 仍只结算 observed closing 中 schema v2、`match_pick_v3` 的 `MATCH_PICK`；历史 reconstructed 表现要等后续经批准的 source-specific 实现，并始终独立统计，不得并入正式命中率或据此声称胜率提高。scheduler 的 `closing_coverage_candidates` 只注解已经由既有锚点/鲜度策略判定 due 的场次，不产生新的 due authority，也不会让 audit 调用 provider。audit、report 或 pending 失败只记本地安全 warning，不得隐藏或阻断当前已有的有效首选，也不得绕过原有 due、quota、live 与 publish 边界。
 
 `worldcup.csl_scheduled_launch_agent` 可生成本机 LaunchAgent plist，默认每 900 秒唤醒一次 runner，但 runner 自身仍会先做 due / quota / 30 分钟节流判断，所以唤醒频率提高不会直接变成每 15 分钟调用一次 The Odds API。生成或更新 plist 不会自动加载 launchd；实际写入 `~/Library/LaunchAgents/` 和 `launchctl bootstrap` 前必须单独确认。
 

@@ -14,6 +14,9 @@ from worldcup.publish_outbox import attempt_publish, load_pending_publish
 from worldcup.quota import load_quota_ledger
 from worldcup.refresh_runner import _load_env
 from worldcup.scheduler import make_run_id
+from worldcup.csl_closing_coverage import closing_archive_candidates
+from worldcup.csl_closing_coverage_runner import run_closing_coverage
+from worldcup.csl_eval_data import load_snapshots
 from worldcup.csl_results_refresh import run_csl_results_refresh
 from worldcup.csl_postmatch_shadow import run_csl_postmatch_shadow
 from worldcup.csl_snapshot_archive import archive_snapshot
@@ -45,6 +48,39 @@ PublishFn = Callable[..., dict[str, Any]]
 ResultsRefreshFn = Callable[..., dict[str, Any]]
 ArchiveFn = Callable[..., dict[str, Any]]
 PostmatchShadowFn = Callable[..., dict[str, Any]]
+ClosingCoverageFn = Callable[..., dict[str, Any]]
+
+LOCAL_POLICY_FIELDS = {
+    "closing_coverage_candidates",
+    "closing_coverage_quality",
+}
+COVERAGE_OPERATION_ISSUES = {
+    "quota_blocked",
+    "provider_refresh_failed",
+    "snapshot_archive_failed",
+    "archive_validation_failed",
+}
+CLOSING_COVERAGE_STATUSES = {
+    "stored",
+    "unchanged",
+    "dry_run",
+    "blocked",
+    "error",
+    "stored_pending_cleanup",
+    "unchanged_pending_cleanup",
+}
+CLOSING_COVERAGE_REASONS = {
+    "coverage_report_invalid",
+    "coverage_pending_invalid",
+    "coverage_pending_commit_failed",
+    "coverage_inputs_unavailable",
+    "coverage_pending_owner_changed",
+    "coverage_pending_cleanup_failed",
+    "coverage_report_commit_failed",
+    "coverage_path_conflict",
+    "coverage_generated_at_invalid",
+    "coverage_runner_failed",
+}
 
 
 def _now_utc_iso() -> str:
@@ -264,10 +300,32 @@ def build_csl_publish_decision(
     now: str,
     min_interval_seconds: int = DEFAULT_MIN_INTERVAL_SECONDS,
     discovery_interval_seconds: int = DEFAULT_DISCOVERY_INTERVAL_SECONDS,
+    archived_snapshots: list[dict[str, Any]] | None = None,
+    archive_history_status: str = "ok",
 ) -> dict[str, Any]:
     now_dt = _parse_utc(now)
     last_raw = _last_refresh_at(snapshot)
     last_dt = _parse_utc(last_raw) if last_raw else None
+    anchor_due_matches = _due_match_items(snapshot, now_dt, last_dt, quota_remaining)
+    expiry_due_matches = _pick_expiry_items(snapshot, now_dt, last_dt, quota_remaining)
+    due_ids = {
+        str(item.get("match_id") or "")
+        for item in [*anchor_due_matches, *expiry_due_matches]
+        if item.get("match_id")
+    }
+    if archive_history_status == "ok":
+        coverage_candidates = closing_archive_candidates(
+            snapshot=snapshot,
+            archived_snapshots=archived_snapshots or [],
+            due_match_ids=due_ids,
+        )
+        coverage_quality = {"history_status": "ok", "warning": None}
+    else:
+        coverage_candidates = []
+        coverage_quality = {
+            "history_status": "unreadable",
+            "warning": "coverage_history_unreadable",
+        }
     base = {
         "schema_version": 1,
         "competition_id": DEFAULT_COMPETITION_ID,
@@ -277,6 +335,8 @@ def build_csl_publish_decision(
         "min_interval_seconds": int(min_interval_seconds),
         "discovery_interval_seconds": int(discovery_interval_seconds),
         "anchors": [anchor for _offset, anchor, _label in _allowed_anchors(quota_remaining)],
+        "closing_coverage_candidates": coverage_candidates,
+        "closing_coverage_quality": coverage_quality,
     }
     if quota_remaining is not None and quota_remaining <= 0:
         return {
@@ -287,8 +347,6 @@ def build_csl_publish_decision(
             "next_due_at": None,
         }
 
-    anchor_due_matches = _due_match_items(snapshot, now_dt, last_dt, quota_remaining)
-    expiry_due_matches = _pick_expiry_items(snapshot, now_dt, last_dt, quota_remaining)
     due_matches = [*anchor_due_matches, *expiry_due_matches]
     has_future = bool(_future_matches(snapshot, now_dt))
     discovery_due = False
@@ -361,6 +419,210 @@ def _safe_quota_entry(value: Any) -> dict[str, Any]:
     }
 
 
+def _validate_archive_history_snapshot(snapshot: Any) -> None:
+    if type(snapshot) is not dict:
+        raise ValueError("archive_history_snapshot_invalid")
+    snapshot_at = snapshot.get("snapshot_at")
+    if type(snapshot_at) is not str:
+        raise ValueError("archive_history_snapshot_at_invalid")
+    _parse_utc(snapshot_at)
+    competition = snapshot.get("competition")
+    if (
+        type(competition) is not dict
+        or competition.get("id") != DEFAULT_COMPETITION_ID
+    ):
+        raise ValueError("archive_history_competition_invalid")
+    matches = snapshot.get("matches")
+    if type(matches) is not list:
+        raise ValueError("archive_history_matches_invalid")
+    for match in matches:
+        if type(match) is not dict:
+            raise ValueError("archive_history_match_invalid")
+        kickoff = match.get("kickoff_at_utc")
+        home = match.get("home_canonical")
+        away = match.get("away_canonical")
+        match_competition = match.get("competition")
+        if type(kickoff) is not str:
+            raise ValueError("archive_history_match_kickoff_invalid")
+        _parse_utc(kickoff)
+        if type(home) is not str or not home.strip():
+            raise ValueError("archive_history_match_home_invalid")
+        if type(away) is not str or not away.strip():
+            raise ValueError("archive_history_match_away_invalid")
+        if (
+            type(match_competition) is not dict
+            or match_competition.get("id") != DEFAULT_COMPETITION_ID
+        ):
+            raise ValueError("archive_history_match_competition_invalid")
+
+
+def _load_archive_history_safe(history_path: Path) -> dict[str, Any]:
+    try:
+        snapshots = load_snapshots(history_path)
+        if type(snapshots) is not list:
+            raise ValueError("archive_history_invalid")
+        for snapshot in snapshots:
+            _validate_archive_history_snapshot(snapshot)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {
+            "status": "unreadable",
+            "warning": "coverage_history_unreadable",
+            "snapshots": [],
+        }
+    return {"status": "ok", "warning": None, "snapshots": snapshots}
+
+
+def _invalid_closing_coverage_result() -> dict[str, Any]:
+    return {
+        "status": "error",
+        "reason": "invalid_closing_coverage_result",
+        "error_type": "ValueError",
+    }
+
+
+def _stable_error_type(value: Any) -> bool:
+    return (
+        type(value) is str
+        and 0 < len(value) <= 128
+        and value.isascii()
+        and (value[0].isalpha() or value[0] == "_")
+        and all(character.isalnum() or character in "._" for character in value)
+    )
+
+
+def _sha256_text(value: Any) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _safe_closing_coverage(value: Any) -> dict[str, Any]:
+    if type(value) is not dict:
+        return _invalid_closing_coverage_result()
+    status = value.get("status")
+    if type(status) is not str or status not in CLOSING_COVERAGE_STATUSES:
+        return _invalid_closing_coverage_result()
+    reason = value.get("reason")
+    if reason is not None and (
+        type(reason) is not str or reason not in CLOSING_COVERAGE_REASONS
+    ):
+        return _invalid_closing_coverage_result()
+    competition_id = value.get("competition_id")
+    if competition_id is not None and (
+        type(competition_id) is not str
+        or competition_id != DEFAULT_COMPETITION_ID
+    ):
+        return _invalid_closing_coverage_result()
+    season = value.get("season")
+    if season is not None and (type(season) is not str or season != "2026"):
+        return _invalid_closing_coverage_result()
+    fingerprint = value.get("input_fingerprint")
+    if fingerprint is not None and not _sha256_text(fingerprint):
+        return _invalid_closing_coverage_result()
+    error_type = value.get("error_type")
+    if error_type is not None and not _stable_error_type(error_type):
+        return _invalid_closing_coverage_result()
+    counts = {}
+    for key in (
+        "finished_result_count",
+        "observed_closing_count",
+        "observed_current_decision_count",
+        "missing_count",
+    ):
+        item = value.get(key)
+        if item is not None:
+            if type(item) is not int or item < 0:
+                return _invalid_closing_coverage_result()
+            counts[key] = item
+    sample_too_small = value.get("sample_too_small")
+    if sample_too_small is not None and type(sample_too_small) is not bool:
+        return _invalid_closing_coverage_result()
+    safe: dict[str, Any] = {"status": status}
+    for key, item in (
+        ("reason", reason),
+        ("competition_id", competition_id),
+        ("season", season),
+        ("input_fingerprint", fingerprint),
+        ("error_type", error_type),
+    ):
+        if item is not None:
+            safe[key] = item
+    safe.update(counts)
+    if sample_too_small is not None:
+        safe["sample_too_small"] = sample_too_small
+    return safe
+
+
+def _coverage_audit_events(
+    candidates: list[dict[str, Any]],
+    *,
+    observed_at: str,
+    issue_code: str,
+) -> list[dict[str, Any]]:
+    if issue_code not in COVERAGE_OPERATION_ISSUES:
+        return []
+    events: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        kickoff = candidate.get("kickoff_at_utc")
+        home = candidate.get("home_canonical")
+        away = candidate.get("away_canonical")
+        if not kickoff or not home or not away:
+            continue
+        event = {
+            "observed_at": observed_at,
+            "match_id": str(candidate.get("match_id") or ""),
+            "kickoff_at_utc": str(kickoff),
+            "home_canonical": str(home),
+            "away_canonical": str(away),
+            "issue_code": issue_code,
+        }
+        key = (
+            event["kickoff_at_utc"],
+            event["home_canonical"],
+            event["away_canonical"],
+            issue_code,
+        )
+        prior = events.get(key)
+        if prior is None or event["match_id"] < prior["match_id"]:
+            events[key] = event
+    return [events[key] for key in sorted(events)]
+
+
+def _run_closing_coverage_safe(
+    *,
+    closing_coverage_fn: ClosingCoverageFn,
+    closing_coverage_root: str | Path,
+    history_path: Path,
+    cache_dir: str | Path,
+    observed_at: str,
+    audit_events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    try:
+        value = closing_coverage_fn(
+            root=closing_coverage_root,
+            history=history_path,
+            results_path=Path(cache_dir)
+            / f"club_results_{DEFAULT_COMPETITION_ID}.csv",
+            write=True,
+            generated_at=observed_at,
+            audit_events=audit_events or [],
+        )
+    except Exception as exc:
+        return {
+            "status": "error",
+            "reason": "csl_closing_coverage_failed",
+            "error_type": type(exc).__name__,
+        }
+    try:
+        return _safe_closing_coverage(value)
+    except Exception:
+        return _invalid_closing_coverage_result()
+
+
 def _safe_results_refresh(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {"status": "error", "reason": "invalid_results_refresh_result"}
@@ -396,18 +658,67 @@ def _safe_results_refresh(value: Any) -> dict[str, Any]:
 
 
 def _safe_archive_summary(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {"status": "error", "reason": "invalid_archive_result"}
-    safe: dict[str, Any] = {"status": str(value.get("status") or "error")}
-    for key in ("path", "snapshot_at"):
-        if value.get(key) is not None:
-            safe[key] = str(value[key])
-    for key in ("created", "duplicate"):
-        if isinstance(value.get(key), bool):
-            safe[key] = value[key]
-    if isinstance(value.get("matches"), int) and not isinstance(value.get("matches"), bool):
-        safe["matches"] = value["matches"]
-    return safe
+    invalid = {
+        "status": "error",
+        "reason": "invalid_snapshot_archive_result",
+        "error_type": "ValueError",
+    }
+    try:
+        if type(value) is not dict:
+            return invalid
+        status = dict.get(value, "status")
+        if type(status) is not str or status not in {
+            "created",
+            "duplicate",
+            "dry_run",
+            "error",
+        }:
+            return invalid
+        reason = dict.get(value, "reason")
+        error_type = dict.get(value, "error_type")
+        if status == "error":
+            if reason not in {
+                "snapshot_archive_failed",
+                "archive_validation_failed",
+            }:
+                return invalid
+            safe: dict[str, Any] = {"status": status, "reason": reason}
+            if error_type is not None:
+                if not _stable_error_type(error_type):
+                    return invalid
+                safe["error_type"] = error_type
+            return safe
+        if reason is not None or error_type is not None:
+            return invalid
+
+        safe = {"status": status}
+        snapshot_at = dict.get(value, "snapshot_at")
+        if snapshot_at is not None:
+            if type(snapshot_at) is not str:
+                return invalid
+            safe["snapshot_at"] = _iso_utc(_parse_utc(snapshot_at))
+        for key in ("created", "duplicate"):
+            item = dict.get(value, key)
+            if item is not None:
+                if type(item) is not bool:
+                    return invalid
+                safe[key] = item
+        matches = dict.get(value, "matches")
+        if matches is not None:
+            if type(matches) is not int or matches < 0:
+                return invalid
+            safe["matches"] = matches
+        return safe
+    except Exception:
+        return invalid
+
+
+def _public_policy_decision(decision: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in decision.items()
+        if key not in LOCAL_POLICY_FIELDS
+    }
 
 
 def _safe_postmatch_shadow(value: Any) -> dict[str, Any]:
@@ -445,7 +756,7 @@ def _attach_run_metadata(
         "run_id": make_run_id(observed_at, "csl-live"),
         "mode": "csl_scheduled_publish",
         "observed_at": observed_at,
-        "policy": decision,
+        "policy": _public_policy_decision(decision),
         "quota": {provider: quota_entry} if quota_entry else {},
         "quota_path": str(quota_path),
         "source_cache_path": "data/cache/theoddsapi_csl_2026_odds.json",
@@ -533,18 +844,28 @@ def run_csl_scheduled_publish(
     results_refresh_fn: ResultsRefreshFn = run_csl_results_refresh,
     postmatch_shadow_fn: PostmatchShadowFn = run_csl_postmatch_shadow,
     postmatch_shadow_root: str | Path = ".",
+    closing_coverage_fn: ClosingCoverageFn = run_closing_coverage,
+    closing_coverage_root: str | Path = ".",
     archive_fn: ArchiveFn = archive_snapshot,
     archive_history_path: str | Path | None = None,
 ) -> dict[str, Any]:
     observed = now or _now_utc_iso()
     snapshot = _read_json_if_exists(snapshot_path)
     quota_remaining = _quota_remaining(quota_path)
+    history_path = (
+        Path(archive_history_path)
+        if archive_history_path is not None
+        else Path(diagnostics_snapshot_path).with_name("csl_history")
+    )
+    archive_history = _load_archive_history_safe(history_path)
     decision = build_csl_publish_decision(
         snapshot=snapshot,
         quota_remaining=quota_remaining,
         now=observed,
         min_interval_seconds=min_interval_seconds,
         discovery_interval_seconds=discovery_interval_seconds,
+        archived_snapshots=archive_history["snapshots"],
+        archive_history_status=str(archive_history["status"]),
     )
 
     if not live:
@@ -556,6 +877,36 @@ def run_csl_scheduled_publish(
             "publish": None,
         }
 
+    pending = load_pending_publish(snapshot_path)
+    closing_coverage: dict[str, Any] | None = None
+    if not force and not decision["should_refresh"]:
+        audit_events = (
+            _coverage_audit_events(
+                decision["closing_coverage_candidates"],
+                observed_at=observed,
+                issue_code="quota_blocked",
+            )
+            if decision.get("reason") == "quota_exhausted"
+            else []
+        )
+        closing_coverage = _run_closing_coverage_safe(
+            closing_coverage_fn=closing_coverage_fn,
+            closing_coverage_root=closing_coverage_root,
+            history_path=history_path,
+            cache_dir=cache_dir,
+            observed_at=observed,
+            audit_events=audit_events,
+        )
+        if pending is None:
+            return {
+                "status": "skipped",
+                "force": force,
+                "decision": decision,
+                "closing_coverage": closing_coverage,
+                "refresh": None,
+                "publish": None,
+            }
+
     # Fail-fast: validate secret before any refresh/publish/network side effects
     env = load_env(env_path)
     resolved_secret = env.get("INGEST_HMAC_SECRET")
@@ -565,6 +916,11 @@ def run_csl_scheduled_publish(
             "reason": "missing_ingest_hmac_secret",
             "force": force,
             "decision": decision,
+            **(
+                {"closing_coverage": closing_coverage}
+                if closing_coverage is not None
+                else {}
+            ),
             "refresh": None,
             "publish": None,
         }
@@ -577,11 +933,15 @@ def run_csl_scheduled_publish(
             "reason": "weak_ingest_hmac_secret",
             "force": force,
             "decision": decision,
+            **(
+                {"closing_coverage": closing_coverage}
+                if closing_coverage is not None
+                else {}
+            ),
             "refresh": None,
             "publish": None,
         }
 
-    pending = load_pending_publish(snapshot_path)
     if not force and not decision["should_refresh"] and pending is not None:
         if pending.get("status") != "pending":
             return {
@@ -589,6 +949,7 @@ def run_csl_scheduled_publish(
                 "reason": pending.get("reason"),
                 "force": force,
                 "decision": decision,
+                "closing_coverage": closing_coverage,
                 "refresh": None,
                 "publish": None,
             }
@@ -604,25 +965,12 @@ def run_csl_scheduled_publish(
             "status": "republished" if retried["status"] == "published" else retried["status"],
             "force": force,
             "decision": decision,
+            "closing_coverage": closing_coverage,
             "refresh": None,
             "publish": retried.get("publish"),
             "pending": retried.get("pending"),
         }
 
-    if not force and not decision["should_refresh"]:
-        return {
-            "status": "skipped",
-            "force": force,
-            "decision": decision,
-            "refresh": None,
-            "publish": None,
-        }
-
-    history_path = (
-        Path(archive_history_path)
-        if archive_history_path is not None
-        else Path(diagnostics_snapshot_path).with_name("csl_history")
-    )
     try:
         results_refresh = _safe_results_refresh(
             results_refresh_fn(
@@ -639,6 +987,13 @@ def run_csl_scheduled_publish(
             "reason": "results_refresh_failed_using_existing_cache",
             "error_type": type(exc).__name__,
         }
+    closing_coverage = _run_closing_coverage_safe(
+        closing_coverage_fn=closing_coverage_fn,
+        closing_coverage_root=closing_coverage_root,
+        history_path=history_path,
+        cache_dir=cache_dir,
+        observed_at=observed,
+    )
     result_source_status = str(results_refresh.get("status") or "error")
     if result_source_status in {"updated", "verified"}:
         try:
@@ -677,11 +1032,29 @@ def run_csl_scheduled_publish(
         observed_at=observed,
     )
     if refresh.get("status") != "fetched":
+        issue_code = (
+            "quota_blocked"
+            if refresh.get("reason") == "quota_exhausted"
+            else "provider_refresh_failed"
+        )
+        closing_coverage = _run_closing_coverage_safe(
+            closing_coverage_fn=closing_coverage_fn,
+            closing_coverage_root=closing_coverage_root,
+            history_path=history_path,
+            cache_dir=cache_dir,
+            observed_at=observed,
+            audit_events=_coverage_audit_events(
+                decision["closing_coverage_candidates"],
+                observed_at=observed,
+                issue_code=issue_code,
+            ),
+        )
         return {
             "status": "blocked" if refresh.get("status") == "blocked" else "error",
             "force": force,
             "decision": decision,
             "results_refresh": results_refresh,
+            "closing_coverage": closing_coverage,
             "postmatch_shadow": postmatch_shadow,
             "refresh": refresh,
             "publish": None,
@@ -699,6 +1072,7 @@ def run_csl_scheduled_publish(
             "force": force,
             "decision": decision,
             "results_refresh": results_refresh,
+            "closing_coverage": closing_coverage,
             "postmatch_shadow": postmatch_shadow,
             "refresh": refresh,
             "publish": None,
@@ -754,10 +1128,49 @@ def run_csl_scheduled_publish(
     except (OSError, ValueError) as exc:
         archive = {
             "status": "error",
-            "reason": "snapshot_archive_failed",
+            "reason": (
+                "archive_validation_failed"
+                if isinstance(exc, ValueError)
+                else "snapshot_archive_failed"
+            ),
             "error_type": type(exc).__name__,
         }
     if archive.get("status") not in {"created", "duplicate"}:
+        try:
+            built_match_ids = {
+                _match_id(match)
+                for match in built.get("matches") or []
+                if isinstance(match, dict)
+            }
+            archive_affected = closing_archive_candidates(
+                snapshot=built,
+                archived_snapshots=[],
+                due_match_ids=built_match_ids,
+            )
+            archive_issue = (
+                "archive_validation_failed"
+                if archive.get("reason") == "archive_validation_failed"
+                else "snapshot_archive_failed"
+            )
+            audit_events = _coverage_audit_events(
+                archive_affected,
+                observed_at=observed,
+                issue_code=archive_issue,
+            )
+            closing_coverage = _run_closing_coverage_safe(
+                closing_coverage_fn=closing_coverage_fn,
+                closing_coverage_root=closing_coverage_root,
+                history_path=history_path,
+                cache_dir=cache_dir,
+                observed_at=observed,
+                audit_events=audit_events,
+            )
+        except Exception as exc:
+            closing_coverage = {
+                "status": "error",
+                "reason": "csl_closing_coverage_failed",
+                "error_type": type(exc).__name__,
+            }
         if isinstance(data_quality, dict):
             warnings = data_quality.setdefault("warnings", [])
             if isinstance(warnings, list) and "snapshot_archive_failed" not in warnings:
@@ -780,6 +1193,7 @@ def run_csl_scheduled_publish(
             "force": force,
             "decision": decision,
             "results_refresh": results_refresh,
+            "closing_coverage": closing_coverage,
             "postmatch_shadow": postmatch_shadow,
             "archive": archive,
             "refresh": refresh,
@@ -792,6 +1206,7 @@ def run_csl_scheduled_publish(
         "force": force,
         "decision": decision,
         "results_refresh": results_refresh,
+        "closing_coverage": closing_coverage,
         "postmatch_shadow": postmatch_shadow,
         "archive": archive,
         "refresh": {

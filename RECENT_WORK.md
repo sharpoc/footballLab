@@ -4,6 +4,14 @@
 
 历史归档：[docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md](docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md)（164 条）
 
+## 2026-08-13 中超 closing coverage foundation 文档与真实本地验收
+
+- 同步 `README.md`、`docs/superpowers/data-contract.md`、`AGENTS.md` 与 `CLAUDE.md`：初始 128 个 match ID 是固定重建资格 membership，`2026-06-29` 仅为 bootstrap cutoff；canonical report 做全量 finished/history reconciliation，pending 只承接恢复；正式 headline 仅结算 observed schema v2 `match_pick_v3` 的 `MATCH_PICK`，reconstructed 保持独立且不得混算。本轮 implementation/documentation commits：none（按授权 deferred），未 `git add` / commit / push。
+- 最终完整项目验证：指定 runtime `1062/1062 tests passed`，`test_fastapi_app.py` 因 optional `fastapi` 不可用显式跳过 1 个 module。真实 `--initial-manifest` dry-run 返回 `matches=128`、`observed_cutoff=2026-06-29`，且运行前后 manifest/report/pending 均不存在，确认零写入。最终对抗性审查后，report strict validator 还强制 `initial_missing_count=128` 与固定 membership SHA256，重算 derived fields / fingerprint 后的 127-ID 子集或替换 128-ID 均 fail closed；真实 report 只读校验通过且文件 SHA256 不变。
+- 显式 ignored 写入后，`initial_missing_manifest.json` 有 128 个唯一 ID，固定 membership hash 为 `530acaa872d753c911861e2cab1e1bf6a2a0a87c595028d9c5e369523a7f6a40`，日期范围 `2026-03-06..2026-06-28`，每行均通过精确 UTC kickoff 与 `cfl_official` / `sevenm` 双 source ID 复验。canonical report 覆盖 171 个 accepted `csl_2026` / `2026` results：43 observed closing、35 observed current decisions、8 observed missing-current-decision、128 missing，正式 observed tally 为 `17 hit / 18 miss / 0 push / 0 no_pick`，`sample_too_small=true`；没有 reconstructed tally 或 combined rate，不能据此声称重建提高胜率。
+- 幂等与安全：第二次 manifest/report 写入均返回 `unchanged`；manifest SHA256 `9698786a6f5eed01d8a0cc7990c29a6fa63f6b33cafe93145b08cb6c9a6707da`、report SHA256 `7357d524770d89fb49f9a334b30c6684b2adf27236a2b10dc9234eab0f8e2211` 前后不变，pending 成功清除。两份 ignored artifact 对 `Authorization`、`Cookie`、`api_key`、`secret`、`.env` 和 request headers 的扫描为空。`csl_scheduled_publish` 原样命令返回 `status=dry_run`、`refresh=null`、`publish=null`，manifest/report/quota hash 与 mtime 不变，未读取 `.env`、未调用 provider、未消耗 quota、未发布或写 DB。
+- 后续边界：历史 reconstruction 仍须先确认具体 source，完成 terms/robots/retention/reuse/rate-limit 审批，再单独确认小样本联网并把真实 raw samples 保存到 `data/probe/csl_historical_odds/<source_id>/`；只有之后另起 source-specific plan，才能实现离线 parser、quote-time interval、immutable bundle 与 reconstructed-only report，不得改变本轮 observed report 语义。
+
 ## 2026-08-12 中超本地 postmatch shadow 闭环
 
 - 新增 `worldcup.csl_postmatch_shadow`：只结算 2026 赛季已验证赛果，严格选择开球前最后一份合法 closing，复用 `settle_match_decision()` / `summarize_decision_records()` 产出 decision-only tally、coverage、分组和 `p_hit_safe` Brier 校准；2023–2025 replay 仍只供评级/pending gate，不误记为当季 closing 缺口。
