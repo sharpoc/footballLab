@@ -199,6 +199,8 @@ def test_preview_restores_original_workbench_layout_without_grade_ui():
 
     assert "<title>足球研究台账</title>" in html
     assert 'class="primary-nav"' in html
+    assert 'class="primary-nav-item active" aria-current="page" href="/preview"' in html
+    assert 'class="primary-nav-item" href="/daily-picks">每日精选</a>' in html
     assert 'class="workbench-shell premium-intelligence-workbench"' in html
     assert 'class="ledger-workbench"' in html
     assert 'class="match-list-panel"' in html

@@ -509,11 +509,111 @@ def project_finished_rows(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def project_match_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+def load_daily_sidecar_snapshot(
+    path: str | Path = "data/cache/daily_odds/daily_odds_snapshot.json",
+) -> dict[str, Any] | None:
+    from worldcup.daily_odds_refresh import load_daily_odds_payload
+
+    return load_daily_odds_payload(path)
+
+
+def project_daily_sidecar(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return a public-safe, read-only projection of the isolated daily sidecar."""
+    safe = {
+        key: deepcopy(snapshot.get(key))
+        for key in (
+            "schema_version",
+            "namespace",
+            "generated_at",
+            "timezone",
+            "cycle",
+            "candidate_count",
+            "selected_count",
+            "coverage",
+            "degradation_reasons",
+            "combination_rejection_reasons",
+        )
+        if key in snapshot
+    }
+    safe["singles"] = []
+    for row in snapshot.get("top4") or []:
+        if not isinstance(row, dict):
+            continue
+        item = {
+            key: deepcopy(row.get(key))
+            for key in (
+                "match_id",
+                "competition_id",
+                "competition_label",
+                "kickoff_at_utc",
+                "home_team",
+                "away_team",
+                "market",
+                "selection",
+                "model_probability",
+                "market_implied_probability",
+                "edge",
+                "last_update",
+                "selection_reason",
+            )
+            if key in row
+        }
+        safe["singles"].append(item)
+    safe["parlay_2"] = deepcopy(snapshot.get("parlay_2") or [])
+    safe["parlay_3"] = deepcopy(snapshot.get("parlay_3") or [])
+    safe["data_as_of"] = snapshot.get("generated_at")
+    return safe
+
+
+def project_daily_sidecar_api(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return project_daily_sidecar(snapshot)
+def project_daily_picks(
+    snapshot: dict[str, Any],
+    *,
+    now: str | datetime | None = None,
+) -> dict[str, Any]:
+    """Build a safe daily-picks artifact from the existing public match projection."""
+    from worldcup.combination_selection import build_combination_research
+    from worldcup.daily_competitions import coverage_projection, enabled_competition_ids
+    from worldcup.daily_selection import select_daily_top4
+
+    generated_at = now or datetime.now(timezone.utc).isoformat()
+    rows = project_match_rows(
+        snapshot,
+        as_of=_parse_public_at(generated_at),
+    )
+    selected = select_daily_top4(
+        rows,
+        now=generated_at,
+        enabled_competition_ids=enabled_competition_ids(),
+    )
+    combinations = build_combination_research(selected.selected)
+    combination_payload = combinations.to_dict()
+    payload = selected.to_dict()
+    payload.update(
+        {
+            "schema_version": 1,
+            "data_as_of": snapshot.get("snapshot_at"),
+            "singles": [deepcopy(row) for row in selected.selected],
+            "coverage": coverage_projection(),
+            "parlay_2": combination_payload["parlay_2"],
+            "parlay_3": combination_payload["parlay_3"],
+            "combination_rejection_reasons": list(combinations.rejection_reasons),
+            "combination_degradation_reasons": list(combinations.degradation_reasons),
+        }
+    )
+    return payload
+
+
+def project_match_rows(
+    snapshot: dict[str, Any],
+    *,
+    as_of: datetime | None = None,
+) -> list[dict[str, Any]]:
     data_quality = snapshot.get("data_quality") or {}
     stale = bool(data_quality.get("stale_sources"))
     rows: list[dict[str, Any]] = []
-    as_of = datetime.now(timezone.utc)
+    as_of = as_of or datetime.now(timezone.utc)
     default_competition_id = _competition_id_for_snapshot(snapshot)
     finished_identities = {
         _public_match_identity(

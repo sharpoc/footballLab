@@ -87,7 +87,37 @@ def test_build_odds_url_accepts_custom_sport_key_without_logging_secret():
     assert "apiKey=fake-key" in url
 
 
-def test_fetch_odds_for_sport_writes_csl_cache_and_slot_quota():
+def test_fetch_events_for_sport_uses_injected_transport_and_quota():
+    from worldcup.sources.theoddsapi import fetch_events_for_sport
+
+    seen = {}
+
+    def fake_transport(url):
+        seen["url"] = url
+        return FakeResponse()
+
+    with TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "events.json"
+        quota_path = Path(tmp) / "quota.json"
+        result = fetch_events_for_sport(
+            api_key="fake-key",
+            sport_key="soccer_epl",
+            transport=fake_transport,
+            cache_path=cache_path,
+            quota_path=quota_path,
+            observed_at="2026-07-31T00:00:00+00:00",
+            quota_provider=SECONDARY_PROVIDER,
+        )
+
+        assert "soccer_epl/events" in seen["url"]
+        assert "apiKey=fake-key" in seen["url"]
+        assert result.json_body == [{"id": "event-1"}]
+        assert json.loads(cache_path.read_text()) == [{"id": "event-1"}]
+        quota = json.loads(quota_path.read_text())
+        assert quota["providers"][SECONDARY_PROVIDER]["remaining"] == 497
+        assert quota["providers"][LEGACY_PROVIDER]["remaining"] == 497
+
+
     from worldcup.sources.theoddsapi import fetch_odds_for_sport
 
     seen = {}

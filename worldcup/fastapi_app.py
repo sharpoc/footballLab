@@ -91,6 +91,22 @@ def create_fastapi_app(
     async def preview(request: Request) -> Response:
         return await _dispatch(request, "GET", "/preview", db_path, secret, store=store)
 
+    @app.get("/api/daily-picks-sidecar")
+    async def daily_picks_sidecar_api(request: Request) -> Response:
+        return await _dispatch(request, "GET", "/api/daily-picks-sidecar", db_path, secret, store=store)
+
+    @app.get("/daily-picks-sidecar")
+    async def daily_picks_sidecar(request: Request) -> Response:
+        return await _dispatch(request, "GET", "/daily-picks-sidecar", db_path, secret, store=store)
+
+    @app.get("/api/daily-picks")
+    async def daily_picks_api(request: Request) -> Response:
+        return await _dispatch(request, "GET", "/api/daily-picks", db_path, secret, store=store)
+
+    @app.get("/daily-picks")
+    async def daily_picks(request: Request) -> Response:
+        return await _dispatch(request, "GET", "/daily-picks", db_path, secret, store=store)
+
     @app.post("/api/ingest/snapshot")
     async def ingest_snapshot(request: Request) -> Response:
         raw_body = await request.body()

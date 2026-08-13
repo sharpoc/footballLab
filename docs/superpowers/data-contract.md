@@ -637,6 +637,46 @@ live 赛果更新使用两个公开源：7M `fixture.js` 与中足联官方 CSL 
 
 中超 live scheduled publish 每次成功构建 snapshot 后，必须在发布前把同一份 snapshot 归档到 ignored `data/local/diagnostics/csl_history/`，用于后续按开赛时间选 closing snapshot。归档失败必须写 `snapshot_archive_failed` 质量警告，但不得因此隐藏或阻断当场已有的有效首选；HMAC 发布失败仍由既有 outbox 重试，不重复消耗赔率额度。
 
+### CSL Closing Coverage contract
+
+该契约只审计本地 observed closing 覆盖率，不重建历史决策，也不改变首选、模型或公开 API。初始缺口 membership 固定为 128 个精确 `match_id`，并以 `INITIAL_MATCH_IDS_SHA256=530acaa872d753c911861e2cab1e1bf6a2a0a87c595028d9c5e369523a7f6a40` 校验；`observed_cutoff=2026-06-29` 仅用于首次 bootstrap，后续 reconciliation 只按冻结 ID 判断 membership。
+
+精确枚举与原因优先级如下。`reason_codes` 先去重，再按表内顺序规范化；第一个值成为 `reason_code`。只要存在精确 observed closing，就忽略所有 historical evidence；observed 内先判当前 schema v2 决策，否则归为 observed missing-current-decision。没有 observed 时，historical status 优先级为 `manual_review`（3）> `reconstructed`（4）> `market_baseline_only`（5）> `missing`（6）。
+
+| `coverage_status` | `provenance_class` | 允许的 `reason_code` / 顺序 | 优先规则 |
+|---|---|---|---|
+| `observed_current_decision` | `observed` | `observed_closing` | 精确 observed 且 decision 为 schema v2、`match_pick_v3`、label 为 `MATCH_PICK` 或 `NO_CLEAN_MARKET` |
+| `observed_missing_current_decision` | `observed` | `legacy_decision`, `no_current_decision` | 精确 observed 存在但不满足当前 decision 契约 |
+| `manual_review` | `none` | `identity_mismatch`, `kickoff_conflict`, `source_conflict`, `duplicate_event_conflict` | historical 3 |
+| `reconstructed` | `reconstructed` | `reconstructed_eligible` | historical 4 |
+| `market_baseline_only` | `none` | `quote_time_unverifiable`, `insufficient_bookmakers`, `no_complete_main_market`, `aggregate_only` | historical 5 |
+| `missing` | `none` | `source_unavailable`, `source_access_blocked`, `source_unapproved`, `kickoff_unverifiable`, `no_market_record`, `post_kickoff_only` | historical 6 |
+
+本地 ignored 路径固定为：
+
+| 角色 | 路径 | 生命周期 |
+|---|---|---|
+| 初始 membership | `data/local/backfill/csl_2026/initial_missing_manifest.json` | 只用 `--initial-manifest --write-initial-manifest` 创建一次；已存在时必须按 128 IDs、固定 hash、赛果身份、精确 UTC kickoff 和 `cfl_official` / `sevenm` 双 source ID 全量复验，匹配才返回 `unchanged` |
+| canonical report | `data/local/diagnostics/csl_closing_coverage.json` | 每次从完整 accepted results + 完整 history 重建；原子提交并复验派生字段与 fingerprint |
+| recovery pending | `data/local/diagnostics/csl_closing_coverage_pending.json` | 只记录 reconciliation/commit 恢复状态；写 report 前先落 pending，canonical 已提交或同 fingerprint `unchanged` 后仅在 `attempt_id` 所有权未变化且 unlink 成功时清除；owner changed 或 cleanup failure 时保留 recovery state，并返回安全 warning；不得作为 coverage 真相来源 |
+| 单实例锁 | `data/local/diagnostics/csl_closing_coverage.lock` | 只序列化显式写入；不改变输入或业务语义 |
+
+pending `reason` 只允许 `coverage_reconciliation_pending`、`coverage_reconciliation_failed`、`coverage_report_commit_pending`、`coverage_report_commit_failed`；pending schema 只允许 `schema_version`、`status=pending`、`attempt_id`、`attempted_at`、`input_fingerprint`、`reason`、`error_type`。正常 cleanup 成功时 pending 必须不存在；若 cleanup 发现 owner changed 或 unlink failure，则保留 pending，并分别返回 `stored_pending_cleanup` / `unchanged_pending_cleanup` 与 `coverage_pending_owner_changed` / `coverage_pending_cleanup_failed` 脱敏原因，不回滚已提交 canonical，也不阻断已有有效首选。
+
+`operational_events` / `operational_event_counts` 的 issue allowlist 与稳定顺序为：`closing_archive_missing`、`quota_blocked`、`provider_refresh_failed`、`snapshot_archive_failed`、`archive_validation_failed`。事件 identity key 精确等于 `(kickoff_at_utc, home_canonical, away_canonical, issue_code)`；kickoff 必须是 timezone-aware 并归一到 UTC，主客 canonical 不得为空。重复事件只保留最早 `observed_at`，时间相同时取字典序更小的 `match_id`。落盘安全投影只能包含 `observed_at`、`match_id`、`kickoff_at_utc`、`home_canonical`、`away_canonical`、`issue_code`，不得保存 provider payload、bookmaker/price、请求 headers、`Authorization`、`Cookie`、API key、secret 或 `.env` 内容。
+
+`input_fingerprint` 是 canonical JSON SHA256，只包含 `schema_version`、`competition_id`、`season`、固定 membership、规范化 `operational_events`，以及按 `match_id` 排序的完整 match coverage rows。match rows 因而绑定比赛 identity、精确 kickoff、`closing_snapshot_at` / `closing_snapshot_run_id` observed snapshot identity、`provenance_class`、`coverage_status`、`reason_code` / `reason_codes`、audit/operational history、settlement 等 coverage 状态。它明确排除 `generated_at`、文件路径和输入文件/row 的原始顺序；相同有效输入不得因运行时间、root 路径或读取顺序改变 fingerprint 或文件 hash。
+
+正式 performance 过滤器只接纳：精确早于开球的 observed closing、`match_decision.schema_version=2`、`policy_version=match_pick_v3` 且 `label=MATCH_PICK`，再用已接受 90 分钟赛果调用统一 settlement。`NO_CLEAN_MARKET` 可归入 `observed_current_decision` coverage，但不进入正式 settlement；legacy、缺失 decision、reconstructed、market baseline、manual review 与 missing 均不得进入 observed headline。`performance.observed.official_headline_scope` 固定为 `observed_schema_v2_match_pick_only`；`performance.reconstructed` 当前固定为 `status=not_implemented`、`combined_with_observed=false`，报告不得增加 combined tally、combined sample 或 combined rate。未来 reconstructed 只能在另行批准的 source-specific 实现中独立统计，永远不得混入 headline。
+
+Scheduler 的 `closing_coverage_candidates` 只允许从既有 anchor-due 与 `valid_until` freshness-due 的 `due_match_ids` 派生；它不是 due authority，不得进入 `potential_refresh`、新增刷新锚点、绕过全局 throttle/quota/live guard，或触发 provider 请求。audit failure、report failure 或 pending cleanup failure 只返回脱敏本地 warning，不得写入公开 snapshot，也不得隐藏或阻断已有有效首选。
+
+Closing archive 创建必须先把 canonical JSON 写入同目录临时文件、`flush` + `fsync`，对 staging 重新读取并验证 competition、snapshot 时间、match identity/kickoff 与完整字节，再以原子唯一创建提交；目标已存在时只允许 exact bytes + metadata duplicate，否则 `archive_conflict`。新目标提交后必须重新打开并再次验证 bytes/metadata，任何偏差报 `archive_validation_failed`，不得报告成功。
+
+Archive 对每一行（包括 `POSTPONED`）都必须验证自身 competition、canonical 主客 identity 与 timezone-aware kickoff。对于非 `POSTPONED` 行，`snapshot_at >= kickoff` 只增加本地 summary 的 `late_matches`，不否决整份 snapshot、不删行，archive 仍可正常返回 `created` / `duplicate`；`POSTPONED` 行不进入 late 计数但仍接受上述字段验证。后续 `select_observed_closing_exact()` 按目标比赛逐场要求 `snapshot_at < kickoff` 并排除 `POSTPONED`：同一 mixed-time snapshot 中已开赛行不能成为 observed closing，尚未开赛且身份/kickoff 精确匹配的行仍可成为 observed closing。
+
+`worldcup.csl_closing_coverage_runner` 默认 dry-run，只读完整本地 accepted results、双源已保存赛程与 observed history，零写入、零网络、零 provider、零 quota、零 secret/`.env`、零 publish、零 DB。只有显式 `--write-initial-manifest` 或 `--write` 才可写上述 ignored manifest/report/pending/lock；两者不能合并。`worldcup.csl_scheduled_publish` 默认 dry-run 同样必须在 `.env`、refresh、provider、publish 与 coverage report 写入之前返回；coverage audit 不能扩大 live 权限或额度消耗。
+
 ### Query projection
 
 `worldcup.query` 提供只读投影：

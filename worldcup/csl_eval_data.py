@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,13 @@ from worldcup.club_rating import ClubResult, load_club_results_csv
 from worldcup.eval_data import OUTPUT_COLUMNS
 
 DEFAULT_COMPETITION_ID = "csl_2026"
+
+
+@dataclass(frozen=True)
+class ClosingMatch:
+    entry: dict[str, Any]
+    snapshot_at: str
+    snapshot_run_id: str | None
 
 
 def _parse_utc(value: str) -> datetime:
@@ -35,14 +43,14 @@ def load_snapshots(history_dir: str | Path) -> list[dict[str, Any]]:
     ]
 
 
-def closing_match_entry(
+def closing_match(
     snapshots: list[dict[str, Any]],
     match_date: str,
     home_canonical: str,
     away_canonical: str,
     competition_id: str | None = None,
-) -> dict[str, Any] | None:
-    best: dict[str, Any] | None = None
+) -> ClosingMatch | None:
+    best: ClosingMatch | None = None
     best_at: datetime | None = None
     for snapshot in snapshots:
         snapshot_at = snapshot.get("snapshot_at")
@@ -71,9 +79,32 @@ def closing_match_entry(
             if at >= _parse_utc(str(kickoff_at)):
                 continue
             if best_at is None or at > best_at:
-                best = entry
+                run = snapshot.get("run")
+                run_id = run.get("run_id") if isinstance(run, dict) else None
+                best = ClosingMatch(
+                    entry=entry,
+                    snapshot_at=str(snapshot_at),
+                    snapshot_run_id=str(run_id) if run_id is not None else None,
+                )
                 best_at = at
     return best
+
+
+def closing_match_entry(
+    snapshots: list[dict[str, Any]],
+    match_date: str,
+    home_canonical: str,
+    away_canonical: str,
+    competition_id: str | None = None,
+) -> dict[str, Any] | None:
+    selected = closing_match(
+        snapshots,
+        match_date,
+        home_canonical,
+        away_canonical,
+        competition_id=competition_id,
+    )
+    return selected.entry if selected is not None else None
 
 
 def _market_odds(entry: dict[str, Any], market: str, selections: tuple[str, ...]) -> dict[str, float]:

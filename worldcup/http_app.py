@@ -19,8 +19,15 @@ from worldcup.query import (
     load_latest_snapshot,
     load_latest_snapshot_view,
     load_recent_snapshot_views,
+    project_daily_picks,
+    project_daily_sidecar_api,
+    load_daily_sidecar_snapshot,
     project_finished_rows,
     project_match_rows,
+)
+from worldcup.daily_picks_html import (
+    build_daily_picks_html as render_daily_picks_html,
+    build_daily_sidecar_html as render_daily_sidecar_html,
 )
 from worldcup.refresh_runner import _load_env
 from worldcup.store_contract import SnapshotStore
@@ -400,6 +407,36 @@ def _handle_store_routes(
         if snapshot is None:
             return _json_response(404, {"error": "snapshot_not_found"})
         return _json_response(200, {"snapshot": build_public_snapshot(snapshot)})
+
+    if method_upper == "GET" and route == "/api/daily-picks-sidecar":
+        daily_snapshot = load_daily_sidecar_snapshot()
+        if daily_snapshot is None:
+            return _json_response(404, {"error": "daily_snapshot_unavailable"})
+        return _json_response(200, project_daily_sidecar_api(daily_snapshot))
+
+    if method_upper == "GET" and route == "/daily-picks-sidecar":
+        daily_snapshot = load_daily_sidecar_snapshot()
+        if daily_snapshot is None:
+            return _html_response(404, "<!doctype html><title>Not Found</title><p>daily_snapshot_unavailable</p>")
+        return _html_response(200, render_daily_sidecar_html(project_daily_sidecar_api(daily_snapshot)))
+
+    if method_upper == "GET" and route == "/api/daily-picks":
+        snapshot = _latest_view(db_path, store, view_cache)
+        if snapshot is None:
+            return _json_response(404, {"error": "snapshot_not_found"})
+        return _json_response(
+            200,
+            project_daily_picks(snapshot, now=now),
+        )
+
+    if method_upper == "GET" and route == "/daily-picks":
+        snapshot = _latest_view(db_path, store, view_cache)
+        if snapshot is None:
+            return _html_response(404, "<!doctype html><title>Not Found</title><p>snapshot_not_found</p>")
+        return _html_response(
+            200,
+            render_daily_picks_html(project_daily_picks(snapshot, now=now)),
+        )
 
     if method_upper == "GET" and route == "/api/matches":
         snapshot = _latest_view(db_path, store, view_cache)

@@ -67,6 +67,17 @@
 - 当前 HMAC secret helper 只打印 `INGEST_HMAC_SECRET=<value>`，不会写 `.env`
 - 当前公网 MVP 使用 HTTP app + SQLite + Nginx HTTPS；FastAPI、PostgreSQL/RDS、OSS/CDN 都是可选升级，不是单用户 MVP 首发必需项
 
+### 每日精选（动态主路径）
+
+- 当前每日精选公开入口为 `/daily-picks` 与 `/api/daily-picks`，主路径是动态 HTTP/FastAPI；它们复用现有 snapshot、`project_match_rows()` 等 public safe projection 和 scheduled refresh/publish，不重新生成或改变旧单场 `match_decision`。
+- 每个推荐周期按 `Asia/Shanghai` 计算为 `[18:00, 次日18:00)`，内部统一使用 timezone-aware UTC；Top 4 是当前周期内所有“已启用且已验证真实数据链路”的联赛候选中的全局 Top 4，不是每个联赛各取 4 场。
+- `2串1` 与 `3串1` 只从同一组全局 Top 4 生成，过滤同场多个玩法和同一球队重复；页面显示“独立性近似组合分数”，不是校准后的联合概率，不显示金额，也不提供下注或执行建议。
+- 当前 20 个联赛覆盖目录状态为：17 个已完成真实 provider `/sports` + `/events` 验证并进入 `enabled`（中超、英超、英冠、德甲、德乙、法甲、意甲、西甲、瑞典超、挪超、丹超、芬超、墨西哥超、J 联赛、K 联赛、巴西甲、美职联）；墨西哥甲、澳超、阿根廷超继续 `code_reserved` / fail-closed。英超确认使用 `soccer_epl`，德甲确认使用 `soccer_germany_bundesliga`；未知 provider ID / sport key 仍不猜测、不模拟。
+- 每日精选不自动启动独立赔率 scheduler、quota ledger 或 LaunchAgent；新增的 `worldcup.daily_odds_refresh` 是默认不运行的注入式 sidecar：先读取 `/sports` 的 exact active `sport_key`，再读取 `/events` 发现未来赛程；同一 `sport_key` 的相近比赛在同一调度波次只调用一次 `/odds`，不同 key 分别调用。T-6h/T-90m 只取 `h2h`，T-25m 取 `h2h,spreads,totals`；每 key/anchor 幂等去重，已开赛、无未来赛程、inactive/provider_unavailable、改期 kickoff 不一致或 quota 不足时 fail-closed。该 sidecar 只生成可注入的赔率刷新/风险元数据，`odds_movement` 保持 `shadow_only`，不参与 Top4/组合排序、tie-break 或旧单场 `match_decision`，也不公开 raw bookmaker/odds；静态 export 尚未扩展。
+- 每日精选 sidecar 现支持独立 `daily_odds_snapshot.json` production pipeline：显式 `enabled=True, live=True` 时，同一 `sport_key + anchor` 只调用一次注入式 `odds_fetcher`，该响应同时生成标准化 event rows、全局 Top4、2串1、3串1 和 sidecar 菜单；T-6/T-90 只请求 `h2h`，T-25 请求 `h2h,spreads,totals`。标准化结果写入 `data/cache/daily_odds/daily_odds_snapshot.json`，使用原子替换并只保存 schema、北京时间周期、event/球队、必要 markets、model/market probability、edge、selection reason、last update、quota 摘要和 fail-closed 原因，不保存 raw provider payload、bookmaker 明细、API key 或 secret。
+- sidecar 使用独立 `daily_odds_state.json` 提交 `sport_key|anchor` 幂等键：只有 snapshot writer 成功后才提交，进程重启可复用已提交键；provider response 不完整、h2h 缺失、event identity/重复 ID/改期、赔率过期、quota unknown/不足或日预算不足时 fail-closed，部分失败只保留失败 key 重跑。默认 dry-run/disabled，不注册旧 scheduler 或 LaunchAgent，也不改变旧 `analysis_snapshot.json`、`project_daily_picks(snapshot)`、旧 `/api/daily-picks` 和 `/daily-picks`。
+- sidecar 只读入口为 `/api/daily-picks-sidecar` 与 `/daily-picks-sidecar`，页面刷新只读取已生成快照，不联网；旧单场菜单和 API 保持原契约。sidecar 的组合只来自同一全局 Top4，过滤同 event/同球队冲突，显示独立性近似组合分数，不显示资金或执行建议。
+
 ## 目录结构
 
 ```text
@@ -98,6 +109,9 @@ worldcup/
   postmatch_diagnostics.py      # legacy 完赛等级诊断；不进入当前产品链路
   csl_results_probe.py          # 中超历史赛果本地样例清洗与双源诊断 CLI
   csl_eval_data.py              # 中超本地 snapshot × 完赛赛果 join 成回测 CSV
+  csl_postmatch_shadow.py       # 中超封盘首选结算、指纹幂等和本地 shadow 产物
+  csl_closing_coverage.py       # 中超 observed closing coverage 纯函数契约与全量 reconciliation
+  csl_closing_coverage_runner.py # 中超 closing coverage 本地 dry-run/ignored 原子写入 CLI
   csl_ops_runner.py             # 中超本地实战闭环：dry-run、snapshot、归档、观察报告、postmatch
   lineup_audit.py               # 官方首发抓取 × snapshot/post-information odds 本地审计
   scores_capture.py             # The Odds API scores → 本地 results CSV（默认 dry-run）
@@ -213,7 +227,7 @@ HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store �
 
 ### CSL Scheduled Publish
 
-`worldcup.csl_scheduled_publish` 是中超自动刷新/发布入口。默认 dry-run 只读取本地 snapshot / quota 并输出决策，不读取 `.env`、不联网、不调用 The Odds API、不发布；只有显式 `--live` 且决策 due，或同时传 `--force`，才会读取 `.env`、刷新中超 odds、生成预测 snapshot 并 HMAC ingest 到线上。live due 时会先用 7M 赛程数组与中足联官方公开接口双源校验已完赛比分；只有日期、主客队和比分全部一致才原子更新本地 replay CSV。这两个公开源不消耗 The Odds API quota；抓取或校验失败时沿用旧 cache 并写质量警告，不阻断赔率刷新。每次成功构建的赛前 snapshot 还会自动归档到 ignored `data/local/diagnostics/csl_history/`，用于后续 closing join 和市场基准积累；归档失败会写质量警告，但不阻断当场首选发布。
+`worldcup.csl_scheduled_publish` 是中超自动刷新/发布入口。默认 dry-run 只读取本地 snapshot / quota 并输出决策，不读取 `.env`、不联网、不调用 The Odds API、不发布；只有显式 `--live` 且决策 due，或同时传 `--force`，才会读取 `.env`、刷新中超 odds、生成预测 snapshot 并 HMAC ingest 到线上。live due 时会先用 7M 赛程数组与中足联官方公开接口双源校验已完赛比分；只有日期、主客队和比分全部一致才原子更新本地 replay CSV。这两个公开源不消耗 The Odds API quota；抓取或校验失败时沿用旧 cache 并写质量警告，不阻断赔率刷新。已接受的双源赛果会在 odds refresh 前触发本地 postmatch shadow；shadow 失败只增加 `csl_postmatch_shadow_failed` warning，不改变后续刷新、发布或 quota 行为。每次成功构建的赛前 snapshot 还会自动归档到 ignored `data/local/diagnostics/csl_history/`，用于后续 closing join 和市场基准积累；归档失败会写质量警告，但不阻断当场首选发布。
 
 同一轮双源响应还会校验未完赛赛程的 `SCHEDULED` / `POSTPONED` 状态，成功后原子写入 ignored `data/cache/csl_fixture_status_csl_2026.json`；状态 cache 缺失时，runner 可以只读复用已经保存且双源一致的 `data/cache/csl_results_sources/` 原始响应。官方与 7M 对日期、主客队或状态存在分歧时不更新状态 cache，避免单源误撤首选。确认延期的场次继续保留在内部 snapshot/cache/history 供诊断和补赛重排，但 `project_match_rows()`、公开 API、预览页和静态导出会整场隐藏，不再显示“比赛延期”占位行或公开延期计数；`/readyz.match_count` 也只统计公开可见场次。该场不参与赛前锚点/首选鲜度调度、closing 或赛后评估。官方出现同一主客队的新日期后，新赛程重新按新赔率计算，赔率源仍残留的更早旧事件会被压掉，避免旧、新场次重复。结果/状态刷新失败但本地 cache 可用时会在 `data_quality.stale_sources` 标记，不静默当作新鲜状态。
 
@@ -233,6 +247,25 @@ HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store �
   --env .env \
   --endpoint https://football.celab.xin/api/ingest/snapshot
 ```
+
+### CSL Closing Coverage Audit
+
+`worldcup.csl_closing_coverage_runner` 从完整已接受 `csl_2026` 赛果、双源赛程和本地 observed history 重建覆盖率报告。初始 128 个 match ID 是一次性冻结的历史重建资格 membership；`2026-06-29` 仅是生成初始清单时的 bootstrap cutoff，后续 membership 必须按固定 ID 读取，不能按日期扩张。默认命令只读本地数据、零写入，不读取 `.env`、不联网、不调用 provider、不消耗 quota、不发布也不写数据库：
+
+```bash
+# 默认 dry-run：全量读取已接受赛果、双源赛程和 observed history，零写入
+python3 -m worldcup.csl_closing_coverage_runner
+
+# 一次性冻结初始 128 场 match ID 清单（ignored 本地产物）
+python3 -m worldcup.csl_closing_coverage_runner --initial-manifest --write-initial-manifest
+
+# 原子更新 observed-only coverage 报告与 pending 恢复状态
+python3 -m worldcup.csl_closing_coverage_runner --write
+```
+
+固定清单位于 `data/local/backfill/csl_2026/initial_missing_manifest.json`；canonical `data/local/diagnostics/csl_closing_coverage.json` 每次都做 full reconciliation，`data/local/diagnostics/csl_closing_coverage_pending.json` 只承接失败恢复。只有 canonical 已成功提交或确认同 fingerprint `unchanged`，且 pending owner 仍与本次 `attempt_id` 一致、cleanup unlink 成功时才清除 pending；owner 变化或 unlink 失败时必须保留 recovery pending，返回 `stored_pending_cleanup` / `unchanged_pending_cleanup` 安全 warning，不回滚已成功的 canonical，也不阻断已有有效首选。canonical 的安全 `operational_events` / `operational_event_counts` 区分 quota、provider、archive、validation 与尚未解决的 closing gap；同一精确 UTC kickoff、canonical 主客队和 issue code 的重复唤醒只保留最早一次观察。
+
+正式 headline 仍只结算 observed closing 中 schema v2、`match_pick_v3` 的 `MATCH_PICK`；历史 reconstructed 表现要等后续经批准的 source-specific 实现，并始终独立统计，不得并入正式命中率或据此声称胜率提高。scheduler 的 `closing_coverage_candidates` 只注解已经由既有锚点/鲜度策略判定 due 的场次，不产生新的 due authority，也不会让 audit 调用 provider。audit、report 或 pending 失败只记本地安全 warning，不得隐藏或阻断当前已有的有效首选，也不得绕过原有 due、quota、live 与 publish 边界。
 
 `worldcup.csl_scheduled_launch_agent` 可生成本机 LaunchAgent plist，默认每 900 秒唤醒一次 runner，但 runner 自身仍会先做 due / quota / 30 分钟节流判断，所以唤醒频率提高不会直接变成每 15 分钟调用一次 The Odds API。生成或更新 plist 不会自动加载 launchd；实际写入 `~/Library/LaunchAgents/` 和 `launchctl bootstrap` 前必须单独确认。
 
@@ -359,6 +392,8 @@ Gate report 除聚合样本外，还分赛季报告 model / uniform / home-prior
 
 P9.15 新增中超本地赛后评估闭环，用于把已归档的 CSL league snapshot 与本地完赛赛果 join 成现有 `worldcup.backtest` 可读取的 CSV，再计算模型 vs 市场的 Brier / Log Loss / 校准等研究指标。该链路只读本地 history/results，输出到 ignored `data/local/backtest/`，不联网、不读取 `.env`、不调用 The Odds API、不消耗 quota、不发布、不部署、不更新 LaunchAgent，也不解除 `club_rating_pending`。
 
+`worldcup.csl_postmatch_shadow` 在此基础上固化 2026 赛季 decision-only 结算：每场只取严格早于开球时间的最后合法 snapshot，复用统一 `settle_match_decision()`，通过赛果、实际 closing 和安全 decision 投影生成稳定指纹。相同指纹不重算 eval/backtest/gate；state 中的 canonical report hash 与报告实际 hash 一致时，才视为一轮完整成功。它不把 2023–2025 评级 replay 误记为当季 closing 缺口，不将 legacy 等级混入当前首选命中率。
+
 要让 CSL 评估有效，必须先在赛前持续保留 opening/closing 候选 snapshot；没有开球前 snapshot 的完赛场会计入 `skipped_no_closing`，不能用来声称准确率。
 
 ```bash
@@ -382,7 +417,17 @@ P9.15 新增中超本地赛后评估闭环，用于把已归档的 CSL league sn
   --min-sample 30 \
   --warmup-matches 300 \
   --min-eval-matches 200
+
+# 3) 默认只读：计算 shadow 候选摘要，不写任何产物
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.csl_postmatch_shadow
+
+# 4) 显式本地写入：更新 ignored shadow/eval/backtest/gate/state
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.csl_postmatch_shadow --write
 ```
+
+shadow canonical 报告为 `data/local/diagnostics/csl_postmatch_shadow.json`，状态为 `csl_postmatch_shadow_state.json`，并同步更新 `data/local/backtest/csl_2026_eval.csv`、`csl_2026_report.json` 与 `data/local/diagnostics/csl_pending_gate_latest.json`。这些都是本地 ignored 研究产物，不进 `/api/finished`、preview 或线上数据库。`decision_sample.sample_too_small=true` 时只能作观察，不自动调参或解除 `club_rating_pending`。
 
 判断“准确率”时必须同时看覆盖率和命中率：优先看 `csl_2026_report.json` 中 `sample.sample_too_small`、`markets.1x2.model_matched` vs `markets.1x2.market`、`markets.1x2.uniform`、校准分箱，以及 `csl_pending_gate` 的 `checks.market_baseline_sufficient`、`checks.latest_season_model_beats_home_prior_brier`。样本不足、closing snapshot 覆盖不足或模型弱于市场/最新赛季主场先验时，只能作为观察，不能调参或解除 `club_rating_pending`；公开首选继续使用明确标记风险的市场共识兜底。
 
@@ -530,7 +575,7 @@ python3 -m worldcup.ops_daily_report --format json
 python3 -m worldcup.ssh_deploy
 ```
 
-真实部署必须显式加 `--live`；部署使用本地 `git archive` 通过 SSH stdin 上传到 `/opt/worldcup/releases/<commit>`，远端 `py_compile` 关键 HTTP/query 文件后原子切换 `/opt/worldcup/current`，重启 `worldcup.service`，先在 ECS 本机请求 `http://127.0.0.1:8788/readyz` warmup 最新 public view，再公网 smoke `/healthz`、`/api/matches` 和 `/preview`；这样不需要把 `/readyz` 加到 Nginx 公网白名单，也能降低重启后第一波重页面请求风险。如需 smoke 失败自动回滚到上一 release：
+真实部署必须显式加 `--live`；部署使用本地 `git archive` 通过 SSH stdin 上传到 `/opt/worldcup/releases/<commit>`，远端 `py_compile` 关键 HTTP/query 文件后原子切换 `/opt/worldcup/current`，重启 `worldcup.service`，先在 ECS 本机请求 `http://127.0.0.1:8788/readyz` warmup 最新 public view，再由版本化 `deploy/nginx/worldcup-daily-picks.conf` 通过 `worldcup.nginx_routes` 只管理四个 Nginx exact route：`/api/daily-picks`、`/daily-picks`、`/api/daily-picks-sidecar`、`/daily-picks-sidecar`。Nginx 安装器只改目标 `server_name football.celab.xin` 中这四个 route，使用原子替换、`/root/nginx-backups` 备份、`nginx -t`，仅测试成功后 reload；幂等时不备份、不 reload，测试或 reload 失败会恢复旧 site/snippet。最后再公网 smoke `/healthz`、`/api/matches` 和 `/preview`；这样不需要把 `/readyz` 加到 Nginx 公网白名单，也能降低重启后第一波重页面请求风险。如需 smoke 失败自动回滚到上一 release：
 
 ```bash
 python3 -m worldcup.ssh_deploy --live --rollback-on-fail
@@ -652,7 +697,7 @@ DATABASE_URL=
 ## 下一步
 
 1. Gate C HTTPS 已完成：`https://football.celab.xin/` 对外展示研究台账。
-2. 公网开放 `/`、`/preview`、`/api/matches`、`/healthz`、`/api/ingest/snapshot`；`/api/snapshot/latest` 返回 404；`/readyz` 是应用内部 warmup 路由，当前不经 Nginx 公网开放。
+2. 公网开放 `/`、`/preview`、`/api/matches`、`/api/finished`、`/daily-picks`、`/api/daily-picks`、`/daily-picks-sidecar`、`/api/daily-picks-sidecar`、`/healthz`、`/api/ingest/snapshot`；`/api/snapshot/latest` 返回 404；`/readyz` 是应用内部 warmup 路由，当前不经 Nginx 公网开放。
 3. 本机 `launchd` 已启用 `xin.celab.football.scheduled-publish`，每 15 分钟唤醒一次；真正刷新/发布仍由 scheduler due 判断控制。
 4. 本机 `launchd` 已启用 `xin.celab.football.pre-match`，每 300 秒运行 lineups-only 赛前首发轮询和首发链路审计通知；不带 `--live-refresh`，不会自动刷新 odds。
 5. 下一步观察首轮 due 后的刷新、线上 ingest、Nginx/systemd 日志、certbot 自动续期和赛前首发轮询日志。

@@ -4,8 +4,12 @@ import argparse
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Mapping
 
+from worldcup.daily_competitions import DailyCompetition, resolve_provider_catalog
+from worldcup.daily_odds_refresh import plan_daily_odds_refresh, refresh_daily_odds
+from worldcup.daily_odds_store import DailyOddsSnapshotWriter, default_daily_odds_snapshot_path
+from worldcup.daily_odds_state import DailyOddsState, default_daily_odds_state_path
 from worldcup.refresh_runner import _load_env, refresh_cache_and_build_snapshot
 from worldcup.scheduler import build_scheduler_report
 from worldcup.theoddsapi_keys import LEGACY_PROVIDER, choose_key_slot
@@ -86,6 +90,115 @@ def run_scheduled_refresh(
             "odds_api_key_slot": slot,
             "theoddsapi_provider": provider,
         },
+    }
+
+
+
+def run_daily_odds_refresh(
+    *,
+    enabled: bool = False,
+    live: bool = False,
+    now: str | None = None,
+    cache_dir: str | Path = "data/cache",
+    snapshot_path: str | Path | None = None,
+    sports_fetcher: Callable[[], Any] | None = None,
+    events_fetcher: Callable[[str], Any] | None = None,
+    odds_fetcher: Callable[[str, tuple[str, ...]], Any] | None = None,
+    snapshot_writer: Callable[[dict[str, Any]], Any] | None = None,
+    quota_remaining_by_key: Mapping[str, int | None] | None = None,
+    state: Any = None,
+    catalog: tuple[DailyCompetition, ...] | None = None,
+    state_path: str | Path | None = None,
+    daily_budget_credits: int | None = None,
+) -> dict[str, Any]:
+    """Explicitly run the daily-odds sidecar; disabled by default and never auto-scheduled."""
+    if not enabled:
+        return {
+            "status": "disabled",
+            "reason": "feature_disabled",
+            "plan": None,
+            "refresh": None,
+        }
+    if sports_fetcher is None or events_fetcher is None:
+        raise ValueError("daily_odds_fetchers_required")
+    observed = now or _now_utc_iso()
+    sports = sports_fetcher()
+    if not isinstance(sports, list):
+        sports = []
+    events_by_sport: dict[str, Any] = {}
+    resolved = resolve_provider_catalog(catalog or (), sports) if catalog else None
+    keys = [
+        item.sport_key
+        for item in (resolved or ())
+        if item.status == "enabled" and item.sport_key
+    ]
+    if not keys:
+        from worldcup.daily_competitions import daily_competition_catalog
+
+        keys = [
+            item.sport_key
+            for item in resolve_provider_catalog(daily_competition_catalog(), sports)
+            if item.status == "enabled" and item.sport_key
+        ]
+    for sport_key in keys:
+        events_by_sport[sport_key] = events_fetcher(sport_key)
+
+    committed_state = state
+    if (
+        live
+        and committed_state is None
+        and state_path is not False
+        and (state_path is not None or snapshot_writer is None)
+    ):
+        committed_state = DailyOddsState(state_path or default_daily_odds_state_path(cache_dir))
+    plan = plan_daily_odds_refresh(
+        now=observed,
+        sports=sports,
+        events_by_sport=events_by_sport,
+        quota_remaining_by_key=quota_remaining_by_key,
+        state=committed_state,
+        catalog=catalog,
+        daily_budget_credits=daily_budget_credits,
+    )
+    plan_payload = plan.to_dict()
+    if not live:
+        return {
+            "status": "dry_run",
+            "reason": "live_not_enabled",
+            "plan": plan_payload,
+            "refresh": None,
+        }
+    if odds_fetcher is None:
+        raise ValueError("daily_odds_odds_fetcher_required")
+    writer = snapshot_writer
+    if writer is None:
+        writer = DailyOddsSnapshotWriter(
+            snapshot_path or default_daily_odds_snapshot_path(cache_dir)
+        )
+    committed_state = state
+    if (
+        live
+        and committed_state is None
+        and state_path is not False
+        and (state_path is not None or snapshot_writer is None)
+    ):
+        committed_state = DailyOddsState(state_path or default_daily_odds_state_path(cache_dir))
+    refreshed = refresh_daily_odds(
+        now=observed,
+        sports_fetcher=lambda: sports,
+        events_fetcher=lambda sport_key: events_by_sport.get(sport_key, []),
+        odds_fetcher=odds_fetcher,
+        snapshot_writer=writer,
+        quota_remaining_by_key=quota_remaining_by_key,
+        state=committed_state,
+        catalog=catalog,
+        daily_budget_credits=daily_budget_credits,
+    )
+    return {
+        "status": "refreshed",
+        "reason": "explicit_live",
+        "plan": plan_payload,
+        "refresh": refreshed.to_dict(),
     }
 
 

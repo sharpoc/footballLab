@@ -4,6 +4,31 @@
 
 历史归档：[docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md](docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md)（164 条）
 
+## 2026-08-13 中超 closing coverage foundation 文档与真实本地验收
+
+- 同步 `README.md`、`docs/superpowers/data-contract.md`、`AGENTS.md` 与 `CLAUDE.md`：初始 128 个 match ID 是固定重建资格 membership，`2026-06-29` 仅为 bootstrap cutoff；canonical report 做全量 finished/history reconciliation，pending 只承接恢复；正式 headline 仅结算 observed schema v2 `match_pick_v3` 的 `MATCH_PICK`，reconstructed 保持独立且不得混算。本轮 implementation/documentation 已本地提交，未 push。
+- 最终完整项目验证：指定 runtime `1062/1062 tests passed`，`test_fastapi_app.py` 因 optional `fastapi` 不可用显式跳过 1 个 module。真实 `--initial-manifest` dry-run 返回 `matches=128`、`observed_cutoff=2026-06-29`，且运行前后 manifest/report/pending 均不存在，确认零写入。最终对抗性审查后，report strict validator 还强制 `initial_missing_count=128` 与固定 membership SHA256，重算 derived fields / fingerprint 后的 127-ID 子集或替换 128-ID 均 fail closed；真实 report 只读校验通过且文件 SHA256 不变。
+- 显式 ignored 写入后，`initial_missing_manifest.json` 有 128 个唯一 ID，固定 membership hash 为 `530acaa872d753c911861e2cab1e1bf6a2a0a87c595028d9c5e369523a7f6a40`，日期范围 `2026-03-06..2026-06-28`，每行均通过精确 UTC kickoff 与 `cfl_official` / `sevenm` 双 source ID 复验。canonical report 覆盖 171 个 accepted `csl_2026` / `2026` results：43 observed closing、35 observed current decisions、8 observed missing-current-decision、128 missing，正式 observed tally 为 `17 hit / 18 miss / 0 push / 0 no_pick`，`sample_too_small=true`；没有 reconstructed tally 或 combined rate，不能据此声称重建提高胜率。
+- 幂等与安全：第二次 manifest/report 写入均返回 `unchanged`；manifest SHA256 `9698786a6f5eed01d8a0cc7990c29a6fa63f6b33cafe93145b08cb6c9a6707da`、report SHA256 `7357d524770d89fb49f9a334b30c6684b2adf27236a2b10dc9234eab0f8e2211` 前后不变，pending 成功清除。两份 ignored artifact 对 `Authorization`、`Cookie`、`api_key`、`secret`、`.env` 和 request headers 的扫描为空。`csl_scheduled_publish` 原样命令返回 `status=dry_run`、`refresh=null`、`publish=null`，manifest/report/quota hash 与 mtime 不变，未读取 `.env`、未调用 provider、未消耗 quota、未发布或写 DB。
+- 后续边界：历史 reconstruction 仍须先确认具体 source，完成 terms/robots/retention/reuse/rate-limit 审批，再单独确认小样本联网并把真实 raw samples 保存到 `data/probe/csl_historical_odds/<source_id>/`；只有之后另起 source-specific plan，才能实现离线 parser、quote-time interval、immutable bundle 与 reconstructed-only report，不得改变本轮 observed report 语义。
+
+## 2026-08-12 中超本地 postmatch shadow 闭环
+
+- 新增 `worldcup.csl_postmatch_shadow`：只结算 2026 赛季已验证赛果，严格选择开球前最后一份合法 closing，复用 `settle_match_decision()` / `summarize_decision_records()` 产出 decision-only tally、coverage、分组和 `p_hit_safe` Brier 校准；2023–2025 replay 仍只供评级/pending gate，不误记为当季 closing 缺口。
+- CLI 默认 dry-run 零写入；显式 `--write` 先 staging 生成 eval/backtest/gate/shadow，交叉校验后逐文件原子提升，report 倒数第二、state 最后提交，并用 report hash + input fingerprint 绑定完整成功。相同输入返回 `unchanged`，提升失败回滚旧产物并只保留安全错误码。
+- `csl_scheduled_publish` 在双源赛果接受后、odds refresh 前触发 shadow；源阻断时不运行，shadow 异常只记 `csl_postmatch_shadow_failed` warning，不阻断赛前 snapshot 生成/发布，不把 shadow 摘要持久化进常规发布 snapshot。
+- 真实 ignored 数据验收：2026 赛季 171 场已验证赛果，43 场有 closing，35 场当前策略可结算，`17 hit / 18 miss / 0 push / 0 no_pick`，命中率 48.57%，`sample_too_small=true`；8 月 9 日三场均为 `OU over 2.5`，结算 `2 hit / 1 miss`。重复写入返回 `unchanged`，report/state hash 一致，敏感/原始 provider 字段扫描为空。
+- 验证：聚焦回归 `61/61`，项目 runtime `968/968 passed, 1 optional fastapi skipped`，`py_compile` 和 `git diff --check` 通过。本阶段未读取 `.env`、未联网、未调用 The Odds API、未消耗 quota、未修改公开 API/preview、未发布、未部署、未改 LaunchAgent、未 commit/push。
+
+## 2026-08-01 生产 Nginx 每日精选路由纳入 Git
+
+- 新增版本化模板 `deploy/nginx/worldcup-daily-picks.conf`，只声明 `/api/daily-picks`、`/daily-picks`、`/api/daily-picks-sidecar`、`/daily-picks-sidecar` 四个 `location =`，统一代理到 `127.0.0.1:8788`；不扩大 `location /`，不含证书、secret、token、账号或 `.env`。
+- 新增 `worldcup.nginx_routes`：只在目标 `server_name football.celab.xin` 中移除这四个旧 exact location 并加入一个 managed include；snippet/site 原子替换，先备份到 `/root/nginx-backups`，幂等时无副作用，`nginx -t` 失败不 reload 并恢复旧文件，reload 失败也恢复旧文件并尝试旧配置恢复 reload。
+- `worldcup.ssh_deploy` live 远端流程接入 release 内模板和安装器；保持既有 bind-address、release/current 原子切换、旧路由、service restart、readyz warmup、公网 smoke 与 rollback 语义不变。dry-run 仍只读 Git，不 archive、SSH、写远端 Nginx 或 reload。
+- TDD 新增 `tests/test_nginx_routes.py`，覆盖四个 exact route、模板安全、规范化幂等、备份/原子安装、`nginx -t` 失败恢复且不 reload、reload 失败恢复、ssh deploy 接线和 dry-run 无副作用。
+- 验证：定向 Nginx 测试 `9/9` 通过；项目 runtime `951/951 passed, 1 optional fastapi skipped`；未访问生产、未 live deploy、未调用 provider、未读取 `.env`、未消耗 credits。
+
+
 ## 2026-07-20 15:36 UTC+8 readiness profile 拆分 + 部署 + RECENT_WORK 归档
 
 - 本地功能：`worldcup/readiness.py` 新增 `--profile` (full/server/publisher) 和 `--env-path` 参数；893 tests passed，1 optional module skipped (fastapi)。

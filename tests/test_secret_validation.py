@@ -255,8 +255,8 @@ def test_scheduled_publish_dry_run_no_secret_needed():
 
 # === Entry points: csl_scheduled_publish (fail-fast before refresh) ===
 
-def test_csl_scheduled_publish_blocks_weak_secret():
-    """live=True + weak secret returns blocked immediately; no refresh called."""
+def test_csl_scheduled_publish_blocks_weak_secret_when_refresh_due():
+    """A due live refresh blocks a weak secret before refresh is called."""
     from worldcup.csl_scheduled_publish import run_csl_scheduled_publish
     env_path = _write_env("INGEST_HMAC_SECRET=tiny\nTHE_ODDS_API_KEY=x\n")
 
@@ -266,14 +266,20 @@ def test_csl_scheduled_publish_blocks_weak_secret():
         call_log.append("refresh")
         raise RuntimeError("refresh should not be called")
 
-    result = run_csl_scheduled_publish(
-        env_path=env_path,
-        endpoint="https://example.invalid/api/ingest/snapshot",
-        now="2026-07-20T00:00:00+00:00",
-        force=False,
-        live=True,
-        refresh_fn=exploding_refresh,
-    )
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        result = run_csl_scheduled_publish(
+            env_path=env_path,
+            cache_dir=root / "cache",
+            quota_path=root / "quota.json",
+            snapshot_path=root / "snapshot.json",
+            diagnostics_snapshot_path=root / "diagnostics" / "snapshot.json",
+            endpoint="https://example.invalid/api/ingest/snapshot",
+            now="2026-07-20T00:00:00+00:00",
+            force=False,
+            live=True,
+            refresh_fn=exploding_refresh,
+        )
     assert result["status"] == "blocked"
     assert result["reason"] == "weak_ingest_hmac_secret"
     assert call_log == [], "refresh_fn must not be called when secret is weak"
