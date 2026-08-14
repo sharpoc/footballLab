@@ -204,13 +204,12 @@ def _deploy_script(
     releases_dir = release.rsplit("/", 1)[0]
     release_name = release.rsplit("/", 1)[1]
     compile_paths = " ".join(f'"$tmp/{path}"' for path in py_compile_files)
-    rollback_trap = ""
+    rollback_on_exit = ""
     if rollback_on_fail:
-        rollback_trap = (
-            "trap 'code=$?; "
-            'if [ "$code" -ne 0 ] && [ -n "$previous" ] && [ -d "$previous" ]; then '
+        rollback_on_exit = (
+            '  if [ "$code" -ne 0 ] && [ -n "$previous" ] && [ -d "$previous" ]; then '
             'ln -sfn "$previous" "$current"; systemctl restart "$service" || true; '
-            "printf \"rollback_on_remote_failure=attempted\\n\"; fi; exit \"$code\"' EXIT\n"
+            'printf "rollback_on_remote_failure=attempted\\n"; fi'
         )
     return "\n".join(
         [
@@ -251,7 +250,17 @@ def _deploy_script(
             'else',
             '  previous=""',
             'fi',
-            rollback_trap.rstrip(),
+            'generation_tmp=""',
+            'generation_tmp_owned=0',
+            'on_exit() {',
+            '  code=$?',
+            '  if [ "$generation_tmp_owned" -eq 1 ] && [ -n "$generation_tmp" ]; then',
+            '    rm -f -- "$generation_tmp" || true',
+            '  fi',
+            rollback_on_exit,
+            '  exit "$code"',
+            '}',
+            'trap on_exit EXIT',
             'rm -rf "$tmp"',
             'mkdir -p "$tmp"',
             'tar -C "$tmp" -xf -',
@@ -296,9 +305,12 @@ def _deploy_script(
             ),
             'generation_tmp="$generation_file.$deployment_id.tmp"',
             'if [ -e "$generation_tmp" ] || [ -L "$generation_tmp" ]; then printf "deploy_blocked=generation_tmp_exists\\n"; exit 1; fi',
-            'if ! (umask 077; set -o noclobber; printf "%s\\n" "$deployment_id" > "$generation_tmp"); then printf "deploy_blocked=generation_write_failed\\n"; exit 1; fi',
-            'if [ -L "$generation_file" ] || { [ -e "$generation_file" ] && [ ! -f "$generation_file" ]; }; then rm -f "$generation_tmp"; printf "deploy_blocked=invalid_generation\\n"; exit 1; fi',
-            'mv -f "$generation_tmp" "$generation_file"',
+            'if ! (umask 077; set -o noclobber; : > "$generation_tmp"); then printf "deploy_blocked=generation_write_failed\\n"; exit 1; fi',
+            'generation_tmp_owned=1',
+            'if ! printf "%s\\n" "$deployment_id" > "$generation_tmp"; then printf "deploy_blocked=generation_write_failed\\n"; exit 1; fi',
+            'if [ -L "$generation_file" ] || { [ -e "$generation_file" ] && [ ! -f "$generation_file" ]; }; then printf "deploy_blocked=invalid_generation\\n"; exit 1; fi',
+            'if ! mv -f "$generation_tmp" "$generation_file"; then printf "deploy_blocked=generation_rename_failed\\n"; exit 1; fi',
+            'generation_tmp_owned=0',
             'current_target=$(readlink -f "$current" 2>/dev/null || true)',
             'printf "previous_release=%s\\n" "$previous"',
             'printf "release=%s\\n" "$release"',
@@ -353,6 +365,12 @@ def _rollback_script(
             'if [ -z "$failed" ] || [ ! -d "$failed" ]; then printf "rollback_blocked=failed_invalid\\n"; exit 1; fi',
             'case "$previous" in "$releases_dir"/*) ;; *) printf "rollback_blocked=previous_outside_releases\\n"; exit 1;; esac',
             'case "$failed" in "$releases_dir"/*) ;; *) printf "rollback_blocked=failed_outside_releases\\n"; exit 1;; esac',
+            'if [ "$previous" = "$failed" ]; then',
+            '  current_target=$(readlink -f "$current" 2>/dev/null || true)',
+            '  printf "rollback=skipped_same_release\\n"',
+            '  printf "current_target=%s\\n" "$current_target"',
+            '  exit 0',
+            'fi',
             'current_target=$(readlink -f "$current" 2>/dev/null || true)',
             'if [ "$current_target" != "$failed" ]; then',
             '  printf "rollback=skipped_current_changed\\n"',
@@ -455,7 +473,11 @@ def _run_rollback(
     rollback_result = summary.get("rollback")
     if rollback_result == "ok":
         status = "ok"
-    elif rollback_result in {"skipped_current_changed", "skipped_generation_changed"}:
+    elif rollback_result in {
+        "skipped_current_changed",
+        "skipped_generation_changed",
+        "skipped_same_release",
+    }:
         status = "skipped"
     else:
         status = "error"

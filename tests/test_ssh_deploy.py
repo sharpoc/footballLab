@@ -290,6 +290,17 @@ def _remote_env(fake_bin: Path, **extra: str) -> dict[str, str]:
     return env
 
 
+def _install_restart_logger(fake_bin: Path) -> None:
+    _write_executable(
+        fake_bin / "systemctl",
+        """#!/bin/bash
+if [ "$1" = "restart" ]; then printf '%s\n' "$*" >> "$TEST_RESTART_LOG"; fi
+if [ "$1" = "is-active" ]; then printf 'active\n'; fi
+exit 0
+""",
+    )
+
+
 def _deploy_for_paths(release: Path, current: Path, *, rollback: bool = False) -> str:
     return _deploy_script(
         release=str(release),
@@ -705,6 +716,133 @@ def test_local_shell_normal_smoke_failure_still_rolls_back() -> None:
         assert result["status"] == "rolled_back"
         assert result["rollback"]["status"] == "ok"
         assert current.resolve() == previous.resolve()
+
+
+def test_local_shell_same_release_smoke_failure_does_not_claim_rollback() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        current = root / "current"
+        runner = LocalShellRunner(_remote_env(_fake_remote_bin(root)))
+
+        first_result = _run_local_live_deploy(
+            runner=runner,
+            releases=releases,
+            current=current,
+            fetcher=ok_fetcher,
+        )
+
+        def failing_fetcher(url: str, timeout: int) -> FetchResult:
+            if url.endswith("/api/matches"):
+                return FetchResult(ok=False, status_code=None, body="", error="timeout")
+            return ok_fetcher(url, timeout)
+
+        second_result = _run_local_live_deploy(
+            runner=runner,
+            releases=releases,
+            current=current,
+            fetcher=failing_fetcher,
+        )
+        release = releases / "00158faef75b"
+
+        assert first_result["status"] == "deployed"
+        assert second_result["status"] == "failed"
+        assert second_result["rollback"]["status"] == "skipped"
+        assert second_result["rollback"]["rollback"] == "skipped_same_release"
+        assert current.resolve() == release.resolve()
+
+
+def test_deploy_script_cleans_owned_generation_temp_when_write_fails() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        previous = releases / "previous"
+        previous.mkdir(parents=True)
+        foreign_tmp = releases / ".deploy.generation.foreign.tmp"
+        foreign_tmp.write_text("keep-me", encoding="utf-8")
+        current = root / "current"
+        current.symlink_to(previous, target_is_directory=True)
+        fake_bin = _fake_remote_bin(root)
+        _install_restart_logger(fake_bin)
+        restart_log = root / "restarts.log"
+        bash_env = root / "fail-generation-write.sh"
+        bash_env.write_text(
+            """printf() {
+  if [ "$#" -eq 2 ] && [[ "$1" = '%s\\n' ]] && [[ "$2" =~ ^[0-9a-f]{32}$ ]]; then
+    return 1
+  fi
+  builtin printf "$@"
+}
+""",
+            encoding="utf-8",
+        )
+        runner = LocalShellRunner(
+            _remote_env(
+                fake_bin,
+                BASH_ENV=str(bash_env),
+                TEST_RESTART_LOG=str(restart_log),
+            )
+        )
+
+        result = _run_local_live_deploy(
+            runner=runner,
+            releases=releases,
+            current=current,
+            fetcher=ok_fetcher,
+        )
+
+        assert result["status"] == "blocked"
+        assert result["reason"] == "ssh_deploy_failed"
+        assert current.resolve() == previous.resolve()
+        assert restart_log.read_text(encoding="utf-8").splitlines() == [
+            "restart worldcup.service",
+            "restart worldcup.service",
+        ]
+        assert list(releases.glob(".deploy.generation.*.tmp")) == [foreign_tmp]
+        assert foreign_tmp.read_text(encoding="utf-8") == "keep-me"
+
+
+def test_deploy_script_cleans_owned_generation_temp_when_rename_fails() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        previous = releases / "previous"
+        previous.mkdir(parents=True)
+        current = root / "current"
+        current.symlink_to(previous, target_is_directory=True)
+        fake_bin = _fake_remote_bin(root)
+        _install_restart_logger(fake_bin)
+        restart_log = root / "restarts.log"
+        _write_executable(
+            fake_bin / "mv",
+            """#!/bin/bash
+last=${!#}
+case "$last" in */.deploy.generation) exit 1;; esac
+exec /bin/mv "$@"
+""",
+        )
+        runner = LocalShellRunner(
+            _remote_env(
+                fake_bin,
+                TEST_RESTART_LOG=str(restart_log),
+            )
+        )
+
+        result = _run_local_live_deploy(
+            runner=runner,
+            releases=releases,
+            current=current,
+            fetcher=ok_fetcher,
+        )
+
+        assert result["status"] == "blocked"
+        assert result["reason"] == "ssh_deploy_failed"
+        assert current.resolve() == previous.resolve()
+        assert restart_log.read_text(encoding="utf-8").splitlines() == [
+            "restart worldcup.service",
+            "restart worldcup.service",
+        ]
+        assert list(releases.glob(".deploy.generation.*.tmp")) == []
 
 
 def test_local_shell_rollback_fails_closed_when_generation_marker_missing() -> None:

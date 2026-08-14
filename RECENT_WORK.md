@@ -28,6 +28,7 @@
 - TDD 新增 `tests/test_nginx_routes.py`，覆盖四个 exact route、模板安全、规范化幂等、备份/原子安装、`nginx -t` 失败恢复且不 reload、reload 失败恢复、ssh deploy 接线和 dry-run 无副作用。
 - 验证：定向 Nginx 测试通过；项目 runtime `950/950 passed, 1 optional fastapi skipped`；未访问生产、未 live deploy、未调用 provider、未读取 `.env`、未消耗 credits。
 
+## 2026-08-01 每日赔率 sidecar live 刷新闭环
 
 - 保留上一阶段全部 dirty 改动，未 reset/checkout/clean，未 commit/push/PR；先恢复 `tests/test_daily_odds_refresh.py` 中被吞并的同 key 测试边界，再补 timezone、自然日、一次请求、多 event、quota、完整 h2h、标准化快照和 writer 失败状态断言。
 - `worldcup.daily_odds_refresh` 现以单次 planner 结果驱动 live：同 `sport_key + anchor` 一次 odds fetch，T-6/T-90=`h2h`、T-25=`h2h,spreads,totals`；只保留北京时间当日未开赛 event，排除次日/已开赛/重复 ID/改期/不完整 h2h/过期赔率；一次 response 同时生成安全 event rows、全局 Top4、2串1、3串1 和 snapshot payload。
@@ -36,6 +37,7 @@
 - 新增只读 `/api/daily-picks-sidecar` 与 `/daily-picks-sidecar`；旧 `/api/daily-picks`、`/daily-picks`、旧单场 API/预览仍走原 snapshot projection，不会因刷新联网。FastAPI 路由同步声明。
 - 文档已同步到 `README.md`；未创建 `ARCHITECTURE.md`。项目 runtime 完整回归 `942/942 passed, 1 optional fastapi skipped`；focused daily sidecar/旧菜单回归通过；`py_compile` 与 `git diff --check` 通过。未读取 `.env`、未调用真实 provider、未消耗 odds credits、未启动服务、未部署。
 - 当前最终状态：代码本地完成；`worldcup.ssh_deploy --root /Users/eagod/ai-dev/足彩 --ref HEAD` dry-run 已执行并按设计返回 `status=blocked, reason=dirty_worktree, dirty_files=31`，未 SSH、未 archive、未重启服务、未切换线上 current。服务尚未部署，自动 daily odds 抓取保持关闭；没有 commit/push/PR、没有读取 `.env`、没有真实 provider/odds/credits、没有线上写入。
+
 ## 2026-08-01 真实 provider 验证后的 17 联赛接入
 
 - 将已通过真实 The Odds API `/sports` + `/events` 只读验证的 17 个联赛接入现有 `worldcup.competitions` profile 与 `worldcup.daily_competitions` catalog：中超、英超、英冠、德甲、德乙、法甲、意甲、西甲、瑞典超、挪超、丹超、芬超、墨西哥超、J 联赛、K 联赛、巴西甲、美职联；墨西哥甲、澳超、阿根廷超仍无 profile/`sport_key`，保持 `code_reserved` / fail-closed。
@@ -61,6 +63,7 @@
 - `worldcup.scheduled_refresh.run_daily_odds_refresh()` 默认返回 `disabled`；显式 `enabled=True` 但 `live=False` 只做 planner dry-run；仅显式 `enabled=True, live=True` 才调用注入的 `odds_fetcher` 和 writer。旧 `run_scheduled_refresh()` 及其 CLI parser/返回契约保持不变，未注册 scheduler/LaunchAgent。
 - TDD 先记录缺失 `daily_odds_store` 的红灯（项目 runtime `928/929`），实现后定向与完整回归均为 `935/935 passed, 1 module skipped (optional fastapi)`；`py_compile`、`git diff --check` 通过。全程未联网、未读 `.env`/密钥、未调用真实 provider、未启动服务、未消耗 quota、未 commit/push/deploy。
 
+## 2026-07-31 每日精选 sidecar 初版
 
 - 完成每日精选 sidecar：20 个联赛目录状态为中超 `enabled`、英超/德甲/法甲/意甲/西甲 `code_reserved`、其余 14 个 `unsupported`；未验证 provider ID / sport key 不猜测、不模拟。
 - 新增动态 `/daily-picks` 与 `/api/daily-picks`，周期为北京时间 `18:00` 至次日 `18:00`，内部 UTC；全局 Top 4、同一 Top 4 派生 `2串1` / `3串1`，组合仅标记独立性近似研究分数并过滤同场/同队冲突。
