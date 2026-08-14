@@ -333,13 +333,13 @@ Expected:
 Run:
 
 ```bash
-test -f .claude/settings.local.json
-test -d .claude/worktrees
-git check-ignore -q .claude/settings.local.json
-git check-ignore -q .claude/worktrees/daily-sidecar-prod/README.md
+test -f /Users/eagod/ai-dev/足彩/.claude/settings.local.json
+test -d /Users/eagod/ai-dev/足彩/.claude/worktrees
+git check-ignore --no-index -q .claude/settings.local.json
+git check-ignore --no-index -q .claude/worktrees/daily-sidecar-prod/README.md
 ```
 
-Expected: local Claude state still exists and is ignored rather than deleted.
+Expected: local Claude state still exists in the original main checkout and the isolated worktree's Git policy ignores the corresponding paths without copying or deleting them.
 
 ---
 
