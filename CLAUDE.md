@@ -109,3 +109,32 @@ python3 -m pytest -v
 3. 线上 ECS 当前使用 SQLite；切换 PostgreSQL/RDS 需单独确认（`postgres_store` / `store_factory` 代码层已就绪）。
 4. 赛期内完赛后用 `results_capture` / `eval_data` 积累真实赛果，再决定是否采纳 `mu_total=2.2, mu_dr_slope=0.0015`（见 `docs/research/2026-06-10-mu-dr-fit.md`）；积累足够样本前不改模型参数。
 5. 日常巡检用只读命令 `python3 -m worldcup.ops_check`。
+
+## 阶段确认规则
+
+以下四个口令是当前项目内对一次明确阶段的批量授权，不是永久或跨任务授权。每个阶段执行前必须汇报目标、影响文件/状态、验证方式；用户口令只授权已汇报范围。用户可随时撤销；发现业务语义、接口、数据、权限、密钥、依赖、迁移或范围变化必须重新确认。
+
+### "确认实现"
+
+- **授权**：在已说明且用户确认的当前任务范围内修改本地源码/测试/文档并运行本地验证，可连续完成，不逐文件重复确认。
+- **不授权**：commit/push/PR/merge/deploy、secrets、数据库或生产写入、依赖安装、权限与账号变更。
+- **失效**：任务完成、用户取消、需求/范围发生实质变化。
+
+### "确认提交推送"
+
+- **授权**：对当前任务的当前非 main PR 分支进行 commit + push；同一 PR 内仅为修复 CI 的非业务语义问题（test assertions/fixtures、CI 配置、import path、格式）可连续修改、测试、commit、push 直到 CI 通过，不逐次确认。
+- **不授权**：`worldcup/` 业务行为、API 契约、数据库 schema、依赖、secret/权限处理的新增变化；push main、force push、merge、deploy、删分支。
+- **遇到不允许项**：立即停下重新说明和确认。
+- **失效**：PR 合并/关闭或需求变化。
+
+### "确认合并"
+
+- **授权**：仅把当前已通过要求 CI 的 PR squash merge 到 main。
+- **不授权**：force push、删分支、部署。
+- **失效**：合并完成即失效。
+
+### "确认部署"
+
+- **授权**：仅部署用户已确认的 main commit/artifact；允许预检、新建独立物理 release、上传/解压、原子 current 切换、既有服务重启、healthz/readyz/API/preview GET、失败自动回滚、部署记录。
+- **不授权**：修改 .env/secrets/账号权限/数据库 schema、ingest/publish/admin/生产业务写入、git 操作、删除旧 release。
+- **失效**：成功或回滚完成即失效。

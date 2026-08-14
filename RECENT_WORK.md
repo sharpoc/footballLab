@@ -6,7 +6,7 @@
 
 ## 2026-08-13 中超 closing coverage foundation 文档与真实本地验收
 
-- 同步 `README.md`、`docs/superpowers/data-contract.md`、`AGENTS.md` 与 `CLAUDE.md`：初始 128 个 match ID 是固定重建资格 membership，`2026-06-29` 仅为 bootstrap cutoff；canonical report 做全量 finished/history reconciliation，pending 只承接恢复；正式 headline 仅结算 observed schema v2 `match_pick_v3` 的 `MATCH_PICK`，reconstructed 保持独立且不得混算。本轮 implementation/documentation 已本地提交，未 push。
+- 同步 `README.md`、`docs/superpowers/data-contract.md`、`AGENTS.md` 与 `CLAUDE.md`：初始 128 个 match ID 是固定重建资格 membership，`2026-06-29` 仅为 bootstrap cutoff；canonical report 做全量 finished/history reconciliation，pending 只承接恢复；正式 headline 仅结算 observed schema v2 `match_pick_v3` 的 `MATCH_PICK`，reconstructed 保持独立且不得混算。本轮 implementation/documentation 已通过 PR #2 squash merge 到远程 `main` commit `5d006be240fd42ef320e0e5ec1aee69992f0e9c9`，CI `tests` 通过；已部署到 `/opt/worldcup/releases/5d006be240fd42ef320e0e5ec1aee69992f0e9c9`，内部 health/readiness 与公网 `/healthz`、`/api/matches`、`/preview` 均验证通过。本条记录随 SSH 部署加固分支纳入本地版本历史。
 - 最终完整项目验证：指定 runtime `1062/1062 tests passed`，`test_fastapi_app.py` 因 optional `fastapi` 不可用显式跳过 1 个 module。真实 `--initial-manifest` dry-run 返回 `matches=128`、`observed_cutoff=2026-06-29`，且运行前后 manifest/report/pending 均不存在，确认零写入。最终对抗性审查后，report strict validator 还强制 `initial_missing_count=128` 与固定 membership SHA256，重算 derived fields / fingerprint 后的 127-ID 子集或替换 128-ID 均 fail closed；真实 report 只读校验通过且文件 SHA256 不变。
 - 显式 ignored 写入后，`initial_missing_manifest.json` 有 128 个唯一 ID，固定 membership hash 为 `530acaa872d753c911861e2cab1e1bf6a2a0a87c595028d9c5e369523a7f6a40`，日期范围 `2026-03-06..2026-06-28`，每行均通过精确 UTC kickoff 与 `cfl_official` / `sevenm` 双 source ID 复验。canonical report 覆盖 171 个 accepted `csl_2026` / `2026` results：43 observed closing、35 observed current decisions、8 observed missing-current-decision、128 missing，正式 observed tally 为 `17 hit / 18 miss / 0 push / 0 no_pick`，`sample_too_small=true`；没有 reconstructed tally 或 combined rate，不能据此声称重建提高胜率。
 - 幂等与安全：第二次 manifest/report 写入均返回 `unchanged`；manifest SHA256 `9698786a6f5eed01d8a0cc7990c29a6fa63f6b33cafe93145b08cb6c9a6707da`、report SHA256 `7357d524770d89fb49f9a334b30c6684b2adf27236a2b10dc9234eab0f8e2211` 前后不变，pending 成功清除。两份 ignored artifact 对 `Authorization`、`Cookie`、`api_key`、`secret`、`.env` 和 request headers 的扫描为空。`csl_scheduled_publish` 原样命令返回 `status=dry_run`、`refresh=null`、`publish=null`，manifest/report/quota hash 与 mtime 不变，未读取 `.env`、未调用 provider、未消耗 quota、未发布或写 DB。
@@ -26,8 +26,71 @@
 - 新增 `worldcup.nginx_routes`：只在目标 `server_name football.celab.xin` 中移除这四个旧 exact location 并加入一个 managed include；snippet/site 原子替换，先备份到 `/root/nginx-backups`，幂等时无副作用，`nginx -t` 失败不 reload 并恢复旧文件，reload 失败也恢复旧文件并尝试旧配置恢复 reload。
 - `worldcup.ssh_deploy` live 远端流程接入 release 内模板和安装器；保持既有 bind-address、release/current 原子切换、旧路由、service restart、readyz warmup、公网 smoke 与 rollback 语义不变。dry-run 仍只读 Git，不 archive、SSH、写远端 Nginx 或 reload。
 - TDD 新增 `tests/test_nginx_routes.py`，覆盖四个 exact route、模板安全、规范化幂等、备份/原子安装、`nginx -t` 失败恢复且不 reload、reload 失败恢复、ssh deploy 接线和 dry-run 无副作用。
-- 验证：定向 Nginx 测试 `9/9` 通过；项目 runtime `951/951 passed, 1 optional fastapi skipped`；未访问生产、未 live deploy、未调用 provider、未读取 `.env`、未消耗 credits。
+- 验证：定向 Nginx 测试通过；项目 runtime `950/950 passed, 1 optional fastapi skipped`；未访问生产、未 live deploy、未调用 provider、未读取 `.env`、未消耗 credits。
 
+
+- 保留上一阶段全部 dirty 改动，未 reset/checkout/clean，未 commit/push/PR；先恢复 `tests/test_daily_odds_refresh.py` 中被吞并的同 key 测试边界，再补 timezone、自然日、一次请求、多 event、quota、完整 h2h、标准化快照和 writer 失败状态断言。
+- `worldcup.daily_odds_refresh` 现以单次 planner 结果驱动 live：同 `sport_key + anchor` 一次 odds fetch，T-6/T-90=`h2h`、T-25=`h2h,spreads,totals`；只保留北京时间当日未开赛 event，排除次日/已开赛/重复 ID/改期/不完整 h2h/过期赔率；一次 response 同时生成安全 event rows、全局 Top4、2串1、3串1 和 snapshot payload。
+- 新增 `worldcup.daily_odds_state.DailyOddsState`，原子保存 `sport_key|anchor` committed keys；只有 `DailyOddsSnapshotWriter` 成功后才提交，重启可复用 state，writer 失败不会伪造成功。新增日预算与 provider remaining 硬 guard，部分失败只重跑失败 key。
+- `worldcup.daily_odds_store` 扩展标准化白名单和跨运行 event identity/kickoff 校验，继续原子写入独立 `data/cache/daily_odds/`，不保存 raw provider/bookmaker/API key/secret。新增 `query.load_daily_sidecar_snapshot()` / `project_daily_sidecar()`。
+- 新增只读 `/api/daily-picks-sidecar` 与 `/daily-picks-sidecar`；旧 `/api/daily-picks`、`/daily-picks`、旧单场 API/预览仍走原 snapshot projection，不会因刷新联网。FastAPI 路由同步声明。
+- 文档已同步到 `README.md`；未创建 `ARCHITECTURE.md`。项目 runtime 完整回归 `942/942 passed, 1 optional fastapi skipped`；focused daily sidecar/旧菜单回归通过；`py_compile` 与 `git diff --check` 通过。未读取 `.env`、未调用真实 provider、未消耗 odds credits、未启动服务、未部署。
+- 当前最终状态：代码本地完成；`worldcup.ssh_deploy --root /Users/eagod/ai-dev/足彩 --ref HEAD` dry-run 已执行并按设计返回 `status=blocked, reason=dirty_worktree, dirty_files=31`，未 SSH、未 archive、未重启服务、未切换线上 current。服务尚未部署，自动 daily odds 抓取保持关闭；没有 commit/push/PR、没有读取 `.env`、没有真实 provider/odds/credits、没有线上写入。
+## 2026-08-01 真实 provider 验证后的 17 联赛接入
+
+- 将已通过真实 The Odds API `/sports` + `/events` 只读验证的 17 个联赛接入现有 `worldcup.competitions` profile 与 `worldcup.daily_competitions` catalog：中超、英超、英冠、德甲、德乙、法甲、意甲、西甲、瑞典超、挪超、丹超、芬超、墨西哥超、J 联赛、K 联赛、巴西甲、美职联；墨西哥甲、澳超、阿根廷超仍无 profile/`sport_key`，保持 `code_reserved` / fail-closed。
+- 英超消歧：排除俄超、非足球和 outright/winner 类候选后，`soccer_epl` 为唯一主赛事 key；`/events` HTTP 200，返回 10 场完整 event identity。德甲消歧：排除奥地利、女子、手球和其他非主赛事候选后，`soccer_germany_bundesliga` 为唯一主赛事 key；`/events` HTTP 200，返回 11 场完整 event identity。两者均无重复 event、无 identity 异常。
+- `/sports` 返回 174 个 sport；本阶段只调用 `/sports` 与每个确认 key 一次 `/events`，响应 quota headers 保持 `remaining=500 / used=0 / last=0`，未调用 `/odds`、`/scores` 或历史赔率，未消耗赔率 credits、未写 raw payload。
+- 保留旧 catalog 顺序和中超 `resolve_sport_key` 的双 candidate/显式 key 兼容；daily sidecar 使用已验证 exact key。`daily_odds_refresh` 默认仍 disabled，只有显式 `enabled=True, live=True` 才进入 odds fetcher；未改 `local_runner.py`、`match_decision.py`、旧单场查询或 snapshot 契约。
+- TDD 先出现 3 个兼容红灯，最小修正后项目 runtime 完整回归 `938/938 passed, 1 module skipped (optional fastapi)`；新增 17 联赛 resolved-catalog、3 联赛 fail-closed 和 exact profile/key 测试。未启动服务、未部署、未 commit/push。
+
+## 2026-07-31 每日赔率 sidecar 与动态 provider 状态
+
+- 在不改旧单场 `match_decision` / `local_runner` 主路径的前提下，新增 `worldcup/daily_odds_refresh.py` 注入式 sidecar：依赖注入 `sports/events/odds fetcher` 与 snapshot writer，默认不自动运行。
+- 20 联赛白名单保留：中超仍为已知配置；英超/德甲/法甲/意甲/西甲保留候选 `sport_key`；其余 14 个仅保留名称和 `code_reserved`，不猜 `competition_id` 或 provider key。运行时只接受 `/sports` exact active key，缺失/inactive 显示 `provider_unavailable`。
+- 同一 `sport_key` 的未来赛程在同一波只发一次 odds 请求；不同 key 分别请求；T-6h/T-90m 为 `h2h`，T-25m 为 `h2h,spreads,totals`。已开赛、无未来赛程、重复锚点、quota 不足和同 event 多 kickoff 均 fail-closed。
+- 扩展 `worldcup.sources.theoddsapi` 的 `/events` URL 与注入式 `fetch_events_for_sport`，继续复用现有 `fetch_json_from_url` 和 `quota.update_quota_from_headers`；旧世界杯 odds 封装保持兼容。
+- `odds_movement` 只记录 `shadow_only` / risk metadata，不参与 Top4、2串1、3串1 排序或 tie-break，不进入公开 raw bookmaker/odds 字段；每日精选继续复用既有 snapshot/query/routes/menu。
+- TDD 先捕获 provider 目录、同 key 批量、跨 key、三锚点 markets、改期/quota/幂等和 `/events` source 边界失败，再修复实现。定向与完整验证：`928/928 passed, 1 optional fastapi skipped`；未联网、未读 `.env`、未启动服务、未调用真实 provider、未消耗 quota、未 commit。
+
+## 2026-07-31 每日赔率本地接线（默认关闭）
+
+- 新增独立 `worldcup.daily_odds_store.DailyOddsSnapshotWriter` 与 `data/cache/daily_odds/daily_odds_snapshot.json` 命名空间：原子临时文件 + `fsync` + `os.replace`，校验 `competition_id`、`event_id`、`commence_time`、fixture identity，改期 event fail-closed；禁止写入旧 `analysis_snapshot.json` / 联赛 snapshot 名称。
+- writer 只保留 provider catalog、sport/competition、anchor、markets、event IDs、fixture identity 和 `odds_movement=shadow_only` 风险元数据；注入 payload 中的 raw bookmaker/provider odds 不进入文件，也不污染旧 cache/history。
+- `worldcup.daily_odds_refresh.plan_daily_odds_refresh()` 只基于注入的 `/sports` 等价列表和 `/events` 等价 fixtures 生成 due anchor、markets、estimated credits、fixtures、skip reason；不创建 transport、不调用 odds、不写文件。
+- `worldcup.scheduled_refresh.run_daily_odds_refresh()` 默认返回 `disabled`；显式 `enabled=True` 但 `live=False` 只做 planner dry-run；仅显式 `enabled=True, live=True` 才调用注入的 `odds_fetcher` 和 writer。旧 `run_scheduled_refresh()` 及其 CLI parser/返回契约保持不变，未注册 scheduler/LaunchAgent。
+- TDD 先记录缺失 `daily_odds_store` 的红灯（项目 runtime `928/929`），实现后定向与完整回归均为 `935/935 passed, 1 module skipped (optional fastapi)`；`py_compile`、`git diff --check` 通过。全程未联网、未读 `.env`/密钥、未调用真实 provider、未启动服务、未消耗 quota、未 commit/push/deploy。
+
+
+- 完成每日精选 sidecar：20 个联赛目录状态为中超 `enabled`、英超/德甲/法甲/意甲/西甲 `code_reserved`、其余 14 个 `unsupported`；未验证 provider ID / sport key 不猜测、不模拟。
+- 新增动态 `/daily-picks` 与 `/api/daily-picks`，周期为北京时间 `18:00` 至次日 `18:00`，内部 UTC；全局 Top 4、同一 Top 4 派生 `2串1` / `3串1`，组合仅标记独立性近似研究分数并过滤同场/同队冲突。
+- 复用现有 snapshot/public safe projection 和 scheduled refresh/publish；未新增 daily-picks scheduler、静态 export 或 LaunchAgent。旧单场算法、投影、路由和返回契约未改变。
+- 验证：项目指定 runtime `tests/run_tests.py` 为 `921/921 passed, 1 optional fastapi skipped`；未启动服务、未联网、未消耗 quota、未部署、未 commit。
+
+## 2026-07-20 19:30 UTC+8 阶段确认规则 + ssh_deploy 安全加固
+
+- **阶段确认规则**：`CLAUDE.md` 和 `AGENTS.md` 各追加"阶段确认规则"段落（四个口令：确认实现/提交推送/合并/部署），内容同步。
+- **ssh_deploy.py 加固**（TDD 红→绿）：
+  - 远端脚本在 mv/ln 前拒绝 `[ -L "$release" ]`（防止部署到 symlink alias 导致共享目录污染）。
+  - `previous` 解析改为 fail-closed：先判断 `$current` 是否作为文件系统条目存在（`[ -e ] || [ -L ]`）；只有真正不存在时才允许 `previous=""` 作为首次部署；current 存在但 `readlink -f` 返回空（broken/cyclic symlink）则打印 `current_unresolvable` 并 exit 1；解析非空后继续做 releases 前缀、-d、非 symlink 校验。
+  - 使用 `flock -n` 非阻塞并发锁（`$releases_dir/.deploy.lock`），覆盖创建→切换→重启→验证全程。
+- **测试**：新增 4 个 test_ssh_deploy 测试；全部 11/11 通过；完整 run_tests.py 897/897 + 1 skip (fastapi)。
+- 未做：commit/push/PR/merge/deploy、依赖安装、CI/GitHub 设置、服务状态变更。
+
+## 2026-07-20 17:50 UTC+8 部署修正：独立物理 release + symlink 污染修复
+
+- **异常根因**：先前部署使用 `cp -a` 复制 release symlink（而非目录内容），导致所有 release alias 指向同一物理目录 `dd972e6e1626b8999ccee47ec3a837135180a288`；后续 `scp` 实际覆写了共享物理目录，旧 release alias 作为回滚点已失效。
+- **修正操作**：
+  1. 创建独立回滚物理目录 `pre-4c68f00-rollback-20260720T101500Z`（从当前物理目录 cp -a + 旧 blob 覆盖 6 文件，inode 独立，nlink=1）。
+  2. 创建独立 main release 物理目录 `4c68f00-main-20260720T101500Z`（从当前物理目录 cp -a，298/298 文件一致，inode 独立）。
+  3. 原子切换 `current` → 新物理目录（直接指向，不经 release alias symlink 链）。
+  4. 服务重启并验证：PID=59900、NRestarts=0、healthz ok、readyz ready (9 场)、/api/matches 200、/preview 200。
+- **回滚目录** 6 文件旧 hash 验证通过：store.py=b195b2b5578e、quota.py=98c33da4ab7c、refresh_runner.py=74773f90e600、decision_settlement.py=f1189742e90f、match_decision.py=a9c0c32e915c、collectors/csl_result_sources.py=8773495d3c35。
+- **main release** 6 文件新 hash：store.py=23e01afe742b、quota.py=96c8650d77f9、refresh_runner.py=74a046f739c3、decision_settlement.py=7a2e1cf89162、match_decision.py=bc8c78541871、collectors/csl_result_sources.py=9fd01bf44086。
+- **当前 current**：`/opt/worldcup/releases/4c68f00-main-20260720T101500Z`（物理目录，非 symlink）。
+- **回滚路径**：`ln -sfn /opt/worldcup/releases/pre-4c68f00-rollback-20260720T101500Z /opt/worldcup/current && systemctl restart worldcup`。
+- **今后禁止**：不得使用 `cp -a` 复制 release symlink 作为新 release；必须用 `cp -a $(realpath source)` 或 `cp -rL` 创建独立物理目录。
+- 未做：commit/push、修改 .env/DB/LaunchAgent/监控、删除旧 release、ingest/publish。
 
 ## 2026-07-20 15:36 UTC+8 readiness profile 拆分 + 部署 + RECENT_WORK 归档
 
