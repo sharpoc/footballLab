@@ -6,6 +6,7 @@ import json
 import re
 import shlex
 import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -194,6 +195,7 @@ def _deploy_script(
     py_compile_files: tuple[str, ...],
     readyz_url: str,
     rollback_on_fail: bool,
+    deployment_id: str = "manual",
     nginx_site_config: str = DEFAULT_NGINX_SITE_CONFIG,
     nginx_snippet_path: str = DEFAULT_NGINX_SNIPPET_PATH,
     nginx_backup_dir: str = DEFAULT_NGINX_BACKUP_DIR,
@@ -217,6 +219,7 @@ def _deploy_script(
             f"current={shlex.quote(current_symlink)}",
             f"service={shlex.quote(service)}",
             f"nginx_service={shlex.quote(nginx_service)}",
+            f"deployment_id={shlex.quote(deployment_id)}",
             f"releases_dir={shlex.quote(releases_dir)}",
             'mkdir -p "$releases_dir"',
             'releases_dir=$(cd -P -- "$releases_dir" && pwd)',
@@ -232,6 +235,10 @@ def _deploy_script(
             'if [ -L "$lock_file" ] || [ ! -f "$lock_file" ]; then printf "deploy_blocked=invalid_lock\\n"; exit 1; fi',
             'exec 9<"$lock_file"',
             'if ! flock -n 9; then printf "deploy_blocked=concurrent_deploy\\n"; exit 1; fi',
+            'case "$deployment_id" in ""|*[!a-zA-Z0-9_-]*) printf "deploy_blocked=invalid_deployment_id\\n"; exit 1;; esac',
+            'generation_file="$releases_dir/.deploy.generation"',
+            'if [ -L "$generation_file" ]; then printf "deploy_blocked=generation_is_symlink\\n"; exit 1; fi',
+            'if [ -e "$generation_file" ] && [ ! -f "$generation_file" ]; then printf "deploy_blocked=invalid_generation\\n"; exit 1; fi',
             # Reject deploying over a symlink (prevents shared-dir pollution)
             'if [ -L "$release" ]; then printf "deploy_blocked=release_is_symlink\\n"; exit 1; fi',
             # Resolve previous: only skip if current truly does not exist
@@ -287,6 +294,11 @@ def _deploy_script(
                 f"--backup-dir {shlex.quote(nginx_backup_dir)} "
                 f"--nginx-service \"$nginx_service\""
             ),
+            'generation_tmp="$generation_file.$deployment_id.tmp"',
+            'if [ -e "$generation_tmp" ] || [ -L "$generation_tmp" ]; then printf "deploy_blocked=generation_tmp_exists\\n"; exit 1; fi',
+            'if ! (umask 077; set -o noclobber; printf "%s\\n" "$deployment_id" > "$generation_tmp"); then printf "deploy_blocked=generation_write_failed\\n"; exit 1; fi',
+            'if [ -L "$generation_file" ] || { [ -e "$generation_file" ] && [ ! -f "$generation_file" ]; }; then rm -f "$generation_tmp"; printf "deploy_blocked=invalid_generation\\n"; exit 1; fi',
+            'mv -f "$generation_tmp" "$generation_file"',
             'current_target=$(readlink -f "$current" 2>/dev/null || true)',
             'printf "previous_release=%s\\n" "$previous"',
             'printf "release=%s\\n" "$release"',
@@ -304,6 +316,7 @@ def _rollback_script(
     failed_release: str,
     current_symlink: str,
     service: str,
+    expected_deployment_id: str = "manual",
 ) -> str:
     releases_dir = failed_release.rsplit("/", 1)[0]
     return "\n".join(
@@ -311,6 +324,7 @@ def _rollback_script(
             "set -euo pipefail",
             f"previous={shlex.quote(previous_release)}",
             f"failed={shlex.quote(failed_release)}",
+            f"expected_deployment_id={shlex.quote(expected_deployment_id)}",
             f"current={shlex.quote(current_symlink)}",
             f"service={shlex.quote(service)}",
             f"releases_dir={shlex.quote(releases_dir)}",
@@ -324,6 +338,15 @@ def _rollback_script(
             'if [ -L "$lock_file" ] || [ ! -f "$lock_file" ]; then printf "rollback_blocked=invalid_lock\\n"; exit 1; fi',
             'exec 9<"$lock_file"',
             'if ! flock -n 9; then printf "rollback_blocked=concurrent_deploy\\n"; exit 1; fi',
+            'generation_file="$releases_dir/.deploy.generation"',
+            'if [ -L "$generation_file" ] || [ ! -f "$generation_file" ]; then printf "rollback_blocked=generation_invalid\\n"; exit 1; fi',
+            'active_deployment_id=$(<"$generation_file")',
+            'if [ "$active_deployment_id" != "$expected_deployment_id" ]; then',
+            '  current_target=$(readlink -f "$current" 2>/dev/null || true)',
+            '  printf "rollback=skipped_generation_changed\\n"',
+            '  printf "current_target=%s\\n" "$current_target"',
+            '  exit 0',
+            'fi',
             'previous=$(readlink -f "$previous" 2>/dev/null || true)',
             'failed=$(readlink -f "$failed" 2>/dev/null || true)',
             'if [ -z "$previous" ] || [ ! -d "$previous" ]; then printf "rollback_blocked=previous_invalid\\n"; exit 1; fi',
@@ -388,6 +411,7 @@ def _run_rollback(
     bind_address: str | None,
     previous_release: str,
     failed_release: str,
+    expected_deployment_id: str,
     current_symlink: str,
     service: str,
     ssh_timeout: int,
@@ -409,6 +433,7 @@ def _run_rollback(
             _rollback_script(
                 previous_release=previous_release,
                 failed_release=failed_release,
+                expected_deployment_id=expected_deployment_id,
                 current_symlink=current_symlink,
                 service=service,
             ),
@@ -430,7 +455,7 @@ def _run_rollback(
     rollback_result = summary.get("rollback")
     if rollback_result == "ok":
         status = "ok"
-    elif rollback_result == "skipped_current_changed":
+    elif rollback_result in {"skipped_current_changed", "skipped_generation_changed"}:
         status = "skipped"
     else:
         status = "error"
@@ -499,6 +524,7 @@ def run_ssh_deploy(
     if archive.returncode != 0:
         return {**base, **_command_failure("git_archive_failed", archive)}
 
+    deployment_id = uuid.uuid4().hex
     remote_script = _deploy_script(
         release=release,
         current_symlink=current_symlink,
@@ -507,6 +533,7 @@ def run_ssh_deploy(
         py_compile_files=DEFAULT_REMOTE_PY_COMPILE,
         readyz_url=DEFAULT_REMOTE_READYZ_URL,
         rollback_on_fail=rollback_on_fail,
+        deployment_id=deployment_id,
     )
     ssh_args = [
             "ssh",
@@ -539,6 +566,7 @@ def run_ssh_deploy(
             bind_address=bind_address,
             previous_release=previous,
             failed_release=release,
+            expected_deployment_id=deployment_id,
             current_symlink=current_symlink,
             service=service,
             ssh_timeout=ssh_timeout,

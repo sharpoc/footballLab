@@ -315,6 +315,68 @@ def _run_remote_script(script: str, env: dict[str, str]) -> subprocess.Completed
     )
 
 
+class LocalShellRunner:
+    """Run generated SSH scripts locally while keeping git/provider boundaries fake."""
+
+    def __init__(self, env: dict[str, str]) -> None:
+        self.env = env
+        self.calls: list[dict] = []
+
+    def __call__(
+        self,
+        args: list[str],
+        *,
+        cwd: str | Path | None = None,
+        input_bytes: bytes | None = None,
+        timeout: int = 30,
+    ) -> CommandResult:
+        self.calls.append(
+            {"args": args, "cwd": cwd, "input_bytes": input_bytes, "timeout": timeout}
+        )
+        if args[:3] == ["git", "rev-parse", "--verify"]:
+            return CommandResult(0, "00158faef75b\n", "", b"00158faef75b\n")
+        if args[:3] == ["git", "status", "--porcelain"]:
+            return CommandResult(0, "", "", b"")
+        if args[:3] == ["git", "archive", "--format=tar"]:
+            return CommandResult(0, "", "", b"tar-bytes")
+        if args[:1] == ["ssh"]:
+            completed = subprocess.run(
+                ["bash", "-c", args[-1]],
+                input=input_bytes or b"",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=self.env,
+                timeout=timeout,
+                check=False,
+            )
+            return CommandResult(
+                completed.returncode,
+                completed.stdout.decode("utf-8", errors="replace"),
+                completed.stderr.decode("utf-8", errors="replace"),
+                completed.stdout,
+            )
+        raise AssertionError(f"unexpected command: {args}")
+
+
+def _run_local_live_deploy(
+    *,
+    runner: LocalShellRunner,
+    releases: Path,
+    current: Path,
+    fetcher=ok_fetcher,
+    rollback_on_fail: bool = True,
+) -> dict[str, object]:
+    return run_ssh_deploy(
+        root=".",
+        live=True,
+        releases_dir=str(releases),
+        current_symlink=str(current),
+        rollback_on_fail=rollback_on_fail,
+        command_runner=runner,
+        fetcher=fetcher,
+    )
+
+
 def test_deploy_script_aborts_if_release_is_symlink() -> None:
     with tempfile.TemporaryDirectory() as raw_tmp:
         root = Path(raw_tmp)
@@ -477,6 +539,7 @@ def test_rollback_script_skips_when_current_points_to_newer_release() -> None:
         newer = releases / "newer"
         for path in (previous, failed, newer):
             path.mkdir(parents=True, exist_ok=True)
+        (releases / ".deploy.generation").write_text("manual\n", encoding="utf-8")
         current = root / "current"
         current.symlink_to(newer, target_is_directory=True)
         result = _run_remote_script(
@@ -571,3 +634,161 @@ def test_live_deploy_reports_failed_if_rollback_skips_changed_current() -> None:
     assert result["status"] == "failed"
     assert result["rollback"]["status"] == "skipped"
     assert result["rollback"]["rollback"] == "skipped_current_changed"
+
+
+def test_same_commit_later_deploy_prevents_older_smoke_rollback() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        previous = releases / "previous"
+        previous.mkdir(parents=True)
+        current = root / "current"
+        current.symlink_to(previous, target_is_directory=True)
+        runner = LocalShellRunner(_remote_env(_fake_remote_bin(root)))
+        later_result: dict[str, object] = {}
+        later_started = False
+
+        def older_fetcher(url: str, timeout: int) -> FetchResult:
+            nonlocal later_result, later_started
+            if url.endswith("/api/matches") and not later_started:
+                later_started = True
+                later_result = _run_local_live_deploy(
+                    runner=runner,
+                    releases=releases,
+                    current=current,
+                    fetcher=ok_fetcher,
+                    rollback_on_fail=False,
+                )
+                return FetchResult(ok=False, status_code=None, body="", error="timeout")
+            return ok_fetcher(url, timeout)
+
+        older_result = _run_local_live_deploy(
+            runner=runner,
+            releases=releases,
+            current=current,
+            fetcher=older_fetcher,
+        )
+        release = releases / "00158faef75b"
+        generation_file = releases / ".deploy.generation"
+
+        assert later_result["status"] == "deployed"
+        assert older_result["status"] == "failed"
+        assert older_result["rollback"]["status"] == "skipped"
+        assert older_result["rollback"]["rollback"] == "skipped_generation_changed"
+        assert current.resolve() == release.resolve()
+        assert generation_file.is_file() and not generation_file.is_symlink()
+        assert generation_file.read_text(encoding="utf-8").strip()
+
+
+def test_local_shell_normal_smoke_failure_still_rolls_back() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        previous = releases / "previous"
+        previous.mkdir(parents=True)
+        current = root / "current"
+        current.symlink_to(previous, target_is_directory=True)
+        runner = LocalShellRunner(_remote_env(_fake_remote_bin(root)))
+
+        def failing_fetcher(url: str, timeout: int) -> FetchResult:
+            if url.endswith("/api/matches"):
+                return FetchResult(ok=False, status_code=None, body="", error="timeout")
+            return ok_fetcher(url, timeout)
+
+        result = _run_local_live_deploy(
+            runner=runner,
+            releases=releases,
+            current=current,
+            fetcher=failing_fetcher,
+        )
+
+        assert result["status"] == "rolled_back"
+        assert result["rollback"]["status"] == "ok"
+        assert current.resolve() == previous.resolve()
+
+
+def test_local_shell_rollback_fails_closed_when_generation_marker_missing() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        previous = releases / "previous"
+        previous.mkdir(parents=True)
+        current = root / "current"
+        current.symlink_to(previous, target_is_directory=True)
+        runner = LocalShellRunner(_remote_env(_fake_remote_bin(root)))
+
+        def delete_generation_then_fail(url: str, timeout: int) -> FetchResult:
+            if url.endswith("/api/matches"):
+                (releases / ".deploy.generation").unlink(missing_ok=True)
+                return FetchResult(ok=False, status_code=None, body="", error="timeout")
+            return ok_fetcher(url, timeout)
+
+        result = _run_local_live_deploy(
+            runner=runner,
+            releases=releases,
+            current=current,
+            fetcher=delete_generation_then_fail,
+        )
+
+        assert result["status"] == "failed"
+        assert result["rollback"]["status"] == "error"
+        assert current.resolve() == (releases / "00158faef75b").resolve()
+
+
+def test_local_shell_rollback_rejects_generation_marker_symlink() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        previous = releases / "previous"
+        previous.mkdir(parents=True)
+        current = root / "current"
+        current.symlink_to(previous, target_is_directory=True)
+        victim = root / "victim"
+        victim.write_text("keep-me", encoding="utf-8")
+        runner = LocalShellRunner(_remote_env(_fake_remote_bin(root)))
+
+        def replace_generation_then_fail(url: str, timeout: int) -> FetchResult:
+            if url.endswith("/api/matches"):
+                generation_file = releases / ".deploy.generation"
+                generation_file.unlink(missing_ok=True)
+                generation_file.symlink_to(victim)
+                return FetchResult(ok=False, status_code=None, body="", error="timeout")
+            return ok_fetcher(url, timeout)
+
+        result = _run_local_live_deploy(
+            runner=runner,
+            releases=releases,
+            current=current,
+            fetcher=replace_generation_then_fail,
+        )
+
+        assert result["status"] == "failed"
+        assert result["rollback"]["status"] == "error"
+        assert current.resolve() == (releases / "00158faef75b").resolve()
+        assert victim.read_text(encoding="utf-8") == "keep-me"
+
+
+def test_local_shell_deploy_rejects_generation_marker_symlink() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        previous = releases / "previous"
+        previous.mkdir(parents=True)
+        current = root / "current"
+        current.symlink_to(previous, target_is_directory=True)
+        victim = root / "victim"
+        victim.write_text("keep-me", encoding="utf-8")
+        (releases / ".deploy.generation").symlink_to(victim)
+        runner = LocalShellRunner(_remote_env(_fake_remote_bin(root)))
+
+        result = _run_local_live_deploy(
+            runner=runner,
+            releases=releases,
+            current=current,
+            fetcher=ok_fetcher,
+        )
+
+        assert result["status"] == "blocked"
+        assert result["reason"] == "ssh_deploy_failed"
+        assert current.resolve() == previous.resolve()
+        assert victim.read_text(encoding="utf-8") == "keep-me"
