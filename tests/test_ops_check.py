@@ -3,8 +3,10 @@ from __future__ import annotations
 import io
 import hashlib
 import json
+import os
 import plistlib
 from contextlib import redirect_stdout
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -14,6 +16,39 @@ from worldcup.ops_check import format_ops_report, main as ops_check_main, run_op
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _set_mtime_utc(path: Path, value: str) -> None:
+    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    os.utime(path, (timestamp, timestamp))
+
+
+def _run_csl_ops_fixture(
+    root: Path,
+    providers: dict,
+    diagnostic: dict | None = None,
+    cache_updated_at: str = "2026-08-13T01:25:57+00:00",
+) -> dict:
+    launch_agent = root / "logs/xin.celab.football.scheduled-publish.plist"
+    _write_minimal_ops_inputs(root, launch_agent)
+    cache_path = root / "data/cache/theoddsapi_csl_2026_odds.json"
+    _write(cache_path, json.dumps([_csl_live_odds_event()]))
+    _set_mtime_utc(cache_path, cache_updated_at)
+    _write(root / "data/cache/quota.json", json.dumps({"providers": providers}))
+    if diagnostic is not None:
+        _write(
+            root / "data/local/diagnostics/csl_live_odds_refresh.json",
+            json.dumps(diagnostic),
+        )
+    return run_ops_check(
+        root=root,
+        public_base_url=None,
+        remote_host=None,
+        launch_agent_path=launch_agent,
+        local_log_paths=[],
+        pre_match_launch_agent_path=None,
+        pre_match_log_paths=[],
+    )
 
 
 def _write_plist(path: Path) -> None:
@@ -461,10 +496,9 @@ def test_run_ops_check_adds_csl_live_odds_report_digest_without_raw_payload():
         logs_dir = root / "logs"
         launch_agent = logs_dir / "xin.celab.football.scheduled-publish.plist"
         _write_minimal_ops_inputs(root, launch_agent)
-        _write(
-            root / "data/cache/theoddsapi_csl_2026_odds.json",
-            json.dumps([_csl_live_odds_event()]),
-        )
+        cache_path = root / "data/cache/theoddsapi_csl_2026_odds.json"
+        _write(cache_path, json.dumps([_csl_live_odds_event()]))
+        _set_mtime_utc(cache_path, "2026-06-24T01:51:18+00:00")
         _write(
             root / "data/local/diagnostics/csl_live_odds_refresh.json",
             json.dumps(
@@ -554,6 +588,122 @@ def test_run_ops_check_adds_csl_live_odds_report_digest_without_raw_payload():
     assert "must-not-leak" not in str(result)
     assert "2.05" not in str(result)
     assert "bookmakers" not in str(result)
+
+
+def test_csl_report_prefers_current_cache_and_low_quota_over_stale_diagnostic():
+    with TemporaryDirectory() as tmp:
+        result = _run_csl_ops_fixture(
+            Path(tmp),
+            providers={
+                "theoddsapi_primary": {"remaining": 0, "last": 3},
+                "theoddsapi_secondary": {"remaining": 29, "last": 3},
+                "theoddsapi_tertiary": {"remaining": 29, "last": 3},
+                "theoddsapi": {"remaining": 29, "last": 3},
+            },
+            diagnostic={
+                "status": "fetched",
+                "observed_at": "2026-06-29T02:32:31+00:00",
+                "theoddsapi_provider": "theoddsapi_secondary",
+                "quota_remaining": 34,
+                "quota_last": 3,
+            },
+        )
+
+    local = result["local"]["csl_live_odds"]
+    report = result["report"]["csl_live_odds"]
+    assert local["cache_updated_at"] == "2026-08-13T01:25:57+00:00"
+    assert local["refresh_diagnostic"]["observed_at"] == "2026-06-29T02:32:31+00:00"
+    assert report["observed_at"] == "2026-08-13T01:25:57+00:00"
+    assert report["provider"] == "theoddsapi_secondary"
+    assert report["quota_remaining"] == 29
+    assert report["quota_last"] == 3
+
+
+def test_csl_report_prefers_first_normal_quota_slot_over_low_slots():
+    with TemporaryDirectory() as tmp:
+        result = _run_csl_ops_fixture(
+            Path(tmp),
+            providers={
+                "theoddsapi_primary": {"remaining": 0, "last": 3},
+                "theoddsapi_secondary": {"remaining": 29, "last": 3},
+                "theoddsapi_tertiary": {"remaining": 50, "last": 4},
+            },
+        )
+
+    report = result["report"]["csl_live_odds"]
+    assert report["provider"] == "theoddsapi_tertiary"
+    assert report["quota_remaining"] == 50
+    assert report["quota_last"] == 4
+
+
+def test_csl_report_falls_back_only_for_missing_current_fields():
+    with TemporaryDirectory() as tmp:
+        result = _run_csl_ops_fixture(
+            Path(tmp),
+            providers={
+                "theoddsapi_primary": {"remaining": -1, "last": 99},
+                "theoddsapi_secondary": {"remaining": 29},
+                "theoddsapi_tertiary": {"remaining": "50", "last": 99},
+                "opaque-provider": {"remaining": 100, "secret": "must-not-leak"},
+            },
+            diagnostic={
+                "status": "fetched",
+                "observed_at": "2026-06-29T02:32:31+00:00",
+                "theoddsapi_provider": "theoddsapi_tertiary",
+                "quota_remaining": 34,
+                "quota_last": 3,
+                "secret": "must-not-leak",
+            },
+        )
+
+    report = result["report"]["csl_live_odds"]
+    assert report["observed_at"] == "2026-08-13T01:25:57+00:00"
+    assert report["provider"] == "theoddsapi_secondary"
+    assert report["quota_remaining"] == 29
+    assert report["quota_last"] == 3
+    assert "must-not-leak" not in str(result)
+    assert "opaque-provider" not in str(result)
+
+
+def test_csl_report_uses_diagnostic_quota_only_when_current_quota_is_unusable():
+    with TemporaryDirectory() as tmp:
+        result = _run_csl_ops_fixture(
+            Path(tmp),
+            providers={
+                "theoddsapi_primary": {"remaining": -1},
+                "theoddsapi_secondary": {"remaining": True},
+                "theoddsapi_tertiary": {"remaining": 29.0},
+            },
+            diagnostic={
+                "status": "fetched",
+                "observed_at": "2026-06-29T02:32:31+00:00",
+                "theoddsapi_provider": "theoddsapi_secondary",
+                "quota_remaining": 34,
+                "quota_last": 3,
+            },
+        )
+
+    report = result["report"]["csl_live_odds"]
+    assert report["observed_at"] == "2026-08-13T01:25:57+00:00"
+    assert report["provider"] == "theoddsapi_secondary"
+    assert report["quota_remaining"] == 34
+    assert report["quota_last"] == 3
+
+
+def test_csl_report_selects_first_zero_slot_when_all_valid_slots_are_exhausted():
+    with TemporaryDirectory() as tmp:
+        result = _run_csl_ops_fixture(
+            Path(tmp),
+            providers={
+                "theoddsapi_primary": {"remaining": 0, "last": 3},
+                "theoddsapi_secondary": {"remaining": 0, "last": 4},
+            },
+        )
+
+    report = result["report"]["csl_live_odds"]
+    assert report["provider"] == "theoddsapi_primary"
+    assert report["quota_remaining"] == 0
+    assert report["quota_last"] == 3
 
 
 def test_csl_live_odds_report_marks_missing_cache_as_warning():
@@ -669,7 +819,9 @@ def test_ops_check_summary_format_prints_daily_csl_digest_without_raw_payload():
         _write(logs_dir / "scheduled-publish.err.log", "")
         _write(logs_dir / "pre-match.out.log", "")
         _write(logs_dir / "pre-match.err.log", "")
-        _write(root / "data/cache/theoddsapi_csl_2026_odds.json", json.dumps([_csl_live_odds_event()]))
+        cache_path = root / "data/cache/theoddsapi_csl_2026_odds.json"
+        _write(cache_path, json.dumps([_csl_live_odds_event()]))
+        _set_mtime_utc(cache_path, "2026-06-24T01:51:18+00:00")
         _write(
             root / "data/local/diagnostics/csl_live_odds_refresh.json",
             json.dumps(
@@ -737,6 +889,7 @@ def test_ops_check_summary_format_prints_daily_csl_digest_without_raw_payload():
     assert code == 0
     assert "ops_check: ok errors=0 warnings=0" in text
     assert "CSL live odds: ok events=1 fixtures=1 odds_events=1" in text
+    assert "observed_at=2026-06-24T01:51:18+00:00" in text
     assert "provider=theoddsapi_secondary quota_remaining=248 quota_last=3" in text
     assert "guards: synthetic=false alias_unmatched=0 invalid_odds=0 issues=none" in text
     assert "runner: ok matches=1 rating_policy=club_rating_pending" in text
