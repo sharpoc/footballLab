@@ -200,6 +200,8 @@ def _deploy_script(
     nginx_template_path: str = DEFAULT_NGINX_TEMPLATE_PATH,
 ) -> str:
     tmp = f"{release}.tmp.deploy"
+    releases_dir = release.rsplit("/", 1)[0]
+    lock_file = f"{releases_dir}/.deploy.lock"
     nginx_template = f"{release}/{nginx_template_path}"
     compile_paths = " ".join(f'"$tmp/{path}"' for path in py_compile_files)
     rollback_trap = ""
@@ -218,7 +220,23 @@ def _deploy_script(
             f"current={shlex.quote(current_symlink)}",
             f"service={shlex.quote(service)}",
             f"nginx_service={shlex.quote(nginx_service)}",
-            'previous=$(readlink -f "$current" 2>/dev/null || true)',
+            f"releases_dir={shlex.quote(releases_dir)}",
+            f"lock_file={shlex.quote(lock_file)}",
+            # Acquire non-blocking deployment lock
+            'exec 9>"$lock_file"',
+            'if ! flock -n 9; then printf "deploy_blocked=concurrent_deploy\\n"; exit 1; fi',
+            # Reject deploying over a symlink (prevents shared-dir pollution)
+            'if [ -L "$release" ]; then printf "deploy_blocked=release_is_symlink\\n"; exit 1; fi',
+            # Resolve previous: only skip if current truly does not exist
+            'if [ -e "$current" ] || [ -L "$current" ]; then',
+            '  previous=$(readlink -f "$current" 2>/dev/null || true)',
+            '  if [ -z "$previous" ]; then printf "deploy_blocked=current_unresolvable\\n"; exit 1; fi',
+            '  if [ -L "$previous" ]; then printf "deploy_blocked=previous_is_symlink\\n"; exit 1; fi',
+            '  if [ ! -d "$previous" ]; then printf "deploy_blocked=previous_not_dir\\n"; exit 1; fi',
+            '  case "$previous" in "$releases_dir"/*) ;; *) printf "deploy_blocked=previous_outside_releases\\n"; exit 1;; esac',
+            'else',
+            '  previous=""',
+            'fi',
             rollback_trap.rstrip(),
             'rm -rf "$tmp"',
             'mkdir -p "$tmp"',

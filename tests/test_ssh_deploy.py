@@ -224,3 +224,155 @@ def test_main_prints_json_dry_run() -> None:
     assert exit_code == 0
     assert payload["status"] == "dry_run_ready"
     assert payload["mode"] == "dry_run"
+
+
+# --- Tests for symlink/previous/flock safety (TDD: expected to fail before implementation) ---
+
+from worldcup.ssh_deploy import _deploy_script
+
+
+def test_deploy_script_aborts_if_release_is_symlink() -> None:
+    """Remote script must reject deploying to a path that is a symlink."""
+    script = _deploy_script(
+        release="/opt/worldcup/releases/abc123",
+        current_symlink="/opt/worldcup/current",
+        service="worldcup.service",
+        nginx_service="nginx",
+        py_compile_files=("worldcup/http_app.py",),
+        readyz_url="http://127.0.0.1:8788/readyz",
+        rollback_on_fail=False,
+    )
+    # Script must check if release target is a symlink and abort before any mv/ln
+    assert '[ -L "$release" ]' in script or "[ -h " in script, (
+        "Script does not check if release is a symlink"
+    )
+    # The abort must happen BEFORE the mv or ln -sfn that changes current
+    lines = script.splitlines()
+    symlink_check_idx = None
+    mv_idx = None
+    for i, line in enumerate(lines):
+        if "[ -L " in line and "release" in line:
+            symlink_check_idx = i
+        if 'mv "$tmp"' in line or "mv " in line and "release" in line:
+            if mv_idx is None:
+                mv_idx = i
+    assert symlink_check_idx is not None, "No symlink check for release found"
+    assert mv_idx is not None, "No mv command found"
+    assert symlink_check_idx < mv_idx, "Symlink check must come before mv"
+
+
+def test_deploy_script_validates_previous_is_physical_dir_under_releases() -> None:
+    """Remote script must validate previous is a physical dir under releases_dir."""
+    script = _deploy_script(
+        release="/opt/worldcup/releases/abc123",
+        current_symlink="/opt/worldcup/current",
+        service="worldcup.service",
+        nginx_service="nginx",
+        py_compile_files=("worldcup/http_app.py",),
+        readyz_url="http://127.0.0.1:8788/readyz",
+        rollback_on_fail=True,
+    )
+    # Script must verify previous is: exists, is a directory, is not a symlink,
+    # and path starts with releases_dir prefix
+    assert "releases_dir=" in script or "/opt/worldcup/releases" in script
+    # Must check previous is not a symlink
+    assert '[ -L "$previous" ]' in script or '[ -h "$previous" ]' in script, (
+        "Script does not verify previous is not a symlink"
+    )
+    # Must validate previous starts with releases_dir
+    assert "releases_dir" in script or "/opt/worldcup/releases/" in script
+    # The validation must happen BEFORE ln -sfn that changes current
+    lines = script.splitlines()
+    prev_check_idx = None
+    ln_idx = None
+    for i, line in enumerate(lines):
+        if ("[ -L " in line or "[ -h " in line) and "previous" in line:
+            prev_check_idx = i
+        if 'ln -sfn "$release"' in line:
+            ln_idx = i
+    assert prev_check_idx is not None, "No previous symlink validation found"
+    assert ln_idx is not None
+    assert prev_check_idx < ln_idx, "Previous validation must come before current switch"
+
+
+def test_deploy_script_acquires_flock() -> None:
+    """Remote script must use flock for concurrency protection."""
+    script = _deploy_script(
+        release="/opt/worldcup/releases/abc123",
+        current_symlink="/opt/worldcup/current",
+        service="worldcup.service",
+        nginx_service="nginx",
+        py_compile_files=("worldcup/http_app.py",),
+        readyz_url="http://127.0.0.1:8788/readyz",
+        rollback_on_fail=False,
+    )
+    # Must acquire a non-blocking flock
+    assert "flock" in script, "Script does not use flock"
+    # flock must be non-blocking (-n) to fail immediately on contention
+    assert "flock -n" in script or "flock --nonblock" in script, (
+        "flock must be non-blocking"
+    )
+    # Lock file must be in releases directory
+    assert "/opt/worldcup/releases" in script and ".deploy.lock" in script, (
+        "Lock file must be in releases dir with .deploy.lock suffix"
+    )
+
+
+def test_deploy_script_aborts_when_current_exists_but_resolves_empty() -> None:
+    """If current is a symlink/file (exists) but readlink -f returns empty,
+    the script must abort before any release creation or current switch.
+    Only truly non-existent current (neither file nor symlink entry) may
+    proceed with empty previous as a first deploy."""
+    script = _deploy_script(
+        release="/opt/worldcup/releases/abc123",
+        current_symlink="/opt/worldcup/current",
+        service="worldcup.service",
+        nginx_service="nginx",
+        py_compile_files=("worldcup/http_app.py",),
+        readyz_url="http://127.0.0.1:8788/readyz",
+        rollback_on_fail=False,
+    )
+    lines = script.splitlines()
+
+    # The script must distinguish "current does not exist at all" from
+    # "current exists but resolves to nothing". Find the logic:
+    # 1) Must check if current exists (file/dir/symlink entry)
+    has_current_existence_check = any(
+        ('[ -e "$current" ]' in line or '[ -L "$current" ]' in line)
+        for line in lines
+    )
+    assert has_current_existence_check, (
+        "Script must check whether current exists as a filesystem entry"
+    )
+
+    # 2) When current exists but previous resolves empty, must abort
+    has_empty_previous_abort = any(
+        "previous" in line and ("exit 1" in line or "exit 1" in lines[i + 1] if i + 1 < len(lines) else False)
+        for i, line in enumerate(lines)
+        if "previous" in line and ("-z" in line or '= ""' in line or "! -n" in line)
+    )
+    # Alternative: look for -z "$previous" check that leads to exit
+    has_abort_on_empty = False
+    for i, line in enumerate(lines):
+        if '-z "$previous"' in line or '! -n "$previous"' in line:
+            # Check surrounding lines for exit
+            block = "\n".join(lines[max(0, i):min(len(lines), i + 3)])
+            if "exit 1" in block:
+                has_abort_on_empty = True
+                break
+    assert has_abort_on_empty, (
+        "Script must abort (exit 1) when current exists but previous resolves empty"
+    )
+
+    # 3) The abort must happen BEFORE tar extraction and mv
+    abort_idx = None
+    tar_idx = None
+    for i, line in enumerate(lines):
+        if '-z "$previous"' in line or '! -n "$previous"' in line:
+            abort_idx = i
+        if 'tar -C' in line:
+            tar_idx = i
+    assert abort_idx is not None and tar_idx is not None
+    assert abort_idx < tar_idx, (
+        "Empty-previous abort must come before tar extraction"
+    )
