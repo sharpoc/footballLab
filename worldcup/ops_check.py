@@ -8,6 +8,7 @@ import json
 import re
 import shlex
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -16,6 +17,13 @@ from urllib.request import Request, urlopen
 from worldcup.collectors.league_odds import parse_league_odds_events
 from worldcup.query import project_match_decision, summarize_finished_block
 from worldcup.refresh_audit import DEFAULT_LAUNCH_AGENT, inspect_launch_agent, summarize_history
+from worldcup.theoddsapi_keys import (
+    LEGACY_PROVIDER,
+    LOW_QUOTA_SWITCH_THRESHOLD,
+    PRIMARY_PROVIDER,
+    SECONDARY_PROVIDER,
+    TERTIARY_PROVIDER,
+)
 
 DEFAULT_PUBLIC_BASE_URL = "https://football.celab.xin"
 DEFAULT_REMOTE_HOST = "strategy-lab-ecs"
@@ -45,6 +53,12 @@ DEFAULT_CSL_LIVE_SNAPSHOT_PATH = Path(
     "data/local/diagnostics/csl_live_league_snapshot.json"
 )
 SAFE_QUOTA_FIELDS = ("remaining", "used", "last")
+CSL_QUOTA_PROVIDER_ORDER = (
+    PRIMARY_PROVIDER,
+    SECONDARY_PROVIDER,
+    TERTIARY_PROVIDER,
+    LEGACY_PROVIDER,
+)
 CSL_RUNNER_BLOCKING_WARNINGS = {
     "club_rating_missing",
     "club_rating_invalid",
@@ -340,6 +354,40 @@ def _safe_quota_providers(root: Path) -> dict[str, Any]:
     return {"status": "ok", "path": str(path), "providers": safe_providers}
 
 
+def _safe_cache_updated_at(path: Path) -> str | None:
+    try:
+        modified_at = path.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(modified_at, tz=timezone.utc).isoformat()
+
+
+def _select_current_quota_provider(
+    quota: dict[str, Any],
+) -> tuple[str, dict[str, Any]] | None:
+    providers = quota.get("providers") if isinstance(quota.get("providers"), dict) else {}
+
+    def candidate(provider: str) -> dict[str, Any] | None:
+        entry = providers.get(provider)
+        if not isinstance(entry, dict):
+            return None
+        remaining = entry.get("remaining")
+        if not isinstance(remaining, int) or isinstance(remaining, bool) or remaining < 0:
+            return None
+        return entry
+
+    for predicate in (
+        lambda remaining: remaining > LOW_QUOTA_SWITCH_THRESHOLD,
+        lambda remaining: remaining > 0,
+        lambda remaining: remaining == 0,
+    ):
+        for provider in CSL_QUOTA_PROVIDER_ORDER:
+            entry = candidate(provider)
+            if entry is not None and predicate(entry["remaining"]):
+                return provider, entry
+    return None
+
+
 def _safe_refresh_diagnostic(root: Path) -> dict[str, Any]:
     path = root / DEFAULT_CSL_LIVE_REFRESH_DIAGNOSTIC_PATH
     payload = _read_json(path)
@@ -523,7 +571,7 @@ def _csl_live_odds_summary(
     )
     safe_unmatched = _safe_team_label_list(raw_unmatched)
 
-    return {
+    result = {
         "status": "ok",
         "competition_id": competition_id,
         "path": str(cache_path),
@@ -539,6 +587,10 @@ def _csl_live_odds_summary(
         "refresh_diagnostic": _safe_refresh_diagnostic(root),
         "runner_check": _safe_runner_check(root),
     }
+    cache_updated_at = _safe_cache_updated_at(cache_path)
+    if cache_updated_at is not None:
+        result["cache_updated_at"] = cache_updated_at
+    return result
 
 
 def _snapshot_summary(path: Path) -> dict[str, Any]:
@@ -1170,9 +1222,12 @@ def _report_csl_live_odds(csl: dict[str, Any]) -> dict[str, Any]:
         else {}
     )
     quota = csl.get("quota") if isinstance(csl.get("quota"), dict) else {}
-    providers = quota.get("providers") if isinstance(quota.get("providers"), dict) else {}
-    provider = refresh.get("theoddsapi_provider")
-    provider_quota = providers.get(provider) if isinstance(providers.get(provider), dict) else {}
+    selected_quota = _select_current_quota_provider(quota)
+    if selected_quota is None:
+        provider = refresh.get("theoddsapi_provider")
+        provider_quota: dict[str, Any] = {}
+    else:
+        provider, provider_quota = selected_quota
     club_rating = runner.get("club_rating") if isinstance(runner.get("club_rating"), dict) else {}
     counts = runner.get("counts") if isinstance(runner.get("counts"), dict) else {}
     issues = _report_csl_issue_codes(csl, runner)
@@ -1188,13 +1243,13 @@ def _report_csl_live_odds(csl: dict[str, Any]) -> dict[str, Any]:
         "fixtures": csl.get("fixtures"),
         "odds_events": csl.get("odds_events"),
         "sport_keys": csl.get("sport_keys") or [],
-        "observed_at": refresh.get("observed_at"),
+        "observed_at": csl.get("cache_updated_at") or refresh.get("observed_at"),
         "provider": provider,
         "quota_remaining": _first_safe_number(
-            refresh.get("quota_remaining"),
             provider_quota.get("remaining"),
+            refresh.get("quota_remaining"),
         ),
-        "quota_last": _first_safe_number(refresh.get("quota_last"), provider_quota.get("last")),
+        "quota_last": _first_safe_number(provider_quota.get("last"), refresh.get("quota_last")),
         "has_synthetic_marker": csl.get("has_synthetic_marker"),
         "club_alias_unmatched_count": _as_int(csl.get("club_alias_unmatched_count")),
         "invalid_odds_count": _as_int(csl.get("invalid_odds_count")),
