@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import tempfile
+import time
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
-from worldcup.ssh_deploy import CommandResult, FetchResult, main, run_ssh_deploy
+from worldcup.ssh_deploy import (
+    CommandResult,
+    FetchResult,
+    _deploy_script,
+    _rollback_script,
+    main,
+    run_ssh_deploy,
+)
 
 
 class FakeRunner:
@@ -142,7 +153,8 @@ def test_live_deploy_uploads_archive_restarts_and_smokes_public_routes() -> None
     deploy_call = ssh_calls[0]
     assert deploy_call["input_bytes"] == b"tar-bytes"
     remote_script = deploy_call["args"][-1]
-    assert "/opt/worldcup/releases/00158faef75b" in remote_script
+    assert "releases_dir=/opt/worldcup/releases" in remote_script
+    assert "release_name=00158faef75b" in remote_script
     assert '"$tmp/worldcup/query.py"' in remote_script
     assert "http://127.0.0.1:8788/readyz" in remote_script
     assert "time.monotonic() + 30" in remote_script
@@ -226,153 +238,336 @@ def test_main_prints_json_dry_run() -> None:
     assert payload["mode"] == "dry_run"
 
 
-# --- Tests for symlink/previous/flock safety (TDD: expected to fail before implementation) ---
+def _write_executable(path: Path, source: str) -> None:
+    path.write_text(source, encoding="utf-8")
+    path.chmod(0o755)
 
-from worldcup.ssh_deploy import _deploy_script
+
+def _fake_remote_bin(root: Path) -> Path:
+    fake_bin = root / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "flock",
+        """#!/bin/bash
+if [ "$1" != "-n" ]; then exit 2; fi
+exec /usr/bin/python3 -c 'import fcntl, sys
+try:
+    fcntl.flock(int(sys.argv[1]), fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    raise SystemExit(1)' "$2"
+""",
+    )
+    _write_executable(
+        fake_bin / "readlink",
+        """#!/bin/bash
+exec /usr/bin/python3 -c 'import os, sys
+path = os.path.realpath(sys.argv[-1])
+if not os.path.exists(path):
+    raise SystemExit(1)
+print(path)' "$@"
+""",
+    )
+    _write_executable(
+        fake_bin / "systemctl",
+        """#!/bin/bash
+if [ "$1" = "restart" ] && [ -n "${TEST_RESTART_MARKER:-}" ]; then
+  touch "$TEST_RESTART_MARKER"
+  while [ ! -e "$TEST_RESTART_GATE" ]; do sleep 0.02; done
+fi
+if [ "$1" = "is-active" ]; then printf 'active\\n'; fi
+exit 0
+""",
+    )
+    _write_executable(fake_bin / "python3", "#!/bin/bash\ncat >/dev/null || true\nexit 0\n")
+    _write_executable(fake_bin / "tar", "#!/bin/bash\ncat >/dev/null || true\nexit 0\n")
+    return fake_bin
+
+
+def _remote_env(fake_bin: Path, **extra: str) -> dict[str, str]:
+    env = dict(os.environ)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env.update(extra)
+    return env
+
+
+def _deploy_for_paths(release: Path, current: Path, *, rollback: bool = False) -> str:
+    return _deploy_script(
+        release=str(release),
+        current_symlink=str(current),
+        service="worldcup.service",
+        nginx_service="nginx",
+        py_compile_files=("worldcup/http_app.py",),
+        readyz_url="http://127.0.0.1:8788/readyz",
+        rollback_on_fail=rollback,
+    )
+
+
+def _run_remote_script(script: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", script],
+        input="",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        timeout=5,
+        check=False,
+    )
 
 
 def test_deploy_script_aborts_if_release_is_symlink() -> None:
-    """Remote script must reject deploying to a path that is a symlink."""
-    script = _deploy_script(
-        release="/opt/worldcup/releases/abc123",
-        current_symlink="/opt/worldcup/current",
-        service="worldcup.service",
-        nginx_service="nginx",
-        py_compile_files=("worldcup/http_app.py",),
-        readyz_url="http://127.0.0.1:8788/readyz",
-        rollback_on_fail=False,
-    )
-    # Script must check if release target is a symlink and abort before any mv/ln
-    assert '[ -L "$release" ]' in script or "[ -h " in script, (
-        "Script does not check if release is a symlink"
-    )
-    # The abort must happen BEFORE the mv or ln -sfn that changes current
-    lines = script.splitlines()
-    symlink_check_idx = None
-    mv_idx = None
-    for i, line in enumerate(lines):
-        if "[ -L " in line and "release" in line:
-            symlink_check_idx = i
-        if 'mv "$tmp"' in line or "mv " in line and "release" in line:
-            if mv_idx is None:
-                mv_idx = i
-    assert symlink_check_idx is not None, "No symlink check for release found"
-    assert mv_idx is not None, "No mv command found"
-    assert symlink_check_idx < mv_idx, "Symlink check must come before mv"
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        shared = root / "shared"
+        releases.mkdir()
+        shared.mkdir()
+        release = releases / "abc123"
+        release.symlink_to(shared, target_is_directory=True)
+        result = _run_remote_script(
+            _deploy_for_paths(release, root / "current"),
+            _remote_env(_fake_remote_bin(root)),
+        )
+
+        assert result.returncode != 0
+        assert "deploy_blocked=release_is_symlink" in result.stdout
+        assert list(shared.iterdir()) == []
 
 
 def test_deploy_script_validates_previous_is_physical_dir_under_releases() -> None:
-    """Remote script must validate previous is a physical dir under releases_dir."""
-    script = _deploy_script(
-        release="/opt/worldcup/releases/abc123",
-        current_symlink="/opt/worldcup/current",
-        service="worldcup.service",
-        nginx_service="nginx",
-        py_compile_files=("worldcup/http_app.py",),
-        readyz_url="http://127.0.0.1:8788/readyz",
-        rollback_on_fail=True,
-    )
-    # Script must verify previous is: exists, is a directory, is not a symlink,
-    # and path starts with releases_dir prefix
-    assert "releases_dir=" in script or "/opt/worldcup/releases" in script
-    # Must check previous is not a symlink
-    assert '[ -L "$previous" ]' in script or '[ -h "$previous" ]' in script, (
-        "Script does not verify previous is not a symlink"
-    )
-    # Must validate previous starts with releases_dir
-    assert "releases_dir" in script or "/opt/worldcup/releases/" in script
-    # The validation must happen BEFORE ln -sfn that changes current
-    lines = script.splitlines()
-    prev_check_idx = None
-    ln_idx = None
-    for i, line in enumerate(lines):
-        if ("[ -L " in line or "[ -h " in line) and "previous" in line:
-            prev_check_idx = i
-        if 'ln -sfn "$release"' in line:
-            ln_idx = i
-    assert prev_check_idx is not None, "No previous symlink validation found"
-    assert ln_idx is not None
-    assert prev_check_idx < ln_idx, "Previous validation must come before current switch"
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        outside = root / "outside"
+        releases.mkdir()
+        outside.mkdir()
+        current = root / "current"
+        current.symlink_to(outside, target_is_directory=True)
+        release = releases / "abc123"
+        result = _run_remote_script(
+            _deploy_for_paths(release, current, rollback=True),
+            _remote_env(_fake_remote_bin(root)),
+        )
+
+        assert result.returncode != 0
+        assert "deploy_blocked=previous_outside_releases" in result.stdout
+        assert not release.exists()
+        assert current.resolve() == outside.resolve()
 
 
 def test_deploy_script_acquires_flock() -> None:
-    """Remote script must use flock for concurrency protection."""
-    script = _deploy_script(
-        release="/opt/worldcup/releases/abc123",
-        current_symlink="/opt/worldcup/current",
-        service="worldcup.service",
-        nginx_service="nginx",
-        py_compile_files=("worldcup/http_app.py",),
-        readyz_url="http://127.0.0.1:8788/readyz",
-        rollback_on_fail=False,
-    )
-    # Must acquire a non-blocking flock
-    assert "flock" in script, "Script does not use flock"
-    # flock must be non-blocking (-n) to fail immediately on contention
-    assert "flock -n" in script or "flock --nonblock" in script, (
-        "flock must be non-blocking"
-    )
-    # Lock file must be in releases directory
-    assert "/opt/worldcup/releases" in script and ".deploy.lock" in script, (
-        "Lock file must be in releases dir with .deploy.lock suffix"
-    )
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        releases.mkdir()
+        current = root / "current"
+        fake_bin = _fake_remote_bin(root)
+        marker = root / "restart.started"
+        gate = root / "restart.continue"
+        first = subprocess.Popen(
+            ["bash", "-c", _deploy_for_paths(releases / "first", current)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_remote_env(
+                fake_bin,
+                TEST_RESTART_MARKER=str(marker),
+                TEST_RESTART_GATE=str(gate),
+            ),
+        )
+        try:
+            deadline = time.monotonic() + 3
+            while not marker.exists() and first.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert marker.exists(), "first deployment did not reach the lock-holding restart"
+
+            second = _run_remote_script(
+                _deploy_for_paths(releases / "second", current),
+                _remote_env(fake_bin),
+            )
+            assert second.returncode != 0
+            assert "deploy_blocked=concurrent_deploy" in second.stdout
+            assert not (releases / "second").exists()
+        finally:
+            gate.touch()
+            first_stdout, first_stderr = first.communicate(timeout=5)
+        assert first.returncode == 0, (first_stdout, first_stderr)
 
 
 def test_deploy_script_aborts_when_current_exists_but_resolves_empty() -> None:
-    """If current is a symlink/file (exists) but readlink -f returns empty,
-    the script must abort before any release creation or current switch.
-    Only truly non-existent current (neither file nor symlink entry) may
-    proceed with empty previous as a first deploy."""
-    script = _deploy_script(
-        release="/opt/worldcup/releases/abc123",
-        current_symlink="/opt/worldcup/current",
-        service="worldcup.service",
-        nginx_service="nginx",
-        py_compile_files=("worldcup/http_app.py",),
-        readyz_url="http://127.0.0.1:8788/readyz",
-        rollback_on_fail=False,
-    )
-    lines = script.splitlines()
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        releases.mkdir()
+        current = root / "current"
+        current.symlink_to(root / "missing")
+        release = releases / "abc123"
+        result = _run_remote_script(
+            _deploy_for_paths(release, current),
+            _remote_env(_fake_remote_bin(root)),
+        )
 
-    # The script must distinguish "current does not exist at all" from
-    # "current exists but resolves to nothing". Find the logic:
-    # 1) Must check if current exists (file/dir/symlink entry)
-    has_current_existence_check = any(
-        ('[ -e "$current" ]' in line or '[ -L "$current" ]' in line)
-        for line in lines
-    )
-    assert has_current_existence_check, (
-        "Script must check whether current exists as a filesystem entry"
+        assert result.returncode != 0
+        assert "deploy_blocked=current_unresolvable" in result.stdout
+        assert not release.exists()
+
+
+def test_deploy_script_creates_missing_releases_directory_on_first_deploy() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        current = root / "current"
+        release = releases / "first"
+        result = _run_remote_script(
+            _deploy_for_paths(release, current),
+            _remote_env(_fake_remote_bin(root)),
+        )
+
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert release.is_dir()
+        assert current.resolve() == release.resolve()
+
+
+def test_deploy_script_rejects_lock_symlink_without_touching_target() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        releases.mkdir()
+        victim = root / "victim"
+        victim.write_text("keep-me", encoding="utf-8")
+        (releases / ".deploy.lock").symlink_to(victim)
+        result = _run_remote_script(
+            _deploy_for_paths(releases / "first", root / "current"),
+            _remote_env(_fake_remote_bin(root)),
+        )
+
+        assert result.returncode != 0
+        assert "deploy_blocked=lock_is_symlink" in result.stdout
+        assert victim.read_text(encoding="utf-8") == "keep-me"
+
+
+def test_deploy_script_compares_previous_against_physical_releases_dir() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        real_releases = root / "real-releases"
+        real_releases.mkdir()
+        alias = root / "releases"
+        alias.symlink_to(real_releases, target_is_directory=True)
+        previous = real_releases / "previous"
+        previous.mkdir()
+        current = root / "current"
+        current.symlink_to(previous, target_is_directory=True)
+        release = alias / "next"
+        result = _run_remote_script(
+            _deploy_for_paths(release, current),
+            _remote_env(_fake_remote_bin(root)),
+        )
+
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert current.resolve() == (real_releases / "next").resolve()
+
+
+def test_rollback_script_skips_when_current_points_to_newer_release() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        previous = releases / "previous"
+        failed = releases / "failed"
+        newer = releases / "newer"
+        for path in (previous, failed, newer):
+            path.mkdir(parents=True, exist_ok=True)
+        current = root / "current"
+        current.symlink_to(newer, target_is_directory=True)
+        result = _run_remote_script(
+            _rollback_script(
+                previous_release=str(previous),
+                failed_release=str(failed),
+                current_symlink=str(current),
+                service="worldcup.service",
+            ),
+            _remote_env(_fake_remote_bin(root)),
+        )
+
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert "rollback=skipped_current_changed" in result.stdout
+        assert current.resolve() == newer.resolve()
+
+
+def test_rollback_script_does_not_switch_current_during_lock_contention() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        releases = root / "releases"
+        previous = releases / "previous"
+        failed = releases / "failed"
+        previous.mkdir(parents=True)
+        failed.mkdir()
+        current = root / "current"
+        current.symlink_to(failed, target_is_directory=True)
+        lock_file = releases / ".deploy.lock"
+        lock_file.touch()
+        fake_bin = _fake_remote_bin(root)
+        marker = root / "lock.held"
+        gate = root / "lock.release"
+        holder = subprocess.Popen(
+            [
+                "bash",
+                "-c",
+                f'exec 9<"{lock_file}"; flock -n 9; touch "{marker}"; '
+                f'while [ ! -e "{gate}" ]; do sleep 0.02; done',
+            ],
+            env=_remote_env(fake_bin),
+        )
+        try:
+            deadline = time.monotonic() + 3
+            while not marker.exists() and holder.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert marker.exists(), "lock holder did not acquire the deployment lock"
+            result = _run_remote_script(
+                _rollback_script(
+                    previous_release=str(previous),
+                    failed_release=str(failed),
+                    current_symlink=str(current),
+                    service="worldcup.service",
+                ),
+                _remote_env(fake_bin),
+            )
+            assert result.returncode != 0
+            assert "rollback_blocked=concurrent_deploy" in result.stdout
+            assert current.resolve() == failed.resolve()
+        finally:
+            gate.touch()
+            holder.wait(timeout=5)
+
+
+def test_live_deploy_reports_failed_if_rollback_skips_changed_current() -> None:
+    class ChangedCurrentRunner(FakeRunner):
+        def __call__(self, args, *, cwd=None, input_bytes=None, timeout=30):
+            if args[:1] == ["ssh"] and input_bytes is None:
+                self.calls.append(
+                    {"args": args, "cwd": cwd, "input_bytes": input_bytes, "timeout": timeout}
+                )
+                return CommandResult(
+                    0,
+                    "rollback=skipped_current_changed\n"
+                    "current_target=/opt/worldcup/releases/newer\n",
+                    "",
+                )
+            return super().__call__(args, cwd=cwd, input_bytes=input_bytes, timeout=timeout)
+
+    def failing_fetcher(url: str, timeout: int) -> FetchResult:
+        if url.endswith("/api/matches"):
+            return FetchResult(ok=False, status_code=None, body="", error="timeout")
+        return ok_fetcher(url, timeout)
+
+    result = run_ssh_deploy(
+        root=".",
+        live=True,
+        rollback_on_fail=True,
+        command_runner=ChangedCurrentRunner(),
+        fetcher=failing_fetcher,
     )
 
-    # 2) When current exists but previous resolves empty, must abort
-    has_empty_previous_abort = any(
-        "previous" in line and ("exit 1" in line or "exit 1" in lines[i + 1] if i + 1 < len(lines) else False)
-        for i, line in enumerate(lines)
-        if "previous" in line and ("-z" in line or '= ""' in line or "! -n" in line)
-    )
-    # Alternative: look for -z "$previous" check that leads to exit
-    has_abort_on_empty = False
-    for i, line in enumerate(lines):
-        if '-z "$previous"' in line or '! -n "$previous"' in line:
-            # Check surrounding lines for exit
-            block = "\n".join(lines[max(0, i):min(len(lines), i + 3)])
-            if "exit 1" in block:
-                has_abort_on_empty = True
-                break
-    assert has_abort_on_empty, (
-        "Script must abort (exit 1) when current exists but previous resolves empty"
-    )
-
-    # 3) The abort must happen BEFORE tar extraction and mv
-    abort_idx = None
-    tar_idx = None
-    for i, line in enumerate(lines):
-        if '-z "$previous"' in line or '! -n "$previous"' in line:
-            abort_idx = i
-        if 'tar -C' in line:
-            tar_idx = i
-    assert abort_idx is not None and tar_idx is not None
-    assert abort_idx < tar_idx, (
-        "Empty-previous abort must come before tar extraction"
-    )
+    assert result["status"] == "failed"
+    assert result["rollback"]["status"] == "skipped"
+    assert result["rollback"]["rollback"] == "skipped_current_changed"

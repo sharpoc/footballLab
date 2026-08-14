@@ -199,10 +199,8 @@ def _deploy_script(
     nginx_backup_dir: str = DEFAULT_NGINX_BACKUP_DIR,
     nginx_template_path: str = DEFAULT_NGINX_TEMPLATE_PATH,
 ) -> str:
-    tmp = f"{release}.tmp.deploy"
     releases_dir = release.rsplit("/", 1)[0]
-    lock_file = f"{releases_dir}/.deploy.lock"
-    nginx_template = f"{release}/{nginx_template_path}"
+    release_name = release.rsplit("/", 1)[1]
     compile_paths = " ".join(f'"$tmp/{path}"' for path in py_compile_files)
     rollback_trap = ""
     if rollback_on_fail:
@@ -215,15 +213,24 @@ def _deploy_script(
     return "\n".join(
         [
             "set -euo pipefail",
-            f"release={shlex.quote(release)}",
-            f"tmp={shlex.quote(tmp)}",
+            f"release_name={shlex.quote(release_name)}",
             f"current={shlex.quote(current_symlink)}",
             f"service={shlex.quote(service)}",
             f"nginx_service={shlex.quote(nginx_service)}",
             f"releases_dir={shlex.quote(releases_dir)}",
-            f"lock_file={shlex.quote(lock_file)}",
-            # Acquire non-blocking deployment lock
-            'exec 9>"$lock_file"',
+            'mkdir -p "$releases_dir"',
+            'releases_dir=$(cd -P -- "$releases_dir" && pwd)',
+            'release="$releases_dir/$release_name"',
+            'tmp="$release.tmp.deploy"',
+            'lock_file="$releases_dir/.deploy.lock"',
+            f"nginx_template_path={shlex.quote(nginx_template_path)}",
+            'nginx_template="$release/$nginx_template_path"',
+            'if [ -L "$lock_file" ]; then printf "deploy_blocked=lock_is_symlink\\n"; exit 1; fi',
+            'if [ ! -e "$lock_file" ]; then',
+            '  (umask 077; set -o noclobber; : > "$lock_file") 2>/dev/null || true',
+            'fi',
+            'if [ -L "$lock_file" ] || [ ! -f "$lock_file" ]; then printf "deploy_blocked=invalid_lock\\n"; exit 1; fi',
+            'exec 9<"$lock_file"',
             'if ! flock -n 9; then printf "deploy_blocked=concurrent_deploy\\n"; exit 1; fi',
             # Reject deploying over a symlink (prevents shared-dir pollution)
             'if [ -L "$release" ]; then printf "deploy_blocked=release_is_symlink\\n"; exit 1; fi',
@@ -276,7 +283,7 @@ def _deploy_script(
                 "PYTHONPATH=\"$release\" python3 -m worldcup.nginx_routes --install "
                 f"--site-config {shlex.quote(nginx_site_config)} "
                 f"--snippet-path {shlex.quote(nginx_snippet_path)} "
-                f"--snippet-source {shlex.quote(nginx_template)} "
+                '--snippet-source "$nginx_template" '
                 f"--backup-dir {shlex.quote(nginx_backup_dir)} "
                 f"--nginx-service \"$nginx_service\""
             ),
@@ -294,15 +301,41 @@ def _deploy_script(
 def _rollback_script(
     *,
     previous_release: str,
+    failed_release: str,
     current_symlink: str,
     service: str,
 ) -> str:
+    releases_dir = failed_release.rsplit("/", 1)[0]
     return "\n".join(
         [
             "set -euo pipefail",
             f"previous={shlex.quote(previous_release)}",
+            f"failed={shlex.quote(failed_release)}",
             f"current={shlex.quote(current_symlink)}",
             f"service={shlex.quote(service)}",
+            f"releases_dir={shlex.quote(releases_dir)}",
+            'if [ ! -d "$releases_dir" ]; then printf "rollback_blocked=releases_missing\\n"; exit 1; fi',
+            'releases_dir=$(cd -P -- "$releases_dir" && pwd)',
+            'lock_file="$releases_dir/.deploy.lock"',
+            'if [ -L "$lock_file" ]; then printf "rollback_blocked=lock_is_symlink\\n"; exit 1; fi',
+            'if [ ! -e "$lock_file" ]; then',
+            '  (umask 077; set -o noclobber; : > "$lock_file") 2>/dev/null || true',
+            'fi',
+            'if [ -L "$lock_file" ] || [ ! -f "$lock_file" ]; then printf "rollback_blocked=invalid_lock\\n"; exit 1; fi',
+            'exec 9<"$lock_file"',
+            'if ! flock -n 9; then printf "rollback_blocked=concurrent_deploy\\n"; exit 1; fi',
+            'previous=$(readlink -f "$previous" 2>/dev/null || true)',
+            'failed=$(readlink -f "$failed" 2>/dev/null || true)',
+            'if [ -z "$previous" ] || [ ! -d "$previous" ]; then printf "rollback_blocked=previous_invalid\\n"; exit 1; fi',
+            'if [ -z "$failed" ] || [ ! -d "$failed" ]; then printf "rollback_blocked=failed_invalid\\n"; exit 1; fi',
+            'case "$previous" in "$releases_dir"/*) ;; *) printf "rollback_blocked=previous_outside_releases\\n"; exit 1;; esac',
+            'case "$failed" in "$releases_dir"/*) ;; *) printf "rollback_blocked=failed_outside_releases\\n"; exit 1;; esac',
+            'current_target=$(readlink -f "$current" 2>/dev/null || true)',
+            'if [ "$current_target" != "$failed" ]; then',
+            '  printf "rollback=skipped_current_changed\\n"',
+            '  printf "current_target=%s\\n" "$current_target"',
+            '  exit 0',
+            'fi',
             'ln -sfn "$previous" "$current"',
             'systemctl restart "$service"',
             'service_status=$(systemctl is-active "$service")',
@@ -354,6 +387,7 @@ def _run_rollback(
     host: str,
     bind_address: str | None,
     previous_release: str,
+    failed_release: str,
     current_symlink: str,
     service: str,
     ssh_timeout: int,
@@ -374,6 +408,7 @@ def _run_rollback(
             host,
             _rollback_script(
                 previous_release=previous_release,
+                failed_release=failed_release,
                 current_symlink=current_symlink,
                 service=service,
             ),
@@ -391,7 +426,15 @@ def _run_rollback(
             "stdout_tail": _redact(result.stdout),
             "stderr_tail": _redact(result.stderr),
         }
-    return {"status": "ok", **_parse_key_values(result.stdout)}
+    summary = _parse_key_values(result.stdout)
+    rollback_result = summary.get("rollback")
+    if rollback_result == "ok":
+        status = "ok"
+    elif rollback_result == "skipped_current_changed":
+        status = "skipped"
+    else:
+        status = "error"
+    return {"status": status, **summary}
 
 
 def run_ssh_deploy(
@@ -495,6 +538,7 @@ def run_ssh_deploy(
             host=host,
             bind_address=bind_address,
             previous_release=previous,
+            failed_release=release,
             current_symlink=current_symlink,
             service=service,
             ssh_timeout=ssh_timeout,
