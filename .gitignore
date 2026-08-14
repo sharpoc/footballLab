@@ -19,3 +19,7 @@ tools/
 .venv/
 venv/
 *.egg-info/
+
+# Local Claude Code state and managed worktrees
+.claude/settings.local.json
+.claude/worktrees/
