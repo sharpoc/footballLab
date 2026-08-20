@@ -2,7 +2,7 @@
 
 日期：2026-08-20
 
-状态：已确认设计，待实施计划
+状态：已实施；本地 standalone dry-run 已验收。真实 ignored baseline 的 `--write` 尚未激活，仍须单独批准；真实 WxPusher 通知也须单独批准。
 
 适用赛事：`csl_2026`
 
@@ -367,6 +367,13 @@ state 不可读或校验失败时：
 
 验收不以命中率提高为标准；验收标准是异常发现、去重、恢复、样本门槛提醒和主链路隔离均可由测试证明。
 
+### 11.5 实施状态与验收证据（2026-08-20）
+
+- 已实现 `worldcup.csl_postmatch_sentinel`、其离线/并发/outbox 测试，以及 `worldcup.csl_scheduled_publish` 的非阻断接线和 `--no-notify`；最终 publish-body 捕获测试覆盖 sentinel 不进入公开 snapshot 或 HMAC body 的边界。
+- 新鲜验证：`py_compile` 通过；聚焦 suite 为 sentinel `28/28`、scheduler `45/45`；指定完整 runner 为 `1123/1123 tests passed, 1 module skipped (optional fastapi)`。
+- 使用工作树代码、显式 `--root /Users/eagod/ai-dev/足彩` 对真实 ignored shadow/coverage 运行 standalone dry-run，返回事实为 `{"status":"dry_run_ready","event_count":0,"notification_status":"not_attempted"}`。原项目绝对 state/lock 路径在前后均为 `absent`，hash/existence guard 通过；本次没有 `--write`、`--notify`、provider、quota、`.env`、push 或部署动作。
+- 真实 ignored baseline 仍未激活：不得把 dry-run 视为已建立 baseline。后续仅在另行批准后，才可执行 `worldcup.csl_postmatch_sentinel --write`；真实 WxPusher 发送还需独立于该写入授权的明确批准。
+
 ## 12. 对抗性自审
 
 ### 12.1 小样本误导
@@ -406,4 +413,4 @@ sentinel 只读本地报告，通知复用全局 WxPusher 工具；不得读取�
 5. 实现 `--no-notify` 和非阻断接入；
 6. 更新现有 README 与近期记录；本阶段不新建 `ARCHITECTURE.md`；
 7. 执行聚焦测试、完整回归、安全扫描和真实本地 dry-run；
-8. 另行确认后才可进入 commit/push、合并或部署阶段。
+8. 文档与代码可按已授权阶段提交；push、合并、部署、真实 ignored baseline 写入和真实 WxPusher 通知仍须各自另行确认。
