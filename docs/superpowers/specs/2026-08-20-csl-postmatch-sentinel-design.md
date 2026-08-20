@@ -2,7 +2,7 @@
 
 日期：2026-08-20
 
-状态：已实施；本地 standalone dry-run 已验收。真实 ignored baseline 的 `--write` 尚未激活，仍须单独批准；真实 WxPusher 通知也须单独批准。
+状态：已实施；本地 standalone dry-run 与真实 ignored baseline 已验收。baseline 激活未发送 WxPusher；任何真实通知仍须单独批准。
 
 适用赛事：`csl_2026`
 
@@ -371,9 +371,10 @@ state 不可读或校验失败时：
 
 - 已实现 `worldcup.csl_postmatch_sentinel`、其离线/并发/outbox 测试，以及 `worldcup.csl_scheduled_publish` 的非阻断接线和 `--no-notify`；最终 publish-body 捕获测试覆盖 sentinel 不进入公开 snapshot 或 HMAC body 的边界。
 - Fix Round1：合法报告的 standalone dry-run 与 CLI 安全摘要从同一次已验证 projection 传播精确 `decision_count` / `sample_too_small`，不二次读取报告；合法 `stored` / `unchanged` 也可携带。错误或输入不可读时省略这两个字段。scheduler 的 `_safe_postmatch_sentinel` 保持白名单，仍丢弃它们，避免扩大 scheduler-local 或公开 payload。
-- 新鲜验证：`py_compile` 通过；聚焦 suite 为 sentinel `28/28`、scheduler `45/45`；指定完整 runner 为 `1123/1123 tests passed, 1 module skipped (optional fastapi)`。
-- 使用工作树代码、显式 `--root /Users/eagod/ai-dev/足彩` 对真实 ignored shadow/coverage 运行 standalone dry-run，最新返回事实为 `{"decision_count":38,"event_count":0,"notification_status":"not_attempted","sample_too_small":true,"status":"dry_run_ready"}`。原项目绝对 state/lock 路径在前后均为 `absent`，hash/existence guard 通过；本次没有 `--write`、`--notify`、provider、quota、`.env`、push 或部署动作。
-- 真实 ignored baseline 仍未激活：不得把 dry-run 视为已建立 baseline。后续仅在另行批准后，才可执行 `worldcup.csl_postmatch_sentinel --write`；真实 WxPusher 发送还需独立于该写入授权的明确批准。
+- 最终验证：`py_compile` 通过；聚焦 suite 为 sentinel `31/31`、scheduler `45/45`；指定完整 runner 为 `1126/1126 tests passed, 1 module skipped (optional fastapi)`。实现已通过 PR #5 squash merge 到远端 `main` commit `8a500bec65bc50a26d2043ec9edd5817bfcea70d`。
+- 使用同步后的本地 `main` 对真实 ignored shadow/coverage 运行 standalone dry-run，返回 `{"decision_count":38,"event_count":0,"notification_status":"not_attempted","sample_too_small":true,"status":"dry_run_ready"}`，state/lock 均保持 `absent`，确认零写入、零通知。
+- 经独立授权后执行 `worldcup.csl_postmatch_sentinel --write` 且未传 `--notify`：首次返回 `stored`，第二次返回 `unchanged`，均为 38 个正式样本、0 个事件、`sample_too_small=true`。state 以 128 个 closing 缺口和 8 个 decision 缺口为通知基线，`threshold_notified=false`、active/outbox 均为空；重复运行 SHA256 保持 `b8f3d8064d09dad6ca6a9485243f904027bfbda48f8b8bd86bedcb86e6f491e1`，敏感字段扫描为空。
+- 现有 `xin.celab.football.csl-scheduled-publish` LaunchAgent 每 900 秒唤醒既有 `worldcup.csl_scheduled_publish --live`，最近退出码为 0；没有新增 timer。`worldcup.ops_check` 只读巡检返回 `ok=true`、0 errors。真实 WxPusher 仍未发送，任何后续真实通知继续要求独立批准；本轮未调用 provider、未新增 quota 消耗、未部署。
 
 ## 12. 对抗性自审
 
