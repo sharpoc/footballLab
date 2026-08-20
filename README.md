@@ -110,6 +110,7 @@ worldcup/
   csl_results_probe.py          # 中超历史赛果本地样例清洗与双源诊断 CLI
   csl_eval_data.py              # 中超本地 snapshot × 完赛赛果 join 成回测 CSV
   csl_postmatch_shadow.py       # 中超封盘首选结算、指纹幂等和本地 shadow 产物
+  csl_postmatch_sentinel.py     # 中超赛后样本/数据质量 sentinel：默认零写 dry-run，本地 state/outbox
   csl_closing_coverage.py       # 中超 observed closing coverage 纯函数契约与全量 reconciliation
   csl_closing_coverage_runner.py # 中超 closing coverage 本地 dry-run/ignored 原子写入 CLI
   csl_ops_runner.py             # 中超本地实战闭环：dry-run、snapshot、归档、观察报告、postmatch
@@ -227,7 +228,7 @@ HTTP 预览/公开查询支持多赛事 latest 合并视图：同一个 store �
 
 ### CSL Scheduled Publish
 
-`worldcup.csl_scheduled_publish` 是中超自动刷新/发布入口。默认 dry-run 只读取本地 snapshot / quota 并输出决策，不读取 `.env`、不联网、不调用 The Odds API、不发布；只有显式 `--live` 且决策 due，或同时传 `--force`，才会读取 `.env`、刷新中超 odds、生成预测 snapshot 并 HMAC ingest 到线上。live due 时会先用 7M 赛程数组与中足联官方公开接口双源校验已完赛比分；只有日期、主客队和比分全部一致才原子更新本地 replay CSV。这两个公开源不消耗 The Odds API quota；抓取或校验失败时沿用旧 cache 并写质量警告，不阻断赔率刷新。已接受的双源赛果会在 odds refresh 前触发本地 postmatch shadow；shadow 失败只增加 `csl_postmatch_shadow_failed` warning，不改变后续刷新、发布或 quota 行为。每次成功构建的赛前 snapshot 还会自动归档到 ignored `data/local/diagnostics/csl_history/`，用于后续 closing join 和市场基准积累；归档失败会写质量警告，但不阻断当场首选发布。
+`worldcup.csl_scheduled_publish` 是中超自动刷新/发布入口。默认 dry-run 只读取本地 snapshot / quota 并输出决策，不读取 `.env`、不联网、不调用 The Odds API、不发布；只有显式 `--live` 且决策 due，或同时传 `--force`，才会读取 `.env`、刷新中超 odds、生成预测 snapshot 并 HMAC ingest 到线上。live due 时会先用 7M 赛程数组与中足联官方公开接口双源校验已完赛比分；只有日期、主客队和比分全部一致才原子更新本地 replay CSV。这两个公开源不消耗 The Odds API quota；抓取或校验失败时沿用旧 cache 并写质量警告，不阻断赔率刷新。已接受的双源赛果会按“accepted result → postmatch shadow 成功（`stored` / `unchanged`）→ postmatch sentinel → odds refresh”顺序处理；shadow 或 sentinel 失败都不会阻断后续刷新、发布或 quota 行为，sentinel 摘要仅留在 scheduler 本地返回值，不进入 snapshot 或 HMAC publish body。每次成功构建的赛前 snapshot 还会自动归档到 ignored `data/local/diagnostics/csl_history/`，用于后续 closing join 和市场基准积累；归档失败会写质量警告，但不阻断当场首选发布。
 
 同一轮双源响应还会校验未完赛赛程的 `SCHEDULED` / `POSTPONED` 状态，成功后原子写入 ignored `data/cache/csl_fixture_status_csl_2026.json`；状态 cache 缺失时，runner 可以只读复用已经保存且双源一致的 `data/cache/csl_results_sources/` 原始响应。官方与 7M 对日期、主客队或状态存在分歧时不更新状态 cache，避免单源误撤首选。确认延期的场次继续保留在内部 snapshot/cache/history 供诊断和补赛重排，但 `project_match_rows()`、公开 API、预览页和静态导出会整场隐藏，不再显示“比赛延期”占位行或公开延期计数；`/readyz.match_count` 也只统计公开可见场次。该场不参与赛前锚点/首选鲜度调度、closing 或赛后评估。官方出现同一主客队的新日期后，新赛程重新按新赔率计算，赔率源仍残留的更早旧事件会被压掉，避免旧、新场次重复。结果/状态刷新失败但本地 cache 可用时会在 `data_quality.stale_sources` 标记，不静默当作新鲜状态。
 
@@ -430,6 +431,24 @@ P9.15 新增中超本地赛后评估闭环，用于把已归档的 CSL league sn
 shadow canonical 报告为 `data/local/diagnostics/csl_postmatch_shadow.json`，状态为 `csl_postmatch_shadow_state.json`，并同步更新 `data/local/backtest/csl_2026_eval.csv`、`csl_2026_report.json` 与 `data/local/diagnostics/csl_pending_gate_latest.json`。这些都是本地 ignored 研究产物，不进 `/api/finished`、preview 或线上数据库。`decision_sample.sample_too_small=true` 时只能作观察，不自动调参或解除 `club_rating_pending`。
 
 判断“准确率”时必须同时看覆盖率和命中率：优先看 `csl_2026_report.json` 中 `sample.sample_too_small`、`markets.1x2.model_matched` vs `markets.1x2.market`、`markets.1x2.uniform`、校准分箱，以及 `csl_pending_gate` 的 `checks.market_baseline_sufficient`、`checks.latest_season_model_beats_home_prior_brier`。样本不足、closing snapshot 覆盖不足或模型弱于市场/最新赛季主场先验时，只能作为观察，不能调参或解除 `club_rating_pending`；公开首选继续使用明确标记风险的市场共识兜底。
+
+### CSL Postmatch Sentinel
+
+`worldcup.csl_postmatch_sentinel` 只读取本地 `csl_postmatch_shadow.json`、`csl_closing_coverage.json`，以及（若已存在）sentinel state；standalone 默认是零写 dry-run，不创建 state 或 lock，也不调用 WxPusher。其 ignored 本地状态固定为 `data/local/diagnostics/csl_postmatch_sentinel_state.json`。
+
+当前历史 `128` 个 closing 缺口和 `8` 个 decision 缺口只是首次启用的通知基线，coverage 仍完整保留，未被修复或隐藏。sentinel 只对数据链路的新增异常、异常扩大、恢复，以及首次 `decision_count >= 50` 发出候选通知；命中率、连胜连败、首选方向或盘口方向不会触发。达到 50 仅提示人工复盘，不会自动调参或解除 `club_rating_pending`。
+
+`csl_scheduled_publish --no-notify` 只静音 sentinel，不改变双源赛果、shadow、odds refresh、quota、snapshot 或 publish。sentinel 不新增 timer、provider 请求、The Odds API quota 消耗、公开 payload、自动调参或 pending lift；其安全摘要也不进入 API、preview、数据库或 HMAC body。
+
+```bash
+# 零写检查：只读本地 shadow / coverage，不通知
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.csl_postmatch_sentinel
+
+# 激活本地 state 基线但不发手机通知；会写 ignored diagnostics，须另行批准
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.csl_postmatch_sentinel --write
+```
 
 ## 本地验证
 

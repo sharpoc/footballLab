@@ -19,6 +19,7 @@ from worldcup.csl_closing_coverage_runner import run_closing_coverage
 from worldcup.csl_eval_data import load_snapshots
 from worldcup.csl_results_refresh import run_csl_results_refresh
 from worldcup.csl_postmatch_shadow import run_csl_postmatch_shadow
+from worldcup.csl_postmatch_sentinel import run_csl_postmatch_sentinel
 from worldcup.csl_snapshot_archive import archive_snapshot
 from worldcup.theoddsapi_keys import LOW_QUOTA_SWITCH_THRESHOLD
 
@@ -48,6 +49,7 @@ PublishFn = Callable[..., dict[str, Any]]
 ResultsRefreshFn = Callable[..., dict[str, Any]]
 ArchiveFn = Callable[..., dict[str, Any]]
 PostmatchShadowFn = Callable[..., dict[str, Any]]
+PostmatchSentinelFn = Callable[..., dict[str, Any]]
 ClosingCoverageFn = Callable[..., dict[str, Any]]
 
 LOCAL_POLICY_FIELDS = {
@@ -80,6 +82,27 @@ CLOSING_COVERAGE_REASONS = {
     "coverage_path_conflict",
     "coverage_generated_at_invalid",
     "coverage_runner_failed",
+}
+POSTMATCH_SENTINEL_STATUSES = {
+    "dry_run_ready",
+    "stored",
+    "unchanged",
+    "error",
+}
+POSTMATCH_SENTINEL_REASONS = {
+    "shadow_report_invalid",
+    "coverage_report_invalid",
+    "report_generated_at_invalid",
+    "report_fingerprint_invalid",
+    "coverage_shadow_mismatch",
+    "sentinel_state_unreadable",
+    "sentinel_state_write_failed",
+}
+POSTMATCH_SENTINEL_NOTIFICATION_STATUSES = {
+    "not_attempted",
+    "suppressed",
+    "sent",
+    "failed",
 }
 
 
@@ -741,6 +764,51 @@ def _safe_postmatch_shadow(value: Any) -> dict[str, Any]:
     return safe
 
 
+def _safe_postmatch_sentinel(value: Any) -> dict[str, Any]:
+    invalid = {"status": "error", "reason": "invalid_postmatch_sentinel_result"}
+    if type(value) is not dict:
+        return invalid
+    status = value.get("status")
+    reason = value.get("reason")
+    competition_id = value.get("competition_id")
+    notification_status = value.get("notification_status")
+    error_type = value.get("error_type")
+    event_count = value.get("event_count")
+    if type(status) is not str or status not in POSTMATCH_SENTINEL_STATUSES:
+        return invalid
+    if reason is not None and (
+        type(reason) is not str or reason not in POSTMATCH_SENTINEL_REASONS
+    ):
+        return invalid
+    if competition_id is not None and (
+        type(competition_id) is not str
+        or competition_id != DEFAULT_COMPETITION_ID
+    ):
+        return invalid
+    if (
+        type(notification_status) is not str
+        or notification_status not in POSTMATCH_SENTINEL_NOTIFICATION_STATUSES
+    ):
+        return invalid
+    if error_type is not None and not _stable_error_type(error_type):
+        return invalid
+    if type(event_count) is not int or event_count < 0:
+        return invalid
+    safe = {
+        "status": status,
+        "event_count": event_count,
+        "notification_status": notification_status,
+    }
+    for key, item in (
+        ("reason", reason),
+        ("competition_id", competition_id),
+        ("error_type", error_type),
+    ):
+        if item is not None:
+            safe[key] = item
+    return safe
+
+
 def _attach_run_metadata(
     snapshot: dict[str, Any],
     *,
@@ -844,6 +912,9 @@ def run_csl_scheduled_publish(
     results_refresh_fn: ResultsRefreshFn = run_csl_results_refresh,
     postmatch_shadow_fn: PostmatchShadowFn = run_csl_postmatch_shadow,
     postmatch_shadow_root: str | Path = ".",
+    postmatch_sentinel_fn: PostmatchSentinelFn = run_csl_postmatch_sentinel,
+    postmatch_sentinel_root: str | Path = ".",
+    notify: bool = True,
     closing_coverage_fn: ClosingCoverageFn = run_closing_coverage,
     closing_coverage_root: str | Path = ".",
     archive_fn: ArchiveFn = archive_snapshot,
@@ -873,6 +944,10 @@ def run_csl_scheduled_publish(
             "status": "dry_run",
             "force": force,
             "decision": decision,
+            "postmatch_sentinel": {
+                "status": "not_run",
+                "reason": "scheduler_dry_run",
+            },
             "refresh": None,
             "publish": None,
         }
@@ -903,6 +978,10 @@ def run_csl_scheduled_publish(
                 "force": force,
                 "decision": decision,
                 "closing_coverage": closing_coverage,
+                "postmatch_sentinel": {
+                    "status": "not_run",
+                    "reason": "scheduled_refresh_not_due",
+                },
                 "refresh": None,
                 "publish": None,
             }
@@ -921,6 +1000,10 @@ def run_csl_scheduled_publish(
                 if closing_coverage is not None
                 else {}
             ),
+            "postmatch_sentinel": {
+                "status": "not_run",
+                "reason": "ingest_secret_unavailable",
+            },
             "refresh": None,
             "publish": None,
         }
@@ -938,6 +1021,10 @@ def run_csl_scheduled_publish(
                 if closing_coverage is not None
                 else {}
             ),
+            "postmatch_sentinel": {
+                "status": "not_run",
+                "reason": "ingest_secret_invalid",
+            },
             "refresh": None,
             "publish": None,
         }
@@ -950,6 +1037,10 @@ def run_csl_scheduled_publish(
                 "force": force,
                 "decision": decision,
                 "closing_coverage": closing_coverage,
+                "postmatch_sentinel": {
+                    "status": "not_run",
+                    "reason": "pending_publish_retry",
+                },
                 "refresh": None,
                 "publish": None,
             }
@@ -966,6 +1057,10 @@ def run_csl_scheduled_publish(
             "force": force,
             "decision": decision,
             "closing_coverage": closing_coverage,
+            "postmatch_sentinel": {
+                "status": "not_run",
+                "reason": "pending_publish_retry",
+            },
             "refresh": None,
             "publish": retried.get("publish"),
             "pending": retried.get("pending"),
@@ -1021,6 +1116,30 @@ def run_csl_scheduled_publish(
             "status": "blocked",
             "reason": "result_source_not_accepted",
         }
+    if postmatch_shadow.get("status") in {"stored", "unchanged"}:
+        try:
+            postmatch_sentinel = _safe_postmatch_sentinel(
+                postmatch_sentinel_fn(
+                    root=postmatch_sentinel_root,
+                    observed_at=observed,
+                    write=True,
+                    notify=notify,
+                )
+            )
+        except Exception as exc:
+            error_type = type(exc).__name__
+            postmatch_sentinel = {
+                "status": "error",
+                "reason": "csl_postmatch_sentinel_failed",
+                "error_type": (
+                    error_type if _stable_error_type(error_type) else "Exception"
+                ),
+            }
+    else:
+        postmatch_sentinel = {
+            "status": "not_run",
+            "reason": "postmatch_shadow_not_successful",
+        }
     refresh = refresh_fn(
         live=True,
         env=env,
@@ -1056,6 +1175,7 @@ def run_csl_scheduled_publish(
             "results_refresh": results_refresh,
             "closing_coverage": closing_coverage,
             "postmatch_shadow": postmatch_shadow,
+            "postmatch_sentinel": postmatch_sentinel,
             "refresh": refresh,
             "publish": None,
         }
@@ -1074,6 +1194,7 @@ def run_csl_scheduled_publish(
             "results_refresh": results_refresh,
             "closing_coverage": closing_coverage,
             "postmatch_shadow": postmatch_shadow,
+            "postmatch_sentinel": postmatch_sentinel,
             "refresh": refresh,
             "publish": None,
         }
@@ -1195,6 +1316,7 @@ def run_csl_scheduled_publish(
             "results_refresh": results_refresh,
             "closing_coverage": closing_coverage,
             "postmatch_shadow": postmatch_shadow,
+            "postmatch_sentinel": postmatch_sentinel,
             "archive": archive,
             "refresh": refresh,
             "publish": attempted.get("publish"),
@@ -1208,6 +1330,7 @@ def run_csl_scheduled_publish(
         "results_refresh": results_refresh,
         "closing_coverage": closing_coverage,
         "postmatch_shadow": postmatch_shadow,
+        "postmatch_sentinel": postmatch_sentinel,
         "archive": archive,
         "refresh": {
             "status": refresh.get("status"),
@@ -1235,6 +1358,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--now", default=None)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--no-notify",
+        action="store_true",
+        help="Disable local CSL postmatch sentinel notifications only.",
+    )
     parser.add_argument("--env", default=".env")
     parser.add_argument("--cache-dir", default="data/cache")
     parser.add_argument("--quota-path", default="data/cache/quota.json")
@@ -1260,6 +1388,7 @@ def main(argv: list[str] | None = None) -> int:
         now=args.now,
         live=args.live,
         force=args.force,
+        notify=not args.no_notify,
         env_path=args.env,
         cache_dir=args.cache_dir,
         quota_path=args.quota_path,
