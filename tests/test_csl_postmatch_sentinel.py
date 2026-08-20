@@ -602,6 +602,209 @@ def test_notification_batch_has_at_most_five_detail_lines():
     assert len(lines[1:-1]) <= 5
 
 
+def test_repeated_anomaly_after_recovery_gets_new_lifecycle_event_id():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        calls = []
+        _write_reports(root, missing_closing=129)
+        first = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T01:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: calls.append(True)
+            or {"status": "sent"},
+        )
+        state_path = root / "data/local/diagnostics/csl_postmatch_sentinel_state.json"
+        first_state = json.loads(state_path.read_text(encoding="utf-8"))
+        first_anomaly_id = first_state["outbox"][-1]["event_id"]
+
+        _write_reports(root, finished_result_count=175)
+        recovered = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T01:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: calls.append(True)
+            or {"status": "sent"},
+        )
+
+        _write_reports(root, missing_closing=129, finished_result_count=176)
+        repeated = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T01:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: calls.append(True)
+            or {"status": "sent"},
+        )
+        final_state = json.loads(state_path.read_text(encoding="utf-8"))
+        repeated_anomaly_id = final_state["outbox"][-1]["event_id"]
+    assert first["status"] == "stored"
+    assert recovered["status"] == "stored"
+    assert repeated["status"] == "stored"
+    assert first_anomaly_id != repeated_anomaly_id
+    assert len(final_state["outbox"]) == 3
+    assert calls == [True, True, True]
+
+
+def test_pending_retry_keeps_original_event_id_without_duplicate_record():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        _write_reports(root, missing_closing=129)
+        failed = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T01:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: {"status": "failed"},
+        )
+        state_path = root / "data/local/diagnostics/csl_postmatch_sentinel_state.json"
+        failed_state = json.loads(state_path.read_text(encoding="utf-8"))
+        original_id = failed_state["outbox"][0]["event_id"]
+        calls = []
+        retried = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T02:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: calls.append(True)
+            or {"status": "sent"},
+        )
+        retried_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert failed["notification_status"] == "failed"
+    assert retried["event_count"] == 0
+    assert retried["notification_status"] == "sent"
+    assert len(retried_state["outbox"]) == 1
+    assert retried_state["outbox"][0]["event_id"] == original_id
+    assert calls == [True]
+
+
+def test_directory_fsync_failure_cannot_report_failure_after_replace_commit():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        state_path = root / "data/local/diagnostics/csl_postmatch_sentinel_state.json"
+        previous = state_path.read_bytes()
+        _write_reports(root, missing_closing=129)
+        calls = []
+
+        def fail_second_fsync(_descriptor: int) -> None:
+            calls.append(True)
+            if len(calls) == 2:
+                raise OSError("injected directory fsync failure")
+
+        with patch("worldcup.csl_postmatch_sentinel.os.fsync", fail_second_fsync):
+            result = run_csl_postmatch_sentinel(
+                root=root,
+                write=True,
+                notify=False,
+                observed_at="2026-08-20T01:00:00Z",
+            )
+        committed = state_path.read_bytes()
+    assert result["status"] == "stored"
+    assert calls == [True]
+    assert committed != previous
+    assert json.loads(committed)["outbox"][0]["delivery_status"] == "suppressed"
+
+
+def test_state_rejects_unknown_nested_fields_without_rewrite_or_notification():
+    for block_name in ("baseline_quality", "high_water", "active"):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_reports(root)
+            run_csl_postmatch_sentinel(
+                root=root,
+                write=True,
+                observed_at="2026-08-20T00:00:00Z",
+            )
+            if block_name == "active":
+                _write_reports(root, missing_closing=129)
+                run_csl_postmatch_sentinel(
+                    root=root,
+                    write=True,
+                    notify=False,
+                    observed_at="2026-08-20T01:00:00Z",
+                )
+            state_path = root / "data/local/diagnostics/csl_postmatch_sentinel_state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            if block_name == "active":
+                active = next(iter(state["active_conditions"].values()))
+                active["unknown"] = 1
+            else:
+                state[block_name]["unknown"] = 1
+            corrupt = json.dumps(state, sort_keys=True).encode("utf-8")
+            state_path.write_bytes(corrupt)
+            calls = []
+            result = run_csl_postmatch_sentinel(
+                root=root,
+                write=True,
+                notify=True,
+                observed_at="2026-08-20T02:00:00Z",
+                notify_fn=lambda *_args, **_kwargs: calls.append(True)
+                or {"status": "sent"},
+            )
+            preserved = state_path.read_bytes()
+        assert result["reason"] == "sentinel_state_unreadable"
+        assert preserved == corrupt
+        assert calls == []
+
+
+def test_state_rejects_active_outbox_count_or_digest_mismatch():
+    for field, replacement in (("current_count", 130), ("match_ids_digest", "f" * 64)):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_reports(root)
+            run_csl_postmatch_sentinel(
+                root=root,
+                write=True,
+                observed_at="2026-08-20T00:00:00Z",
+            )
+            _write_reports(root, missing_closing=129)
+            run_csl_postmatch_sentinel(
+                root=root,
+                write=True,
+                notify=False,
+                observed_at="2026-08-20T01:00:00Z",
+            )
+            state_path = root / "data/local/diagnostics/csl_postmatch_sentinel_state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            active = next(iter(state["active_conditions"].values()))
+            active[field] = replacement
+            corrupt = json.dumps(state, sort_keys=True).encode("utf-8")
+            state_path.write_bytes(corrupt)
+            calls = []
+            result = run_csl_postmatch_sentinel(
+                root=root,
+                write=True,
+                notify=True,
+                observed_at="2026-08-20T02:00:00Z",
+                notify_fn=lambda *_args, **_kwargs: calls.append(True)
+                or {"status": "sent"},
+            )
+            preserved = state_path.read_bytes()
+        assert result["reason"] == "sentinel_state_unreadable"
+        assert preserved == corrupt
+        assert calls == []
+
+
 def test_validate_inputs_rejects_cross_report_mismatch():
     shadow, coverage = _reports()
     coverage["summary"]["observed_current_decision_count"] = 37

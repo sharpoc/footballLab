@@ -367,6 +367,8 @@ def _initial_state(current: dict[str, object], observed_at: str) -> tuple[dict[s
 def _state_count_map(value: object, fields: tuple[str, ...]) -> dict[str, int]:
     if type(value) is not dict:
         raise SentinelValidationError("sentinel_state_invalid")
+    if set(value) != set(fields):
+        raise SentinelValidationError("sentinel_state_invalid")
     return {
         field: _strict_count(value.get(field), "sentinel_state_invalid")
         for field in fields
@@ -395,6 +397,8 @@ def _validate_state(value: object) -> dict[str, object]:
     active: dict[str, dict[str, object]] = {}
     for condition, active_value in normalized["active_conditions"].items():
         if not isinstance(condition, str) or type(active_value) is not dict:
+            raise SentinelValidationError("sentinel_state_invalid")
+        if set(active_value) != {"event_id", "current_count", "match_ids_digest"}:
             raise SentinelValidationError("sentinel_state_invalid")
         event_id = active_value.get("event_id")
         count = active_value.get("current_count")
@@ -439,7 +443,7 @@ def _event(
         "match_ids_digest": match_ids_digest,
     }
     return {
-        "event_id": _event_id(payload),
+        "event_id": _event_id({**payload, "observed_at": observed_at}),
         **payload,
         "observed_at": observed_at,
     }
@@ -650,9 +654,11 @@ def _validate_outbox_record(value: object) -> dict[str, object]:
         "observed_at",
         "delivery_status",
         "attempted_at",
+        "lifecycle_index",
     }
+    optional_keys = {"attempted_at", "lifecycle_index"}
     if not set(record).issubset(allowed_keys) or not (
-        allowed_keys - {"attempted_at"}
+        allowed_keys - optional_keys
     ).issubset(record):
         raise SentinelValidationError("sentinel_state_invalid")
     event_id = record.get("event_id")
@@ -663,6 +669,7 @@ def _validate_outbox_record(value: object) -> dict[str, object]:
     current_count = record.get("current_count")
     digest = record.get("match_ids_digest")
     delivery_status = record.get("delivery_status")
+    lifecycle_index = record.get("lifecycle_index")
     if (
         not isinstance(event_id, str)
         or re.fullmatch(r"[0-9a-f]{64}", event_id) is None
@@ -682,19 +689,36 @@ def _validate_outbox_record(value: object) -> dict[str, object]:
             )
         )
         or delivery_status not in _DELIVERY_STATUSES
+        or (
+            lifecycle_index is not None
+            and (type(lifecycle_index) is not int or lifecycle_index <= 0)
+        )
     ):
         raise SentinelValidationError("sentinel_state_invalid")
-    expected_event_id = _event_id(
-        {
-            "kind": kind,
-            "code": code,
-            "condition": condition,
-            "baseline_count": baseline_count,
-            "current_count": current_count,
-            "match_ids_digest": digest,
-        }
+    event_payload = {
+        "kind": kind,
+        "code": code,
+        "condition": condition,
+        "baseline_count": baseline_count,
+        "current_count": current_count,
+        "match_ids_digest": digest,
+    }
+    normalized_observed_at = _parse_utc(record.get("observed_at"))
+    legacy_event_id = _event_id(event_payload)
+    lifecycle_event_id = _event_id(
+        {**event_payload, "observed_at": normalized_observed_at}
     )
-    if event_id != expected_event_id:
+    expected_event_ids = {legacy_event_id, lifecycle_event_id}
+    if lifecycle_index is not None:
+        expected_event_ids = {
+            _event_id(
+                {
+                    "base_event_id": lifecycle_event_id,
+                    "lifecycle_index": lifecycle_index,
+                }
+            )
+        }
+    if event_id not in expected_event_ids:
         raise SentinelValidationError("sentinel_state_invalid")
     normalized = {
         "event_id": event_id,
@@ -704,12 +728,14 @@ def _validate_outbox_record(value: object) -> dict[str, object]:
         "baseline_count": baseline_count,
         "current_count": current_count,
         "match_ids_digest": digest,
-        "observed_at": _parse_utc(record.get("observed_at")),
+        "observed_at": normalized_observed_at,
         "delivery_status": delivery_status,
     }
     attempted_at = record.get("attempted_at")
     if attempted_at is not None:
         normalized["attempted_at"] = _parse_utc(attempted_at)
+    if lifecycle_index is not None:
+        normalized["lifecycle_index"] = lifecycle_index
     return normalized
 
 
@@ -745,6 +771,8 @@ def _validate_runner_state(value: object) -> dict[str, object]:
             and (
                 active_record["condition"] != condition
                 or active_record["kind"] != "anomaly"
+                or active_record["current_count"] != active["current_count"]
+                or active_record["match_ids_digest"] != active["match_ids_digest"]
             )
         ):
             raise SentinelValidationError("sentinel_state_invalid")
@@ -968,11 +996,6 @@ def _write_state_atomic(path: Path, state: dict[str, object]) -> None:
         )
         _validate_runner_state(verified)
         os.replace(temp_path, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
     except Exception:
         try:
             temp_path.unlink()
@@ -1003,12 +1026,31 @@ def _add_outbox_events(
     *,
     notify: bool,
     previous_state: dict[str, object] | None,
+    next_state: dict[str, object],
 ) -> list[str]:
     new_statuses: list[str] = []
+    existing_ids = {item["event_id"] for item in outbox}
     for event in events:
         suppressed = not notify or _origin_was_suppressed(event, previous_state)
         delivery_status = "suppressed" if suppressed else "pending"
-        outbox.append({**deepcopy(event), "delivery_status": delivery_status})
+        record = {**deepcopy(event), "delivery_status": delivery_status}
+        base_event_id = record["event_id"]
+        lifecycle_index = 0
+        while record["event_id"] in existing_ids:
+            lifecycle_index += 1
+            record["event_id"] = _event_id(
+                {
+                    "base_event_id": base_event_id,
+                    "lifecycle_index": lifecycle_index,
+                }
+            )
+        if lifecycle_index:
+            record["lifecycle_index"] = lifecycle_index
+            active = next_state["active_conditions"].get(record["condition"])
+            if active is not None and active["event_id"] == base_event_id:
+                active["event_id"] = record["event_id"]
+        outbox.append(record)
+        existing_ids.add(record["event_id"])
         new_statuses.append(delivery_status)
     return new_statuses
 
@@ -1094,6 +1136,7 @@ def _run_locked(
         events,
         notify=notify,
         previous_state=previous_state,
+        next_state=next_core,
     )
     state = {**next_core, "outbox": previous_outbox}
     state_changed = previous_state is None or core_changed or bool(events)
