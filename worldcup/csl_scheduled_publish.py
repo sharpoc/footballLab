@@ -83,6 +83,27 @@ CLOSING_COVERAGE_REASONS = {
     "coverage_generated_at_invalid",
     "coverage_runner_failed",
 }
+POSTMATCH_SENTINEL_STATUSES = {
+    "dry_run_ready",
+    "stored",
+    "unchanged",
+    "error",
+}
+POSTMATCH_SENTINEL_REASONS = {
+    "shadow_report_invalid",
+    "coverage_report_invalid",
+    "report_generated_at_invalid",
+    "report_fingerprint_invalid",
+    "coverage_shadow_mismatch",
+    "sentinel_state_unreadable",
+    "sentinel_state_write_failed",
+}
+POSTMATCH_SENTINEL_NOTIFICATION_STATUSES = {
+    "not_attempted",
+    "suppressed",
+    "sent",
+    "failed",
+}
 
 
 def _now_utc_iso() -> str:
@@ -744,15 +765,47 @@ def _safe_postmatch_shadow(value: Any) -> dict[str, Any]:
 
 
 def _safe_postmatch_sentinel(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {"status": "error", "reason": "invalid_postmatch_sentinel_result"}
-    safe = {"status": str(value.get("status") or "error")}
-    for key in ("reason", "competition_id", "notification_status", "error_type"):
-        if value.get(key) is not None:
-            safe[key] = str(value[key])
-    count = value.get("event_count")
-    if type(count) is int and count >= 0:
-        safe["event_count"] = count
+    invalid = {"status": "error", "reason": "invalid_postmatch_sentinel_result"}
+    if type(value) is not dict:
+        return invalid
+    status = value.get("status")
+    reason = value.get("reason")
+    competition_id = value.get("competition_id")
+    notification_status = value.get("notification_status")
+    error_type = value.get("error_type")
+    event_count = value.get("event_count")
+    if type(status) is not str or status not in POSTMATCH_SENTINEL_STATUSES:
+        return invalid
+    if reason is not None and (
+        type(reason) is not str or reason not in POSTMATCH_SENTINEL_REASONS
+    ):
+        return invalid
+    if competition_id is not None and (
+        type(competition_id) is not str
+        or competition_id != DEFAULT_COMPETITION_ID
+    ):
+        return invalid
+    if (
+        type(notification_status) is not str
+        or notification_status not in POSTMATCH_SENTINEL_NOTIFICATION_STATUSES
+    ):
+        return invalid
+    if error_type is not None and not _stable_error_type(error_type):
+        return invalid
+    if type(event_count) is not int or event_count < 0:
+        return invalid
+    safe = {
+        "status": status,
+        "event_count": event_count,
+        "notification_status": notification_status,
+    }
+    for key, item in (
+        ("reason", reason),
+        ("competition_id", competition_id),
+        ("error_type", error_type),
+    ):
+        if item is not None:
+            safe[key] = item
     return safe
 
 
@@ -1073,7 +1126,7 @@ def run_csl_scheduled_publish(
                     notify=notify,
                 )
             )
-        except (OSError, ValueError, TimeoutError, RuntimeError) as exc:
+        except Exception as exc:
             postmatch_sentinel = {
                 "status": "error",
                 "reason": "csl_postmatch_sentinel_failed",

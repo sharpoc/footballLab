@@ -78,7 +78,7 @@ def _sentinel_result(**_kwargs):
         "status": "unchanged",
         "competition_id": "csl_2026",
         "event_count": 0,
-        "notification_status": "not_needed",
+        "notification_status": "not_attempted",
     }
 
 
@@ -959,7 +959,7 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
                 "status": "stored",
                 "competition_id": "csl_2026",
                 "event_count": 0,
-                "notification_status": "not_needed",
+                "notification_status": "not_attempted",
             }
 
         def fake_builder(cache_dir, competition_id, snapshot_at):
@@ -1775,7 +1775,7 @@ def _run_live_sentinel_case(
                 postmatch_sentinel_fn=lambda **_kwargs: {
                     "status": "unchanged",
                     "event_count": 0,
-                    "notification_status": "not_needed",
+                    "notification_status": "not_attempted",
                 },
                 publish_fn=unavailable_publish,
                 notify=notify,
@@ -1829,13 +1829,37 @@ def test_sentinel_failure_does_not_block_odds_publish_or_leak_message():
     assert "postmatch_sentinel" not in json.dumps(case["published"])
 
 
+def test_sentinel_typeerror_with_exploding_str_is_non_blocking_and_redacted():
+    class ExplodingSentinelTypeError(TypeError):
+        def __str__(self):
+            raise RuntimeError("private sentinel __str__ marker")
+
+    def broken_sentinel(**_kwargs):
+        raise ExplodingSentinelTypeError("private sentinel constructor marker")
+
+    case = _run_live_sentinel_case(postmatch_sentinel_fn=broken_sentinel)
+    assert case["result"]["status"] == "published"
+    assert case["calls"]["refresh"] == 1
+    assert case["calls"]["publish"] == 1
+    assert case["result"]["postmatch_sentinel"] == {
+        "status": "error",
+        "reason": "csl_postmatch_sentinel_failed",
+        "error_type": "ExplodingSentinelTypeError",
+    }
+    serialized = json.dumps(
+        {"result": case["result"], "published": case["published"]}
+    )
+    assert "private sentinel constructor marker" not in serialized
+    assert "private sentinel __str__ marker" not in serialized
+
+
 def test_unchanged_shadow_runs_sentinel_for_pending_outbox_retry():
     case = _run_live_sentinel_case(
         shadow_status="unchanged",
         postmatch_sentinel_fn=lambda **_kwargs: {
             "status": "unchanged",
             "event_count": 0,
-            "notification_status": "not_needed",
+            "notification_status": "not_attempted",
         },
     )
     assert case["calls"]["sentinel"] == 1
@@ -1967,3 +1991,41 @@ def test_sentinel_summary_never_enters_published_snapshot():
         "private-provider-marker",
     ):
         assert forbidden not in serialized
+
+
+def test_postmatch_sentinel_projection_rejects_private_allowed_values_and_subclass():
+    marker = "private-sentinel-allowed-marker"
+
+    class SentinelResultSubclass(dict):
+        pass
+
+    invalid_results = (
+        SentinelResultSubclass(
+            status="stored",
+            reason=marker,
+            event_count=0,
+            notification_status="not_attempted",
+        ),
+        {"status": marker},
+        {"status": "stored", "reason": marker},
+        {"status": "stored", "competition_id": marker},
+        {"status": "stored", "notification_status": marker},
+        {"status": "stored", "error_type": marker},
+        {"status": "stored", "event_count": True},
+    )
+
+    for invalid in invalid_results:
+        case = _run_live_sentinel_case(
+            postmatch_sentinel_fn=lambda invalid=invalid, **_kwargs: invalid,
+        )
+        assert case["result"]["status"] == "published"
+        assert case["calls"]["refresh"] == 1
+        assert case["calls"]["publish"] == 1
+        assert case["result"]["postmatch_sentinel"] == {
+            "status": "error",
+            "reason": "invalid_postmatch_sentinel_result",
+        }
+        cli_serialized = json.dumps(case["result"])
+        public_serialized = json.dumps(case["published"])
+        assert marker not in cli_serialized
+        assert marker not in public_serialized
