@@ -73,6 +73,15 @@ def _coverage_result(*, status="unchanged", fingerprint=COVERAGE_FINGERPRINT):
     }
 
 
+def _sentinel_result(**_kwargs):
+    return {
+        "status": "unchanged",
+        "competition_id": "csl_2026",
+        "event_count": 0,
+        "notification_status": "not_needed",
+    }
+
+
 def _dry_run_with_archive_history(payload):
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -156,6 +165,8 @@ def _run_invalid_kickoff_archive_failure(*, archive_fn, publish_fn):
             closing_coverage_fn=fake_coverage,
             closing_coverage_root=root,
             postmatch_shadow_fn=lambda **_kwargs: {"status": "unchanged"},
+            postmatch_sentinel_fn=_sentinel_result,
+            postmatch_sentinel_root=root,
             refresh_fn=lambda **_kwargs: {
                 "status": "fetched",
                 "events": 1,
@@ -511,12 +522,17 @@ def test_dry_run_does_not_read_env_or_call_live_side_effects():
             quota_path=quota_path,
             load_env=forbidden,
             closing_coverage_fn=forbidden,
+            postmatch_sentinel_fn=forbidden,
             refresh_fn=forbidden,
             publish_fn=forbidden,
         )
 
     assert result["status"] == "dry_run"
     assert result["decision"]["should_refresh"] is True
+    assert result["postmatch_sentinel"] == {
+        "status": "not_run",
+        "reason": "scheduler_dry_run",
+    }
 
 
 def test_dry_run_reports_unreadable_history_without_leaking_corrupt_content():
@@ -624,6 +640,7 @@ def test_live_not_due_reconciles_local_pending_without_provider_calls():
             closing_coverage_root=root,
             results_refresh_fn=forbidden,
             postmatch_shadow_fn=forbidden,
+            postmatch_sentinel_fn=forbidden,
             refresh_fn=forbidden,
             snapshot_builder=forbidden,
             archive_fn=forbidden,
@@ -632,6 +649,10 @@ def test_live_not_due_reconciles_local_pending_without_provider_calls():
 
     assert result["status"] == "skipped"
     assert result["closing_coverage"]["status"] == "unchanged"
+    assert result["postmatch_sentinel"] == {
+        "status": "not_run",
+        "reason": "scheduled_refresh_not_due",
+    }
     assert calls == {"coverage": 1}
 
 
@@ -770,6 +791,8 @@ def test_due_exploding_coverage_mapping_does_not_block_publication():
             ),
             closing_coverage_root=root,
             postmatch_shadow_fn=lambda **_kwargs: {"status": "unchanged"},
+            postmatch_sentinel_fn=_sentinel_result,
+            postmatch_sentinel_root=root,
             refresh_fn=lambda **_kwargs: {
                 "status": "fetched",
                 "events": 1,
@@ -858,6 +881,7 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
             "results": 0,
             "coverage": 0,
             "shadow": 0,
+            "sentinel": 0,
             "refresh": 0,
             "publish": 0,
         }
@@ -924,6 +948,20 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
                 "input_fingerprint_prefix": "123456789abc",
             }
 
+        def fake_sentinel(**kwargs):
+            calls["sentinel"] += 1
+            events.append("sentinel")
+            assert Path(kwargs["root"]) == root
+            assert kwargs["write"] is True
+            assert kwargs["notify"] is True
+            assert kwargs["observed_at"] == "2026-07-10T10:30:00+00:00"
+            return {
+                "status": "stored",
+                "competition_id": "csl_2026",
+                "event_count": 0,
+                "notification_status": "not_needed",
+            }
+
         def fake_builder(cache_dir, competition_id, snapshot_at):
             assert competition_id == "csl_2026"
             return _snapshot(["2026-07-10T12:00:00+00:00"], observed_at=snapshot_at)
@@ -958,6 +996,8 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
             closing_coverage_root=root,
             postmatch_shadow_fn=fake_shadow,
             postmatch_shadow_root=root,
+            postmatch_sentinel_fn=fake_sentinel,
+            postmatch_sentinel_root=root,
             refresh_fn=fake_refresh,
             snapshot_builder=fake_builder,
             publish_fn=fake_publish,
@@ -973,13 +1013,15 @@ def test_live_force_refreshes_builds_snapshot_and_publishes():
         "results": 1,
         "coverage": 1,
         "shadow": 1,
+        "sentinel": 1,
         "refresh": 1,
         "publish": 1,
     }
-    assert events[:4] == ["results", "coverage", "shadow", "odds"]
+    assert events[:5] == ["results", "coverage", "shadow", "sentinel", "odds"]
     assert result["results_refresh"]["status"] == "updated"
     assert result["closing_coverage"]["input_fingerprint"] == COVERAGE_FINGERPRINT
     assert result["postmatch_shadow"]["status"] == "stored"
+    assert result["postmatch_sentinel"]["status"] == "stored"
     assert result["archive"]["status"] == "created"
     assert len(archived) == 1
     assert written["run"]["run_id"] == "20260710T103000Z-csl-live"
@@ -1029,6 +1071,8 @@ def test_coverage_failure_is_local_and_does_not_block_or_leak_to_public_snapshot
             closing_coverage_fn=broken_coverage,
             closing_coverage_root=root,
             postmatch_shadow_fn=lambda **_kwargs: {"status": "unchanged"},
+            postmatch_sentinel_fn=_sentinel_result,
+            postmatch_sentinel_root=root,
             refresh_fn=lambda **_kwargs: {
                 "status": "fetched",
                 "events": 1,
@@ -1158,6 +1202,8 @@ def test_archive_failure_warns_but_does_not_block_current_publish():
                 "status": "unchanged",
                 "competition_id": "csl_2026",
             },
+            postmatch_sentinel_fn=_sentinel_result,
+            postmatch_sentinel_root=root,
             refresh_fn=lambda **_kwargs: {
                 "status": "fetched",
                 "events": 1,
@@ -1370,6 +1416,8 @@ def test_shadow_runs_before_odds_refresh_failure_and_summary_is_preserved():
             closing_coverage_fn=fake_coverage,
             closing_coverage_root=root,
             postmatch_shadow_fn=fake_shadow,
+            postmatch_sentinel_fn=_sentinel_result,
+            postmatch_sentinel_root=root,
             refresh_fn=blocked_refresh,
             snapshot_builder=lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 AssertionError("blocked odds refresh must not build snapshot")
@@ -1483,6 +1531,8 @@ def test_csl_publish_retries_pending_snapshot_without_consuming_refresh_again():
             closing_coverage_fn=first_coverage,
             closing_coverage_root=root,
             postmatch_shadow_fn=fake_shadow,
+            postmatch_sentinel_fn=_sentinel_result,
+            postmatch_sentinel_root=root,
             refresh_fn=fake_refresh,
             snapshot_builder=fake_builder,
             publish_fn=fake_publish,
@@ -1499,6 +1549,7 @@ def test_csl_publish_retries_pending_snapshot_without_consuming_refresh_again():
             closing_coverage_fn=retry_coverage,
             closing_coverage_root=root,
             postmatch_shadow_fn=forbidden,
+            postmatch_sentinel_fn=forbidden,
             refresh_fn=forbidden,
             snapshot_builder=forbidden,
             archive_fn=forbidden,
@@ -1557,6 +1608,8 @@ def test_pending_publish_runs_coverage_before_missing_secret_blocks_retry():
             closing_coverage_fn=lambda **_kwargs: _coverage_result(),
             closing_coverage_root=root,
             postmatch_shadow_fn=lambda **_kwargs: {"status": "unchanged"},
+            postmatch_sentinel_fn=_sentinel_result,
+            postmatch_sentinel_root=root,
             refresh_fn=lambda **_kwargs: {
                 "status": "fetched",
                 "events": 1,
@@ -1590,6 +1643,7 @@ def test_pending_publish_runs_coverage_before_missing_secret_blocks_retry():
             closing_coverage_fn=retry_coverage,
             closing_coverage_root=root,
             postmatch_shadow_fn=forbidden,
+            postmatch_sentinel_fn=forbidden,
             refresh_fn=forbidden,
             snapshot_builder=forbidden,
             archive_fn=forbidden,
@@ -1604,3 +1658,312 @@ def test_pending_publish_runs_coverage_before_missing_secret_blocks_retry():
     )
     assert coverage_calls == 1
     assert publish_calls == 1
+
+
+def _run_live_sentinel_case(
+    *,
+    postmatch_sentinel_fn,
+    notify=True,
+    results_status="updated",
+    shadow_status="stored",
+    pending=False,
+):
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot_path = root / "csl_publish_snapshot.json"
+        diagnostics_path = root / "csl_live_league_snapshot.json"
+        quota_path = root / "quota.json"
+        calls = {
+            "results": 0,
+            "coverage": 0,
+            "shadow": 0,
+            "sentinel": 0,
+            "refresh": 0,
+            "builder": 0,
+            "publish": 0,
+        }
+        events = []
+        published = []
+        _write_json(
+            quota_path,
+            {"providers": {"theoddsapi_secondary": {"remaining": 200}}},
+        )
+
+        def fake_results(**_kwargs):
+            calls["results"] += 1
+            events.append("results")
+            if results_status in {"updated", "verified"}:
+                return {"status": results_status}
+            return {"status": results_status, "reason": "result_source_blocked"}
+
+        def fake_coverage(**_kwargs):
+            calls["coverage"] += 1
+            events.append("coverage")
+            return _coverage_result()
+
+        def fake_shadow(**_kwargs):
+            calls["shadow"] += 1
+            events.append("shadow")
+            return {
+                "status": shadow_status,
+                "competition_id": "csl_2026",
+            }
+
+        def tracked_sentinel(**kwargs):
+            calls["sentinel"] += 1
+            events.append("sentinel")
+            return postmatch_sentinel_fn(**kwargs)
+
+        def fake_refresh(**_kwargs):
+            calls["refresh"] += 1
+            events.append("odds")
+            return {
+                "status": "fetched",
+                "events": 1,
+                "quota_entry": {"remaining": 197, "used": 303, "last": 3},
+                "theoddsapi_provider": "theoddsapi_secondary",
+            }
+
+        def fake_builder(_cache_dir, competition_id, snapshot_at):
+            calls["builder"] += 1
+            assert competition_id == "csl_2026"
+            return _snapshot(
+                ["2026-07-12T12:00:00+00:00"], observed_at=snapshot_at
+            )
+
+        def fake_publish(**kwargs):
+            calls["publish"] += 1
+            events.append("publish")
+            published.append(
+                json.loads(
+                    Path(kwargs["snapshot_path"]).read_text(encoding="utf-8")
+                )
+            )
+            return {
+                "status": "sent",
+                "http_status": 200,
+                "ingest_status": "stored",
+            }
+
+        common = {
+            "live": True,
+            "cache_dir": root,
+            "quota_path": quota_path,
+            "snapshot_path": snapshot_path,
+            "diagnostics_snapshot_path": diagnostics_path,
+            "load_env": lambda _path: {
+                "INGEST_HMAC_SECRET": "test-secret-long-enough-for-validation!!"
+            },
+            "results_refresh_fn": fake_results,
+            "closing_coverage_fn": fake_coverage,
+            "closing_coverage_root": root,
+            "postmatch_shadow_fn": fake_shadow,
+            "postmatch_shadow_root": root,
+            "postmatch_sentinel_root": root,
+            "refresh_fn": fake_refresh,
+            "snapshot_builder": fake_builder,
+            "archive_fn": lambda **_kwargs: {"status": "duplicate"},
+        }
+        if pending:
+            def unavailable_publish(**_kwargs):
+                calls["publish"] += 1
+                raise urllib.error.URLError("temporary publish failure")
+
+            first = run_csl_scheduled_publish(
+                now="2026-07-10T10:30:00+00:00",
+                force=True,
+                postmatch_sentinel_fn=lambda **_kwargs: {
+                    "status": "unchanged",
+                    "event_count": 0,
+                    "notification_status": "not_needed",
+                },
+                publish_fn=unavailable_publish,
+                notify=notify,
+                **common,
+            )
+            assert first["status"] == "publish_pending"
+            for key in calls:
+                calls[key] = 0
+            events.clear()
+            result = run_csl_scheduled_publish(
+                now="2026-07-10T10:35:00+00:00",
+                postmatch_sentinel_fn=tracked_sentinel,
+                publish_fn=fake_publish,
+                notify=notify,
+                **common,
+            )
+        else:
+            result = run_csl_scheduled_publish(
+                now="2026-07-10T10:30:00+00:00",
+                force=True,
+                postmatch_sentinel_fn=tracked_sentinel,
+                publish_fn=fake_publish,
+                notify=notify,
+                **common,
+            )
+    return {
+        "result": result,
+        "calls": calls,
+        "events": events,
+        "published": published,
+    }
+
+
+def test_sentinel_failure_does_not_block_odds_publish_or_leak_message():
+    def broken_sentinel(**_kwargs):
+        raise RuntimeError("private sentinel path and token")
+
+    case = _run_live_sentinel_case(postmatch_sentinel_fn=broken_sentinel)
+    assert case["result"]["status"] == "published"
+    assert case["calls"]["refresh"] == 1
+    assert case["calls"]["publish"] == 1
+    assert case["result"]["postmatch_sentinel"] == {
+        "status": "error",
+        "reason": "csl_postmatch_sentinel_failed",
+        "error_type": "RuntimeError",
+    }
+    serialized = json.dumps(
+        {"result": case["result"], "published": case["published"]}
+    )
+    assert "private sentinel path" not in serialized
+    assert "postmatch_sentinel" not in json.dumps(case["published"])
+
+
+def test_unchanged_shadow_runs_sentinel_for_pending_outbox_retry():
+    case = _run_live_sentinel_case(
+        shadow_status="unchanged",
+        postmatch_sentinel_fn=lambda **_kwargs: {
+            "status": "unchanged",
+            "event_count": 0,
+            "notification_status": "not_needed",
+        },
+    )
+    assert case["calls"]["sentinel"] == 1
+    assert case["events"][:5] == [
+        "results",
+        "coverage",
+        "shadow",
+        "sentinel",
+        "odds",
+    ]
+    assert case["result"]["postmatch_sentinel"]["status"] == "unchanged"
+
+
+def test_blocked_result_source_does_not_run_sentinel():
+    case = _run_live_sentinel_case(
+        results_status="blocked",
+        postmatch_sentinel_fn=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("blocked result source must not run sentinel")
+        ),
+    )
+    assert case["calls"]["shadow"] == 0
+    assert case["calls"]["sentinel"] == 0
+    assert case["calls"]["refresh"] == 1
+    assert case["calls"]["publish"] == 1
+    assert case["result"]["postmatch_sentinel"] == {
+        "status": "not_run",
+        "reason": "postmatch_shadow_not_successful",
+    }
+
+
+def test_shadow_error_does_not_run_sentinel():
+    case = _run_live_sentinel_case(
+        shadow_status="error",
+        postmatch_sentinel_fn=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("shadow error must not run sentinel")
+        ),
+    )
+    assert case["calls"]["shadow"] == 1
+    assert case["calls"]["sentinel"] == 0
+    assert case["calls"]["refresh"] == 1
+    assert case["calls"]["publish"] == 1
+    assert case["result"]["postmatch_sentinel"] == {
+        "status": "not_run",
+        "reason": "postmatch_shadow_not_successful",
+    }
+
+
+def test_pending_publish_retry_does_not_run_sentinel():
+    case = _run_live_sentinel_case(
+        pending=True,
+        postmatch_sentinel_fn=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("pending publish retry must not run sentinel")
+        ),
+    )
+    assert case["result"]["status"] == "republished"
+    assert case["calls"] == {
+        "results": 0,
+        "coverage": 1,
+        "shadow": 0,
+        "sentinel": 0,
+        "refresh": 0,
+        "builder": 0,
+        "publish": 1,
+    }
+    assert case["result"]["postmatch_sentinel"] == {
+        "status": "not_run",
+        "reason": "pending_publish_retry",
+    }
+
+
+def test_no_notify_cli_only_disables_sentinel():
+    import io
+    from contextlib import redirect_stdout
+    from unittest.mock import patch
+    from worldcup.csl_scheduled_publish import main as csl_main
+
+    captured = {}
+    with patch("worldcup.csl_scheduled_publish.run_csl_scheduled_publish") as run:
+        run.side_effect = lambda **kwargs: captured.update(kwargs) or {
+            "status": "dry_run"
+        }
+        with redirect_stdout(io.StringIO()):
+            assert csl_main(["--no-notify"]) == 0
+    assert captured["notify"] is False
+
+
+def test_sentinel_summary_never_enters_published_snapshot():
+    sentinel_calls = []
+
+    def noisy_sentinel(**kwargs):
+        sentinel_calls.append(kwargs)
+        return {
+            "status": "stored",
+            "competition_id": "csl_2026",
+            "event_count": 1,
+            "notification_status": "suppressed",
+            "secret": "private-sentinel-marker",
+            "state_path": "/Users/private/sentinel-state.json",
+            "notification_summary": "private sentinel notification",
+            "event_content": {"provider": "private-provider-marker"},
+        }
+
+    case = _run_live_sentinel_case(
+        postmatch_sentinel_fn=noisy_sentinel,
+        notify=False,
+    )
+    assert sentinel_calls[0]["notify"] is False
+    assert case["calls"] == {
+        "results": 1,
+        "coverage": 1,
+        "shadow": 1,
+        "sentinel": 1,
+        "refresh": 1,
+        "builder": 1,
+        "publish": 1,
+    }
+    assert case["result"]["postmatch_sentinel"] == {
+        "status": "stored",
+        "competition_id": "csl_2026",
+        "event_count": 1,
+        "notification_status": "suppressed",
+    }
+    serialized = json.dumps(case["published"])
+    for forbidden in (
+        "postmatch_sentinel",
+        "private-sentinel-marker",
+        "/Users/private/sentinel-state.json",
+        "private sentinel notification",
+        "private-provider-marker",
+    ):
+        assert forbidden not in serialized
