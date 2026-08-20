@@ -394,6 +394,10 @@ def _validate_state(value: object) -> dict[str, object]:
         "last_input_fingerprint": _fingerprint(state.get("last_input_fingerprint")),
         "last_observed_at": _parse_utc(state.get("last_observed_at")),
     }
+    if normalized["threshold_notified"] != (
+        normalized["high_water"]["decision_count"] >= DEFAULT_MIN_SAMPLE
+    ):
+        raise SentinelValidationError("sentinel_state_invalid")
     active: dict[str, dict[str, object]] = {}
     for condition, active_value in normalized["active_conditions"].items():
         if not isinstance(condition, str) or type(active_value) is not dict:
@@ -763,6 +767,27 @@ def _validate_runner_state(value: object) -> dict[str, object]:
     event_ids = [record["event_id"] for record in records]
     if len(event_ids) != len(set(event_ids)):
         raise SentinelValidationError("sentinel_state_invalid")
+    threshold_records = [
+        record
+        for record in records
+        if record["kind"] == "threshold"
+        or record["code"] == "decision_sample_reached_minimum"
+        or record["condition"] == "threshold:decision_count"
+    ]
+    expected_threshold_count = 1 if normalized["threshold_notified"] else 0
+    if len(threshold_records) != expected_threshold_count:
+        raise SentinelValidationError("sentinel_state_invalid")
+    if threshold_records:
+        threshold = threshold_records[0]
+        if (
+            threshold["kind"] != "threshold"
+            or threshold["code"] != "decision_sample_reached_minimum"
+            or threshold["condition"] != "threshold:decision_count"
+            or threshold["baseline_count"] is not None
+            or threshold["current_count"] < DEFAULT_MIN_SAMPLE
+            or threshold["match_ids_digest"] is not None
+        ):
+            raise SentinelValidationError("sentinel_state_invalid")
     records_by_id = {record["event_id"]: record for record in records}
     for condition, active in normalized["active_conditions"].items():
         active_record = records_by_id.get(active["event_id"])

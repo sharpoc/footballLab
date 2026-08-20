@@ -859,6 +859,139 @@ def test_state_rejects_missing_outbox_before_suppressed_anomaly_recovery():
     assert calls == []
 
 
+def test_state_rejects_false_threshold_flag_after_threshold_was_recorded():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root, decision_count=50)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=False,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        state_path = root / "data/local/diagnostics/csl_postmatch_sentinel_state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        assert state["threshold_notified"] is True
+        assert len(state["outbox"]) == 1
+        state["threshold_notified"] = False
+        corrupt = json.dumps(state, sort_keys=True).encode("utf-8")
+        state_path.write_bytes(corrupt)
+
+        calls = []
+        result = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T01:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: calls.append(True)
+            or {"status": "sent"},
+        )
+        preserved = state_path.read_bytes()
+    assert result == {
+        "status": "error",
+        "reason": "sentinel_state_unreadable",
+        "error_type": "SentinelValidationError",
+        "event_count": 0,
+        "notification_status": "not_attempted",
+    }
+    assert preserved == corrupt
+    assert len(json.loads(preserved)["outbox"]) == 1
+    assert calls == []
+
+
+def test_state_rejects_true_threshold_flag_before_threshold_was_reached():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root, decision_count=38)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=False,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        state_path = root / "data/local/diagnostics/csl_postmatch_sentinel_state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        assert state["threshold_notified"] is False
+        assert state["outbox"] == []
+        state["threshold_notified"] = True
+        corrupt = json.dumps(state, sort_keys=True).encode("utf-8")
+        state_path.write_bytes(corrupt)
+
+        _write_reports(root, decision_count=50)
+        calls = []
+        result = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T01:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: calls.append(True)
+            or {"status": "sent"},
+        )
+        preserved = state_path.read_bytes()
+    assert result == {
+        "status": "error",
+        "reason": "sentinel_state_unreadable",
+        "error_type": "SentinelValidationError",
+        "event_count": 0,
+        "notification_status": "not_attempted",
+    }
+    assert preserved == corrupt
+    assert json.loads(preserved)["outbox"] == []
+    assert calls == []
+
+
+def test_state_rejects_threshold_outbox_history_mismatch():
+    with TemporaryDirectory() as donor_tmp:
+        donor_root = Path(donor_tmp)
+        _write_reports(donor_root, decision_count=50)
+        run_csl_postmatch_sentinel(
+            root=donor_root,
+            write=True,
+            notify=False,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        donor_state_path = (
+            donor_root / "data/local/diagnostics/csl_postmatch_sentinel_state.json"
+        )
+        threshold_record = json.loads(
+            donor_state_path.read_text(encoding="utf-8")
+        )["outbox"][0]
+
+    for decision_count, mutation in ((50, "remove"), (38, "add")):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_reports(root, decision_count=decision_count)
+            run_csl_postmatch_sentinel(
+                root=root,
+                write=True,
+                notify=False,
+                observed_at="2026-08-20T00:00:00Z",
+            )
+            state_path = root / "data/local/diagnostics/csl_postmatch_sentinel_state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            if mutation == "remove":
+                assert state["threshold_notified"] is True
+                state["outbox"] = []
+            else:
+                assert state["threshold_notified"] is False
+                state["outbox"].append(threshold_record)
+            corrupt = json.dumps(state, sort_keys=True).encode("utf-8")
+            state_path.write_bytes(corrupt)
+            calls = []
+            result = run_csl_postmatch_sentinel(
+                root=root,
+                write=True,
+                notify=True,
+                observed_at="2026-08-20T01:00:00Z",
+                notify_fn=lambda *_args, **_kwargs: calls.append(True)
+                or {"status": "sent"},
+            )
+            preserved = state_path.read_bytes()
+        assert result["reason"] == "sentinel_state_unreadable"
+        assert preserved == corrupt
+        assert calls == []
+
+
 def test_validate_inputs_rejects_cross_report_mismatch():
     shadow, coverage = _reports()
     coverage["summary"]["observed_current_decision_count"] = 37
