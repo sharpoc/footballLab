@@ -23,3 +23,6 @@ venv/
 # Local Claude Code state and managed worktrees
 .claude/settings.local.json
 .claude/worktrees/
+
+# Local Codex/Superpowers implementation worktrees
+.worktrees/
