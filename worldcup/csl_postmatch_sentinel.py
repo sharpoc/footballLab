@@ -751,12 +751,12 @@ def _validate_runner_state(value: object) -> dict[str, object]:
         "threshold_notified",
         "last_input_fingerprint",
         "last_observed_at",
+        "outbox",
     }
-    allowed_keys = required_keys | {"outbox"}
-    if not required_keys.issubset(source) or not set(source).issubset(allowed_keys):
+    if set(source) != required_keys:
         raise SentinelValidationError("sentinel_state_invalid")
     normalized = _validate_state(source)
-    outbox = source.get("outbox", [])
+    outbox = source["outbox"]
     if type(outbox) is not list:
         raise SentinelValidationError("sentinel_state_invalid")
     records = [_validate_outbox_record(record) for record in outbox]
@@ -767,16 +767,14 @@ def _validate_runner_state(value: object) -> dict[str, object]:
     for condition, active in normalized["active_conditions"].items():
         active_record = records_by_id.get(active["event_id"])
         if (
-            active_record is not None
-            and (
+            active_record is None
+            or (
                 active_record["condition"] != condition
                 or active_record["kind"] != "anomaly"
                 or active_record["current_count"] != active["current_count"]
                 or active_record["match_ids_digest"] != active["match_ids_digest"]
             )
         ):
-            raise SentinelValidationError("sentinel_state_invalid")
-        if source.get("outbox") is not None and active_record is None:
             raise SentinelValidationError("sentinel_state_invalid")
     normalized["outbox"] = records
     return normalized

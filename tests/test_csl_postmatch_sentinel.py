@@ -805,6 +805,52 @@ def test_state_rejects_active_outbox_count_or_digest_mismatch():
         assert calls == []
 
 
+def test_state_rejects_missing_outbox_before_suppressed_anomaly_recovery():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        _write_reports(root, missing_closing=129)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=False,
+            observed_at="2026-08-20T01:00:00Z",
+        )
+        state_path = root / "data/local/diagnostics/csl_postmatch_sentinel_state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        assert state["active_conditions"]
+        assert state["outbox"][0]["delivery_status"] == "suppressed"
+        del state["outbox"]
+        corrupt = json.dumps(state, sort_keys=True).encode("utf-8")
+        state_path.write_bytes(corrupt)
+
+        _write_reports(root, finished_result_count=175)
+        calls = []
+        result = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T02:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: calls.append(True)
+            or {"status": "sent"},
+        )
+        preserved = state_path.read_bytes()
+    assert result == {
+        "status": "error",
+        "reason": "sentinel_state_unreadable",
+        "error_type": "SentinelValidationError",
+        "event_count": 0,
+        "notification_status": "not_attempted",
+    }
+    assert preserved == corrupt
+    assert calls == []
+
+
 def test_validate_inputs_rejects_cross_report_mismatch():
     shadow, coverage = _reports()
     coverage["summary"]["observed_current_decision_count"] = 37
