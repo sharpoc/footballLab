@@ -670,7 +670,7 @@ def fake_sentinel(**kwargs):
         "status": "stored",
         "competition_id": "csl_2026",
         "event_count": 0,
-        "notification_status": "not_needed",
+        "notification_status": "not_attempted",
     }
 ```
 
