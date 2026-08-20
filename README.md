@@ -434,7 +434,7 @@ shadow canonical 报告为 `data/local/diagnostics/csl_postmatch_shadow.json`，
 
 ### CSL Postmatch Sentinel
 
-`worldcup.csl_postmatch_sentinel` 只读取本地 `csl_postmatch_shadow.json` 与 `csl_closing_coverage.json`；standalone 默认是零写 dry-run，不创建 state 或 lock，也不调用 WxPusher。其 ignored 本地状态固定为 `data/local/diagnostics/csl_postmatch_sentinel_state.json`。
+`worldcup.csl_postmatch_sentinel` 只读取本地 `csl_postmatch_shadow.json`、`csl_closing_coverage.json`，以及（若已存在）sentinel state；standalone 默认是零写 dry-run，不创建 state 或 lock，也不调用 WxPusher。其 ignored 本地状态固定为 `data/local/diagnostics/csl_postmatch_sentinel_state.json`。
 
 当前历史 `128` 个 closing 缺口和 `8` 个 decision 缺口只是首次启用的通知基线，coverage 仍完整保留，未被修复或隐藏。sentinel 只对数据链路的新增异常、异常扩大、恢复，以及首次 `decision_count >= 50` 发出候选通知；命中率、连胜连败、首选方向或盘口方向不会触发。达到 50 仅提示人工复盘，不会自动调参或解除 `club_rating_pending`。
 

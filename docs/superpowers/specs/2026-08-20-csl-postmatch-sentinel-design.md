@@ -370,8 +370,9 @@ state 不可读或校验失败时：
 ### 11.5 实施状态与验收证据（2026-08-20）
 
 - 已实现 `worldcup.csl_postmatch_sentinel`、其离线/并发/outbox 测试，以及 `worldcup.csl_scheduled_publish` 的非阻断接线和 `--no-notify`；最终 publish-body 捕获测试覆盖 sentinel 不进入公开 snapshot 或 HMAC body 的边界。
+- Fix Round1：合法报告的 standalone dry-run 与 CLI 安全摘要从同一次已验证 projection 传播精确 `decision_count` / `sample_too_small`，不二次读取报告；合法 `stored` / `unchanged` 也可携带。错误或输入不可读时省略这两个字段。scheduler 的 `_safe_postmatch_sentinel` 保持白名单，仍丢弃它们，避免扩大 scheduler-local 或公开 payload。
 - 新鲜验证：`py_compile` 通过；聚焦 suite 为 sentinel `28/28`、scheduler `45/45`；指定完整 runner 为 `1123/1123 tests passed, 1 module skipped (optional fastapi)`。
-- 使用工作树代码、显式 `--root /Users/eagod/ai-dev/足彩` 对真实 ignored shadow/coverage 运行 standalone dry-run，返回事实为 `{"status":"dry_run_ready","event_count":0,"notification_status":"not_attempted"}`。原项目绝对 state/lock 路径在前后均为 `absent`，hash/existence guard 通过；本次没有 `--write`、`--notify`、provider、quota、`.env`、push 或部署动作。
+- 使用工作树代码、显式 `--root /Users/eagod/ai-dev/足彩` 对真实 ignored shadow/coverage 运行 standalone dry-run，最新返回事实为 `{"decision_count":38,"event_count":0,"notification_status":"not_attempted","sample_too_small":true,"status":"dry_run_ready"}`。原项目绝对 state/lock 路径在前后均为 `absent`，hash/existence guard 通过；本次没有 `--write`、`--notify`、provider、quota、`.env`、push 或部署动作。
 - 真实 ignored baseline 仍未激活：不得把 dry-run 视为已建立 baseline。后续仅在另行批准后，才可执行 `worldcup.csl_postmatch_sentinel --write`；真实 WxPusher 发送还需独立于该写入授权的明确批准。
 
 ## 12. 对抗性自审

@@ -1982,6 +1982,8 @@ def test_sentinel_summary_never_enters_published_snapshot():
             "competition_id": "csl_2026",
             "event_count": 1,
             "notification_status": "suppressed",
+            "decision_count": 38,
+            "sample_too_small": True,
             "secret": "private-sentinel-marker",
             "state_path": "/Users/private/sentinel-state.json",
             "notification_summary": "private sentinel notification",

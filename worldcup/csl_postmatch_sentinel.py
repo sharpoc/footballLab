@@ -808,6 +808,8 @@ def _summary(
     notification_status: str,
     reason: str | None = None,
     error_type: str | None = None,
+    decision_count: int | None = None,
+    sample_too_small: bool | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "status": status,
@@ -818,6 +820,10 @@ def _summary(
         result["reason"] = reason
     if error_type is not None:
         result["error_type"] = error_type
+    if decision_count is not None:
+        result["decision_count"] = decision_count
+    if sample_too_small is not None:
+        result["sample_too_small"] = sample_too_small
     return result
 
 
@@ -913,21 +919,35 @@ def _load_and_evaluate(
     paths: dict[str, Path],
     previous_state: dict[str, object] | None,
     observed_at: str,
-) -> tuple[dict[str, object] | None, list[dict[str, object]], str | None]:
+) -> tuple[
+    dict[str, object] | None,
+    list[dict[str, object]],
+    str | None,
+    dict[str, int | bool] | None,
+]:
     try:
         shadow = _read_report(paths["shadow"], "shadow")
         coverage = _read_report(paths["coverage"], "coverage")
-        next_state, events = _evaluate_valid_reports(
-            shadow, coverage, previous_state, observed_at
+        normalized_shadow, normalized_coverage = validate_postmatch_inputs(
+            shadow, coverage
         )
-        return next_state, events, None
+        current = _sentinel_projection(normalized_shadow, normalized_coverage)
+        next_state, events = _evaluate_valid_reports(
+            normalized_shadow, normalized_coverage, previous_state, observed_at
+        )
+        decision_count = current["monotonic"]["decision_count"]
+        min_sample = current["min_sample"]
+        return next_state, events, None, {
+            "decision_count": decision_count,
+            "sample_too_small": decision_count < min_sample,
+        }
     except SentinelValidationError as exc:
         if previous_state is None:
-            return None, [], exc.code
+            return None, [], exc.code, None
         next_state, events = _input_error_transition(
             previous_state, exc.code, observed_at
         )
-        return next_state, events, exc.code
+        return next_state, events, exc.code, None
 
 
 def _run_dry(paths: dict[str, Path], *, observed_at: str | None) -> dict[str, Any]:
@@ -945,7 +965,7 @@ def _run_dry(paths: dict[str, Path], *, observed_at: str | None) -> dict[str, An
             event_count=0,
             notification_status="not_attempted",
         )
-    _next_state, events, reason = _load_and_evaluate(
+    _next_state, events, reason, sample_summary = _load_and_evaluate(
         paths, previous_state, timestamp
     )
     if _next_state is None:
@@ -961,6 +981,7 @@ def _run_dry(paths: dict[str, Path], *, observed_at: str | None) -> dict[str, An
         reason=reason,
         event_count=len(events),
         notification_status="not_attempted",
+        **(sample_summary or {}),
     )
 
 
@@ -1108,7 +1129,7 @@ def _run_locked(
             event_count=0,
             notification_status="not_attempted",
         )
-    next_core, events, input_reason = _load_and_evaluate(
+    next_core, events, input_reason, sample_summary = _load_and_evaluate(
         paths, previous_state, timestamp
     )
     if next_core is None:
@@ -1180,6 +1201,7 @@ def _run_locked(
         reason=input_reason,
         event_count=len(events),
         notification_status=notification_status,
+        **(sample_summary or {}),
     )
 
 

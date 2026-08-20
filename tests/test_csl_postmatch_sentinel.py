@@ -158,6 +158,8 @@ def test_runner_dry_run_creates_no_state_lock_or_notification():
         )
     assert result["status"] == "dry_run_ready"
     assert result["event_count"] == 0
+    assert result["decision_count"] == 38
+    assert result["sample_too_small"] is True
     assert before == after
     assert calls == []
 
@@ -503,7 +505,13 @@ def test_cli_defaults_to_zero_write_dry_run():
             os.chdir(previous_cwd)
         result = json.loads(output.getvalue())
     assert exit_code == 0
-    assert result["status"] == "dry_run_ready"
+    assert result == {
+        "status": "dry_run_ready",
+        "event_count": 0,
+        "notification_status": "not_attempted",
+        "decision_count": 38,
+        "sample_too_small": True,
+    }
     assert not (root / "data/local/diagnostics/csl_postmatch_sentinel_state.json").exists()
     assert not (root / "data/local/diagnostics/csl_postmatch_sentinel.lock").exists()
 

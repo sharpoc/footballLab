@@ -11,8 +11,9 @@
 - 已确认独立 `worldcup.csl_postmatch_sentinel` 方向：复用“双源赛果接受 → postmatch shadow”触发，只监控数据链路异常、恢复和正式样本首次达到 50；不根据命中率或盘口方向报警，不自动调参或解除 `club_rating_pending`。
 - 当前真实 ignored shadow 只读基线为 174 场已验证结果、46 场 closing、38 个正式 decision，`20 hit / 18 miss`，`sample_too_small=true`；现有 128 个 closing 缺口和 8 个 decision 缺口只作为通知基线，coverage 仍完整保留，不声称已修复。
 - 已实现 `worldcup/csl_postmatch_sentinel.py`（严格输入契约、纯 evaluator、锁/原子 state/outbox、脱敏 CLI）与 `worldcup/csl_scheduled_publish.py`（accepted result → shadow success → sentinel → odds 的非阻断接线、`--no-notify`）；对应测试为 `tests/test_csl_postmatch_sentinel.py` 与 `tests/test_csl_scheduled_publish.py`。sentinel 摘要仅存在 scheduler-local 返回值，最终 publish-body 捕获测试保证其不进入公开 snapshot 或 HMAC body。
+- Fix Round1：合法 standalone dry-run / CLI 从同一次已验证 projection 输出严格 `decision_count` 与 `sample_too_small`，不二次读取报告；错误/输入不可读时省略。scheduler 白名单继续丢弃这两个字段，既不扩大其 local result，也不进入公开 snapshot/HMAC body。
 - 新鲜验证：`py_compile` 通过；聚焦 sentinel `28/28`、scheduler `45/45`；指定 runtime 完整回归为 `1123/1123 tests passed, 1 module skipped (optional fastapi)`。
-- 真实 ignored 输入以工作树代码显式 `--root /Users/eagod/ai-dev/足彩` 执行 standalone dry-run，实际返回 `status=dry_run_ready`、`event_count=0`、`notification_status=not_attempted`；原项目 `data/local/diagnostics/csl_postmatch_sentinel_state.json` 和 `.lock` 前后均不存在，存在性/hash guard 确认零写入。
+- 真实 ignored 输入以工作树代码显式 `--root /Users/eagod/ai-dev/足彩` 执行 standalone dry-run，实际返回 `status=dry_run_ready`、`event_count=0`、`notification_status=not_attempted`、`decision_count=38`、`sample_too_small=true`；原项目 `data/local/diagnostics/csl_postmatch_sentinel_state.json` 和 `.lock` 前后均不存在，存在性/hash guard 确认零写入。
 - 设计文档：`docs/superpowers/specs/2026-08-20-csl-postmatch-sentinel-design.md`；实施计划：`docs/superpowers/plans/2026-08-20-csl-postmatch-sentinel.md`。确认不新建 `ARCHITECTURE.md`。真实 ignored baseline `--write` 尚未激活且须单独批准；本阶段未调用真实 WxPusher、provider 或 quota，未读取 `.env`，未 push 或部署。
 
 ## 2026-08-13 中超 closing coverage foundation 文档与真实本地验收

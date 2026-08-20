@@ -897,7 +897,7 @@ Do not run the following command under “确认实现” alone because it write
   -m worldcup.csl_postmatch_sentinel --write
 ```
 
-After explicit approval, expect `status=stored`, historical 128/8 produces `event_count=0`, `notification_status=not_needed`, and state contains no sensitive keys. Repeat once and expect `status=unchanged`. Never add `--notify` during local acceptance unless the user separately confirms a real WxPusher send.
+After explicit approval, expect `status=stored`, historical 128/8 produces `event_count=0`, `notification_status=not_attempted`, and state contains no sensitive keys. Repeat once and expect `status=unchanged`. Never add `--notify` during local acceptance unless the user separately confirms a real WxPusher send.
 
 - [ ] **Step 5: Run fresh focused and full verification**
 
