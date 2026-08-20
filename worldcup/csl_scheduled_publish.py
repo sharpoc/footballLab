@@ -1127,10 +1127,13 @@ def run_csl_scheduled_publish(
                 )
             )
         except Exception as exc:
+            error_type = type(exc).__name__
             postmatch_sentinel = {
                 "status": "error",
                 "reason": "csl_postmatch_sentinel_failed",
-                "error_type": type(exc).__name__,
+                "error_type": (
+                    error_type if _stable_error_type(error_type) else "Exception"
+                ),
             }
     else:
         postmatch_sentinel = {

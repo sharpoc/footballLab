@@ -1853,6 +1853,32 @@ def test_sentinel_typeerror_with_exploding_str_is_non_blocking_and_redacted():
     assert "private sentinel __str__ marker" not in serialized
 
 
+def test_sentinel_private_exception_class_name_uses_safe_error_type():
+    marker = "private sentinel class marker"
+
+    class PrivateNamedSentinelError(Exception):
+        pass
+
+    PrivateNamedSentinelError.__name__ = marker
+
+    def broken_sentinel(**_kwargs):
+        raise PrivateNamedSentinelError("ordinary sentinel failure")
+
+    case = _run_live_sentinel_case(postmatch_sentinel_fn=broken_sentinel)
+    assert case["result"]["status"] == "published"
+    assert case["calls"]["refresh"] == 1
+    assert case["calls"]["publish"] == 1
+    assert case["result"]["postmatch_sentinel"] == {
+        "status": "error",
+        "reason": "csl_postmatch_sentinel_failed",
+        "error_type": "Exception",
+    }
+    serialized = json.dumps(
+        {"result": case["result"], "published": case["published"]}
+    )
+    assert marker not in serialized
+
+
 def test_unchanged_shadow_runs_sentinel_for_pending_outbox_retry():
     case = _run_live_sentinel_case(
         shadow_status="unchanged",
