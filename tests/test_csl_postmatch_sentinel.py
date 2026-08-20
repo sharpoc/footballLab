@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
 from copy import deepcopy
+from io import StringIO
+import json
+import multiprocessing
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from worldcup.csl_postmatch_sentinel import (
     SentinelValidationError,
     evaluate_postmatch_sentinel,
+    main,
+    run_csl_postmatch_sentinel,
     validate_postmatch_inputs,
 )
 
@@ -99,6 +109,497 @@ def _reports(
         "matches": [],
     }
     return shadow, coverage
+
+
+def _write_reports(root: Path, **kwargs: object) -> None:
+    shadow, coverage = _reports(**kwargs)
+    diagnostics = root / "data/local/diagnostics"
+    diagnostics.mkdir(parents=True, exist_ok=True)
+    (diagnostics / "csl_postmatch_shadow.json").write_text(
+        json.dumps(shadow), encoding="utf-8"
+    )
+    (diagnostics / "csl_closing_coverage.json").write_text(
+        json.dumps(coverage), encoding="utf-8"
+    )
+
+
+def _concurrent_runner(root_text: str, worker_id: int) -> None:
+    root = Path(root_text)
+    calls: list[str] = []
+    result = run_csl_postmatch_sentinel(
+        root=root,
+        write=True,
+        notify=True,
+        observed_at="2026-08-20T01:00:00Z",
+        notify_fn=lambda content, **_kwargs: calls.append(content)
+        or {"status": "sent"},
+    )
+    (root / f"worker-{worker_id}.json").write_text(
+        json.dumps({"result": result, "notification_count": len(calls)}),
+        encoding="utf-8",
+    )
+
+
+def test_runner_dry_run_creates_no_state_lock_or_notification():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        before = sorted(
+            path.relative_to(root) for path in root.rglob("*") if path.is_file()
+        )
+        calls = []
+        result = run_csl_postmatch_sentinel(
+            root=root,
+            observed_at="2026-08-20T00:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: calls.append(True),
+        )
+        after = sorted(
+            path.relative_to(root) for path in root.rglob("*") if path.is_file()
+        )
+    assert result["status"] == "dry_run_ready"
+    assert result["event_count"] == 0
+    assert before == after
+    assert calls == []
+
+
+def test_runner_write_persists_initial_baseline_without_old_gap_event():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        result = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=False,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        state = json.loads(
+            (root / "data/local/diagnostics/csl_postmatch_sentinel_state.json")
+            .read_text(encoding="utf-8")
+        )
+    assert result["status"] == "stored"
+    assert result["event_count"] == 0
+    assert state["baseline_quality"]["missing_closing_count"] == 128
+    assert state["baseline_quality"]["missing_decision_count"] == 8
+
+
+def test_runner_suppresses_new_event_when_notify_false_and_never_backfills_it():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=False,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        _write_reports(root, missing_closing=129)
+        suppressed = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=False,
+            observed_at="2026-08-20T01:00:00Z",
+        )
+        calls = []
+        repeated = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T02:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: calls.append(True)
+            or {"status": "sent"},
+        )
+    assert suppressed["notification_status"] == "suppressed"
+    assert repeated["status"] == "unchanged"
+    assert calls == []
+
+
+def test_failed_notification_remains_pending_and_retries_on_unchanged_input():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=False,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        _write_reports(root, missing_closing=129)
+        failed = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T01:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: {
+                "status": "failed",
+                "exit_code": 1,
+            },
+        )
+        calls = []
+        retried = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T02:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: calls.append(True)
+            or {"status": "sent"},
+        )
+    assert failed["notification_status"] == "failed"
+    assert retried["notification_status"] == "sent"
+    assert calls == [True]
+
+
+def test_notify_requires_write_before_creating_lock():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        try:
+            run_csl_postmatch_sentinel(root=root, write=False, notify=True)
+        except ValueError as exc:
+            assert str(exc) == "notify_requires_write"
+        else:
+            raise AssertionError("notify without write must fail closed")
+        assert not (root / "data/local/diagnostics/csl_postmatch_sentinel.lock").exists()
+
+
+def test_valid_state_tracks_input_error_once_and_notifies_recovery_once():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        shadow_path = root / "data/local/diagnostics/csl_postmatch_shadow.json"
+        shadow_path.write_text("{broken", encoding="utf-8")
+        calls = []
+        broken = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T01:00:00Z",
+            notify_fn=lambda content, **kwargs: calls.append((content, kwargs))
+            or {"status": "sent"},
+        )
+        repeated = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T02:00:00Z",
+            notify_fn=lambda content, **kwargs: calls.append((content, kwargs))
+            or {"status": "sent"},
+        )
+        _write_reports(root)
+        recovered = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T03:00:00Z",
+            notify_fn=lambda content, **kwargs: calls.append((content, kwargs))
+            or {"status": "sent"},
+        )
+        recovered_again = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T04:00:00Z",
+            notify_fn=lambda content, **kwargs: calls.append((content, kwargs))
+            or {"status": "sent"},
+        )
+    assert broken["event_count"] == 1
+    assert repeated["status"] == "unchanged"
+    assert recovered["event_count"] == 1
+    assert recovered_again["status"] == "unchanged"
+    assert len(calls) == 2
+    assert all(kwargs == {"summary": "中超赛后数据监控提醒"} for _, kwargs in calls)
+
+
+def test_recovery_of_suppressed_anomaly_is_also_suppressed():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        _write_reports(root, missing_closing=129)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=False,
+            observed_at="2026-08-20T01:00:00Z",
+        )
+        _write_reports(root, finished_result_count=175)
+        calls = []
+        recovery = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T02:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: calls.append(True)
+            or {"status": "sent"},
+        )
+    assert recovery["notification_status"] == "suppressed"
+    assert calls == []
+
+
+def test_corrupt_state_is_preserved_and_notification_is_not_attempted():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        state_path = root / "data/local/diagnostics/csl_postmatch_sentinel_state.json"
+        corrupt = b'{"secret":"keep exactly",broken'
+        state_path.write_bytes(corrupt)
+        calls = []
+        result = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T01:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: calls.append(True)
+            or {"status": "sent"},
+        )
+        preserved = state_path.read_bytes()
+    assert result == {
+        "status": "error",
+        "reason": "sentinel_state_unreadable",
+        "error_type": "SentinelValidationError",
+        "event_count": 0,
+        "notification_status": "not_attempted",
+    }
+    assert preserved == corrupt
+    assert calls == []
+
+
+def test_atomic_state_failure_preserves_previous_bytes():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        state_path = root / "data/local/diagnostics/csl_postmatch_sentinel_state.json"
+        previous = state_path.read_bytes()
+        _write_reports(root, missing_closing=129)
+        with patch(
+            "worldcup.csl_postmatch_sentinel.os.replace",
+            side_effect=OSError("injected replace failure"),
+        ):
+            result = run_csl_postmatch_sentinel(
+                root=root,
+                write=True,
+                observed_at="2026-08-20T01:00:00Z",
+            )
+        preserved = state_path.read_bytes()
+        temp_files = list(state_path.parent.glob("*.tmp"))
+    assert result["status"] == "error"
+    assert result["reason"] == "sentinel_state_write_failed"
+    assert preserved == previous
+    assert temp_files == []
+
+
+def test_state_result_and_notification_redact_sensitive_input():
+    sensitive_values = (
+        "secret",
+        "api_key",
+        "bookmakers",
+        "/Users/private/person/project/.env",
+        "Traceback (most recent call last): private stack",
+    )
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        shadow, _coverage = _reports()
+        shadow["status"] = "broken"
+        shadow["secret"] = "hidden"
+        shadow["api_key"] = "private-key"
+        shadow["bookmakers"] = [{"payload": "raw"}]
+        shadow["private_path"] = sensitive_values[3]
+        shadow["traceback"] = sensitive_values[4]
+        shadow_path = root / "data/local/diagnostics/csl_postmatch_shadow.json"
+        shadow_path.write_text(json.dumps(shadow), encoding="utf-8")
+        notifications = []
+        result = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T01:00:00Z",
+            notify_fn=lambda content, **kwargs: notifications.append(
+                {"content": content, "kwargs": kwargs}
+            )
+            or {"status": "sent"},
+        )
+        state = json.loads(
+            (root / "data/local/diagnostics/csl_postmatch_sentinel_state.json")
+            .read_text(encoding="utf-8")
+        )
+    scanned = json.dumps(
+        {"result": result, "state": state, "notifications": notifications},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    for sensitive in sensitive_values:
+        assert sensitive not in scanned
+    assert notifications[0]["content"].endswith("仅用于研究分析，不构成投注建议。")
+
+
+def test_concurrent_runners_create_and_send_one_event():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        _write_reports(root, missing_closing=129)
+        context = multiprocessing.get_context("fork")
+        workers = [
+            context.Process(target=_concurrent_runner, args=(str(root), worker_id))
+            for worker_id in range(2)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(10)
+            assert worker.exitcode == 0
+        results = [
+            json.loads((root / f"worker-{worker_id}.json").read_text(encoding="utf-8"))
+            for worker_id in range(2)
+        ]
+        state_path = root / "data/local/diagnostics/csl_postmatch_sentinel_state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        temp_files = list(state_path.parent.glob("*.tmp"))
+    assert sum(item["notification_count"] for item in results) == 1
+    assert sum(item["result"]["event_count"] for item in results) == 1
+    assert len(state["outbox"]) == 1
+    assert len({item["event_id"] for item in state["outbox"]}) == 1
+    assert temp_files == []
+
+
+def test_cli_defaults_to_zero_write_dry_run():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        previous_cwd = Path.cwd()
+        output = StringIO()
+        try:
+            os.chdir(root)
+            with redirect_stdout(output):
+                exit_code = main([])
+        finally:
+            os.chdir(previous_cwd)
+        result = json.loads(output.getvalue())
+    assert exit_code == 0
+    assert result["status"] == "dry_run_ready"
+    assert not (root / "data/local/diagnostics/csl_postmatch_sentinel_state.json").exists()
+    assert not (root / "data/local/diagnostics/csl_postmatch_sentinel.lock").exists()
+
+
+def test_cli_notify_uses_injected_runner():
+    calls = []
+
+    def fake_runner(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        assert kwargs["write"] is True
+        assert kwargs["notify"] is True
+        return {
+            "status": "stored",
+            "event_count": 1,
+            "notification_status": "sent",
+        }
+
+    output = StringIO()
+    with redirect_stdout(output):
+        exit_code = main(["--write", "--notify"], runner=fake_runner)
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert json.loads(output.getvalue()) == {
+        "status": "stored",
+        "event_count": 1,
+        "notification_status": "sent",
+    }
+
+
+def test_state_with_unknown_sensitive_field_is_rejected_without_rewrite():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        state_path = root / "data/local/diagnostics/csl_postmatch_sentinel_state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["secret"] = "must-not-be-normalized-away"
+        corrupt = json.dumps(state, sort_keys=True).encode("utf-8")
+        state_path.write_bytes(corrupt)
+        calls = []
+        result = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T01:00:00Z",
+            notify_fn=lambda *_args, **_kwargs: calls.append(True)
+            or {"status": "sent"},
+        )
+        preserved = state_path.read_bytes()
+    assert result["reason"] == "sentinel_state_unreadable"
+    assert preserved == corrupt
+    assert calls == []
+
+
+def test_notification_batch_has_at_most_five_detail_lines():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_reports(root)
+        run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            observed_at="2026-08-20T00:00:00Z",
+        )
+        shadow, coverage = _reports(missing_closing=129, missing_decision=9)
+        for field in (
+            "identity_mismatch_count",
+            "invalid_decision_count",
+            "result_source_blocked_count",
+            "unresolved_count",
+        ):
+            shadow["decision_coverage"][field] = 1
+        diagnostics = root / "data/local/diagnostics"
+        (diagnostics / "csl_postmatch_shadow.json").write_text(
+            json.dumps(shadow), encoding="utf-8"
+        )
+        (diagnostics / "csl_closing_coverage.json").write_text(
+            json.dumps(coverage), encoding="utf-8"
+        )
+        notifications = []
+        result = run_csl_postmatch_sentinel(
+            root=root,
+            write=True,
+            notify=True,
+            observed_at="2026-08-20T01:00:00Z",
+            notify_fn=lambda content, **_kwargs: notifications.append(content)
+            or {"status": "sent"},
+        )
+    lines = notifications[0].splitlines()
+    assert result["event_count"] == 6
+    assert lines[0] == "中超赛后数据监控"
+    assert lines[-1] == "仅用于研究分析，不构成投注建议。"
+    assert len(lines[1:-1]) <= 5
 
 
 def test_validate_inputs_rejects_cross_report_mismatch():
