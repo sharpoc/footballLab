@@ -126,11 +126,14 @@ def _validate_tally(value: object, invalid_code: str) -> dict[str, int]:
 
 def _validate_sample(value: object, invalid_code: str) -> dict[str, object]:
     sample = _object(value, invalid_code)
+    min_sample = _strict_positive_count(sample.get("min_sample"), invalid_code)
+    if min_sample != DEFAULT_MIN_SAMPLE:
+        raise SentinelValidationError(invalid_code)
     normalized: dict[str, object] = {
         "actionable": _strict_count(sample.get("actionable"), invalid_code),
         "decided": _strict_count(sample.get("decided"), invalid_code),
         "decision_count": _strict_count(sample.get("decision_count"), invalid_code),
-        "min_sample": _strict_positive_count(sample.get("min_sample"), invalid_code),
+        "min_sample": min_sample,
         "sample_too_small": _strict_bool(sample.get("sample_too_small"), invalid_code),
     }
     hit_rate = sample.get("hit_rate")

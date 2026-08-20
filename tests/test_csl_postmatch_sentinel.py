@@ -17,6 +17,7 @@ def _reports(
     finished_result_count: int | None = None,
     closing_available_count: int | None = None,
     generated_at: str = "2026-08-15T10:36:37Z",
+    min_sample: int = 50,
 ):
     tally = {"hit": decision_count, "miss": 0, "push": 0, "no_pick": 0}
     sample = {
@@ -24,9 +25,9 @@ def _reports(
         "decided": decision_count,
         "decision_count": decision_count,
         "hit_rate": 1.0 if decision_count else None,
-        "min_sample": 50,
+        "min_sample": min_sample,
         "pick_rate": 1.0 if decision_count else 0.0,
-        "sample_too_small": decision_count < 50,
+        "sample_too_small": decision_count < min_sample,
     }
     closing_available = (
         decision_count + missing_decision
@@ -109,6 +110,26 @@ def test_validate_inputs_rejects_cross_report_mismatch():
         assert exc.code == "coverage_shadow_mismatch"
     else:
         raise AssertionError("mismatched reports must fail closed")
+
+
+def test_validate_inputs_rejects_min_sample_below_fixed_threshold():
+    shadow, coverage = _reports(decision_count=38, min_sample=1)
+    try:
+        validate_postmatch_inputs(shadow, coverage)
+    except SentinelValidationError as exc:
+        assert exc.code == "shadow_report_invalid"
+    else:
+        raise AssertionError("min_sample below 50 must fail closed")
+
+
+def test_validate_inputs_rejects_min_sample_above_fixed_threshold():
+    shadow, coverage = _reports(decision_count=50, min_sample=51)
+    try:
+        validate_postmatch_inputs(shadow, coverage)
+    except SentinelValidationError as exc:
+        assert exc.code == "shadow_report_invalid"
+    else:
+        raise AssertionError("min_sample above 50 must fail closed")
 
 
 def test_first_evaluation_baselines_existing_128_and_8_without_alerting():
