@@ -4,14 +4,14 @@
 
 历史归档：[docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md](docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md)（164 条）
 
-较早记录压缩摘要（2026-07-10 至 2026-07-19）：完成 MatchPick v3、首选鲜度、中超俱乐部评级门槛、已开赛待赛果展示、延期状态、三槽 quota 切换和世界杯赛后同步等阶段；保留的关键约束已同步到 README、ARCHITECTURE、AGENTS/CLAUDE 与 Git 历史。2026-07-19 首次赛后 live 因当时外部配置受阻，未产生业务写入。
+较早记录压缩摘要（2026-07-10 至 2026-07-19）：完成 MatchPick v3、首选鲜度、中超俱乐部评级门槛、已开赛待赛果展示、延期状态、三槽 quota 切换和世界杯赛后同步等阶段；保留的关键约束已同步到 README、AGENTS/CLAUDE 与 Git 历史。2026-07-19 首次赛后 live 因当时外部配置受阻，未产生业务写入。
 
 ## 2026-08-20 中超赛后样本 Sentinel 设计
 
 - 已确认独立 `worldcup.csl_postmatch_sentinel` 方向：复用“双源赛果接受 → postmatch shadow”触发，只监控数据链路异常、恢复和正式样本首次达到 50；不根据命中率或盘口方向报警，不自动调参或解除 `club_rating_pending`。
 - 当前真实 ignored shadow 只读基线为 174 场已验证结果、46 场 closing、38 个正式 decision，`20 hit / 18 miss`，`sample_too_small=true`；现有 128 个 closing 缺口和 8 个 decision 缺口只作为通知基线，coverage 仍完整保留，不声称已修复。
 - 设计采用本地锁、原子 state 和 outbox 去重；异常首次/扩大/恢复分别提醒，WxPusher 失败不阻断主链路。中超 scheduler 计划新增 `--no-notify`，只静音 sentinel，不改变赛果、odds、quota、snapshot 或 publish。
-- 设计文档：`docs/superpowers/specs/2026-08-20-csl-postmatch-sentinel-design.md`。本阶段只完成设计与对抗性自审，尚未写实现计划或代码，未联网、未读取 `.env`、未调用 provider、未发送真实通知、未推送或部署。
+- 设计文档：`docs/superpowers/specs/2026-08-20-csl-postmatch-sentinel-design.md`；实施计划：`docs/superpowers/plans/2026-08-20-csl-postmatch-sentinel.md`。本阶段只完成设计、对抗性自审与计划，尚未写实现代码；确认不新建 `ARCHITECTURE.md`。未联网、未读取 `.env`、未调用 provider、未发送真实通知、未推送或部署。
 
 ## 2026-08-13 中超 closing coverage foundation 文档与真实本地验收
 

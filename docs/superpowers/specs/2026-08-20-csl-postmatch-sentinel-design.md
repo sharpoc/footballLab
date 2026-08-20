@@ -404,6 +404,6 @@ sentinel 只读本地报告，通知复用全局 WxPusher 工具；不得读取�
 3. 写 state/outbox/dry-run/并发失败测试并实现本地 runner；
 4. 写 scheduler 接线与公开 payload 隔离测试；
 5. 实现 `--no-notify` 和非阻断接入；
-6. 更新 README、ARCHITECTURE 与近期记录；
+6. 更新现有 README 与近期记录；本阶段不新建 `ARCHITECTURE.md`；
 7. 执行聚焦测试、完整回归、安全扫描和真实本地 dry-run；
 8. 另行确认后才可进入 commit/push、合并或部署阶段。
