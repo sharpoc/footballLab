@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from worldcup.league_lineup_store import LeagueLineupStore
 from worldcup.league_lineups_refresh import run_league_lineups_refresh
 from worldcup.league_team_identity import accepted_league_team_identity_registry
 
@@ -346,7 +347,6 @@ def test_an_already_cached_fingerprint_is_not_newly_confirmed():
             calendar_fetcher=lambda **_kwargs: calendar,
             details_fetcher=lambda **_kwargs: details,
         )
-        stale_state = _empty_state()
         second = run_league_lineups_refresh(
             root=tmp,
             now=NOW,
@@ -354,16 +354,175 @@ def test_an_already_cached_fingerprint_is_not_newly_confirmed():
             write=True,
             acceptance_report=_active_report(),
             fixtures_by_competition={COMPETITION: [fixture]},
-            state=stale_state,
             provider_competition_ids={COMPETITION: PROVIDER_COMPETITION},
             identity_registry=accepted_league_team_identity_registry(),
-            calendar_fetcher=lambda **_kwargs: calendar,
-            details_fetcher=lambda **_kwargs: details,
+            calendar_fetcher=_explode,
+            details_fetcher=_explode,
         )
 
         assert first["counts"]["newly_confirmed_count"] == 1
         assert second["newly_confirmed"] == {}
         assert second["counts"]["newly_confirmed_count"] == 0
+
+
+def test_cache_receipt_survives_state_failure_and_is_emitted_once_after_restart():
+    """Losing the cache-to-state transaction receipt would permanently skip the Task 5 trigger."""
+    fixture = _fixture("epl-1", "2026-08-24T13:00:00+00:00")
+    calendar = _calendar(_calendar_match("1001", fixture["kickoff_at_utc"], "Arsenal", "Chelsea"))
+    details = _details("1001", fixture["kickoff_at_utc"], "Arsenal", "Chelsea")
+
+    class StateFailingStore:
+        def __init__(self, root):
+            self.delegate = LeagueLineupStore(root)
+
+        def read_competition(self, competition_id):
+            return self.delegate.read_competition(competition_id)
+
+        def commit_confirmed(self, competition_id, report):
+            return self.delegate.commit_confirmed(competition_id, report)
+
+        def commit_state(self, _state):
+            raise OSError("SECRET injected state failure")
+
+    with TemporaryDirectory() as tmp:
+        first = run_league_lineups_refresh(
+            root=tmp,
+            now=NOW,
+            live=True,
+            write=True,
+            acceptance_report=_active_report(),
+            fixtures_by_competition={COMPETITION: [fixture]},
+            state=_empty_state(),
+            provider_competition_ids={COMPETITION: PROVIDER_COMPETITION},
+            identity_registry=accepted_league_team_identity_registry(),
+            calendar_fetcher=lambda **_kwargs: calendar,
+            details_fetcher=lambda **_kwargs: details,
+            store_factory=StateFailingStore,
+        )
+
+        pending_path = Path(tmp) / "data/local/leagues/lineup_refresh_pending.json"
+        assert first["status"] == "error"
+        assert first["reason"] == "state_commit_failed"
+        assert first["newly_confirmed"] == {}
+        assert pending_path.exists()
+        assert "SECRET" not in json.dumps(first, ensure_ascii=False)
+
+        recovered = run_league_lineups_refresh(
+            root=tmp,
+            now=NOW,
+            live=True,
+            write=True,
+            acceptance_report=_active_report(),
+            fixtures_by_competition={COMPETITION: [fixture]},
+            provider_competition_ids={COMPETITION: PROVIDER_COMPETITION},
+            identity_registry=accepted_league_team_identity_registry(),
+            calendar_fetcher=_explode,
+            details_fetcher=_explode,
+        )
+        settled = run_league_lineups_refresh(
+            root=tmp,
+            now=NOW,
+            live=True,
+            write=True,
+            acceptance_report=_active_report(),
+            fixtures_by_competition={COMPETITION: [fixture]},
+            provider_competition_ids={COMPETITION: PROVIDER_COMPETITION},
+            identity_registry=accepted_league_team_identity_registry(),
+            calendar_fetcher=_explode,
+            details_fetcher=_explode,
+            store_factory=_explode,
+        )
+
+        assert recovered["status"] == "recovered"
+        assert [row["event_id"] for row in recovered["newly_confirmed"][COMPETITION]] == ["epl-1"]
+        assert recovered["counts"]["newly_confirmed_count"] == 1
+        assert recovered["counts"]["calendar_fetch_count"] == 0
+        assert recovered["counts"]["details_fetch_count"] == 0
+        assert json.loads(pending_path.read_text(encoding="utf-8"))["events"] == {}
+        assert settled["status"] == "no_due"
+        assert settled["newly_confirmed"] == {}
+        assert settled["counts"]["newly_confirmed_count"] == 0
+
+
+def test_malformed_discovery_parser_reports_fail_closed_without_writes_or_leaks():
+    """Dereferencing malformed parser output would crash the timer or expose injected metadata."""
+    fixture = _fixture("epl-1", "2026-08-24T13:00:00+00:00")
+    calendar = _calendar(_calendar_match("1001", fixture["kickoff_at_utc"], "Arsenal", "Chelsea"))
+    malformed_reports = (
+        None,
+        {"accepted": "SECRET accepted text", "rejected": []},
+        {"accepted": [], "rejected": ["SECRET non-mapping row"]},
+        {"accepted": [], "rejected": [{
+            "provider": "fotmob",
+            "competition_id": COMPETITION,
+            "source_match_id": {"raw_response": "SECRET source identity"},
+            "reason": "details_missing",
+        }]},
+    )
+    for malformed in malformed_reports:
+        result = run_league_lineups_refresh(
+            root="unused",
+            now=NOW,
+            live=True,
+            write=True,
+            acceptance_report=_active_report(),
+            fixtures_by_competition={COMPETITION: [fixture]},
+            state=_empty_state(),
+            provider_competition_ids={COMPETITION: PROVIDER_COMPETITION},
+            identity_registry=accepted_league_team_identity_registry(),
+            calendar_fetcher=lambda **_kwargs: calendar,
+            parser=lambda **_kwargs: malformed,
+            store_factory=_explode,
+        )
+
+        assert result["status"] == "error"
+        assert result["rejection_reasons"] == {COMPETITION: {"parser_failed": 1}}
+        assert result["newly_confirmed"] == {}
+        assert result["counts"]["state_commit_count"] == 0
+        assert "SECRET" not in json.dumps(result, ensure_ascii=False)
+        assert "raw_response" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_malformed_final_parser_report_fails_closed_without_writes():
+    """Valid discovery must not make an invalid final report safe to persist or dereference."""
+    fixture = _fixture("epl-1", "2026-08-24T13:00:00+00:00")
+    calendar = _calendar(_calendar_match("1001", fixture["kickoff_at_utc"], "Arsenal", "Chelsea"))
+    calls = {"parser": 0}
+
+    def parser(**_kwargs):
+        calls["parser"] += 1
+        if calls["parser"] == 1:
+            return {"accepted": [], "rejected": [{
+                "provider": "fotmob",
+                "competition_id": COMPETITION,
+                "source_match_id": "1001",
+                "reason": "details_missing",
+            }]}
+        return {"accepted": ["SECRET non-mapping accepted row"], "rejected": []}
+
+    result = run_league_lineups_refresh(
+        root="unused",
+        now=NOW,
+        live=True,
+        write=True,
+        acceptance_report=_active_report(),
+        fixtures_by_competition={COMPETITION: [fixture]},
+        state=_empty_state(),
+        provider_competition_ids={COMPETITION: PROVIDER_COMPETITION},
+        identity_registry=accepted_league_team_identity_registry(),
+        calendar_fetcher=lambda **_kwargs: calendar,
+        details_fetcher=lambda **_kwargs: _details(
+            "1001", fixture["kickoff_at_utc"], "Arsenal", "Chelsea"
+        ),
+        parser=parser,
+        store_factory=_explode,
+    )
+
+    assert calls["parser"] == 2
+    assert result["status"] == "error"
+    assert result["rejection_reasons"] == {COMPETITION: {"parser_failed": 1}}
+    assert result["counts"]["state_commit_count"] == 0
+    assert "SECRET" not in json.dumps(result, ensure_ascii=False)
 
 
 def test_malformed_acceptance_fixtures_and_state_fail_closed_without_dependencies():

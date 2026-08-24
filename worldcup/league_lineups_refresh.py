@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import os
+import tempfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +20,44 @@ from worldcup.league_team_identity import (
     accepted_league_team_identity_registry,
 )
 from worldcup.sources.league_fotmob_lineups import fetch_fotmob_calendar, fetch_fotmob_details
+
+
+_PARSER_REJECTION_REASONS = frozenset({
+    "competition_identity_missing",
+    "competition_identity_unverified",
+    "competition_mismatch",
+    "details_match_id_mismatch",
+    "details_missing",
+    "duplicate_candidate",
+    "fixture_not_found",
+    "home_away_mismatch",
+    "incomplete_starting_xi",
+    "invalid_kickoff",
+    "invalid_match_id",
+    "invalid_player_identity",
+    "kickoff_mismatch",
+    "lineup_predicted",
+    "lineup_status_unknown",
+    "post_kickoff",
+    "unmatched_team",
+})
+_PARSER_ACCEPTED_FIELDS = frozenset({
+    "schema_version",
+    "provider",
+    "competition_id",
+    "event_id",
+    "source_match_id",
+    "kickoff_at_utc",
+    "fetched_at",
+    "lineup_status",
+    "home_canonical",
+    "away_canonical",
+    "home_formation",
+    "away_formation",
+    "home_starting",
+    "away_starting",
+    "lineup_fingerprint",
+})
 
 
 def _utc(value: Any) -> datetime:
@@ -235,6 +276,249 @@ def _summary(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _pending_path(root: str | Path) -> Path:
+    return Path(root) / "data/local/leagues/lineup_refresh_pending.json"
+
+
+def _validate_pending(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != {"schema_version", "events"}:
+        raise ValueError("lineup_refresh_pending_invalid")
+    if value.get("schema_version") != 1 or not isinstance(value.get("events"), Mapping):
+        raise ValueError("lineup_refresh_pending_invalid")
+    checked: dict[str, dict[str, Any]] = {}
+    expected = {
+        "competition_id", "event_id", "source_match_id", "kickoff_at_utc", "fetched_at",
+        "lineup_fingerprint",
+    }
+    for key, row in value["events"].items():
+        if not isinstance(key, str) or ":" not in key or not isinstance(row, Mapping) or set(row) != expected:
+            raise ValueError("lineup_refresh_pending_invalid")
+        competition_id, event_id = key.split(":", 1)
+        if competition_id not in FORMAL_SINGLE_MATCH_IDS or not event_id:
+            raise ValueError("lineup_refresh_pending_invalid")
+        if row.get("competition_id") != competition_id or _scalar_id(row.get("event_id")) != event_id:
+            raise ValueError("lineup_refresh_pending_invalid")
+        source_match_id = _scalar_id(row.get("source_match_id"))
+        fingerprint = row.get("lineup_fingerprint")
+        if (
+            source_match_id is None
+            or not isinstance(fingerprint, str)
+            or len(fingerprint) != 64
+            or any(char not in "0123456789abcdef" for char in fingerprint)
+        ):
+            raise ValueError("lineup_refresh_pending_invalid")
+        checked[key] = {
+            "competition_id": competition_id,
+            "event_id": event_id,
+            "source_match_id": source_match_id,
+            "kickoff_at_utc": _utc(row.get("kickoff_at_utc")).isoformat(),
+            "fetched_at": _utc(row.get("fetched_at")).isoformat(),
+            "lineup_fingerprint": fingerprint,
+        }
+    return {"schema_version": 1, "events": {key: checked[key] for key in sorted(checked)}}
+
+
+def _read_pending(root: str | Path) -> dict[str, Any]:
+    path = _pending_path(root)
+    if not path.exists():
+        return {"schema_version": 1, "events": {}}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise ValueError("lineup_refresh_pending_invalid") from None
+    return _validate_pending(value)
+
+
+def _atomic_write_pending(path: Path, value: Mapping[str, Any]) -> None:
+    payload = json.dumps(dict(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _update_pending(
+    root: str | Path,
+    *,
+    add: Mapping[str, list[Mapping[str, Any]]] | None = None,
+    remove: set[str] | None = None,
+) -> dict[str, Any]:
+    path = _pending_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(".lock")
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        current = _read_pending(root)
+        events = {key: dict(row) for key, row in current["events"].items()}
+        for competition_id, rows in (add or {}).items():
+            if competition_id not in FORMAL_SINGLE_MATCH_IDS or not isinstance(rows, list):
+                raise ValueError("lineup_refresh_pending_invalid")
+            for row in rows:
+                summary = {"competition_id": competition_id, **_summary(row)}
+                checked = _validate_pending({
+                    "schema_version": 1,
+                    "events": {f"{competition_id}:{summary['event_id']}": summary},
+                })
+                key, receipt = next(iter(checked["events"].items()))
+                previous = events.get(key)
+                if previous is not None and previous["lineup_fingerprint"] != receipt["lineup_fingerprint"]:
+                    raise ValueError("lineup_refresh_pending_conflict")
+                events[key] = receipt
+        for key in remove or set():
+            events.pop(key, None)
+        updated = _validate_pending({"schema_version": 1, "events": events})
+        _atomic_write_pending(path, updated)
+        return updated
+
+
+def _pending_groups(pending: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in pending["events"].values():
+        grouped[row["competition_id"]].append(dict(row))
+    return {
+        competition_id: sorted(rows, key=lambda row: row["event_id"])
+        for competition_id, rows in sorted(grouped.items())
+    }
+
+
+def _recoverable_cache_receipts(
+    root: str | Path,
+    acceptance: Mapping[str, Any],
+    poll_state: Mapping[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    recovered: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    cache = LeagueLineupStore(root)
+    for competition_id, acceptance_row in sorted(acceptance["competitions"].items()):
+        if not acceptance_row_is_active(acceptance_row, competition_id):
+            continue
+        committed = cache.read_competition(competition_id)
+        for row in [] if committed is None else committed["accepted"]:
+            event_state = poll_state["events"].get(f"{competition_id}:{row['event_id']}")
+            if isinstance(event_state, Mapping) and event_state.get("confirmed") is True:
+                if event_state.get("accepted_fingerprint") != row["lineup_fingerprint"]:
+                    raise ValueError("lineup_refresh_state_cache_conflict")
+                continue
+            recovered[competition_id].append(row)
+    return {competition_id: rows for competition_id, rows in sorted(recovered.items())}
+
+
+def _state_from_pending(
+    state: Mapping[str, Any],
+    pending: Mapping[str, Any],
+    now: datetime,
+) -> dict[str, Any]:
+    events = {key: dict(row) for key, row in state["events"].items()}
+    for key, row in pending["events"].items():
+        events[key] = {
+            "last_polled_at": now.isoformat(),
+            "confirmed": True,
+            "accepted_fingerprint": row["lineup_fingerprint"],
+        }
+    return {"schema_version": 1, "events": {key: events[key] for key in sorted(events)}}
+
+
+def _parser_player_list(value: Any) -> list[dict[str, str | None]]:
+    if not isinstance(value, list) or len(value) != 11:
+        raise ValueError("parser_report_invalid")
+    players: list[dict[str, str | None]] = []
+    for row in value:
+        if not isinstance(row, Mapping) or set(row) != {"player_id", "name"}:
+            raise ValueError("parser_report_invalid")
+        player_id = _scalar_id(row.get("player_id"))
+        name = row.get("name")
+        if player_id is None or (name is not None and not isinstance(name, str)):
+            raise ValueError("parser_report_invalid")
+        players.append({"player_id": player_id, "name": name})
+    if len({row["player_id"] for row in players}) != 11:
+        raise ValueError("parser_report_invalid")
+    return players
+
+
+def _parser_accepted_row(value: Any, competition_id: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != _PARSER_ACCEPTED_FIELDS:
+        raise ValueError("parser_report_invalid")
+    if (
+        value.get("schema_version") != 1
+        or value.get("provider") != "fotmob"
+        or value.get("competition_id") != competition_id
+        or value.get("lineup_status") != "confirmed"
+    ):
+        raise ValueError("parser_report_invalid")
+    checked = dict(value)
+    for name in ("event_id", "source_match_id"):
+        scalar = _scalar_id(value.get(name))
+        if scalar is None:
+            raise ValueError("parser_report_invalid")
+        checked[name] = scalar
+    for name in ("home_canonical", "away_canonical"):
+        text = value.get(name)
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("parser_report_invalid")
+        checked[name] = text
+    for name in ("home_formation", "away_formation"):
+        if value.get(name) is not None and not isinstance(value.get(name), str):
+            raise ValueError("parser_report_invalid")
+    for name in ("kickoff_at_utc", "fetched_at"):
+        checked[name] = _utc(value.get(name)).isoformat()
+    checked["home_starting"] = _parser_player_list(value.get("home_starting"))
+    checked["away_starting"] = _parser_player_list(value.get("away_starting"))
+    fingerprint = value.get("lineup_fingerprint")
+    if (
+        not isinstance(fingerprint, str)
+        or len(fingerprint) != 64
+        or any(char not in "0123456789abcdef" for char in fingerprint)
+    ):
+        raise ValueError("parser_report_invalid")
+    return checked
+
+
+def _validate_parser_report(value: Any, competition_id: str) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(value, Mapping) or set(value) != {"accepted", "rejected"}:
+        raise ValueError("parser_report_invalid")
+    accepted = value.get("accepted")
+    rejected = value.get("rejected")
+    if not isinstance(accepted, list) or not isinstance(rejected, list):
+        raise ValueError("parser_report_invalid")
+    checked_rejected: list[dict[str, Any]] = []
+    for row in rejected:
+        if not isinstance(row, Mapping) or set(row) != {
+            "provider", "competition_id", "source_match_id", "reason",
+        }:
+            raise ValueError("parser_report_invalid")
+        source_match_id = _scalar_id(row.get("source_match_id"))
+        if source_match_id is None and row.get("source_match_id") != "":
+            raise ValueError("parser_report_invalid")
+        reason = row.get("reason")
+        if (
+            row.get("provider") != "fotmob"
+            or row.get("competition_id") != competition_id
+            or not isinstance(reason, str)
+            or reason not in _PARSER_REJECTION_REASONS
+        ):
+            raise ValueError("parser_report_invalid")
+        checked_rejected.append({
+            "provider": "fotmob",
+            "competition_id": competition_id,
+            "source_match_id": source_match_id or "",
+            "reason": reason,
+        })
+    return {
+        "accepted": [_parser_accepted_row(row, competition_id) for row in accepted],
+        "rejected": checked_rejected,
+    }
+
+
 def _merge_state_for_poll(
     state: Mapping[str, Any],
     requests: list[Mapping[str, Any]],
@@ -334,6 +618,64 @@ def run_league_lineups_refresh(
     }
     if not live:
         return base_result
+
+    try:
+        pending = _read_pending(root)
+        recovered_cache = _recoverable_cache_receipts(root, acceptance, poll_state)
+        if recovered_cache:
+            pending = _update_pending(root, add=recovered_cache)
+    except (OSError, TypeError, ValueError):
+        return {
+            **base_result,
+            "status": "error",
+            "reason": "lineup_recovery_failed",
+        }
+    if pending["events"]:
+        pending_groups = _pending_groups(pending)
+        pending_count = sum(len(rows) for rows in pending_groups.values())
+        recovery_store = store_factory(root)
+        recovered_state = _state_from_pending(poll_state, pending, now_dt)
+        try:
+            recovery_store.commit_state(recovered_state)
+            counts["state_commit_count"] = 1
+        except Exception:
+            return {
+                **base_result,
+                "status": "error",
+                "reason": "state_commit_failed",
+                "counts": counts,
+            }
+        try:
+            _update_pending(root, remove=set(pending["events"]))
+        except Exception:
+            return {
+                **base_result,
+                "status": "error",
+                "reason": "pending_clear_failed",
+                "counts": counts,
+            }
+        counts["accepted_count"] = pending_count
+        counts["newly_confirmed_count"] = pending_count
+        recovered_plan = plan_league_lineup_poll(
+            now=now_dt,
+            fixtures_by_competition=fixtures,
+            acceptance_report=acceptance,
+            state=recovered_state,
+        )
+        return {
+            "status": "recovered",
+            "skipped": plan["skipped"],
+            "rejection_reasons": {},
+            "newly_confirmed": {
+                competition_id: [
+                    {name: value for name, value in row.items() if name != "competition_id"}
+                    for row in rows
+                ]
+                for competition_id, rows in pending_groups.items()
+            },
+            "next_due_at": recovered_plan["next_due_at"],
+            "counts": counts,
+        }
     requests = plan["requests"]
     if not requests:
         return base_result
@@ -371,6 +713,7 @@ def run_league_lineups_refresh(
     registry = identity_registry or accepted_league_team_identity_registry()
     accepted_by_competition: dict[str, list[dict[str, Any]]] = defaultdict(list)
     rejected_rows_by_competition: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    state_requests: list[dict[str, Any]] = []
     had_source_failure = False
     for date in sorted(grouped):
         try:
@@ -382,6 +725,7 @@ def run_league_lineups_refresh(
             had_source_failure = True
             for competition_id, date_requests in grouped[date].items():
                 _increment(rejection_reasons, competition_id, "calendar_fetch_failed", len(date_requests))
+                state_requests.extend(date_requests)
             continue
         for competition_id in sorted(grouped[date]):
             date_requests = grouped[date][competition_id]
@@ -395,7 +739,10 @@ def run_league_lineups_refresh(
                 "provider_competition_id": provider_ids[competition_id],
             }
             try:
-                discovery = parser(details_by_match_id={}, **parser_arguments)
+                discovery = _validate_parser_report(
+                    parser(details_by_match_id={}, **parser_arguments),
+                    competition_id,
+                )
             except Exception:
                 _increment(rejection_reasons, competition_id, "parser_failed", len(date_requests))
                 counts["source_failure_count"] += 1
@@ -422,12 +769,16 @@ def run_league_lineups_refresh(
                     counts["source_failure_count"] += 1
                     had_source_failure = True
             try:
-                report = parser(details_by_match_id=details_by_match_id, **parser_arguments)
+                report = _validate_parser_report(
+                    parser(details_by_match_id=details_by_match_id, **parser_arguments),
+                    competition_id,
+                )
             except Exception:
                 _increment(rejection_reasons, competition_id, "parser_failed", len(date_requests))
                 counts["source_failure_count"] += 1
                 had_source_failure = True
                 continue
+            state_requests.extend(date_requests)
             accepted_by_competition[competition_id].extend(report.get("accepted", []))
             for row in report.get("rejected", []):
                 if not isinstance(row, Mapping):
@@ -449,6 +800,14 @@ def run_league_lineups_refresh(
     counts["accepted_count"] = sum(len(rows) for rows in accepted_by_competition.values())
     counts["rejection_count"] = sum(sum(row.values()) for row in rejection_reasons.values())
 
+    if not state_requests:
+        return {
+            **base_result,
+            "status": "error",
+            "rejection_reasons": rejection_reasons,
+            "counts": counts,
+        }
+
     store = store_factory(root)
     new_candidates: dict[str, list[dict[str, Any]]] = {}
     try:
@@ -468,6 +827,7 @@ def run_league_lineups_refresh(
             new_rows = [row for row in accepted_rows if row["lineup_fingerprint"] not in existing_fingerprints]
             if new_rows:
                 new_candidates[competition_id] = new_rows
+                _update_pending(root, add={competition_id: new_rows})
     except Exception:
         result = {
             **base_result,
@@ -478,7 +838,7 @@ def run_league_lineups_refresh(
         }
         return result
 
-    next_state = _merge_state_for_poll(poll_state, usable_requests, accepted_by_competition, now_dt)
+    next_state = _merge_state_for_poll(poll_state, state_requests, accepted_by_competition, now_dt)
     try:
         store.commit_state(next_state)
         counts["state_commit_count"] = 1
@@ -491,6 +851,23 @@ def run_league_lineups_refresh(
             "counts": counts,
         }
         return result
+
+    pending_keys = {
+        f"{competition_id}:{row['event_id']}"
+        for competition_id, rows in new_candidates.items()
+        for row in rows
+    }
+    if pending_keys:
+        try:
+            _update_pending(root, remove=pending_keys)
+        except Exception:
+            return {
+                **base_result,
+                "status": "error",
+                "reason": "pending_clear_failed",
+                "rejection_reasons": rejection_reasons,
+                "counts": counts,
+            }
 
     next_plan = plan_league_lineup_poll(
         now=now_dt,
