@@ -68,6 +68,7 @@ def run_league_batch(
     live_env: Mapping[str, str] | None = None,
     store_factory: Callable[[str | Path], Any] = LeagueLiveStore,
     expected_event_ids_by_competition: Mapping[str, Sequence[str]] | None = None,
+    expected_snapshot_ids_by_competition: Mapping[str, str] | None = None,
     commit_callback: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
     del score_fetcher
@@ -96,6 +97,11 @@ def run_league_batch(
     expected_events = (
         dict(expected_event_ids_by_competition)
         if isinstance(expected_event_ids_by_competition, Mapping)
+        else {}
+    )
+    expected_snapshot_ids = (
+        dict(expected_snapshot_ids_by_competition)
+        if isinstance(expected_snapshot_ids_by_competition, Mapping)
         else {}
     )
     competitions: dict[str, dict[str, Any]] = {}
@@ -156,10 +162,15 @@ def run_league_batch(
             count = len(snapshot.get("matches") or [])
             if store is not None:
                 identity = hashlib.sha256(f"{profile.id}|{observed_at}".encode("utf-8")).hexdigest()[:20]
+                expected_snapshot_id = expected_snapshot_ids.get(profile.id)
                 snapshot = {
                     **snapshot,
                     "run_id": str(snapshot.get("run_id") or f"league-{identity}"),
-                    "snapshot_id": str(snapshot.get("snapshot_id") or f"league-{identity}"),
+                    "snapshot_id": str(
+                        expected_snapshot_id
+                        or snapshot.get("snapshot_id")
+                        or f"league-{identity}"
+                    ),
                 }
                 commit_status = store.commit_snapshot(profile.id, snapshot)
                 receipt = {
@@ -204,6 +215,7 @@ def run_planned_league_refresh(
     acceptance_report: dict[str, Any],
     identity_registry: LeagueTeamIdentityRegistry,
     expected_event_ids_by_competition: Mapping[str, Sequence[str]],
+    expected_snapshot_ids_by_competition: Mapping[str, str],
     guarded_acceptance_fingerprint: str,
     snapshot_builder: Callable[..., dict[str, Any]] = build_league_competition_snapshot,
     store_factory: Callable[[str | Path], Any] = LeagueLiveStore,
@@ -227,6 +239,16 @@ def run_planned_league_refresh(
     ):
         return {"status": "blocked", "reason": "planned_refresh_expected_events_invalid"}
     if (
+        not isinstance(expected_snapshot_ids_by_competition, Mapping)
+        or set(expected_snapshot_ids_by_competition) != set(selected)
+        or any(
+            not isinstance(snapshot_id, str)
+            or not snapshot_id.startswith("league-attempt-")
+            for snapshot_id in expected_snapshot_ids_by_competition.values()
+        )
+    ):
+        return {"status": "blocked", "reason": "planned_refresh_snapshot_ids_invalid"}
+    if (
         not isinstance(guarded_acceptance_fingerprint, str)
         or guarded_acceptance_fingerprint != acceptance_fingerprint(acceptance_report)
     ):
@@ -244,6 +266,7 @@ def run_planned_league_refresh(
         snapshot_builder=snapshot_builder,
         store_factory=store_factory,
         expected_event_ids_by_competition=expected_event_ids_by_competition,
+        expected_snapshot_ids_by_competition=expected_snapshot_ids_by_competition,
         commit_callback=commit_callback,
     )
 

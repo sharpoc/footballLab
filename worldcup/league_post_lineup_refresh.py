@@ -55,6 +55,24 @@ def _valid_fingerprint(value: Any) -> bool:
     )
 
 
+def _attempt_snapshot_id(
+    competition_id: str,
+    observed_at: str,
+    tokens: Sequence[str],
+) -> str:
+    payload = json.dumps(
+        {
+            "competition_id": competition_id,
+            "observed_at": _utc(observed_at).isoformat(),
+            "tokens": sorted(tokens),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
+    return f"league-attempt-{digest}"
+
+
 def _normalize_receipts(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, Mapping) or not set(value).issubset(FORMAL_SINGLE_MATCH_IDS):
         raise ValueError("post_lineup_receipts_invalid")
@@ -133,9 +151,14 @@ def _validate_state(value: Any) -> dict[str, Any]:
         legacy = phase in {"committed", "published"} and not {
             "observed_at", "acceptance_fingerprint"
         }.intersection(row)
+        legacy_started = phase == "refresh_started" and not {
+            "attempt_id", "attempt_receipts"
+        }.intersection(row)
         expected = {"ack_key", "phase"}
         if phase == "refresh_started":
             expected.update({"observed_at", "acceptance_fingerprint"})
+            if not legacy_started:
+                expected.update({"attempt_id", "attempt_receipts"})
         else:
             expected.add("snapshot_id")
             if not legacy:
@@ -164,6 +187,39 @@ def _validate_state(value: Any) -> dict[str, Any]:
             projected["acceptance_fingerprint"] = row.get("acceptance_fingerprint")
             if not _valid_fingerprint(projected["acceptance_fingerprint"]):
                 raise ValueError("post_lineup_refresh_state_invalid")
+        if phase == "refresh_started" and not legacy_started:
+            attempt_id = row.get("attempt_id")
+            attempt_receipts = row.get("attempt_receipts")
+            if (
+                not isinstance(attempt_id, str)
+                or not attempt_id.startswith("league-attempt-")
+                or not isinstance(attempt_receipts, list)
+                or not attempt_receipts
+            ):
+                raise ValueError("post_lineup_refresh_state_invalid")
+            checked_attempt: dict[str, dict[str, str]] = {}
+            for member in attempt_receipts:
+                if (
+                    not isinstance(member, Mapping)
+                    or set(member) != {"token", "event_id"}
+                    or not _valid_fingerprint(member.get("token"))
+                    or not isinstance(member.get("event_id"), str)
+                    or not member.get("event_id")
+                    or member["token"] in checked_attempt
+                ):
+                    raise ValueError("post_lineup_refresh_state_invalid")
+                checked_attempt[member["token"]] = {
+                    "token": member["token"],
+                    "event_id": member["event_id"],
+                }
+            if token not in checked_attempt or checked_attempt[token]["event_id"] != ack_key["event_id"]:
+                raise ValueError("post_lineup_refresh_state_invalid")
+            if len({member["event_id"] for member in checked_attempt.values()}) != len(checked_attempt):
+                raise ValueError("post_lineup_refresh_state_invalid")
+            projected["attempt_id"] = attempt_id
+            projected["attempt_receipts"] = [
+                checked_attempt[key] for key in sorted(checked_attempt)
+            ]
         if phase != "refresh_started":
             if not isinstance(row.get("snapshot_id"), str) or not row.get("snapshot_id"):
                 raise ValueError("post_lineup_refresh_state_invalid")
@@ -542,33 +598,26 @@ def _committed_snapshot_receipt(
 def _reconcile_started_snapshot(
     root: str | Path,
     competition_id: str,
+    expected_snapshot_id: str,
     observed_at: str,
     expected_event_ids: Sequence[str],
 ) -> dict[str, Any] | None:
-    root_path = Path(root)
-    paths = [root_path / "data/cache/leagues" / competition_id / "snapshot.json"]
-    history = root_path / "data/local/leagues" / competition_id / "history"
-    if history.exists():
-        paths.extend(sorted(history.glob("*.json")))
-    matches: dict[str, dict[str, Any]] = {}
-    for path in paths:
-        snapshot = _read_snapshot(path)
-        if not _snapshot_has_expected_events(
+    snapshot = _read_snapshot(
+        Path(root) / "data/cache/leagues" / competition_id / "snapshot.json"
+    )
+    if (
+        not _snapshot_has_expected_events(
             snapshot,
             competition_id,
             expected_event_ids,
             observed_at=observed_at,
-        ):
-            continue
-        snapshot_id = snapshot.get("snapshot_id")
-        if isinstance(snapshot_id, str) and snapshot_id:
-            matches[snapshot_id] = snapshot
-    if len(matches) != 1:
+        )
+        or snapshot.get("snapshot_id") != expected_snapshot_id
+    ):
         return None
-    snapshot_id = next(iter(matches))
     return {
         "competition": {"id": competition_id},
-        "snapshot_id": snapshot_id,
+        "snapshot_id": expected_snapshot_id,
         "commit_status": "unchanged",
     }
 
@@ -775,6 +824,7 @@ def run_post_lineup_refresh(
             if isinstance(state_rows[row["token"]], Mapping)
             and state_rows[row["token"]].get("phase") == "refresh_started"
         ]
+        recovery_failed = False
         if started_rows:
             attempts = {
                 str(state_rows[row["token"]].get("observed_at") or "")
@@ -784,20 +834,45 @@ def run_post_lineup_refresh(
                 str(state_rows[row["token"]].get("acceptance_fingerprint") or "")
                 for row in started_rows
             }
+            attempt_ids = {
+                str(state_rows[row["token"]].get("attempt_id") or "")
+                for row in started_rows
+            }
+            attempt_memberships = {
+                json.dumps(
+                    state_rows[row["token"]].get("attempt_receipts") or [],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                for row in started_rows
+            }
             recovered = None
+            attempt_receipts: list[dict[str, str]] = []
             if (
                 len(attempts) == 1
                 and len(attempt_fingerprints) == 1
                 and next(iter(attempt_fingerprints)) == guarded_acceptance_fingerprint
+                and len(attempt_ids) == 1
+                and next(iter(attempt_ids)).startswith("league-attempt-")
+                and len(attempt_memberships) == 1
             ):
+                decoded_membership = json.loads(next(iter(attempt_memberships)))
+                if isinstance(decoded_membership, list):
+                    attempt_receipts = [
+                        dict(member)
+                        for member in decoded_membership
+                        if isinstance(member, Mapping)
+                    ]
                 recovered = _reconcile_started_snapshot(
                     root,
                     competition_id,
+                    next(iter(attempt_ids)),
                     next(iter(attempts)),
-                    [row["event_id"] for row in started_rows],
+                    [member["event_id"] for member in attempt_receipts],
                 )
             if recovered is None:
-                for row in competition_rows:
+                recovery_failed = True
+                for row in started_rows:
                     retryable_by_token[row["token"]] = _ack_item(
                         row, "refresh_recovery_required"
                     )
@@ -806,27 +881,48 @@ def run_post_lineup_refresh(
                     "competition_id": competition_id,
                     "snapshot_count": 0,
                 })
-                continue
-            recovered_updates = {
-                row["token"]: {
-                    "ack_key": dict(row["ack_key"]),
-                    "phase": "committed",
-                    "snapshot_id": recovered["snapshot_id"],
-                    "observed_at": next(iter(attempts)),
-                    "acceptance_fingerprint": guarded_acceptance_fingerprint,
-                }
-                for row in started_rows
-            }
-            try:
-                state_store.commit({"schema_version": 1, "receipts": recovered_updates})
-                state = _validate_state(state_store.read())
-            except Exception:
-                for row in competition_rows:
-                    retryable_by_token[row["token"]] = _ack_item(row, "state_commit_failed")
-                continue
-            for row in started_rows:
-                publishable_tokens.add(row["token"])
-                state_rows[row["token"]] = state["receipts"].get(row["token"])
+            else:
+                recovered_updates: dict[str, Any] = {}
+                for member in attempt_receipts:
+                    member_state = state["receipts"].get(member["token"])
+                    ack_key = member_state.get("ack_key") if isinstance(member_state, Mapping) else None
+                    if (
+                        not isinstance(ack_key, Mapping)
+                        or ack_key.get("competition_id") != competition_id
+                        or ack_key.get("event_id") != member["event_id"]
+                    ):
+                        recovered_updates = {}
+                        break
+                    recovered_updates[member["token"]] = {
+                        "ack_key": dict(ack_key),
+                        "phase": "committed",
+                        "snapshot_id": recovered["snapshot_id"],
+                        "observed_at": next(iter(attempts)),
+                        "acceptance_fingerprint": guarded_acceptance_fingerprint,
+                    }
+                if not recovered_updates:
+                    recovery_failed = True
+                    for row in started_rows:
+                        retryable_by_token[row["token"]] = _ack_item(
+                            row, "refresh_recovery_required"
+                        )
+                else:
+                    try:
+                        state_store.commit({
+                            "schema_version": 1,
+                            "receipts": recovered_updates,
+                        })
+                        state = _validate_state(state_store.read())
+                    except Exception:
+                        for row in started_rows:
+                            retryable_by_token[row["token"]] = _ack_item(
+                                row, "state_commit_failed"
+                            )
+                        recovery_failed = True
+                    state_rows = {
+                        row["token"]: state["receipts"].get(row["token"])
+                        for row in competition_rows
+                    }
 
         new_rows = [
             row for row in competition_rows
@@ -837,6 +933,19 @@ def run_post_lineup_refresh(
             if isinstance(state_rows[row["token"]], Mapping)
             and state_rows[row["token"]].get("phase") == "committed"
         ]
+
+        if recovery_failed and new_rows:
+            for row in new_rows:
+                retryable_by_token[row["token"]] = _ack_item(
+                    row, "waiting_for_refresh_recovery"
+                )
+            new_rows = []
+        elif new_rows and committed_before_refresh:
+            for row in new_rows:
+                retryable_by_token[row["token"]] = _ack_item(
+                    row, "waiting_for_committed_publish"
+                )
+            new_rows = []
 
         if new_rows:
             if not isinstance(identity_registry, LeagueTeamIdentityRegistry):
@@ -894,12 +1003,24 @@ def run_post_lineup_refresh(
 
         if new_rows and selected is not None:
             reservations[selected.provider] = reservations.get(selected.provider, 0) + 1
+            attempt_rows = list(new_rows)
+            attempt_receipts = [
+                {"token": row["token"], "event_id": row["event_id"]}
+                for row in sorted(attempt_rows, key=lambda item: item["token"])
+            ]
+            attempt_id = _attempt_snapshot_id(
+                competition_id,
+                now_dt.isoformat(),
+                [row["token"] for row in attempt_rows],
+            )
             intent = {
                 row["token"]: {
                     "ack_key": dict(row["ack_key"]),
                     "phase": "refresh_started",
                     "observed_at": now_dt.isoformat(),
                     "acceptance_fingerprint": guarded_acceptance_fingerprint,
+                    "attempt_id": attempt_id,
+                    "attempt_receipts": attempt_receipts,
                 }
                 for row in new_rows
             }
@@ -924,7 +1045,6 @@ def run_post_lineup_refresh(
                 })
                 continue
 
-            attempt_rows = committed_before_refresh + new_rows
             expected_event_ids = [row["event_id"] for row in attempt_rows]
 
             def commit_callback(
@@ -934,7 +1054,7 @@ def run_post_lineup_refresh(
             ) -> None:
                 snapshots = _snapshot_receipts([receipt], {competition_id})
                 checked = snapshots.get(competition_id)
-                if checked is None:
+                if checked is None or checked["snapshot_id"] != attempt_id:
                     raise ValueError("post_lineup_commit_receipt_invalid")
                 updates = {
                     row["token"]: {
@@ -958,6 +1078,9 @@ def run_post_lineup_refresh(
                 "identity_registry": identity_registry,
                 "expected_event_ids_by_competition": {
                     competition_id: expected_event_ids,
+                },
+                "expected_snapshot_ids_by_competition": {
+                    competition_id: attempt_id,
                 },
                 "guarded_acceptance_fingerprint": guarded_acceptance_fingerprint,
                 "store_factory": live_store_factory,
@@ -1022,12 +1145,9 @@ def run_post_lineup_refresh(
             continue
         committed_rows_for_competition = [
             row for row in competition_rows
-            if row["token"] in publishable_tokens
-            or (
-                isinstance(state["receipts"].get(row["token"]), Mapping)
-                and state["receipts"][row["token"]].get("phase") == "committed"
-                and row not in new_rows
-            )
+            if isinstance(state["receipts"].get(row["token"]), Mapping)
+            and state["receipts"][row["token"]].get("phase") == "committed"
+            and row["token"] not in retryable_by_token
         ]
         if not committed_rows_for_competition:
             continue
@@ -1039,6 +1159,7 @@ def run_post_lineup_refresh(
         if len(state_snapshot_ids) != 1:
             for row in committed_rows_for_competition:
                 retryable_by_token[row["token"]] = _ack_item(row, "publish_failed")
+                publishable_tokens.discard(row["token"])
             continue
         snapshot_id = next(iter(state_snapshot_ids))
         checked_receipt = _committed_snapshot_receipt(
@@ -1050,6 +1171,7 @@ def run_post_lineup_refresh(
         if checked_receipt is None:
             for row in committed_rows_for_competition:
                 retryable_by_token[row["token"]] = _ack_item(row, "publish_failed")
+                publishable_tokens.discard(row["token"])
             continue
         legacy_updates: dict[str, Any] = {}
         snapshot = _read_snapshot(
@@ -1077,12 +1199,15 @@ def run_post_lineup_refresh(
 
     refresh_result = _safe_refresh_summary(refresh_summaries)
     committed_rows = [row for row in eligible if row["token"] in publishable_tokens]
-    retryable = sorted(
-        retryable_by_token.values(),
-        key=lambda item: (
-            item["ack_key"]["competition_id"], item["ack_key"]["event_id"]
-        ),
-    )
+    def sorted_retryable() -> list[AckItem]:
+        return sorted(
+            retryable_by_token.values(),
+            key=lambda item: (
+                item["ack_key"]["competition_id"], item["ack_key"]["event_id"]
+            ),
+        )
+
+    retryable = sorted_retryable()
     blocked = sorted(
         blocked_by_token.values(),
         key=lambda item: (
@@ -1103,12 +1228,26 @@ def run_post_lineup_refresh(
             refresh=refresh_result,
         )
     if publish_fn is None:
-        retryable.extend(_ack_item(row, "publish_failed") for row in committed_rows)
+        for row in committed_rows:
+            retryable_by_token[row["token"]] = _ack_item(row, "publish_failed")
         return _result(
             status="publish_failed",
             plan=plan,
             durable=[_ack_item(row) for row in durable_rows],
-            retryable=retryable,
+            retryable=sorted_retryable(),
+            blocked=blocked,
+            refresh=refresh_result,
+        )
+
+    expected_components = {row["competition_id"] for row in committed_rows}
+    if not expected_components or set(component_receipts) != expected_components:
+        for row in committed_rows:
+            retryable_by_token[row["token"]] = _ack_item(row, "publish_failed")
+        return _result(
+            status="publish_failed" if not durable_rows else "partial",
+            plan=plan,
+            durable=[_ack_item(row) for row in durable_rows],
+            retryable=sorted_retryable(),
             blocked=blocked,
             refresh=refresh_result,
         )
@@ -1120,14 +1259,13 @@ def run_post_lineup_refresh(
         expected_acceptance_fingerprint=guarded_acceptance_fingerprint,
     )
     if publication.get("status") != "published":
-        retryable.extend(_ack_item(row, "publish_failed") for row in committed_rows)
+        for row in committed_rows:
+            retryable_by_token[row["token"]] = _ack_item(row, "publish_failed")
         return _result(
             status="publish_failed" if not durable_rows else "partial",
             plan=plan,
             durable=[_ack_item(row) for row in durable_rows],
-            retryable=sorted(retryable, key=lambda item: (
-                item["ack_key"]["competition_id"], item["ack_key"]["event_id"]
-            )),
+            retryable=sorted_retryable(),
             blocked=blocked,
             refresh=refresh_result,
             publish=publication,
@@ -1159,14 +1297,15 @@ def run_post_lineup_refresh(
             raise ValueError("post_lineup_ack_state_incomplete")
         state_store.commit({"schema_version": 1, "receipts": published_updates})
     except Exception:
-        retryable = [
-            _ack_item(row, "ack_state_commit_failed") for row in committed_rows
-        ] + retryable
+        for row in committed_rows:
+            retryable_by_token[row["token"]] = _ack_item(
+                row, "ack_state_commit_failed"
+            )
         return _result(
             status="publish_failed",
             plan=plan,
             durable=[_ack_item(row) for row in durable_rows],
-            retryable=retryable,
+            retryable=sorted_retryable(),
             blocked=blocked,
             refresh=refresh_result,
             publish=publication,
@@ -1186,9 +1325,7 @@ def run_post_lineup_refresh(
         status=status,
         plan=plan,
         durable=[_ack_item(row) for row in durable_rows],
-        retryable=sorted(retryable, key=lambda item: (
-            item["ack_key"]["competition_id"], item["ack_key"]["event_id"]
-        )),
+        retryable=sorted_retryable(),
         blocked=blocked,
         refresh=refresh_result,
         publish=publication,

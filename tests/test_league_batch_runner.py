@@ -192,6 +192,9 @@ def test_planned_refresh_fetches_only_requested_competition_and_returns_commit_r
             acceptance_report=acceptance,
             identity_registry=_epl_registry(),
             expected_event_ids_by_competition={"epl_2026_27": ["event-1"]},
+            expected_snapshot_ids_by_competition={
+                "epl_2026_27": "league-attempt-test"
+            },
             guarded_acceptance_fingerprint=acceptance_fingerprint(acceptance),
             snapshot_builder=build,
         )

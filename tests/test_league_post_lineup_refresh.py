@@ -533,7 +533,7 @@ def test_published_ingest_without_durable_ack_state_keeps_task4_pending():
         assert "private" not in json.dumps(result, ensure_ascii=False)
 
 
-def test_new_same_competition_receipt_advances_older_committed_receipt_to_latest_snapshot():
+def test_new_same_competition_receipt_waits_for_older_publish_then_refreshes():
     first = _receipt(EPL, "epl-1", "5", "2026-08-24T14:00:00+00:00")
     second = _receipt(EPL, "epl-2", "6", "2026-08-24T14:15:00+00:00")
     fetches = []
@@ -561,7 +561,7 @@ def test_new_same_competition_receipt_advances_older_committed_receipt_to_latest
             publish_fn=lambda _snapshot: {"status": "error"},
         )
         _write_task4_pending(tmp, {EPL: [first, second]})
-        recovered = run_post_lineup_refresh(
+        old_published = run_post_lineup_refresh(
             root=tmp,
             now="2026-08-24T12:05:00+00:00",
             newly_confirmed={EPL: [first, second]},
@@ -577,8 +577,30 @@ def test_new_same_competition_receipt_advances_older_committed_receipt_to_latest
             snapshot_builder=_snapshot_builder,
             publish_fn=lambda _snapshot: {"status": "stored"},
         )
+        recovered = run_post_lineup_refresh(
+            root=tmp,
+            now="2026-08-24T12:06:00+00:00",
+            newly_confirmed={EPL: [first, second]},
+            live=True,
+            env=_env(),
+            quota_ledger=_quota(
+                observed_at="2026-08-24T12:06:00+00:00",
+                theoddsapi_primary=99,
+            ),
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            odds_fetcher=fetch,
+            snapshot_builder=_snapshot_builder,
+            publish_fn=lambda _snapshot: {"status": "stored"},
+        )
 
         assert initial["status"] == "publish_failed"
+        assert old_published["status"] == "partial"
+        assert _ack_events(old_published, "durable") == ["epl-1"]
+        assert old_published["acks"]["retryable"] == [{
+            "ack_key": second["ack_key"],
+            "reason": "waiting_for_committed_publish",
+        }]
         assert recovered["status"] == "published"
         assert _ack_events(recovered, "durable") == ["epl-1", "epl-2"]
         assert fetches == [1, 2]
@@ -639,10 +661,11 @@ def test_visible_snapshot_after_commit_crash_is_reconciled_without_second_quota_
     def crash_after_visible_commit(**kwargs):
         payload = kwargs["odds_fetcher"]("soccer_epl", kwargs["env"])
         snapshot = _snapshot_builder(payload, EPL, kwargs["observed_at"])
+        snapshot_id = kwargs["expected_snapshot_ids_by_competition"][EPL]
         LeagueLiveStore(kwargs["root"]).commit_snapshot(EPL, {
             **snapshot,
-            "run_id": "crash-visible",
-            "snapshot_id": "crash-visible",
+            "run_id": snapshot_id,
+            "snapshot_id": snapshot_id,
         })
         raise SystemExit("simulated crash after committed snapshot became visible")
 
@@ -914,3 +937,318 @@ def test_dependency_mapping_results_are_strictly_projected_without_nested_secret
         )
         encoded = json.dumps(publish_result, ensure_ascii=False)
         assert all(value not in encoded for value in forbidden)
+
+
+def test_history_only_attempt_never_advances_refresh_started_to_committed():
+    receipt = _receipt(EPL, "history-only-event", "1", "2026-08-24T14:00:00+00:00")
+    provider_calls = []
+    publisher_calls = []
+
+    def crash_after_history_only(**kwargs):
+        provider_calls.append("soccer_epl")
+        expected_ids = kwargs.get("expected_snapshot_ids_by_competition") or {}
+        snapshot_id = expected_ids.get(EPL, "history-only")
+        snapshot = {
+            **_snapshot_builder(
+                [{"id": "history-only-event"}], EPL, kwargs["observed_at"]
+            ),
+            "run_id": snapshot_id,
+            "snapshot_id": snapshot_id,
+        }
+        path = (
+            Path(kwargs["root"])
+            / f"data/local/leagues/{EPL}/history/{snapshot_id}.json"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(snapshot), encoding="utf-8")
+        raise SystemExit("simulated crash before current replace")
+
+    with TemporaryDirectory() as tmp:
+        _write_acceptance(tmp, EPL)
+        _write_task4_pending(tmp, {EPL: [receipt]})
+        try:
+            run_post_lineup_refresh(
+                root=tmp,
+                now=NOW,
+                newly_confirmed={EPL: [receipt]},
+                live=True,
+                env=_env(),
+                quota_ledger=_quota(theoddsapi_primary=100),
+                acceptance_report=_acceptance(EPL),
+                identity_registry=_registry(EPL),
+                odds_fetcher=lambda *_args: [{"id": "history-only-event"}],
+                snapshot_builder=_snapshot_builder,
+                refresh_fn=crash_after_history_only,
+                publish_fn=_fail,
+            )
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("simulated crash must escape")
+
+        recovered = run_post_lineup_refresh(
+            root=tmp,
+            now="2026-08-24T12:01:00+00:00",
+            newly_confirmed={EPL: [receipt]},
+            live=True,
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            env_loader=_fail,
+            quota_loader=_fail,
+            odds_fetcher=_fail,
+            refresh_fn=_fail,
+            publish_fn=lambda snapshot: publisher_calls.append(snapshot) or {"status": "stored"},
+        )
+
+        state = PostLineupRefreshStateStore(tmp).read()
+        assert {row["phase"] for row in state["receipts"].values()} == {"refresh_started"}
+        assert recovered["acks"]["retryable"] == [{
+            "ack_key": receipt["ack_key"],
+            "reason": "refresh_recovery_required",
+        }]
+        assert recovered["publish"] is None
+        assert provider_calls == ["soccer_epl"]
+        assert publisher_calls == []
+
+
+def test_wrong_current_snapshot_id_never_satisfies_attempt_recovery():
+    receipt = _receipt(EPL, "wrong-current-event", "2", "2026-08-24T14:00:00+00:00")
+    publisher_calls = []
+
+    def crash_after_wrong_current(**kwargs):
+        snapshot = {
+            **_snapshot_builder(
+                [{"id": "wrong-current-event"}], EPL, kwargs["observed_at"]
+            ),
+            "run_id": "wrong-attempt-id",
+            "snapshot_id": "wrong-attempt-id",
+        }
+        LeagueLiveStore(kwargs["root"]).commit_snapshot(EPL, snapshot)
+        raise SystemExit("simulated foreign current snapshot")
+
+    with TemporaryDirectory() as tmp:
+        _write_acceptance(tmp, EPL)
+        try:
+            run_post_lineup_refresh(
+                root=tmp,
+                now=NOW,
+                newly_confirmed={EPL: [receipt]},
+                live=True,
+                env=_env(),
+                quota_ledger=_quota(theoddsapi_primary=100),
+                acceptance_report=_acceptance(EPL),
+                identity_registry=_registry(EPL),
+                odds_fetcher=lambda *_args: [{"id": "wrong-current-event"}],
+                snapshot_builder=_snapshot_builder,
+                refresh_fn=crash_after_wrong_current,
+                publish_fn=_fail,
+            )
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("simulated crash must escape")
+
+        recovered = run_post_lineup_refresh(
+            root=tmp,
+            now="2026-08-24T12:01:00+00:00",
+            newly_confirmed={EPL: [receipt]},
+            live=True,
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            env_loader=_fail,
+            quota_loader=_fail,
+            odds_fetcher=_fail,
+            refresh_fn=_fail,
+            publish_fn=lambda snapshot: publisher_calls.append(snapshot) or {"status": "stored"},
+        )
+
+        assert recovered["status"] == "refresh_failed"
+        assert recovered["acks"]["durable"] == []
+        assert {row["phase"] for row in PostLineupRefreshStateStore(tmp).read()["receipts"].values()} == {
+            "refresh_started"
+        }
+        assert publisher_calls == []
+
+
+def test_old_committed_queue_publishes_before_claiming_new_same_competition_attempt():
+    old = _receipt(EPL, "old-started-event", "3", "2026-08-24T13:00:00+00:00")
+    new = _receipt(EPL, "new-event", "4", "2026-08-24T14:00:00+00:00")
+    provider_calls = []
+    publisher_calls = []
+
+    def fetch(sport_key, _selected_env):
+        provider_calls.append(sport_key)
+        return [{"id": "old-started-event"}] if len(provider_calls) == 1 else [
+            {"id": "new-event"}
+        ]
+
+    with TemporaryDirectory() as tmp:
+        _write_acceptance(tmp, EPL)
+        _write_task4_pending(tmp, {EPL: [old]})
+        first = run_post_lineup_refresh(
+            root=tmp,
+            now=NOW,
+            newly_confirmed={EPL: [old]},
+            live=True,
+            env=_env(),
+            quota_ledger=_quota(theoddsapi_primary=100),
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            odds_fetcher=fetch,
+            snapshot_builder=_snapshot_builder,
+            publish_fn=lambda _snapshot: {"status": "error"},
+        )
+        _write_task4_pending(tmp, {EPL: [old, new]})
+        second = run_post_lineup_refresh(
+            root=tmp,
+            now="2026-08-24T13:00:01+00:00",
+            newly_confirmed={EPL: [old, new]},
+            live=True,
+            env=_env(),
+            quota_ledger=_quota(
+                observed_at="2026-08-24T13:00:01+00:00",
+                theoddsapi_primary=99,
+            ),
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            odds_fetcher=fetch,
+            snapshot_builder=_snapshot_builder,
+            publish_fn=lambda snapshot: publisher_calls.append(snapshot) or {"status": "stored"},
+        )
+
+        assert first["status"] == "publish_failed"
+        assert provider_calls == ["soccer_epl"]
+        assert _ack_events(second, "durable") == ["old-started-event"]
+        assert second["acks"]["retryable"] == [{
+            "ack_key": new["ack_key"],
+            "reason": "waiting_for_committed_publish",
+        }]
+        assert [
+            row["source_event_id"] for row in publisher_calls[0]["matches"]
+        ] == ["old-started-event"]
+
+
+def test_same_competition_old_then_new_snapshots_converge_in_two_publish_attempts():
+    old = _receipt(EPL, "old-event", "5", "2026-08-24T13:00:00+00:00")
+    new = _receipt(EPL, "new-event", "6", "2026-08-24T14:00:00+00:00")
+    provider_events = []
+
+    def fetch_old(_sport_key, _selected_env):
+        provider_events.append("old-event")
+        return [{"id": "old-event"}]
+
+    with TemporaryDirectory() as tmp:
+        _write_acceptance(tmp, EPL)
+        _write_task4_pending(tmp, {EPL: [old, new]})
+        run_post_lineup_refresh(
+            root=tmp,
+            now=NOW,
+            newly_confirmed={EPL: [old]},
+            live=True,
+            env=_env(),
+            quota_ledger=_quota(theoddsapi_primary=100),
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            odds_fetcher=fetch_old,
+            snapshot_builder=_snapshot_builder,
+            publish_fn=lambda _snapshot: {"status": "error"},
+        )
+        old_published = run_post_lineup_refresh(
+            root=tmp,
+            now="2026-08-24T13:00:01+00:00",
+            newly_confirmed={EPL: [old, new]},
+            live=True,
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            env_loader=_fail,
+            quota_loader=_fail,
+            odds_fetcher=_fail,
+            refresh_fn=_fail,
+            publish_fn=lambda _snapshot: {"status": "stored"},
+        )
+        both_published = run_post_lineup_refresh(
+            root=tmp,
+            now="2026-08-24T13:01:00+00:00",
+            newly_confirmed={EPL: [old, new]},
+            live=True,
+            env=_env(),
+            quota_ledger=_quota(
+                observed_at="2026-08-24T13:01:00+00:00",
+                theoddsapi_primary=99,
+            ),
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            odds_fetcher=lambda _sport, _env: provider_events.append("new-event") or [
+                {"id": "new-event"}
+            ],
+            snapshot_builder=_snapshot_builder,
+            publish_fn=lambda _snapshot: {"status": "stored"},
+        )
+
+        assert _ack_events(old_published, "durable") == ["old-event"]
+        assert old_published["acks"]["retryable"] == [{
+            "ack_key": new["ack_key"],
+            "reason": "waiting_for_committed_publish",
+        }]
+        assert both_published["status"] == "published"
+        assert _ack_events(both_published, "durable") == ["old-event", "new-event"]
+        assert provider_events == ["old-event", "new-event"]
+
+
+def test_failed_recovery_has_one_retryable_ack_and_never_enters_empty_publish_adapter():
+    receipt = _receipt(EPL, "dedupe-event", "7", "2026-08-24T14:00:00+00:00")
+
+    def crash_with_history(**kwargs):
+        expected_ids = kwargs.get("expected_snapshot_ids_by_competition") or {}
+        snapshot_id = expected_ids.get(EPL, "dedupe-history")
+        snapshot = {
+            **_snapshot_builder([{"id": "dedupe-event"}], EPL, kwargs["observed_at"]),
+            "run_id": snapshot_id,
+            "snapshot_id": snapshot_id,
+        }
+        path = Path(kwargs["root"]) / f"data/local/leagues/{EPL}/history/{snapshot_id}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(snapshot), encoding="utf-8")
+        raise SystemExit("simulated history/current half commit")
+
+    with TemporaryDirectory() as tmp:
+        _write_acceptance(tmp, EPL)
+        try:
+            run_post_lineup_refresh(
+                root=tmp,
+                now=NOW,
+                newly_confirmed={EPL: [receipt]},
+                live=True,
+                env=_env(),
+                quota_ledger=_quota(theoddsapi_primary=100),
+                acceptance_report=_acceptance(EPL),
+                identity_registry=_registry(EPL),
+                odds_fetcher=lambda *_args: [{"id": "dedupe-event"}],
+                snapshot_builder=_snapshot_builder,
+                refresh_fn=crash_with_history,
+                publish_fn=_fail,
+            )
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("simulated crash must escape")
+
+        result = run_post_lineup_refresh(
+            root=tmp,
+            now="2026-08-24T12:01:00+00:00",
+            newly_confirmed={EPL: [receipt]},
+            live=True,
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            env_loader=_fail,
+            quota_loader=_fail,
+            odds_fetcher=_fail,
+            refresh_fn=_fail,
+            publish_fn=_fail,
+        )
+
+        assert result["acks"]["retryable"] == [{
+            "ack_key": receipt["ack_key"],
+            "reason": "refresh_recovery_required",
+        }]
+        assert result["publish"] is None
