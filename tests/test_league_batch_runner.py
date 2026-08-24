@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
 from worldcup.league_batch_runner import run_league_batch, run_planned_league_refresh
-from worldcup.league_acceptance import evaluate_league_acceptance
+from worldcup.league_acceptance import acceptance_fingerprint, evaluate_league_acceptance
 from worldcup.league_team_identity import LeagueTeamIdentityRegistry
 
 
@@ -172,23 +172,27 @@ def test_planned_refresh_fetches_only_requested_competition_and_returns_commit_r
             "matches": [{
                 "source_event_id": "event-1",
                 "competition": {"id": competition_id},
+                "match_decision": {"label": "MATCH_PICK"},
             }],
         }
 
     with TemporaryDirectory() as tmp:
+        acceptance = {
+            "schema_version": 1,
+            "competitions": {
+                "epl_2026_27": evaluate_league_acceptance("epl_2026_27", evidence),
+            },
+        }
         result = run_planned_league_refresh(
             root=tmp,
             observed_at="2026-08-24T12:00:00Z",
             competition_ids=["epl_2026_27"],
             env={"THE_ODDS_API_KEY_SECONDARY": "s" * 40},
             odds_fetcher=fetch,
-            acceptance_report={
-                "schema_version": 1,
-                "competitions": {
-                    "epl_2026_27": evaluate_league_acceptance("epl_2026_27", evidence),
-                },
-            },
+            acceptance_report=acceptance,
             identity_registry=_epl_registry(),
+            expected_event_ids_by_competition={"epl_2026_27": ["event-1"]},
+            guarded_acceptance_fingerprint=acceptance_fingerprint(acceptance),
             snapshot_builder=build,
         )
 

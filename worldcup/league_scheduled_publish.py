@@ -6,7 +6,11 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from worldcup.league_acceptance import LeagueAcceptanceStore, acceptance_row_is_active
+from worldcup.league_acceptance import (
+    LeagueAcceptanceStore,
+    acceptance_fingerprint,
+    acceptance_row_is_active,
+)
 from worldcup.league_lifecycle import run_league_lifecycle
 from worldcup.league_live_planner import plan_league_live_refresh
 from worldcup.quota import load_quota_ledger
@@ -17,15 +21,52 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _project_acceptance_report(value: Any) -> dict[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != 1
+        or not isinstance(value.get("competitions"), Mapping)
+        or not set(value["competitions"]).issubset(FORMAL_SINGLE_MATCH_IDS)
+    ):
+        raise ValueError("league_aggregate_acceptance_missing")
+    competitions: dict[str, dict[str, Any]] = {}
+    for competition_id, row in value["competitions"].items():
+        if not isinstance(row, Mapping):
+            raise ValueError("league_aggregate_acceptance_missing")
+        fingerprints = row.get("fingerprints")
+        if not isinstance(fingerprints, Mapping):
+            fingerprints = {}
+        competitions[competition_id] = {
+            "competition_id": str(row.get("competition_id") or ""),
+            "state": str(row.get("state") or ""),
+            "reason": str(row["reason"]) if row.get("reason") is not None else None,
+            "fingerprints": {
+                name: str(fingerprints.get(name) or "")
+                for name in (
+                    "sport_catalog", "odds_sample", "team_identity", "result_contract"
+                )
+                if fingerprints.get(name)
+            },
+        }
+    return {"schema_version": 1, "competitions": competitions}
+
+
 def build_aggregate_league_snapshot(
-    *, root: str | Path, snapshots: list[Mapping[str, Any]]
+    *,
+    root: str | Path,
+    snapshots: list[Mapping[str, Any]],
+    expected_acceptance_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     root_path = Path(root)
-    acceptance = LeagueAcceptanceStore(
+    loaded_acceptance = LeagueAcceptanceStore(
         root_path / "data/local/leagues/acceptance.json"
     ).read()
-    if not isinstance(acceptance, Mapping):
-        raise ValueError("league_aggregate_acceptance_missing")
+    acceptance = _project_acceptance_report(loaded_acceptance)
+    if (
+        expected_acceptance_fingerprint is not None
+        and acceptance_fingerprint(acceptance) != expected_acceptance_fingerprint
+    ):
+        raise ValueError("league_aggregate_acceptance_changed")
     rows = acceptance.get("competitions") if isinstance(acceptance, Mapping) else {}
     active_ids = {
         str(competition_id)
@@ -109,20 +150,49 @@ def build_aggregate_league_snapshot(
 def _read_committed_refresh_snapshots(
     root: str | Path, refreshed: list[Any]
 ) -> list[dict[str, Any]]:
-    committed: list[dict[str, Any]] = []
+    if not isinstance(refreshed, list) or not refreshed:
+        raise ValueError("league_refresh_receipts_required")
+    normalized: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for row in refreshed:
-        if not isinstance(row, Mapping):
+        if not isinstance(row, Mapping) or set(row) != {
+            "competition", "snapshot_id", "commit_status"
+        }:
             raise ValueError("league_refresh_snapshot_invalid")
         competition = row.get("competition")
-        competition_id = str(competition.get("id") or "") if isinstance(competition, Mapping) else ""
+        if not isinstance(competition, Mapping) or set(competition) != {"id"}:
+            raise ValueError("league_refresh_snapshot_invalid")
+        competition_id = str(competition.get("id") or "")
+        snapshot_id = row.get("snapshot_id")
+        if (
+            competition_id not in FORMAL_SINGLE_MATCH_IDS
+            or competition_id in seen
+            or not isinstance(snapshot_id, str)
+            or not snapshot_id.strip()
+            or row.get("commit_status") not in {"stored", "unchanged"}
+        ):
+            raise ValueError("league_refresh_snapshot_invalid")
+        seen.add(competition_id)
+        normalized.append((competition_id, snapshot_id))
+    committed: list[dict[str, Any]] = []
+    for competition_id, snapshot_id in normalized:
         path = Path(root) / "data/cache/leagues" / competition_id / "snapshot.json"
         if not path.exists():
             raise ValueError("league_refresh_snapshot_not_committed")
         stored = _read_json(path)
-        if not isinstance(stored, Mapping) or stored.get("snapshot_id") != row.get("snapshot_id"):
+        if not isinstance(stored, Mapping) or stored.get("snapshot_id") != snapshot_id:
             raise ValueError("league_refresh_snapshot_commit_mismatch")
         committed.append(dict(stored))
     return committed
+
+
+def _project_publish_result(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {"status": "invalid"}
+    status = value.get("status")
+    if status not in {"stored", "duplicate", "error", "rejected", "failed"}:
+        return {"status": "invalid"}
+    return {"status": str(status)}
 
 
 def publish_committed_league_snapshots(
@@ -130,11 +200,16 @@ def publish_committed_league_snapshots(
     root: str | Path,
     snapshot_receipts: list[Any],
     publish_fn: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+    expected_acceptance_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Re-read committed partitions, build one complete aggregate, and publish it."""
     try:
         committed = _read_committed_refresh_snapshots(root, snapshot_receipts)
-        aggregate = build_aggregate_league_snapshot(root=root, snapshots=committed)
+        aggregate = build_aggregate_league_snapshot(
+            root=root,
+            snapshots=committed,
+            expected_acceptance_fingerprint=expected_acceptance_fingerprint,
+        )
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         reason = str(exc)
         if not reason.startswith("league_"):
@@ -147,7 +222,7 @@ def publish_committed_league_snapshots(
         }
     try:
         published_value = publish_fn(aggregate)
-        published = dict(published_value) if isinstance(published_value, Mapping) else {}
+        published = _project_publish_result(published_value)
     except Exception:
         return {
             "status": "publish_failed",
@@ -288,7 +363,10 @@ def run_league_scheduled_publish(
     if not isinstance(env, Mapping):
         return {"status": "blocked", "reason": "league_live_env_invalid"}
     if pending_payload is not None:
-        published = dict(publish_fn(pending_payload))
+        try:
+            published = _project_publish_result(publish_fn(pending_payload))
+        except Exception:
+            published = {"status": "failed"}
         return {
             "status": "published_pending" if published.get("status") in {"stored", "duplicate"} else "publish_pending_failed",
             "plan": safe_plan,
@@ -299,14 +377,40 @@ def run_league_scheduled_publish(
         return {"status": "not_due", "plan": safe_plan, "refresh": None, "publish": None}
     if refresh_fn is None:
         return {"status": "blocked", "reason": "league_live_refresh_missing"}
-    refreshed = dict(refresh_fn(root=root, now=now, plan=safe_plan, env=env))
-    if refreshed.get("status") != "refreshed":
+    loaded_acceptance = LeagueAcceptanceStore(
+        Path(root) / "data/local/leagues/acceptance.json"
+    ).read()
+    try:
+        acceptance = _project_acceptance_report(loaded_acceptance)
+    except ValueError:
+        return {"status": "blocked", "reason": "league_aggregate_acceptance_missing"}
+    guarded_fingerprint = acceptance_fingerprint(acceptance)
+    try:
+        refreshed_value = refresh_fn(root=root, now=now, plan=safe_plan, env=env)
+    except Exception:
+        refreshed_value = None
+    if not isinstance(refreshed_value, Mapping) or set(refreshed_value) != {
+        "status", "competitions", "snapshots"
+    }:
+        return {
+            "status": "refresh_failed",
+            "plan": safe_plan,
+            "refresh": {"status": "invalid"},
+            "publish": None,
+        }
+    refresh_status = refreshed_value.get("status")
+    snapshots = refreshed_value.get("snapshots")
+    refreshed = {
+        "status": str(refresh_status) if isinstance(refresh_status, str) else "invalid",
+        "snapshot_count": len(snapshots) if isinstance(snapshots, list) else 0,
+    }
+    if refresh_status != "refreshed" or not isinstance(snapshots, list):
         return {"status": "refresh_failed", "plan": safe_plan, "refresh": refreshed, "publish": None}
-    snapshots = refreshed.get("snapshots") if isinstance(refreshed.get("snapshots"), list) else []
     publication = publish_committed_league_snapshots(
         root=root,
         snapshot_receipts=snapshots,
         publish_fn=publish_fn,
+        expected_acceptance_fingerprint=guarded_fingerprint,
     )
     ok = publication.get("status") == "published"
     return {

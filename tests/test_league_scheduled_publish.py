@@ -86,7 +86,13 @@ def test_scheduler_refreshes_then_publishes_only_committed_snapshots():
         }
         path = Path(kwargs["root"]) / "data/cache/leagues/epl_2026_27/snapshot.json"
         path.parent.mkdir(parents=True); path.write_text(json.dumps(snapshot))
-        return {"status": "refreshed", "snapshots": [snapshot]}
+        return {"status": "refreshed", "competitions": {
+            "epl_2026_27": {"status": "built"},
+        }, "snapshots": [{
+            "competition": {"id": "epl_2026_27"},
+            "snapshot_id": "fresh-1",
+            "commit_status": "stored",
+        }]}
 
     def publish(payload):
         calls.append(("publish", payload["snapshot_id"]))
@@ -128,7 +134,14 @@ def test_scheduler_publishes_one_aggregate_snapshot_for_multiple_leagues():
             competition_id = snapshot["competition"]["id"]
             path = Path(kwargs["root"]) / f"data/cache/leagues/{competition_id}/snapshot.json"
             path.parent.mkdir(parents=True); path.write_text(json.dumps(snapshot))
-        return {"status": "refreshed", "snapshots": snapshots}
+        return {"status": "refreshed", "competitions": {
+            snapshot["competition"]["id"]: {"status": "built"}
+            for snapshot in snapshots
+        }, "snapshots": [{
+            "competition": {"id": snapshot["competition"]["id"]},
+            "snapshot_id": snapshot["snapshot_id"],
+            "commit_status": "stored",
+        } for snapshot in snapshots]}
 
     def publish(payload):
         published.append(payload)
@@ -383,3 +396,139 @@ def test_committed_receipt_snapshot_id_mismatch_blocks_publisher():
             "publish": None,
             "aggregate": None,
         }
+
+
+def test_publish_adapter_rejects_zero_current_commit_receipts_without_using_old_cache():
+    published = []
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_acceptance(root, "epl_2026_27")
+        path = root / "data/cache/leagues/epl_2026_27/snapshot.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({
+            "snapshot_id": "old-cache",
+            "snapshot_at": "2026-08-24T11:00:00+00:00",
+            "competition": {"id": "epl_2026_27"},
+            "matches": [{
+                "source_event_id": "old-event",
+                "competition": {"id": "epl_2026_27"},
+            }],
+        }), encoding="utf-8")
+
+        result = publish_committed_league_snapshots(
+            root=root,
+            snapshot_receipts=[],
+            publish_fn=lambda snapshot: published.append(snapshot) or {"status": "stored"},
+        )
+
+        assert result == {
+            "status": "publish_failed",
+            "reason": "league_refresh_receipts_required",
+            "publish": None,
+            "aggregate": None,
+        }
+        assert published == []
+
+
+def test_publish_adapter_rejects_malformed_or_duplicate_commit_receipts():
+    cases = [
+        [{
+            "competition": {"id": "epl_2026_27"},
+            "snapshot_id": "snapshot-1",
+            "commit_status": "error",
+        }],
+        [{
+            "competition": {"id": "epl_2026_27"},
+            "snapshot_id": "snapshot-1",
+            "commit_status": "stored",
+            "detail": "must not be accepted",
+        }],
+        [{
+            "competition": {"id": "epl_2026_27"},
+            "snapshot_id": "snapshot-1",
+            "commit_status": "stored",
+        }, {
+            "competition": {"id": "epl_2026_27"},
+            "snapshot_id": "snapshot-1",
+            "commit_status": "unchanged",
+        }],
+    ]
+    for receipts in cases:
+        result = publish_committed_league_snapshots(
+            root=".",
+            snapshot_receipts=receipts,
+            publish_fn=_fail,
+        )
+        assert result == {
+            "status": "publish_failed",
+            "reason": "league_refresh_snapshot_invalid",
+            "publish": None,
+            "aggregate": None,
+        }
+
+
+def test_aggregate_projects_acceptance_without_nested_untrusted_fields():
+    published = []
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        acceptance_path = root / "data/local/leagues/acceptance.json"
+        acceptance_path.parent.mkdir(parents=True)
+        acceptance_path.write_text(json.dumps({
+            "schema_version": 1,
+            "competitions": {
+                "epl_2026_27": {
+                    **_active_row("epl_2026_27"),
+                    "detail": {"headers": {"Authorization": "SECRET signed_body"}},
+                },
+            },
+        }), encoding="utf-8")
+        snapshot_path = root / "data/cache/leagues/epl_2026_27/snapshot.json"
+        snapshot_path.parent.mkdir(parents=True)
+        snapshot_path.write_text(json.dumps({
+            "snapshot_id": "snapshot-1",
+            "snapshot_at": "2026-08-24T12:00:00+00:00",
+            "competition": {"id": "epl_2026_27"},
+            "matches": [{
+                "source_event_id": "event-1",
+                "competition": {"id": "epl_2026_27"},
+            }],
+        }), encoding="utf-8")
+
+        result = publish_committed_league_snapshots(
+            root=root,
+            snapshot_receipts=[{
+                "competition": {"id": "epl_2026_27"},
+                "snapshot_id": "snapshot-1",
+                "commit_status": "stored",
+            }],
+            publish_fn=lambda snapshot: published.append(snapshot) or {"status": "stored"},
+        )
+
+        assert result["status"] == "published"
+        encoded = json.dumps(published, ensure_ascii=False)
+        assert all(value not in encoded for value in (
+            "SECRET", "Authorization", "headers", "signed_body", "detail"
+        ))
+
+
+def test_scheduler_projects_pending_publisher_mapping_without_sensitive_nested_fields():
+    result = run_league_scheduled_publish(
+        root=".",
+        now="2026-08-24T12:00:00Z",
+        plan={"requests": [], "estimated_credits": 0},
+        live=True,
+        write=True,
+        pending_payload={"snapshot_id": "pending-1"},
+        env_loader=lambda: {"INGEST_HMAC_SECRET": "x" * 32},
+        publish_fn=lambda _payload: {
+            "status": "error",
+            "detail": {"headers": {"Authorization": "SECRET signed_body"}},
+        },
+    )
+
+    encoded = json.dumps(result, ensure_ascii=False)
+    assert result["status"] == "publish_pending_failed"
+    assert result["publish"] == {"status": "error"}
+    assert all(value not in encoded for value in (
+        "SECRET", "Authorization", "headers", "signed_body"
+    ))

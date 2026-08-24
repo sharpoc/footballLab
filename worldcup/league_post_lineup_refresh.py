@@ -7,10 +7,10 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
-from worldcup.league_acceptance import acceptance_row_is_active
+from worldcup.league_acceptance import acceptance_fingerprint, acceptance_row_is_active
 from worldcup.league_batch_runner import run_planned_league_refresh
 from worldcup.league_live_store import LeagueLiveStore
 from worldcup.league_lineups_refresh import (
@@ -24,6 +24,7 @@ from worldcup.theoddsapi_keys import LOW_QUOTA_SWITCH_THRESHOLD, configured_key_
 
 
 AckItem = dict[str, Any]
+QUOTA_LEDGER_MAX_AGE_SECONDS = 3600
 
 
 def _utc(value: Any) -> datetime:
@@ -127,10 +128,21 @@ def _validate_state(value: Any) -> dict[str, Any]:
         if not isinstance(token, str) or not isinstance(row, Mapping):
             raise ValueError("post_lineup_refresh_state_invalid")
         phase = row.get("phase")
-        expected = {"ack_key", "phase", "snapshot_id"}
+        if phase not in {"refresh_started", "committed", "published"}:
+            raise ValueError("post_lineup_refresh_state_invalid")
+        legacy = phase in {"committed", "published"} and not {
+            "observed_at", "acceptance_fingerprint"
+        }.intersection(row)
+        expected = {"ack_key", "phase"}
+        if phase == "refresh_started":
+            expected.update({"observed_at", "acceptance_fingerprint"})
+        else:
+            expected.add("snapshot_id")
+            if not legacy:
+                expected.update({"observed_at", "acceptance_fingerprint"})
         if phase == "published":
             expected.update({"aggregate_snapshot_id", "publish_status"})
-        if phase not in {"committed", "published"} or set(row) != expected:
+        if set(row) != expected:
             raise ValueError("post_lineup_refresh_state_invalid")
         ack_key = row.get("ack_key")
         if (
@@ -141,15 +153,21 @@ def _validate_state(value: Any) -> dict[str, Any]:
             or not ack_key.get("event_id")
             or not _valid_fingerprint(ack_key.get("lineup_fingerprint"))
             or _ack_token(ack_key) != token
-            or not isinstance(row.get("snapshot_id"), str)
-            or not row.get("snapshot_id")
         ):
             raise ValueError("post_lineup_refresh_state_invalid")
         projected = {
             "ack_key": dict(ack_key),
             "phase": phase,
-            "snapshot_id": row["snapshot_id"],
         }
+        if not legacy:
+            projected["observed_at"] = _utc(row.get("observed_at")).isoformat()
+            projected["acceptance_fingerprint"] = row.get("acceptance_fingerprint")
+            if not _valid_fingerprint(projected["acceptance_fingerprint"]):
+                raise ValueError("post_lineup_refresh_state_invalid")
+        if phase != "refresh_started":
+            if not isinstance(row.get("snapshot_id"), str) or not row.get("snapshot_id"):
+                raise ValueError("post_lineup_refresh_state_invalid")
+            projected["snapshot_id"] = row["snapshot_id"]
         if phase == "published":
             if (
                 not isinstance(row.get("aggregate_snapshot_id"), str)
@@ -164,6 +182,38 @@ def _validate_state(value: Any) -> dict[str, Any]:
         "schema_version": 1,
         "receipts": {token: checked[token] for token in sorted(checked)},
     }
+
+
+def _phase_rank(value: str) -> int:
+    return {"refresh_started": 1, "committed": 2, "published": 3}[value]
+
+
+def _merge_state_rows(
+    current: Mapping[str, Any], incoming: Mapping[str, Any]
+) -> dict[str, Any]:
+    current_rank = _phase_rank(str(current["phase"]))
+    incoming_rank = _phase_rank(str(incoming["phase"]))
+    if current_rank > incoming_rank:
+        return dict(current)
+    if incoming_rank > current_rank:
+        return dict(incoming)
+    if incoming_rank == 3:
+        return dict(current)
+    current_at = str(current.get("observed_at") or "")
+    incoming_at = str(incoming.get("observed_at") or "")
+    return dict(incoming if incoming_at >= current_at else current)
+
+
+def _merge_states(current: Mapping[str, Any], incoming: Mapping[str, Any]) -> dict[str, Any]:
+    merged = dict(current["receipts"])
+    for token, row in incoming["receipts"].items():
+        previous = merged.get(token)
+        merged[token] = (
+            _merge_state_rows(previous, row)
+            if isinstance(previous, Mapping)
+            else dict(row)
+        )
+    return _validate_state({"schema_version": 1, "receipts": merged})
 
 
 def _atomic_write(path: Path, state: Mapping[str, Any]) -> None:
@@ -201,27 +251,87 @@ class PostLineupRefreshStateStore:
         except (OSError, json.JSONDecodeError):
             raise ValueError("post_lineup_refresh_state_invalid") from None
 
+    def _read_unlocked(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {"schema_version": 1, "receipts": {}}
+        try:
+            return _validate_state(json.loads(self.path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            raise ValueError("post_lineup_refresh_state_invalid") from None
+
+    def _write_unlocked(self, state: Mapping[str, Any]) -> str:
+        payload = json.dumps(
+            dict(state), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ) + "\n"
+        if self.path.exists() and self.path.read_text(encoding="utf-8") == payload:
+            return "unchanged"
+        _atomic_write(self.path, state)
+        return "stored"
+
     def commit(self, state: Mapping[str, Any]) -> str:
         checked = _validate_state(state)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.lock_path.open("a+", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            payload = json.dumps(
-                checked, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            ) + "\n"
-            if self.path.exists() and self.path.read_text(encoding="utf-8") == payload:
-                return "unchanged"
-            _atomic_write(self.path, checked)
-        return "stored"
+            merged = _merge_states(self._read_unlocked(), checked)
+            return self._write_unlocked(merged)
+
+    def claim_refresh(self, state: Mapping[str, Any]) -> dict[str, Any]:
+        checked = _validate_state(state)
+        if any(row["phase"] != "refresh_started" for row in checked["receipts"].values()):
+            raise ValueError("post_lineup_refresh_claim_invalid")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            current = self._read_unlocked()
+            claimed: list[str] = []
+            additions: dict[str, Any] = {}
+            for token, row in checked["receipts"].items():
+                if token not in current["receipts"]:
+                    additions[token] = row
+                    claimed.append(token)
+            merged = _merge_states(
+                current,
+                {"schema_version": 1, "receipts": additions},
+            )
+            status = self._write_unlocked(merged)
+        return {"status": status, "claimed": sorted(claimed), "state": merged}
 
 
 def _validate_acceptance(value: Any) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or value.get("schema_version") != 1:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"schema_version", "competitions"}
+        or value.get("schema_version") != 1
+    ):
         raise ValueError("post_lineup_acceptance_invalid")
     competitions = value.get("competitions")
     if not isinstance(competitions, Mapping) or not set(competitions).issubset(FORMAL_SINGLE_MATCH_IDS):
         raise ValueError("post_lineup_acceptance_invalid")
-    return {"schema_version": 1, "competitions": dict(competitions)}
+    checked: dict[str, dict[str, Any]] = {}
+    for competition_id, row in competitions.items():
+        if not isinstance(row, Mapping):
+            raise ValueError("post_lineup_acceptance_invalid")
+        fingerprints = row.get("fingerprints")
+        if not isinstance(fingerprints, Mapping):
+            fingerprints = {}
+        checked[competition_id] = {
+            "competition_id": str(row.get("competition_id") or ""),
+            "state": str(row.get("state") or ""),
+            "reason": (
+                str(row.get("reason"))
+                if row.get("reason") is not None
+                else None
+            ),
+            "fingerprints": {
+                name: str(fingerprints.get(name) or "")
+                for name in (
+                    "sport_catalog", "odds_sample", "team_identity", "result_contract"
+                )
+                if fingerprints.get(name)
+            },
+        }
+    return {"schema_version": 1, "competitions": checked}
 
 
 def _load_acceptance(root: str | Path) -> dict[str, Any]:
@@ -236,6 +346,10 @@ def _select_quota_slot(
     env: Mapping[str, str],
     quota_ledger: Mapping[str, Any],
     minimum_remaining: int,
+    *,
+    now: datetime,
+    reservations: Mapping[str, int],
+    max_age_seconds: int = QUOTA_LEDGER_MAX_AGE_SECONDS,
 ) -> tuple[Any | None, str | None, int | None]:
     providers = quota_ledger.get("providers") if isinstance(quota_ledger, Mapping) else None
     if not isinstance(providers, Mapping):
@@ -248,6 +362,18 @@ def _select_quota_slot(
         entry = providers.get(slot.provider)
         remaining = entry.get("remaining") if isinstance(entry, Mapping) else None
         remaining = remaining if isinstance(remaining, int) and not isinstance(remaining, bool) else None
+        try:
+            observed_at = _utc(entry.get("observed_at")) if isinstance(entry, Mapping) else None
+        except ValueError:
+            observed_at = None
+        if (
+            observed_at is None
+            or observed_at > now
+            or (now - observed_at).total_seconds() > max_age_seconds
+        ):
+            remaining = None
+        if remaining is not None:
+            remaining -= int(reservations.get(slot.provider) or 0)
         observed.append(remaining)
         if remaining is not None and remaining > minimum_remaining:
             return slot, None, remaining
@@ -278,10 +404,16 @@ def _snapshot_receipts(value: Any, planned_ids: set[str]) -> dict[str, dict[str,
         return {}
     receipts: dict[str, dict[str, Any]] = {}
     for row in value:
-        if not isinstance(row, Mapping):
+        if not isinstance(row, Mapping) or set(row) != {
+            "competition", "snapshot_id", "commit_status"
+        }:
             continue
         competition = row.get("competition")
-        competition_id = competition.get("id") if isinstance(competition, Mapping) else None
+        competition_id = (
+            competition.get("id")
+            if isinstance(competition, Mapping) and set(competition) == {"id"}
+            else None
+        )
         snapshot_id = row.get("snapshot_id")
         if (
             competition_id not in planned_ids
@@ -297,6 +429,148 @@ def _snapshot_receipts(value: Any, planned_ids: set[str]) -> dict[str, dict[str,
             "commit_status": row["commit_status"],
         }
     return receipts
+
+
+def _project_refresh_result(value: Any, competition_id: str) -> dict[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"status", "competitions", "snapshots"}
+        or not isinstance(value.get("status"), str)
+        or not isinstance(value.get("competitions"), Mapping)
+        or set(value["competitions"]) != {competition_id}
+        or not isinstance(value.get("snapshots"), list)
+    ):
+        return {"status": "invalid", "competition_id": competition_id, "snapshot_count": 0}
+    snapshots = _snapshot_receipts(value["snapshots"], {competition_id})
+    return {
+        "status": str(value["status"]),
+        "competition_id": competition_id,
+        "snapshot_count": len(snapshots),
+    }
+
+
+def _safe_refresh_summary(rows: list[Mapping[str, Any]]) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    statuses = {str(row.get("status") or "invalid") for row in rows}
+    if statuses == {"refreshed"}:
+        status = "refreshed"
+    elif "refreshed" in statuses:
+        status = "partial"
+    else:
+        status = "failed"
+    return {
+        "status": status,
+        "competitions": [dict(row) for row in rows],
+    }
+
+
+def _snapshot_has_expected_events(
+    snapshot: Any,
+    competition_id: str,
+    expected_event_ids: Sequence[str],
+    *,
+    observed_at: str | None = None,
+) -> bool:
+    if not isinstance(snapshot, Mapping):
+        return False
+    competition = snapshot.get("competition")
+    if not isinstance(competition, Mapping) or competition.get("id") != competition_id:
+        return False
+    if observed_at is not None:
+        try:
+            if _utc(snapshot.get("snapshot_at")) != _utc(observed_at):
+                return False
+        except ValueError:
+            return False
+    matches = snapshot.get("matches")
+    if not isinstance(matches, list) or not matches:
+        return False
+    labels: dict[str, str] = {}
+    for match in matches:
+        if not isinstance(match, Mapping):
+            return False
+        declared = match.get("competition")
+        event_id = match.get("source_event_id")
+        decision = match.get("match_decision")
+        label = decision.get("label") if isinstance(decision, Mapping) else None
+        if (
+            not isinstance(declared, Mapping)
+            or declared.get("id") != competition_id
+            or not isinstance(event_id, str)
+            or not event_id
+            or event_id in labels
+        ):
+            return False
+        labels[event_id] = str(label or "")
+    expected = {str(value) for value in expected_event_ids}
+    return bool(expected) and expected.issubset(labels) and all(
+        labels[event_id] in {"MATCH_PICK", "NO_CLEAN_MARKET"}
+        for event_id in expected
+    )
+
+
+def _read_snapshot(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return dict(value) if isinstance(value, Mapping) else None
+
+
+def _committed_snapshot_receipt(
+    root: str | Path,
+    competition_id: str,
+    snapshot_id: str,
+    expected_event_ids: Sequence[str],
+) -> dict[str, Any] | None:
+    snapshot = _read_snapshot(
+        Path(root) / "data/cache/leagues" / competition_id / "snapshot.json"
+    )
+    if (
+        not _snapshot_has_expected_events(snapshot, competition_id, expected_event_ids)
+        or snapshot.get("snapshot_id") != snapshot_id
+    ):
+        return None
+    return {
+        "competition": {"id": competition_id},
+        "snapshot_id": snapshot_id,
+        "commit_status": "unchanged",
+    }
+
+
+def _reconcile_started_snapshot(
+    root: str | Path,
+    competition_id: str,
+    observed_at: str,
+    expected_event_ids: Sequence[str],
+) -> dict[str, Any] | None:
+    root_path = Path(root)
+    paths = [root_path / "data/cache/leagues" / competition_id / "snapshot.json"]
+    history = root_path / "data/local/leagues" / competition_id / "history"
+    if history.exists():
+        paths.extend(sorted(history.glob("*.json")))
+    matches: dict[str, dict[str, Any]] = {}
+    for path in paths:
+        snapshot = _read_snapshot(path)
+        if not _snapshot_has_expected_events(
+            snapshot,
+            competition_id,
+            expected_event_ids,
+            observed_at=observed_at,
+        ):
+            continue
+        snapshot_id = snapshot.get("snapshot_id")
+        if isinstance(snapshot_id, str) and snapshot_id:
+            matches[snapshot_id] = snapshot
+    if len(matches) != 1:
+        return None
+    snapshot_id = next(iter(matches))
+    return {
+        "competition": {"id": competition_id},
+        "snapshot_id": snapshot_id,
+        "commit_status": "unchanged",
+    }
 
 
 def _ack_item(row: Mapping[str, Any], reason: str | None = None) -> AckItem:
@@ -371,6 +645,7 @@ def run_post_lineup_refresh(
     state_store_factory: Callable[[str | Path], Any] = PostLineupRefreshStateStore,
     live_store_factory: Callable[[str | Path], Any] = LeagueLiveStore,
     minimum_remaining: int = LOW_QUOTA_SWITCH_THRESHOLD,
+    quota_max_age_seconds: int = QUOTA_LEDGER_MAX_AGE_SECONDS,
 ) -> dict[str, Any]:
     try:
         now_dt = _utc(now)
@@ -410,13 +685,18 @@ def run_post_lineup_refresh(
 
     durable_rows: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
-    blocked: list[AckItem] = []
+    blocked_by_token: dict[str, AckItem] = {}
+    retryable_by_token: dict[str, AckItem] = {}
     for row in receipts:
         existing = state["receipts"].get(row["token"])
         if isinstance(existing, Mapping) and existing.get("phase") == "published":
             durable_rows.append(row)
+        elif isinstance(existing, Mapping) and existing.get("phase") in {
+            "refresh_started", "committed"
+        }:
+            unresolved.append(row)
         elif _utc(row["kickoff_at_utc"]) <= now_dt:
-            blocked.append(_ack_item(row, "match_started"))
+            blocked_by_token[row["token"]] = _ack_item(row, "match_started")
         else:
             unresolved.append(row)
     if durable_rows and not unresolved:
@@ -425,11 +705,11 @@ def run_post_lineup_refresh(
         except (OSError, TypeError, ValueError):
             pass
         return _result(
-            status="partial" if blocked else "already_acked",
+            status="partial" if blocked_by_token else "already_acked",
             plan=plan,
             durable=[_ack_item(row) for row in durable_rows],
             retryable=[],
-            blocked=blocked,
+            blocked=list(blocked_by_token.values()),
         )
 
     try:
@@ -442,16 +722,10 @@ def run_post_lineup_refresh(
             plan=plan,
             durable=[_ack_item(row) for row in durable_rows],
             retryable=[],
-            blocked=blocked + [_ack_item(row, "acceptance_invalid") for row in unresolved],
+            blocked=list(blocked_by_token.values())
+            + [_ack_item(row, "acceptance_invalid") for row in unresolved],
         )
-    if not isinstance(identity_registry, LeagueTeamIdentityRegistry):
-        return _result(
-            status="blocked",
-            plan=plan,
-            durable=[_ack_item(row) for row in durable_rows],
-            retryable=[],
-            blocked=blocked + [_ack_item(row, "strict_identity_registry_required") for row in unresolved],
-        )
+    guarded_acceptance_fingerprint = acceptance_fingerprint(acceptance)
 
     eligible: list[dict[str, Any]] = []
     for row in unresolved:
@@ -459,115 +733,362 @@ def run_post_lineup_refresh(
         if acceptance_row_is_active(acceptance_row, row["competition_id"]):
             eligible.append(row)
         else:
-            blocked.append(_ack_item(row, "acceptance_not_active"))
+            blocked_by_token[row["token"]] = _ack_item(row, "acceptance_not_active")
 
-    committed_rows: list[dict[str, Any]] = []
-    refresh_rows: list[dict[str, Any]] = []
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for row in eligible:
-        existing = state["receipts"].get(row["token"])
-        if isinstance(existing, Mapping) and existing.get("phase") == "committed":
-            committed_rows.append(row)
-        else:
-            refresh_rows.append(row)
+        grouped.setdefault(row["competition_id"], []).append(row)
 
-    refresh_result: Mapping[str, Any] | None = None
-    retryable: list[AckItem] = []
-    if refresh_rows:
+    refresh_summaries: list[dict[str, Any]] = []
+    component_receipts: dict[str, dict[str, Any]] = {}
+    publishable_tokens: set[str] = set()
+    reservations: dict[str, int] = {}
+    loaded_env: Mapping[str, Any] | None = None
+    env_attempted = False
+
+    for competition_id in sorted(grouped):
+        competition_rows = grouped[competition_id]
         try:
-            loaded_env = env if env is not None else (env_loader() if env_loader is not None else None)
-            loaded_quota = (
-                quota_ledger
-                if quota_ledger is not None
-                else (quota_loader() if quota_loader is not None else None)
-            )
+            state = _validate_state(state_store.read())
         except Exception:
-            loaded_env = None
-            loaded_quota = None
-        if not isinstance(loaded_env, Mapping):
-            reason = "quota_key_unavailable"
-            blocked.extend(_ack_item(row, reason) for row in refresh_rows)
-            return _result(
-                status="blocked",
-                plan=plan,
-                durable=[_ack_item(row) for row in durable_rows],
-                retryable=[],
-                blocked=blocked,
-            )
-        selected, guard_reason, _remaining = _select_quota_slot(
-            loaded_env,
-            loaded_quota if isinstance(loaded_quota, Mapping) else {},
-            int(minimum_remaining),
-        )
-        if selected is None:
-            blocked.extend(_ack_item(row, str(guard_reason)) for row in refresh_rows)
-            return _result(
-                status="blocked",
-                plan=plan,
-                durable=[_ack_item(row) for row in durable_rows],
-                retryable=[],
-                blocked=blocked,
-            )
-        if odds_fetcher is None:
-            blocked.extend(_ack_item(row, "odds_fetcher_missing") for row in refresh_rows)
-            return _result(
-                status="blocked",
-                plan=plan,
-                durable=[_ack_item(row) for row in durable_rows],
-                retryable=[],
-                blocked=blocked,
-            )
-        competition_ids = sorted({row["competition_id"] for row in refresh_rows})
-        refresh_kwargs: dict[str, Any] = {
-            "root": root,
-            "observed_at": now_dt.isoformat(),
-            "competition_ids": competition_ids,
-            "env": _selected_env(loaded_env, selected),
-            "odds_fetcher": odds_fetcher,
-            "acceptance_report": dict(acceptance),
-            "identity_registry": identity_registry,
-            "store_factory": live_store_factory,
+            for row in competition_rows:
+                retryable_by_token[row["token"]] = _ack_item(row, "state_invalid")
+            continue
+
+        state_rows = {
+            row["token"]: state["receipts"].get(row["token"])
+            for row in competition_rows
         }
-        if snapshot_builder is not None:
-            refresh_kwargs["snapshot_builder"] = snapshot_builder
-        try:
-            value = refresh_fn(**refresh_kwargs)
-            refresh_result = dict(value) if isinstance(value, Mapping) else {}
-        except Exception:
-            refresh_result = {}
-        snapshot_receipts = _snapshot_receipts(
-            refresh_result.get("snapshots") if isinstance(refresh_result, Mapping) else None,
-            set(competition_ids),
-        )
-        newly_committed: list[dict[str, Any]] = []
-        for row in refresh_rows:
-            receipt = snapshot_receipts.get(row["competition_id"])
-            if receipt is None:
-                retryable.append(_ack_item(row, "refresh_failed"))
-                continue
-            state["receipts"][row["token"]] = {
-                "ack_key": dict(row["ack_key"]),
-                "phase": "committed",
-                "snapshot_id": receipt["snapshot_id"],
+        drifted = [
+            row for row in competition_rows
+            if isinstance(state_rows[row["token"]], Mapping)
+            and state_rows[row["token"]].get("acceptance_fingerprint")
+            not in {None, "", guarded_acceptance_fingerprint}
+        ]
+        if drifted:
+            for row in competition_rows:
+                retryable_by_token[row["token"]] = _ack_item(row, "acceptance_changed")
+            continue
+
+        started_rows = [
+            row for row in competition_rows
+            if isinstance(state_rows[row["token"]], Mapping)
+            and state_rows[row["token"]].get("phase") == "refresh_started"
+        ]
+        if started_rows:
+            attempts = {
+                str(state_rows[row["token"]].get("observed_at") or "")
+                for row in started_rows
             }
-            newly_committed.append(row)
-        if newly_committed:
+            attempt_fingerprints = {
+                str(state_rows[row["token"]].get("acceptance_fingerprint") or "")
+                for row in started_rows
+            }
+            recovered = None
+            if (
+                len(attempts) == 1
+                and len(attempt_fingerprints) == 1
+                and next(iter(attempt_fingerprints)) == guarded_acceptance_fingerprint
+            ):
+                recovered = _reconcile_started_snapshot(
+                    root,
+                    competition_id,
+                    next(iter(attempts)),
+                    [row["event_id"] for row in started_rows],
+                )
+            if recovered is None:
+                for row in competition_rows:
+                    retryable_by_token[row["token"]] = _ack_item(
+                        row, "refresh_recovery_required"
+                    )
+                refresh_summaries.append({
+                    "status": "recovery_required",
+                    "competition_id": competition_id,
+                    "snapshot_count": 0,
+                })
+                continue
+            recovered_updates = {
+                row["token"]: {
+                    "ack_key": dict(row["ack_key"]),
+                    "phase": "committed",
+                    "snapshot_id": recovered["snapshot_id"],
+                    "observed_at": next(iter(attempts)),
+                    "acceptance_fingerprint": guarded_acceptance_fingerprint,
+                }
+                for row in started_rows
+            }
             try:
-                state_store.commit(state)
+                state_store.commit({"schema_version": 1, "receipts": recovered_updates})
+                state = _validate_state(state_store.read())
             except Exception:
-                retryable.extend(
-                    _ack_item(row, "state_commit_failed") for row in newly_committed
-                )
-                return _result(
-                    status="refresh_failed",
-                    plan=plan,
-                    durable=[_ack_item(row) for row in durable_rows],
-                    retryable=sorted(retryable, key=lambda item: (
-                        item["ack_key"]["competition_id"], item["ack_key"]["event_id"]
-                    )),
-                    blocked=blocked,
-                    refresh=refresh_result,
-                )
-            committed_rows.extend(newly_committed)
+                for row in competition_rows:
+                    retryable_by_token[row["token"]] = _ack_item(row, "state_commit_failed")
+                continue
+            for row in started_rows:
+                publishable_tokens.add(row["token"])
+                state_rows[row["token"]] = state["receipts"].get(row["token"])
+
+        new_rows = [
+            row for row in competition_rows
+            if not isinstance(state_rows[row["token"]], Mapping)
+        ]
+        committed_before_refresh = [
+            row for row in competition_rows
+            if isinstance(state_rows[row["token"]], Mapping)
+            and state_rows[row["token"]].get("phase") == "committed"
+        ]
+
+        if new_rows:
+            if not isinstance(identity_registry, LeagueTeamIdentityRegistry):
+                for row in new_rows:
+                    blocked_by_token[row["token"]] = _ack_item(
+                        row, "strict_identity_registry_required"
+                    )
+                new_rows = []
+
+        if new_rows:
+            if not env_attempted:
+                env_attempted = True
+                try:
+                    candidate_env = env if env is not None else (
+                        env_loader() if env_loader is not None else None
+                    )
+                except Exception:
+                    candidate_env = None
+                loaded_env = candidate_env if isinstance(candidate_env, Mapping) else None
+            if loaded_env is None:
+                for row in new_rows:
+                    blocked_by_token[row["token"]] = _ack_item(
+                        row, "quota_key_unavailable"
+                    )
+                new_rows = []
+
+        selected = None
+        if new_rows:
+            if quota_ledger is not None:
+                loaded_quota = quota_ledger
+            else:
+                try:
+                    loaded_quota = quota_loader() if quota_loader is not None else None
+                except Exception:
+                    loaded_quota = None
+            selected, guard_reason, _remaining = _select_quota_slot(
+                loaded_env,
+                loaded_quota if isinstance(loaded_quota, Mapping) else {},
+                int(minimum_remaining),
+                now=now_dt,
+                reservations=reservations,
+                max_age_seconds=int(quota_max_age_seconds),
+            )
+            if selected is None:
+                for row in new_rows:
+                    blocked_by_token[row["token"]] = _ack_item(
+                        row, str(guard_reason or "quota_unknown")
+                    )
+                new_rows = []
+
+        if new_rows and odds_fetcher is None:
+            for row in new_rows:
+                blocked_by_token[row["token"]] = _ack_item(row, "odds_fetcher_missing")
+            new_rows = []
+
+        if new_rows and selected is not None:
+            reservations[selected.provider] = reservations.get(selected.provider, 0) + 1
+            intent = {
+                row["token"]: {
+                    "ack_key": dict(row["ack_key"]),
+                    "phase": "refresh_started",
+                    "observed_at": now_dt.isoformat(),
+                    "acceptance_fingerprint": guarded_acceptance_fingerprint,
+                }
+                for row in new_rows
+            }
+            try:
+                claimed_result = state_store.claim_refresh({
+                    "schema_version": 1,
+                    "receipts": intent,
+                })
+                claimed = set(claimed_result.get("claimed") or [])
+            except Exception:
+                claimed = set()
+            expected_claims = {row["token"] for row in new_rows}
+            if claimed != expected_claims:
+                for row in new_rows:
+                    retryable_by_token[row["token"]] = _ack_item(
+                        row, "refresh_recovery_required"
+                    )
+                refresh_summaries.append({
+                    "status": "recovery_required",
+                    "competition_id": competition_id,
+                    "snapshot_count": 0,
+                })
+                continue
+
+            attempt_rows = committed_before_refresh + new_rows
+            expected_event_ids = [row["event_id"] for row in attempt_rows]
+
+            def commit_callback(
+                receipt: Mapping[str, Any],
+                *,
+                rows: list[dict[str, Any]] = attempt_rows,
+            ) -> None:
+                snapshots = _snapshot_receipts([receipt], {competition_id})
+                checked = snapshots.get(competition_id)
+                if checked is None:
+                    raise ValueError("post_lineup_commit_receipt_invalid")
+                updates = {
+                    row["token"]: {
+                        "ack_key": dict(row["ack_key"]),
+                        "phase": "committed",
+                        "snapshot_id": checked["snapshot_id"],
+                        "observed_at": now_dt.isoformat(),
+                        "acceptance_fingerprint": guarded_acceptance_fingerprint,
+                    }
+                    for row in rows
+                }
+                state_store.commit({"schema_version": 1, "receipts": updates})
+
+            refresh_kwargs: dict[str, Any] = {
+                "root": root,
+                "observed_at": now_dt.isoformat(),
+                "competition_ids": [competition_id],
+                "env": _selected_env(loaded_env, selected),
+                "odds_fetcher": odds_fetcher,
+                "acceptance_report": dict(acceptance),
+                "identity_registry": identity_registry,
+                "expected_event_ids_by_competition": {
+                    competition_id: expected_event_ids,
+                },
+                "guarded_acceptance_fingerprint": guarded_acceptance_fingerprint,
+                "store_factory": live_store_factory,
+                "commit_callback": commit_callback,
+            }
+            if snapshot_builder is not None:
+                refresh_kwargs["snapshot_builder"] = snapshot_builder
+            try:
+                refresh_value = refresh_fn(**refresh_kwargs)
+            except Exception:
+                refresh_value = None
+            projected = _project_refresh_result(refresh_value, competition_id)
+            refresh_summaries.append(projected)
+            valid_shape = (
+                isinstance(refresh_value, Mapping)
+                and set(refresh_value) == {"status", "competitions", "snapshots"}
+            )
+            snapshot_receipts = _snapshot_receipts(
+                refresh_value.get("snapshots")
+                if valid_shape and isinstance(refresh_value, Mapping)
+                else None,
+                {competition_id},
+            )
+            committed_receipt = snapshot_receipts.get(competition_id)
+            if committed_receipt is None or _committed_snapshot_receipt(
+                root,
+                competition_id,
+                committed_receipt["snapshot_id"],
+                expected_event_ids,
+            ) is None:
+                for row in new_rows:
+                    retryable_by_token[row["token"]] = _ack_item(row, "refresh_failed")
+                for row in committed_before_refresh:
+                    publishable_tokens.discard(row["token"])
+                continue
+            try:
+                state = _validate_state(state_store.read())
+                missing_commit = [
+                    row for row in attempt_rows
+                    if not isinstance(state["receipts"].get(row["token"]), Mapping)
+                    or state["receipts"][row["token"]].get("phase") != "committed"
+                    or state["receipts"][row["token"]].get("snapshot_id")
+                    != committed_receipt["snapshot_id"]
+                ]
+                if missing_commit:
+                    commit_callback(committed_receipt)
+                    state = _validate_state(state_store.read())
+            except Exception:
+                for row in attempt_rows:
+                    retryable_by_token[row["token"]] = _ack_item(row, "state_commit_failed")
+                continue
+            component_receipts[competition_id] = committed_receipt
+            for row in attempt_rows:
+                publishable_tokens.add(row["token"])
+                retryable_by_token.pop(row["token"], None)
+
+        try:
+            state = _validate_state(state_store.read())
+        except Exception:
+            for row in competition_rows:
+                retryable_by_token[row["token"]] = _ack_item(row, "state_invalid")
+            continue
+        committed_rows_for_competition = [
+            row for row in competition_rows
+            if row["token"] in publishable_tokens
+            or (
+                isinstance(state["receipts"].get(row["token"]), Mapping)
+                and state["receipts"][row["token"]].get("phase") == "committed"
+                and row not in new_rows
+            )
+        ]
+        if not committed_rows_for_competition:
+            continue
+        state_snapshot_ids = {
+            state["receipts"][row["token"]].get("snapshot_id")
+            for row in committed_rows_for_competition
+            if isinstance(state["receipts"].get(row["token"]), Mapping)
+        }
+        if len(state_snapshot_ids) != 1:
+            for row in committed_rows_for_competition:
+                retryable_by_token[row["token"]] = _ack_item(row, "publish_failed")
+            continue
+        snapshot_id = next(iter(state_snapshot_ids))
+        checked_receipt = _committed_snapshot_receipt(
+            root,
+            competition_id,
+            str(snapshot_id or ""),
+            [row["event_id"] for row in committed_rows_for_competition],
+        )
+        if checked_receipt is None:
+            for row in committed_rows_for_competition:
+                retryable_by_token[row["token"]] = _ack_item(row, "publish_failed")
+            continue
+        legacy_updates: dict[str, Any] = {}
+        snapshot = _read_snapshot(
+            Path(root) / "data/cache/leagues" / competition_id / "snapshot.json"
+        ) or {}
+        for row in committed_rows_for_competition:
+            state_row = state["receipts"][row["token"]]
+            if not state_row.get("acceptance_fingerprint"):
+                legacy_updates[row["token"]] = {
+                    "ack_key": dict(row["ack_key"]),
+                    "phase": "committed",
+                    "snapshot_id": checked_receipt["snapshot_id"],
+                    "observed_at": _utc(snapshot.get("snapshot_at")).isoformat(),
+                    "acceptance_fingerprint": guarded_acceptance_fingerprint,
+                }
+        if legacy_updates:
+            try:
+                state_store.commit({"schema_version": 1, "receipts": legacy_updates})
+            except Exception:
+                for row in committed_rows_for_competition:
+                    retryable_by_token[row["token"]] = _ack_item(row, "state_commit_failed")
+                continue
+        component_receipts[competition_id] = checked_receipt
+        publishable_tokens.update(row["token"] for row in committed_rows_for_competition)
+
+    refresh_result = _safe_refresh_summary(refresh_summaries)
+    committed_rows = [row for row in eligible if row["token"] in publishable_tokens]
+    retryable = sorted(
+        retryable_by_token.values(),
+        key=lambda item: (
+            item["ack_key"]["competition_id"], item["ack_key"]["event_id"]
+        ),
+    )
+    blocked = sorted(
+        blocked_by_token.values(),
+        key=lambda item: (
+            item["ack_key"]["competition_id"], item["ack_key"]["event_id"]
+        ),
+    )
 
     if not committed_rows:
         status = "partial" if durable_rows and (retryable or blocked) else (
@@ -592,38 +1113,11 @@ def run_post_lineup_refresh(
             refresh=refresh_result,
         )
 
-    component_receipts: dict[str, dict[str, Any]] = {}
-    conflicts: set[str] = set()
-    for row in committed_rows:
-        state_row = state["receipts"][row["token"]]
-        competition_id = row["competition_id"]
-        receipt = {
-            "competition": {"id": competition_id},
-            "snapshot_id": state_row["snapshot_id"],
-            "commit_status": "stored",
-        }
-        previous = component_receipts.get(competition_id)
-        if previous is not None and previous["snapshot_id"] != receipt["snapshot_id"]:
-            conflicts.add(competition_id)
-        component_receipts[competition_id] = receipt
-    if conflicts:
-        retryable.extend(
-            _ack_item(row, "publish_failed")
-            for row in committed_rows
-            if row["competition_id"] in conflicts
-        )
-        return _result(
-            status="publish_failed",
-            plan=plan,
-            durable=[_ack_item(row) for row in durable_rows],
-            retryable=retryable,
-            blocked=blocked,
-            refresh=refresh_result,
-        )
     publication = publish_committed_league_snapshots(
         root=root,
         snapshot_receipts=[component_receipts[key] for key in sorted(component_receipts)],
         publish_fn=publish_fn,
+        expected_acceptance_fingerprint=guarded_acceptance_fingerprint,
     )
     if publication.get("status") != "published":
         retryable.extend(_ack_item(row, "publish_failed") for row in committed_rows)
@@ -641,19 +1135,33 @@ def run_post_lineup_refresh(
 
     aggregate = publication["aggregate"]
     publish_status = publication["publish"]["status"]
+    try:
+        state = _validate_state(state_store.read())
+    except Exception:
+        state = {"schema_version": 1, "receipts": {}}
+    published_updates: dict[str, Any] = {}
     for row in committed_rows:
-        state_row = state["receipts"][row["token"]]
-        state["receipts"][row["token"]] = {
+        state_row = state["receipts"].get(row["token"])
+        if not isinstance(state_row, Mapping):
+            retryable_by_token[row["token"]] = _ack_item(row, "ack_state_commit_failed")
+            continue
+        published_updates[row["token"]] = {
             "ack_key": dict(row["ack_key"]),
             "phase": "published",
             "snapshot_id": state_row["snapshot_id"],
+            "observed_at": state_row["observed_at"],
+            "acceptance_fingerprint": state_row["acceptance_fingerprint"],
             "aggregate_snapshot_id": aggregate["snapshot_id"],
             "publish_status": publish_status,
         }
     try:
-        state_store.commit(state)
+        if len(published_updates) != len(committed_rows):
+            raise ValueError("post_lineup_ack_state_incomplete")
+        state_store.commit({"schema_version": 1, "receipts": published_updates})
     except Exception:
-        retryable.extend(_ack_item(row, "ack_state_commit_failed") for row in committed_rows)
+        retryable = [
+            _ack_item(row, "ack_state_commit_failed") for row in committed_rows
+        ] + retryable
         return _result(
             status="publish_failed",
             plan=plan,

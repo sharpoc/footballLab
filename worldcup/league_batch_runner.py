@@ -9,8 +9,46 @@ from typing import Any, Callable, Mapping, Sequence
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS, formal_single_match_competitions
 from worldcup.league_competition_pipeline import build_league_competition_snapshot
 from worldcup.league_live_store import LeagueLiveStore
-from worldcup.league_acceptance import acceptance_row_is_active
+from worldcup.league_acceptance import acceptance_fingerprint, acceptance_row_is_active
 from worldcup.league_team_identity import LeagueTeamIdentityRegistry
+
+
+def _validate_expected_snapshot(
+    snapshot: Any,
+    competition_id: str,
+    expected_event_ids: Sequence[str],
+) -> dict[str, Any]:
+    if not isinstance(snapshot, Mapping):
+        raise ValueError("planned_refresh_snapshot_invalid")
+    expected = {str(value).strip() for value in expected_event_ids}
+    if not expected or "" in expected:
+        raise ValueError("planned_refresh_expected_events_invalid")
+    matches = snapshot.get("matches")
+    if not isinstance(matches, list) or not matches:
+        raise ValueError("planned_refresh_trigger_events_missing")
+    decisions: dict[str, str] = {}
+    for match in matches:
+        if not isinstance(match, Mapping):
+            raise ValueError("planned_refresh_snapshot_invalid")
+        declared = match.get("competition")
+        event_id = match.get("source_event_id")
+        decision = match.get("match_decision")
+        label = decision.get("label") if isinstance(decision, Mapping) else None
+        if (
+            not isinstance(declared, Mapping)
+            or declared.get("id") != competition_id
+            or not isinstance(event_id, str)
+            or not event_id.strip()
+            or event_id in decisions
+        ):
+            raise ValueError("planned_refresh_snapshot_invalid")
+        decisions[event_id] = str(label or "")
+    if not expected.issubset(decisions) or any(
+        decisions[event_id] not in {"MATCH_PICK", "NO_CLEAN_MARKET"}
+        for event_id in expected
+    ):
+        raise ValueError("planned_refresh_trigger_events_missing")
+    return dict(snapshot)
 
 
 def run_league_batch(
@@ -29,6 +67,8 @@ def run_league_batch(
     planned_competition_ids: Sequence[str] | None = None,
     live_env: Mapping[str, str] | None = None,
     store_factory: Callable[[str | Path], Any] = LeagueLiveStore,
+    expected_event_ids_by_competition: Mapping[str, Sequence[str]] | None = None,
+    commit_callback: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
     del score_fetcher
     acceptance_rows = (
@@ -53,6 +93,11 @@ def run_league_batch(
         ):
             return {"status": "blocked", "reason": "planned_competitions_invalid"}
     payloads = dict(odds_payloads or {})
+    expected_events = (
+        dict(expected_event_ids_by_competition)
+        if isinstance(expected_event_ids_by_competition, Mapping)
+        else {}
+    )
     competitions: dict[str, dict[str, Any]] = {}
     committed_receipts: list[dict[str, Any]] = []
     store = store_factory(root) if live and write else None
@@ -102,6 +147,12 @@ def run_league_batch(
                 )
             else:
                 snapshot = snapshot_builder(payloads[profile.id], profile.id, observed_at)
+            if profile.id in expected_events:
+                snapshot = _validate_expected_snapshot(
+                    snapshot,
+                    profile.id,
+                    expected_events[profile.id],
+                )
             count = len(snapshot.get("matches") or [])
             if store is not None:
                 identity = hashlib.sha256(f"{profile.id}|{observed_at}".encode("utf-8")).hexdigest()[:20]
@@ -116,6 +167,8 @@ def run_league_batch(
                     "snapshot_id": snapshot["snapshot_id"],
                     "commit_status": str(commit_status),
                 }
+                if commit_callback is not None:
+                    commit_callback(receipt)
                 committed_receipts.append(receipt)
                 competitions[profile.id] = {
                     "status": "built" if count else "empty",
@@ -150,14 +203,34 @@ def run_planned_league_refresh(
     odds_fetcher: Callable[..., Any],
     acceptance_report: dict[str, Any],
     identity_registry: LeagueTeamIdentityRegistry,
+    expected_event_ids_by_competition: Mapping[str, Sequence[str]],
+    guarded_acceptance_fingerprint: str,
     snapshot_builder: Callable[..., dict[str, Any]] = build_league_competition_snapshot,
     store_factory: Callable[[str | Path], Any] = LeagueLiveStore,
+    commit_callback: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
     """Refresh only planned sport keys and return receipts after durable store commits."""
     if not isinstance(env, Mapping) or not env:
         return {"status": "blocked", "reason": "planned_refresh_env_invalid"}
     if odds_fetcher is None:
         return {"status": "blocked", "reason": "planned_refresh_fetcher_missing"}
+    selected = [str(value) for value in competition_ids]
+    if (
+        not isinstance(expected_event_ids_by_competition, Mapping)
+        or set(expected_event_ids_by_competition) != set(selected)
+        or any(
+            not isinstance(rows, Sequence)
+            or isinstance(rows, (str, bytes))
+            or not rows
+            for rows in expected_event_ids_by_competition.values()
+        )
+    ):
+        return {"status": "blocked", "reason": "planned_refresh_expected_events_invalid"}
+    if (
+        not isinstance(guarded_acceptance_fingerprint, str)
+        or guarded_acceptance_fingerprint != acceptance_fingerprint(acceptance_report)
+    ):
+        return {"status": "blocked", "reason": "planned_refresh_acceptance_changed"}
     return run_league_batch(
         root=root,
         observed_at=observed_at,
@@ -170,6 +243,8 @@ def run_planned_league_refresh(
         planned_competition_ids=competition_ids,
         snapshot_builder=snapshot_builder,
         store_factory=store_factory,
+        expected_event_ids_by_competition=expected_event_ids_by_competition,
+        commit_callback=commit_callback,
     )
 
 
