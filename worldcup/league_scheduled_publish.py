@@ -1,9 +1,219 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Callable, Mapping
+
+from worldcup.league_acceptance import LeagueAcceptanceStore, acceptance_row_is_active
+from worldcup.league_lifecycle import run_league_lifecycle
+from worldcup.league_live_planner import plan_league_live_refresh
+from worldcup.quota import load_quota_ledger
+from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
+
+
+def _read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def build_aggregate_league_snapshot(
+    *, root: str | Path, snapshots: list[Mapping[str, Any]]
+) -> dict[str, Any]:
+    root_path = Path(root)
+    acceptance = LeagueAcceptanceStore(
+        root_path / "data/local/leagues/acceptance.json"
+    ).read()
+    if not isinstance(acceptance, Mapping):
+        raise ValueError("league_aggregate_acceptance_missing")
+    rows = acceptance.get("competitions") if isinstance(acceptance, Mapping) else {}
+    active_ids = {
+        str(competition_id)
+        for competition_id, row in (rows or {}).items()
+        if acceptance_row_is_active(row, str(competition_id))
+    }
+
+    by_competition: dict[str, dict[str, Any]] = {}
+    for snapshot in snapshots:
+        if not isinstance(snapshot, Mapping):
+            raise ValueError("league_aggregate_snapshot_invalid")
+        competition = snapshot.get("competition")
+        competition_id = str(competition.get("id") or "") if isinstance(competition, Mapping) else ""
+        if competition_id not in FORMAL_SINGLE_MATCH_IDS:
+            raise ValueError("league_aggregate_competition_invalid")
+        if competition_id not in active_ids:
+            raise ValueError("league_aggregate_competition_not_active")
+        if competition_id in by_competition:
+            raise ValueError("league_aggregate_duplicate_component")
+        by_competition[competition_id] = dict(snapshot)
+
+    for competition_id in sorted(active_ids - set(by_competition)):
+        path = root_path / "data/cache/leagues" / competition_id / "snapshot.json"
+        if path.exists():
+            cached = _read_json(path)
+            if isinstance(cached, Mapping):
+                by_competition[competition_id] = dict(cached)
+
+    missing = sorted(active_ids - set(by_competition))
+    if missing:
+        raise ValueError("league_aggregate_active_snapshot_missing")
+    matches: list[dict[str, Any]] = []
+    components: list[dict[str, str]] = []
+    seen: set[str] = set()
+    snapshot_times: list[str] = []
+    for competition_id in sorted(by_competition):
+        snapshot = by_competition[competition_id]
+        snapshot_id = str(snapshot.get("snapshot_id") or "").strip()
+        if not snapshot_id:
+            raise ValueError("league_aggregate_snapshot_id_missing")
+        declared = snapshot.get("competition")
+        if not isinstance(declared, Mapping) or declared.get("id") != competition_id:
+            raise ValueError("league_aggregate_competition_mismatch")
+        components.append({"competition_id": competition_id, "snapshot_id": snapshot_id})
+        snapshot_times.append(str(snapshot.get("snapshot_at") or ""))
+        for raw_match in snapshot.get("matches") or []:
+            if not isinstance(raw_match, Mapping):
+                raise ValueError("league_aggregate_match_invalid")
+            match = dict(raw_match)
+            match_competition = match.get("competition")
+            if not isinstance(match_competition, Mapping) or match_competition.get("id") != competition_id:
+                raise ValueError("league_aggregate_match_competition_mismatch")
+            event_id = str(match.get("source_event_id") or "").strip()
+            if not event_id or event_id in seen:
+                raise ValueError("league_aggregate_match_identity_invalid")
+            seen.add(event_id)
+            matches.append(match)
+
+    if not components:
+        raise ValueError("league_aggregate_empty")
+    digest_payload = json.dumps(components, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(digest_payload.encode("utf-8")).hexdigest()[:20]
+    statistics_path = root_path / "data/local/leagues/statistics.json"
+    statistics = _read_json(statistics_path) if statistics_path.exists() else None
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "snapshot_id": f"league-aggregate-{digest}",
+        "snapshot_at": max(snapshot_times),
+        "run": {"run_id": f"league-aggregate-{digest}"},
+        "competition": {"id": "multi_league", "name": "联赛聚合"},
+        "components": components,
+        "matches": matches,
+        "league_acceptance": acceptance or {"schema_version": 1, "competitions": {}},
+        "data_quality": {"missing_competition_snapshots": missing},
+    }
+    if isinstance(statistics, Mapping):
+        result["league_statistics"] = dict(statistics)
+    return result
+
+
+def _read_committed_refresh_snapshots(
+    root: str | Path, refreshed: list[Any]
+) -> list[dict[str, Any]]:
+    committed: list[dict[str, Any]] = []
+    for row in refreshed:
+        if not isinstance(row, Mapping):
+            raise ValueError("league_refresh_snapshot_invalid")
+        competition = row.get("competition")
+        competition_id = str(competition.get("id") or "") if isinstance(competition, Mapping) else ""
+        path = Path(root) / "data/cache/leagues" / competition_id / "snapshot.json"
+        if not path.exists():
+            raise ValueError("league_refresh_snapshot_not_committed")
+        stored = _read_json(path)
+        if not isinstance(stored, Mapping) or stored.get("snapshot_id") != row.get("snapshot_id"):
+            raise ValueError("league_refresh_snapshot_commit_mismatch")
+        committed.append(dict(stored))
+    return committed
+
+
+def build_local_league_plan(*, root: str | Path, now: str) -> dict[str, Any]:
+    root_path = Path(root)
+    acceptance = LeagueAcceptanceStore(
+        root_path / "data/local/leagues/acceptance.json"
+    ).read()
+    rows = acceptance.get("competitions") if isinstance(acceptance, Mapping) else {}
+    states = {
+        str(competition_id): str(row.get("state") or "disabled_until_live_acceptance")
+        for competition_id, row in (rows or {}).items()
+        if acceptance_row_is_active(row, str(competition_id))
+    }
+    events_by_competition: dict[str, list[dict[str, Any]]] = {}
+    for competition_id in sorted(states):
+        event_path = root_path / "data/probe/leagues" / competition_id / "events.json"
+        if not event_path.exists():
+            events_by_competition[competition_id] = []
+            continue
+        raw_events = _read_json(event_path)
+        if not isinstance(raw_events, list):
+            events_by_competition[competition_id] = []
+            continue
+        events = [dict(event) for event in raw_events if isinstance(event, Mapping)]
+        snapshot_path = root_path / "data/cache/leagues" / competition_id / "snapshot.json"
+        if snapshot_path.exists():
+            snapshot = _read_json(snapshot_path)
+            decisions = {
+                str(match.get("source_event_id") or ""): match.get("match_decision")
+                for match in (snapshot.get("matches") or [])
+                if isinstance(match, Mapping) and isinstance(match.get("match_decision"), Mapping)
+            } if isinstance(snapshot, Mapping) else {}
+            for event in events:
+                decision = decisions.get(str(event.get("id") or ""))
+                if decision is not None:
+                    event["match_decision"] = decision
+        events_by_competition[competition_id] = events
+    providers = load_quota_ledger(root_path / "data/cache/quota.json").get("providers") or {}
+    remaining_values = [
+        row.get("remaining")
+        for row in providers.values()
+        if isinstance(row, Mapping) and isinstance(row.get("remaining"), int)
+    ]
+    quota_upper_bound = max(remaining_values) if remaining_values else None
+    return plan_league_live_refresh(
+        now=now,
+        events_by_competition=events_by_competition,
+        acceptance_by_competition=states,
+        quota_remaining=quota_upper_bound,
+    )
+
+
+def run_local_league_scheduler(
+    *,
+    root: str | Path,
+    now: str,
+    live: bool = False,
+    write: bool = False,
+    pending_payload: Mapping[str, Any] | None = None,
+    env_loader: Callable[[], Mapping[str, str]] | None = None,
+    refresh_fn: Callable[..., Mapping[str, Any]] | None = None,
+    publish_fn: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    root_path = Path(root)
+    acceptance = LeagueAcceptanceStore(
+        root_path / "data/local/leagues/acceptance.json"
+    ).read()
+    rows = acceptance.get("competitions") if isinstance(acceptance, Mapping) else {}
+    active_ids = [
+        str(competition_id)
+        for competition_id, row in (rows or {}).items()
+        if acceptance_row_is_active(row, str(competition_id))
+    ]
+    lifecycle = run_league_lifecycle(
+        root=root_path,
+        competition_ids=sorted(active_ids),
+        write=live and write,
+    )
+    plan = build_local_league_plan(root=root_path, now=now)
+    scheduler = run_league_scheduled_publish(
+        root=root_path,
+        now=now,
+        plan=plan,
+        live=live,
+        write=write,
+        pending_payload=pending_payload,
+        env_loader=env_loader,
+        refresh_fn=refresh_fn,
+        publish_fn=publish_fn,
+    )
+    return {"status": scheduler["status"], "lifecycle": lifecycle, "scheduler": scheduler}
 
 
 def run_league_scheduled_publish(
@@ -44,12 +254,16 @@ def run_league_scheduled_publish(
     if refreshed.get("status") != "refreshed":
         return {"status": "refresh_failed", "plan": safe_plan, "refresh": refreshed, "publish": None}
     snapshots = refreshed.get("snapshots") if isinstance(refreshed.get("snapshots"), list) else []
-    published: list[dict[str, Any]] = []
-    for snapshot in snapshots:
-        if not isinstance(snapshot, Mapping) or not str(snapshot.get("snapshot_id") or ""):
-            continue
-        published.append(dict(publish_fn(snapshot)))
-    ok = bool(published) and all(row.get("status") in {"stored", "duplicate"} for row in published)
+    try:
+        committed = _read_committed_refresh_snapshots(root, snapshots)
+        aggregate = build_aggregate_league_snapshot(root=root, snapshots=committed)
+        published = dict(publish_fn(aggregate))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "status": "publish_failed", "reason": str(exc), "plan": safe_plan,
+            "refresh": refreshed, "publish": None,
+        }
+    ok = published.get("status") in {"stored", "duplicate"}
     return {
         "status": "published" if ok else "publish_failed",
         "plan": safe_plan,
@@ -63,10 +277,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=".")
     parser.add_argument("--now", required=True)
     args = parser.parse_args(argv)
-    result = run_league_scheduled_publish(
+    result = run_local_league_scheduler(
         root=args.root,
         now=args.now,
-        plan={"requests": [], "estimated_credits": 0},
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0

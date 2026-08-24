@@ -78,7 +78,7 @@
 - sidecar 使用独立 `daily_odds_state.json` 提交 `sport_key|anchor` 幂等键：只有 snapshot writer 成功后才提交，进程重启可复用已提交键；provider response 不完整、h2h 缺失、event identity/重复 ID/改期、赔率过期、quota unknown/不足或日预算不足时 fail-closed，部分失败只保留失败 key 重跑。默认 dry-run/disabled，不注册旧 scheduler 或 LaunchAgent，也不改变旧 `analysis_snapshot.json`、`project_daily_picks(snapshot)`、旧 `/api/daily-picks` 和 `/daily-picks`。
 - sidecar 只读入口为 `/api/daily-picks-sidecar` 与 `/daily-picks-sidecar`，页面刷新只读取已生成快照，不联网；旧单场菜单和 API 保持原契约。sidecar 的组合只来自同一全局 Top4，过滤同 event/同球队冲突，显示独立性近似组合分数，不显示资金或执行建议。
 
-### 六联赛单场分析完整闭环（离线骨架已实现，live 未启用）
+### 六联赛单场分析完整闭环（本地生产编排已实现）
 
 - 意甲、巴甲、西甲、英超、德甲和法甲将采用“通用联赛闭环 + 六个 competition profile”接入现有 `/preview` 单场分析，而不是只添加赛事名称，也不把每日精选 sidecar 冒充正式单场 snapshot。
 - 目标链路为：分赛事赔率刷新 → MatchPick v3 唯一首选 → 开球前最后合法 snapshot 封盘 → 严格 90 分钟赛果结算 → 分联赛 `decision_tally` / `decision_sample` / `decision_coverage` 与六联赛同口径汇总。
@@ -86,13 +86,14 @@
 - 离线实现阶段只使用保存样例和依赖注入，默认 dry-run，不读取 `.env`、不联网、不消耗 quota、不生成正式 closing 或统计。真实赔率/比分样例、90 分钟比分口径、生产调度、发布和部署均须后续单独确认。
 - 设计文档：[六联赛单场分析完整闭环设计](docs/superpowers/specs/2026-08-24-six-league-single-match-integration-design.md)。
 - Live 激活设计：[六联赛单场分析 Live 激活设计](docs/superpowers/specs/2026-08-24-six-league-live-activation-design.md)。六联赛同时进入赛程发现，按最近开球动态排序并逐联赛独立验收/启用；已经开赛的比赛不得补造赛前首选。
-- 当前已实现正式 profile、市场共识 snapshot、固定页面入口、严格 closing、90 分钟结果验证门、结算、独立统计和零写入 batch dry-run；`--live` / `--write` 仍返回 `live_acceptance_not_enabled`。尚未采集六联赛真实 scores 样例，不能声称生产赛果闭环已启用。
-- Live 激活代码现包含最近开球动态 planner、证据状态机/原子 acceptance store、赛事级严格球队 registry、通用 sport-key scores transport、不可自证的 90 分钟 result evidence、脱敏 probe bundle、分赛事 snapshot/history store，以及 pending-first scheduler 包装。默认命令仍为 dry-run；live 必须同时具备四类证据指纹、严格 identity registry、显式 `live=True/write=True` 和注入式 transport，否则在读取 env 或写盘前阻断。当前未保存六联赛正式真实样例、未生成 active acceptance report、未安装 LaunchAgent，因此线上仍不会自动刷新。
+- 意甲、英超、西甲、法甲和巴甲已通过本地正式验收并标记 `active`；德甲因 2026/27 尚无完赛证据停留在 `identity_verified`，调度必须排除。
+- 内部仍按联赛隔离 snapshot/history/closing/postmatch，公开发布则每轮只生成一份 `league-aggregate-*` snapshot。本轮未刷新的 `active` 联赛会从已提交缓存补齐，避免公开页只剩最后一个联赛；跨联赛身份错配、空 ID 或重复比赛会 fail-closed。
+- `worldcup.league_lifecycle` 以联赛分区运行封盘、严格 90 分钟结算和独立统计；单联赛失败隔离，dry-run 只计算不写入。当前未安装六联赛 LaunchAgent，也未推送或部署该聚合发布链路。
 
 零副作用调度外壳示例：
 
 ```bash
-python3 -m worldcup.league_scheduled_publish --now 2026-08-24T12:00:00Z
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.league_scheduled_publish --root /Users/eagod/ai-dev/足彩 --now 2026-08-24T12:00:00Z
 ```
 
 真实 probe、active 本地写入和 scheduler 安装分别属于实施计划 Gate B/C/D；不得仅修改 competition 配置解除门禁。

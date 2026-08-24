@@ -67,3 +67,60 @@ def test_accepted_registry_resolves_every_verified_serie_a_provider_team_and_rej
     } == expected
     assert registry.resolve("serie_a_2026_27", "Unknown Calcio").canonical is None
     assert registry.resolve("epl_2026_27", "AC Milan").canonical is None
+
+
+def test_accepted_registry_covers_verified_provider_teams_for_the_other_five_leagues():
+    registry = league_team_identity.accepted_league_team_identity_registry()
+    expected = {
+        "epl_2026_27": {
+            "Arsenal": "arsenal", "Aston Villa": "aston_villa", "Bournemouth": "bournemouth",
+            "Brentford": "brentford", "Brighton and Hove Albion": "brighton_and_hove_albion",
+            "Chelsea": "chelsea", "Coventry City": "coventry_city", "Crystal Palace": "crystal_palace",
+            "Everton": "everton", "Fulham": "fulham", "Hull City": "hull_city",
+            "Ipswich Town": "ipswich_town", "Leeds United": "leeds_united", "Liverpool": "liverpool",
+            "Manchester City": "manchester_city", "Manchester United": "manchester_united",
+            "Newcastle United": "newcastle_united", "Nottingham Forest": "nottingham_forest",
+            "Sunderland": "sunderland", "Tottenham Hotspur": "tottenham_hotspur",
+        },
+        "laliga_2026_27": {
+            "Alavés": "alaves", "Athletic Bilbao": "athletic_bilbao", "Atlético Madrid": "atletico_madrid",
+            "Barcelona": "barcelona", "CA Osasuna": "ca_osasuna", "Celta Vigo": "celta_vigo",
+            "Deportivo La Coruña": "deportivo_la_coruna", "Elche CF": "elche", "Espanyol": "espanyol",
+            "Getafe": "getafe", "Levante": "levante", "Málaga": "malaga", "Rayo Vallecano": "rayo_vallecano",
+            "Real Betis": "real_betis", "Real Madrid": "real_madrid",
+            "Real Racing Club de Santander": "racing_santander", "Real Sociedad": "real_sociedad",
+            "Sevilla": "sevilla", "Valencia": "valencia", "Villarreal": "villarreal",
+        },
+        "bundesliga_2026_27": {
+            "1. FC Köln": "fc_koln", "Augsburg": "augsburg", "Bayer Leverkusen": "bayer_leverkusen",
+            "Bayern Munich": "bayern_munich", "Borussia Dortmund": "borussia_dortmund",
+            "Borussia Monchengladbach": "borussia_monchengladbach", "Eintracht Frankfurt": "eintracht_frankfurt",
+            "Elversberg": "elversberg", "FC Schalke 04": "schalke_04", "FSV Mainz 05": "mainz_05",
+            "Hamburger SV": "hamburger_sv", "RB Leipzig": "rb_leipzig", "SC Freiburg": "freiburg",
+            "SC Paderborn": "paderborn", "TSG Hoffenheim": "hoffenheim", "Union Berlin": "union_berlin",
+            "VfB Stuttgart": "stuttgart", "Werder Bremen": "werder_bremen",
+        },
+        "ligue_1_2026_27": {
+            "AS Monaco": "as_monaco", "Angers": "angers", "Auxerre": "auxerre", "Brest": "brest",
+            "Le Havre": "le_havre", "Le Mans FC": "le_mans", "Lille": "lille", "Lorient": "lorient",
+            "Lyon": "lyon", "Marseille": "marseille", "Nice": "nice", "Paris FC": "paris_fc",
+            "Paris Saint Germain": "paris_saint_germain", "RC Lens": "rc_lens", "Rennes": "rennes",
+            "Strasbourg": "strasbourg", "Toulouse": "toulouse", "Troyes": "troyes",
+        },
+        "serie_a_brazil_2026": {
+            "Atletico Mineiro": "atletico_mineiro", "Atletico Paranaense": "atletico_paranaense",
+            "Bahia": "bahia", "Botafogo": "botafogo", "Bragantino-SP": "bragantino",
+            "Chapecoense": "chapecoense", "Corinthians": "corinthians", "Coritiba": "coritiba",
+            "Cruzeiro": "cruzeiro", "Flamengo": "flamengo", "Fluminense": "fluminense",
+            "Grêmio": "gremio", "Internacional": "internacional", "Mirassol": "mirassol",
+            "Palmeiras": "palmeiras", "Remo": "remo", "Santos": "santos", "Sao Paulo": "sao_paulo",
+            "Vasco da Gama": "vasco_da_gama", "Vitoria": "vitoria",
+        },
+    }
+
+    for competition_id, teams in expected.items():
+        assert {
+            provider_name: registry.resolve(competition_id, provider_name).canonical
+            for provider_name in teams
+        } == teams
+    assert registry.resolve("bundesliga_2026_27", "Arsenal").canonical is None
