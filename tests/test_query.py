@@ -8,8 +8,53 @@ from worldcup.query import (
     load_recent_snapshot_views,
     project_finished_rows,
     project_match_rows,
+    project_single_match_competitions,
+    project_league_statistics,
 )
 from worldcup.store import SQLiteSnapshotStore
+
+
+FORMAL_LEAGUE_IDS = {
+    "serie_a_2026_27",
+    "serie_a_brazil_2026",
+    "laliga_2026_27",
+    "epl_2026_27",
+    "bundesliga_2026_27",
+    "ligue_1_2026_27",
+}
+
+
+def test_single_match_competitions_include_fixed_six_without_fake_rows():
+    snapshot = {"matches": [], "finished": {"matches": []}}
+    projection = project_single_match_competitions(snapshot)
+    by_id = {row["competition_id"]: row for row in projection}
+
+    assert FORMAL_LEAGUE_IDS <= set(by_id)
+    assert all(
+        by_id[competition_id]["status"] == "disabled_until_live_acceptance"
+        for competition_id in FORMAL_LEAGUE_IDS
+    )
+    assert project_match_rows(snapshot) == []
+
+
+def test_league_statistics_projection_exposes_only_safe_scope():
+    snapshot = {"league_statistics": {
+        "statistics_scope": "observed_schema_v2_match_pick_only",
+        "competitions": {"epl_2026_27": {
+            "decision_tally": {"hit": 2, "miss": 1, "push": 0, "no_pick": 0},
+            "decision_sample": {"decided": 3, "hit_rate": 2 / 3, "sample_too_small": True},
+            "decision_coverage": {"missing_closing_count": 1},
+            "raw_provider": "must-not-leak",
+        }},
+        "aggregate": {
+            "decision_tally": {"hit": 2, "miss": 1, "push": 0, "no_pick": 0},
+            "decision_sample": {"decided": 3, "hit_rate": 2 / 3, "sample_too_small": True},
+            "decision_coverage": {"missing_closing_count": 1},
+        },
+    }}
+    projected = project_league_statistics(snapshot)
+    assert projected["competitions"]["epl_2026_27"]["decision_tally"]["hit"] == 2
+    assert "raw_provider" not in str(projected)
 
 
 class MemorySnapshotStore:

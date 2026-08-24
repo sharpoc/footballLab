@@ -29,6 +29,11 @@ class CompetitionConfig:
     theoddsapi_search_terms: tuple[str, ...] = ()
     markets: tuple[str, ...] = ("h2h", "spreads", "totals")
     metadata: Mapping[str, str] = field(default_factory=dict)
+    pipeline_family: str = "legacy"
+    prediction_policy: str = "existing"
+    result_policy: str = "football_90min"
+    statistics_scope: str = "existing"
+    runtime_status: str = "enabled"
 
     def snapshot_block(self) -> dict[str, str]:
         return {
@@ -105,6 +110,11 @@ _REGISTRY: dict[str, CompetitionConfig] = {
         theoddsapi_sport_key="soccer_epl",
         theoddsapi_candidate_keys=("soccer_epl",),
         theoddsapi_search_terms=("English Premier League", "EPL", "Premier League"),
+        pipeline_family="league_v1",
+        prediction_policy="market_consensus_until_club_rating_verified",
+        result_policy="verified_football_90min",
+        statistics_scope="observed_schema_v2_match_pick_only",
+        runtime_status="disabled_until_live_acceptance",
     ),
     "efl_championship_2026_27": CompetitionConfig(
         id="efl_championship_2026_27",
@@ -137,6 +147,11 @@ _REGISTRY: dict[str, CompetitionConfig] = {
         theoddsapi_sport_key="soccer_spain_la_liga",
         theoddsapi_candidate_keys=("soccer_spain_la_liga",),
         theoddsapi_search_terms=("La Liga", "Spanish La Liga"),
+        pipeline_family="league_v1",
+        prediction_policy="market_consensus_until_club_rating_verified",
+        result_policy="verified_football_90min",
+        statistics_scope="observed_schema_v2_match_pick_only",
+        runtime_status="disabled_until_live_acceptance",
     ),
     "bundesliga_2026_27": CompetitionConfig(
         id="bundesliga_2026_27",
@@ -153,6 +168,11 @@ _REGISTRY: dict[str, CompetitionConfig] = {
         theoddsapi_sport_key="soccer_germany_bundesliga",
         theoddsapi_candidate_keys=("soccer_germany_bundesliga",),
         theoddsapi_search_terms=("Bundesliga", "German Bundesliga"),
+        pipeline_family="league_v1",
+        prediction_policy="market_consensus_until_club_rating_verified",
+        result_policy="verified_football_90min",
+        statistics_scope="observed_schema_v2_match_pick_only",
+        runtime_status="disabled_until_live_acceptance",
     ),
     "bundesliga2_2026_27": CompetitionConfig(
         id="bundesliga2_2026_27",
@@ -185,6 +205,11 @@ _REGISTRY: dict[str, CompetitionConfig] = {
         theoddsapi_sport_key="soccer_france_ligue_one",
         theoddsapi_candidate_keys=("soccer_france_ligue_one",),
         theoddsapi_search_terms=("Ligue 1", "French Ligue 1"),
+        pipeline_family="league_v1",
+        prediction_policy="market_consensus_until_club_rating_verified",
+        result_policy="verified_football_90min",
+        statistics_scope="observed_schema_v2_match_pick_only",
+        runtime_status="disabled_until_live_acceptance",
     ),
     "serie_a_2026_27": CompetitionConfig(
         id="serie_a_2026_27",
@@ -201,6 +226,11 @@ _REGISTRY: dict[str, CompetitionConfig] = {
         theoddsapi_sport_key="soccer_italy_serie_a",
         theoddsapi_candidate_keys=("soccer_italy_serie_a",),
         theoddsapi_search_terms=("Serie A", "Italian Serie A"),
+        pipeline_family="league_v1",
+        prediction_policy="market_consensus_until_club_rating_verified",
+        result_policy="verified_football_90min",
+        statistics_scope="observed_schema_v2_match_pick_only",
+        runtime_status="disabled_until_live_acceptance",
     ),
     "allsvenskan_2026": CompetitionConfig(
         id="allsvenskan_2026",
@@ -329,6 +359,11 @@ _REGISTRY: dict[str, CompetitionConfig] = {
         theoddsapi_sport_key="soccer_brazil_campeonato",
         theoddsapi_candidate_keys=("soccer_brazil_campeonato",),
         theoddsapi_search_terms=("Brazilian Serie A", "Brazil Serie A", "Brasileirao"),
+        pipeline_family="league_v1",
+        prediction_policy="market_consensus_until_club_rating_verified",
+        result_policy="verified_football_90min",
+        statistics_scope="observed_schema_v2_match_pick_only",
+        runtime_status="disabled_until_live_acceptance",
     ),
     "mls_2026": CompetitionConfig(
         id="mls_2026",
@@ -348,9 +383,22 @@ _REGISTRY: dict[str, CompetitionConfig] = {
     ),
 }
 
+FORMAL_SINGLE_MATCH_IDS = (
+    "serie_a_2026_27",
+    "serie_a_brazil_2026",
+    "laliga_2026_27",
+    "epl_2026_27",
+    "bundesliga_2026_27",
+    "ligue_1_2026_27",
+)
+
 
 def list_competitions() -> list[CompetitionConfig]:
     return list(_REGISTRY.values())
+
+
+def formal_single_match_competitions() -> tuple[CompetitionConfig, ...]:
+    return tuple(_REGISTRY[competition_id] for competition_id in FORMAL_SINGLE_MATCH_IDS)
 
 
 def get_competition(competition_id: str) -> CompetitionConfig:

@@ -320,6 +320,42 @@ def test_preview_empty_upcoming_state_is_clear():
     assert "待开赛</span><strong>0</strong>" in html
 
 
+def test_preview_lists_fixed_six_leagues_without_inventing_matches():
+    snapshot = _snapshot()
+    snapshot["matches"] = []
+    snapshot["finished"] = {"matches": []}
+
+    html = build_preview_html(snapshot)
+
+    for competition_id in (
+        "serie_a_2026_27",
+        "serie_a_brazil_2026",
+        "laliga_2026_27",
+        "epl_2026_27",
+        "bundesliga_2026_27",
+        "ligue_1_2026_27",
+    ):
+        assert f'value="{competition_id}"' in html
+    assert "尚未启用正式刷新" in html
+
+
+def test_preview_renders_six_league_aggregate_as_small_sample_observation():
+    snapshot = _snapshot()
+    snapshot["league_statistics"] = {
+        "statistics_scope": "observed_schema_v2_match_pick_only",
+        "competitions": {},
+        "aggregate": {
+            "decision_tally": {"hit": 3, "miss": 2, "push": 0, "no_pick": 0},
+            "decision_sample": {"decided": 5, "hit_rate": 0.6, "sample_too_small": True},
+            "decision_coverage": {"missing_closing_count": 1},
+        },
+    }
+    html = build_preview_html(snapshot)
+    assert "六联赛同口径汇总" in html
+    assert "3 命中 / 2 未中" in html
+    assert "小样本观察" in html
+
+
 def test_preview_keeps_started_unfinished_match_with_frozen_pick():
     snapshot = _snapshot()
     started = snapshot["matches"][1]

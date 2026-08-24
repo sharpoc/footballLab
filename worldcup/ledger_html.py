@@ -17,7 +17,13 @@ from worldcup.ledger import (
     format_team_label,
     project_signal_rows,
 )
-from worldcup.query import project_finished_rows, project_match_decision, project_match_rows
+from worldcup.query import (
+    project_finished_rows,
+    project_match_decision,
+    project_match_rows,
+    project_league_statistics,
+    project_single_match_competitions,
+)
 
 
 def _text(value: Any) -> str:
@@ -2082,6 +2088,17 @@ def _decision_competition_options(
                 "label": str(row.get("competition_label") or competition_id),
             }
         )
+    for row in project_single_match_competitions(snapshot):
+        competition_id = row["competition_id"]
+        if competition_id in seen:
+            continue
+        seen.add(competition_id)
+        options.append(
+            {
+                "id": competition_id,
+                "label": f'{row["competition_label"]} · {row["status_label"]}',
+            }
+        )
     return options
 
 
@@ -2659,6 +2676,23 @@ def _render_decision_history(
 
 
 def _render_decision_right_rail(snapshot: dict[str, Any]) -> str:
+    league_statistics = project_league_statistics(snapshot)
+    aggregate = league_statistics.get("aggregate") or {}
+    tally = aggregate.get("decision_tally") or {}
+    sample = aggregate.get("decision_sample") or {}
+    statistics_card = ""
+    if league_statistics:
+        observation = " · 小样本观察" if sample.get("sample_too_small") else ""
+        statistics_card = """
+      <section class="rail-card">
+        <h2>六联赛同口径汇总</h2>
+        <p>{hit} 命中 / {miss} 未中{observation}</p>
+      </section>
+        """.format(
+            hit=_text(tally.get("hit", 0)),
+            miss=_text(tally.get("miss", 0)),
+            observation=_text(observation),
+        )
     return """
     <aside class="right-rail">
       <section class="rail-card">
@@ -2671,8 +2705,12 @@ def _render_decision_right_rail(snapshot: dict[str, Any]) -> str:
         <ul><li>模型输出只作为研究分析，可能出错。</li><li>数据过期或输入缺失会降低可信度。</li></ul>
       </section>
       <section class="rail-card"><h2>更新时间</h2><p>{snapshot_at}</p></section>
+      {statistics_card}
     </aside>
-    """.format(snapshot_at=_text(_format_snapshot_time(snapshot.get("snapshot_at"))))
+    """.format(
+        snapshot_at=_text(_format_snapshot_time(snapshot.get("snapshot_at"))),
+        statistics_card=statistics_card,
+    )
 
 
 def build_research_ledger_html(

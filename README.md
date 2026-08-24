@@ -78,13 +78,14 @@
 - sidecar 使用独立 `daily_odds_state.json` 提交 `sport_key|anchor` 幂等键：只有 snapshot writer 成功后才提交，进程重启可复用已提交键；provider response 不完整、h2h 缺失、event identity/重复 ID/改期、赔率过期、quota unknown/不足或日预算不足时 fail-closed，部分失败只保留失败 key 重跑。默认 dry-run/disabled，不注册旧 scheduler 或 LaunchAgent，也不改变旧 `analysis_snapshot.json`、`project_daily_picks(snapshot)`、旧 `/api/daily-picks` 和 `/daily-picks`。
 - sidecar 只读入口为 `/api/daily-picks-sidecar` 与 `/daily-picks-sidecar`，页面刷新只读取已生成快照，不联网；旧单场菜单和 API 保持原契约。sidecar 的组合只来自同一全局 Top4，过滤同 event/同球队冲突，显示独立性近似组合分数，不显示资金或执行建议。
 
-### 六联赛单场分析完整闭环（已确认设计，待实施）
+### 六联赛单场分析完整闭环（离线骨架已实现，live 未启用）
 
 - 意甲、巴甲、西甲、英超、德甲和法甲将采用“通用联赛闭环 + 六个 competition profile”接入现有 `/preview` 单场分析，而不是只添加赛事名称，也不把每日精选 sidecar 冒充正式单场 snapshot。
 - 目标链路为：分赛事赔率刷新 → MatchPick v3 唯一首选 → 开球前最后合法 snapshot 封盘 → 严格 90 分钟赛果结算 → 分联赛 `decision_tally` / `decision_sample` / `decision_coverage` 与六联赛同口径汇总。
 - 首版俱乐部评级保持 `club_rating_pending`，使用赔率去水后的市场共识并附加内部风险扣分；占位 1500 不得影响首选方向。世界杯、中超、legacy decision 和 reconstructed closing 不得混入六联赛正式胜率。
 - 离线实现阶段只使用保存样例和依赖注入，默认 dry-run，不读取 `.env`、不联网、不消耗 quota、不生成正式 closing 或统计。真实赔率/比分样例、90 分钟比分口径、生产调度、发布和部署均须后续单独确认。
 - 设计文档：[六联赛单场分析完整闭环设计](docs/superpowers/specs/2026-08-24-six-league-single-match-integration-design.md)。
+- 当前已实现正式 profile、市场共识 snapshot、固定页面入口、严格 closing、90 分钟结果验证门、结算、独立统计和零写入 batch dry-run；`--live` / `--write` 仍返回 `live_acceptance_not_enabled`。尚未采集六联赛真实 scores 样例，不能声称生产赛果闭环已启用。
 
 ## 目录结构
 

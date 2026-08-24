@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from worldcup.competitions import list_competitions
+from worldcup.competitions import formal_single_match_competitions, list_competitions
 from worldcup.decision_settlement import settle_match_decision, summarize_decision_records
 from worldcup.store import SQLiteSnapshotStore
 from worldcup.store_contract import SnapshotStore
@@ -15,6 +15,67 @@ FINISHED_MIN_SAMPLE = 20
 DEFAULT_COMPETITION_ID = "fifa_world_cup_2026"
 DEFAULT_COMPETITION_LABEL = "2026 世界杯"
 SNAPSHOT_VIEW_SCAN_LIMIT = 50
+
+SINGLE_MATCH_STATUS_LABELS = {
+    "active": "有正式单场数据",
+    "no_valid_odds": "暂无合法赔率",
+    "stale": "数据过期",
+    "result_pending": "赛果待确认",
+    "disabled_until_live_acceptance": "尚未启用正式刷新",
+}
+
+
+def project_single_match_competitions(snapshot: dict[str, Any]) -> list[dict[str, str]]:
+    present: set[str] = set()
+    for row in [
+        *(snapshot.get("matches") or []),
+        *((snapshot.get("finished") or {}).get("matches") or []),
+    ]:
+        if not isinstance(row, dict):
+            continue
+        competition = row.get("competition") if isinstance(row.get("competition"), dict) else {}
+        competition_id = str(row.get("competition_id") or competition.get("id") or "").strip()
+        if competition_id:
+            present.add(competition_id)
+
+    projected: list[dict[str, str]] = []
+    for profile in formal_single_match_competitions():
+        status = "active" if profile.id in present else profile.runtime_status
+        projected.append(
+            {
+                "competition_id": profile.id,
+                "competition_label": profile.name,
+                "status": status,
+                "status_label": SINGLE_MATCH_STATUS_LABELS[status],
+            }
+        )
+    return projected
+
+
+def _safe_statistics_row(value: Any) -> dict[str, Any]:
+    row = value if isinstance(value, dict) else {}
+    return {
+        "decision_tally": deepcopy(row.get("decision_tally") or {}),
+        "decision_sample": deepcopy(row.get("decision_sample") or {}),
+        "decision_coverage": deepcopy(row.get("decision_coverage") or {}),
+    }
+
+
+def project_league_statistics(snapshot: dict[str, Any]) -> dict[str, Any]:
+    source = snapshot.get("league_statistics")
+    if not isinstance(source, dict) or source.get("statistics_scope") != "observed_schema_v2_match_pick_only":
+        return {}
+    allowed = {profile.id for profile in formal_single_match_competitions()}
+    competitions = {
+        competition_id: _safe_statistics_row(row)
+        for competition_id, row in (source.get("competitions") or {}).items()
+        if competition_id in allowed
+    }
+    return {
+        "statistics_scope": "observed_schema_v2_match_pick_only",
+        "competitions": competitions,
+        "aggregate": _safe_statistics_row(source.get("aggregate")),
+    }
 
 
 def _active_competition_ids() -> list[str]:

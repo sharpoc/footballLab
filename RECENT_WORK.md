@@ -12,6 +12,12 @@
 - 同步 `worldcup.theoddsapi_keys`、readiness 必需变量名、scheduler/publish 安全提示、`.env.example`、README 和 AGENTS/CLAUDE；真实 Key 未写入文件，聊天中暴露的 Key 仍应撤销后重生。
 - TDD 分别验证第四、第五槽 RED→GREEN，readiness 缺槽变量名 RED→GREEN；聚焦 Key 测试 `13/13`，完整回归 `1129/1129 tests passed, 1 optional fastapi module skipped`，`py_compile` 与 `git diff --check` 通过。未读取/修改 `.env`、未联网、未消耗 quota、未 commit/push/deploy。
 
+## 2026-08-24 六联赛单场分析离线闭环
+
+- 意甲、巴甲、西甲、英超、德甲、法甲新增正式但默认关闭的 `league_v1` profile、市场共识 snapshot、单场页面固定入口与状态、严格赛前 closing、90 分钟赛果验证门、结算、分联赛统计和六联赛汇总。
+- batch runner 默认零写入 dry-run；live/write 明确阻断为 `live_acceptance_not_enabled`。未读取 `.env`、未联网、未消耗 quota、未生成正式 closing/统计、未发布或部署。
+- TDD 聚焦验证通过；共享 `load_config()` 污染由测试内 deep copy 修复并复现验证；批处理补充单联赛失败隔离与 `partial` 状态回归；最终完整回归 `1148/1148 tests passed, 1 optional fastapi module skipped`，六个新模块 `py_compile` 与 `git diff --check` 通过。
+
 ## 2026-08-20 中超赛后样本 Sentinel
 
 - 已确认独立 `worldcup.csl_postmatch_sentinel` 方向：复用“双源赛果接受 → postmatch shadow”触发，只监控数据链路异常、恢复和正式样本首次达到 50；不根据命中率或盘口方向报警，不自动调参或解除 `club_rating_pending`。
