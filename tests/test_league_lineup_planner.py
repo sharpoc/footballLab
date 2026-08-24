@@ -203,3 +203,32 @@ def test_planner_sorts_requests_by_competition_then_event_id():
         ("epl_2026_27", "z-event"),
         ("laliga_2026_27", "z-event"),
     ]
+
+
+def test_planner_blocks_a_forged_active_non_formal_competition():
+    """Removing the formal-league allowlist would send FotMob requests for arbitrary competitions."""
+    result = plan_league_lineup_poll(
+        now=NOW,
+        fixtures_by_competition={"fifa_world_cup_2026": [_fixture("wc-1", "2026-08-24T13:00:00Z")]},
+        acceptance_report=_active_report("fifa_world_cup_2026"),
+        state={"events": {}},
+    )
+
+    assert result["requests"] == []
+    assert result["skipped"] == {"fifa_world_cup_2026": {"acceptance_not_active": 1}}
+
+
+def test_planner_blocks_invalid_or_naive_persisted_poll_timestamps():
+    """Treating corrupt restart state as no history would bypass the polling throttle."""
+    fixtures = {"epl_2026_27": [_fixture("epl-1", "2026-08-24T13:00:00Z")]}
+    for last_polled_at in ("not-a-time", "2026-08-24T11:58:00"):
+        result = plan_league_lineup_poll(
+            now=NOW,
+            fixtures_by_competition=fixtures,
+            acceptance_report=_active_report("epl_2026_27"),
+            state={"events": {"epl_2026_27:epl-1": {"last_polled_at": last_polled_at}}},
+        )
+
+        assert result["requests"] == []
+        assert result["skipped"] == {"epl_2026_27": {"invalid_poll_state": 1}}
+        assert result["next_due_at"] is None

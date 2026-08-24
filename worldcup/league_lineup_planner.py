@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
+from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
+
 
 def _utc(value: Any) -> datetime:
     if isinstance(value, datetime):
@@ -28,7 +30,8 @@ def _active_competitions(report: Mapping[str, Any]) -> set[str]:
     return {
         str(competition_id)
         for competition_id, row in rows.items()
-        if isinstance(row, Mapping)
+        if competition_id in FORMAL_SINGLE_MATCH_IDS
+        and isinstance(row, Mapping)
         and row.get("competition_id") == competition_id
         and row.get("state") == "active"
         and isinstance(row.get("fingerprints"), Mapping)
@@ -110,8 +113,9 @@ def plan_league_lineup_poll(
                 try:
                     last_polled_dt = _utc(last_polled_at)
                 except (TypeError, ValueError):
-                    last_polled_dt = None
-                if last_polled_dt is not None and last_polled_dt + interval > now_dt:
+                    _add_skip(skipped, competition_id, "invalid_poll_state")
+                    continue
+                if last_polled_dt + interval > now_dt:
                     due_at = last_polled_dt + interval
                     _add_skip(skipped, competition_id, "poll_throttled")
                     if due_at < kickoff:
