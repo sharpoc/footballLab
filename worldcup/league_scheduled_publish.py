@@ -125,6 +125,55 @@ def _read_committed_refresh_snapshots(
     return committed
 
 
+def publish_committed_league_snapshots(
+    *,
+    root: str | Path,
+    snapshot_receipts: list[Any],
+    publish_fn: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Re-read committed partitions, build one complete aggregate, and publish it."""
+    try:
+        committed = _read_committed_refresh_snapshots(root, snapshot_receipts)
+        aggregate = build_aggregate_league_snapshot(root=root, snapshots=committed)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        reason = str(exc)
+        if not reason.startswith("league_"):
+            reason = "league_aggregate_invalid"
+        return {
+            "status": "publish_failed",
+            "reason": reason,
+            "publish": None,
+            "aggregate": None,
+        }
+    try:
+        published_value = publish_fn(aggregate)
+        published = dict(published_value) if isinstance(published_value, Mapping) else {}
+    except Exception:
+        return {
+            "status": "publish_failed",
+            "reason": "league_aggregate_publisher_failed",
+            "publish": None,
+            "aggregate": None,
+        }
+    if published.get("status") not in {"stored", "duplicate"}:
+        return {
+            "status": "publish_failed",
+            "reason": "league_aggregate_ingest_not_confirmed",
+            "publish": published,
+            "aggregate": None,
+        }
+    run = aggregate.get("run") if isinstance(aggregate.get("run"), Mapping) else {}
+    return {
+        "status": "published",
+        "publish": published,
+        "aggregate": {
+            "snapshot_id": aggregate["snapshot_id"],
+            "run_id": str(run.get("run_id") or ""),
+            "components": list(aggregate.get("components") or []),
+        },
+    }
+
+
 def build_local_league_plan(*, root: str | Path, now: str) -> dict[str, Any]:
     root_path = Path(root)
     acceptance = LeagueAcceptanceStore(
@@ -254,21 +303,18 @@ def run_league_scheduled_publish(
     if refreshed.get("status") != "refreshed":
         return {"status": "refresh_failed", "plan": safe_plan, "refresh": refreshed, "publish": None}
     snapshots = refreshed.get("snapshots") if isinstance(refreshed.get("snapshots"), list) else []
-    try:
-        committed = _read_committed_refresh_snapshots(root, snapshots)
-        aggregate = build_aggregate_league_snapshot(root=root, snapshots=committed)
-        published = dict(publish_fn(aggregate))
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return {
-            "status": "publish_failed", "reason": str(exc), "plan": safe_plan,
-            "refresh": refreshed, "publish": None,
-        }
-    ok = published.get("status") in {"stored", "duplicate"}
+    publication = publish_committed_league_snapshots(
+        root=root,
+        snapshot_receipts=snapshots,
+        publish_fn=publish_fn,
+    )
+    ok = publication.get("status") == "published"
     return {
         "status": "published" if ok else "publish_failed",
+        **({"reason": publication["reason"]} if not ok and publication.get("reason") else {}),
         "plan": safe_plan,
         "refresh": refreshed,
-        "publish": published,
+        "publish": publication.get("publish"),
     }
 
 

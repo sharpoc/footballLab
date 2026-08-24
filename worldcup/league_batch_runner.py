@@ -4,9 +4,9 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Sequence
 
-from worldcup.competitions import formal_single_match_competitions
+from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS, formal_single_match_competitions
 from worldcup.league_competition_pipeline import build_league_competition_snapshot
 from worldcup.league_live_store import LeagueLiveStore
 from worldcup.league_acceptance import acceptance_row_is_active
@@ -26,6 +26,9 @@ def run_league_batch(
     snapshot_builder: Callable[..., dict[str, Any]] = build_league_competition_snapshot,
     acceptance_report: dict[str, Any] | None = None,
     identity_registry: LeagueTeamIdentityRegistry | None = None,
+    planned_competition_ids: Sequence[str] | None = None,
+    live_env: Mapping[str, str] | None = None,
+    store_factory: Callable[[str | Path], Any] = LeagueLiveStore,
 ) -> dict[str, Any]:
     del score_fetcher
     acceptance_rows = (
@@ -39,23 +42,48 @@ def run_league_batch(
         return {"status": "blocked", "reason": "live_write_must_be_explicit"}
     if live and identity_registry is None:
         return {"status": "blocked", "reason": "strict_identity_registry_required"}
-    payloads = odds_payloads or {}
+    if planned_competition_ids is None:
+        selected_ids = None
+    else:
+        selected_ids = [str(value) for value in planned_competition_ids]
+        if (
+            not selected_ids
+            or len(set(selected_ids)) != len(selected_ids)
+            or not set(selected_ids).issubset(FORMAL_SINGLE_MATCH_IDS)
+        ):
+            return {"status": "blocked", "reason": "planned_competitions_invalid"}
+    payloads = dict(odds_payloads or {})
     competitions: dict[str, dict[str, Any]] = {}
-    store = LeagueLiveStore(root) if live and write else None
-    live_env: dict[str, str] | None = None
-    for profile in formal_single_match_competitions():
+    committed_receipts: list[dict[str, Any]] = []
+    store = store_factory(root) if live and write else None
+    resolved_env = dict(live_env) if isinstance(live_env, Mapping) else None
+    registered_profiles = {
+        profile.id: profile for profile in formal_single_match_competitions()
+    }
+    profiles = (
+        list(registered_profiles.values())
+        if selected_ids is None
+        else [registered_profiles[competition_id] for competition_id in selected_ids]
+    )
+    for profile in profiles:
         if live and write:
             acceptance = acceptance_rows.get(profile.id)
             if not acceptance_row_is_active(acceptance, profile.id):
                 competitions[profile.id] = {"status": "blocked", "reason": "acceptance_not_active"}
                 continue
-        if profile.id not in payloads and live and write and odds_fetcher is not None and env_loader is not None:
-            if live_env is None:
-                loaded = env_loader()
-                live_env = dict(loaded) if isinstance(loaded, dict) else {}
+        if (
+            profile.id not in payloads
+            and live
+            and write
+            and odds_fetcher is not None
+            and (resolved_env is not None or env_loader is not None)
+        ):
+            if resolved_env is None:
+                loaded = env_loader() if env_loader is not None else None
+                resolved_env = dict(loaded) if isinstance(loaded, Mapping) else {}
             try:
-                payloads[profile.id] = odds_fetcher(profile.theoddsapi_sport_key, live_env)
-            except (KeyError, OSError, TypeError, ValueError) as exc:
+                payloads[profile.id] = odds_fetcher(profile.theoddsapi_sport_key, resolved_env)
+            except Exception as exc:
                 competitions[profile.id] = {"status": "error", "reason": type(exc).__name__}
                 continue
         if profile.id not in payloads:
@@ -82,9 +110,22 @@ def run_league_batch(
                     "run_id": str(snapshot.get("run_id") or f"league-{identity}"),
                     "snapshot_id": str(snapshot.get("snapshot_id") or f"league-{identity}"),
                 }
-                store.commit_snapshot(profile.id, snapshot)
-            competitions[profile.id] = {"status": "built" if count else "empty", "match_count": count}
-        except (KeyError, OSError, TypeError, ValueError) as exc:
+                commit_status = store.commit_snapshot(profile.id, snapshot)
+                receipt = {
+                    "competition": {"id": profile.id},
+                    "snapshot_id": snapshot["snapshot_id"],
+                    "commit_status": str(commit_status),
+                }
+                committed_receipts.append(receipt)
+                competitions[profile.id] = {
+                    "status": "built" if count else "empty",
+                    "match_count": count,
+                    "snapshot_id": snapshot["snapshot_id"],
+                    "commit_status": str(commit_status),
+                }
+            else:
+                competitions[profile.id] = {"status": "built" if count else "empty", "match_count": count}
+        except Exception as exc:
             competitions[profile.id] = {"status": "error", "reason": type(exc).__name__}
     statuses = {row["status"] for row in competitions.values()}
     if "error" in statuses:
@@ -93,7 +134,43 @@ def run_league_batch(
         batch_status = "dry_run"
     if live and write and batch_status == "dry_run":
         batch_status = "refreshed"
-    return {"status": batch_status, "competitions": competitions}
+    return {
+        "status": batch_status,
+        "competitions": competitions,
+        "snapshots": committed_receipts,
+    }
+
+
+def run_planned_league_refresh(
+    *,
+    root: str | Path,
+    observed_at: str,
+    competition_ids: Sequence[str],
+    env: Mapping[str, str],
+    odds_fetcher: Callable[..., Any],
+    acceptance_report: dict[str, Any],
+    identity_registry: LeagueTeamIdentityRegistry,
+    snapshot_builder: Callable[..., dict[str, Any]] = build_league_competition_snapshot,
+    store_factory: Callable[[str | Path], Any] = LeagueLiveStore,
+) -> dict[str, Any]:
+    """Refresh only planned sport keys and return receipts after durable store commits."""
+    if not isinstance(env, Mapping) or not env:
+        return {"status": "blocked", "reason": "planned_refresh_env_invalid"}
+    if odds_fetcher is None:
+        return {"status": "blocked", "reason": "planned_refresh_fetcher_missing"}
+    return run_league_batch(
+        root=root,
+        observed_at=observed_at,
+        live=True,
+        write=True,
+        live_env=env,
+        odds_fetcher=odds_fetcher,
+        acceptance_report=acceptance_report,
+        identity_registry=identity_registry,
+        planned_competition_ids=competition_ids,
+        snapshot_builder=snapshot_builder,
+        store_factory=store_factory,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -3,8 +3,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import worldcup.league_scheduled_publish as league_scheduled_publish
-from worldcup.ingest import build_ingest_payload
-from worldcup.league_scheduled_publish import run_league_scheduled_publish
+from worldcup.ingest import build_ingest_payload, build_ingest_request
+from worldcup.league_scheduled_publish import (
+    publish_committed_league_snapshots,
+    run_league_scheduled_publish,
+)
 
 
 def _fail(*args, **kwargs):
@@ -301,3 +304,82 @@ def test_local_scheduler_plan_reads_active_evidence_and_excludes_identity_only_l
             "missing": ["history", "scores", "result_contract_evidence"],
         }
         assert "bundesliga_2026_27" not in result["lifecycle"]["competitions"]
+
+
+def test_committed_receipt_is_reread_and_aggregate_is_real_ingest_compatible():
+    published = []
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_acceptance(root, "epl_2026_27")
+        path = root / "data/cache/leagues/epl_2026_27/snapshot.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({
+            "snapshot_id": "committed-1",
+            "snapshot_at": "2026-08-24T12:00:00+00:00",
+            "competition": {"id": "epl_2026_27"},
+            "matches": [{
+                "source_event_id": "event-1",
+                "competition": {"id": "epl_2026_27"},
+            }],
+        }), encoding="utf-8")
+
+        def publish(snapshot):
+            published.append(snapshot)
+            request = build_ingest_request(
+                snapshot,
+                endpoint="https://example.invalid/api/ingest/snapshot",
+                secret="h" * 32,
+                timestamp="2026-08-24T12:01:00+00:00",
+            )
+            assert request["headers"]["X-Worldcup-Run-Id"] == snapshot["run"]["run_id"]
+            return {"status": "duplicate"}
+
+        result = publish_committed_league_snapshots(
+            root=root,
+            snapshot_receipts=[{
+                "competition": {"id": "epl_2026_27"},
+                "snapshot_id": "committed-1",
+                "commit_status": "stored",
+            }],
+            publish_fn=publish,
+        )
+
+        assert result["status"] == "published"
+        assert result["publish"] == {"status": "duplicate"}
+        assert result["aggregate"]["run_id"].startswith("league-aggregate-")
+        assert result["aggregate"]["components"] == [{
+            "competition_id": "epl_2026_27",
+            "snapshot_id": "committed-1",
+        }]
+        assert len(published) == 1
+
+
+def test_committed_receipt_snapshot_id_mismatch_blocks_publisher():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_acceptance(root, "epl_2026_27")
+        path = root / "data/cache/leagues/epl_2026_27/snapshot.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({
+            "snapshot_id": "actual-1",
+            "snapshot_at": "2026-08-24T12:00:00+00:00",
+            "competition": {"id": "epl_2026_27"},
+            "matches": [],
+        }), encoding="utf-8")
+
+        result = publish_committed_league_snapshots(
+            root=root,
+            snapshot_receipts=[{
+                "competition": {"id": "epl_2026_27"},
+                "snapshot_id": "claimed-1",
+                "commit_status": "stored",
+            }],
+            publish_fn=_fail,
+        )
+
+        assert result == {
+            "status": "publish_failed",
+            "reason": "league_refresh_snapshot_commit_mismatch",
+            "publish": None,
+            "aggregate": None,
+        }

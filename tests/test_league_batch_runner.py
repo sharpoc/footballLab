@@ -2,7 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
-from worldcup.league_batch_runner import run_league_batch
+from worldcup.league_batch_runner import run_league_batch, run_planned_league_refresh
 from worldcup.league_acceptance import evaluate_league_acceptance
 from worldcup.league_team_identity import LeagueTeamIdentityRegistry
 
@@ -149,3 +149,55 @@ def test_live_batch_blocks_without_strict_identity_registry_before_env_or_write(
         env_loader=_fail,
     )
     assert result == {"status": "blocked", "reason": "strict_identity_registry_required"}
+
+
+def test_planned_refresh_fetches_only_requested_competition_and_returns_commit_receipt():
+    evidence = {
+        "sport_catalog": {"verified": True, "fingerprint": "sport-fp"},
+        "odds_sample": {"verified": True, "fingerprint": "odds-fp"},
+        "team_identity": {"verified": True, "fingerprint": "team-fp", "unmatched_count": 0},
+        "result_contract": {"verified": True, "fingerprint": "result-fp"},
+    }
+    calls = []
+
+    def fetch(sport_key, env):
+        calls.append((sport_key, sorted(env)))
+        return [{"id": "event-1"}]
+
+    def build(payload, competition_id, observed_at, **_kwargs):
+        assert payload == [{"id": "event-1"}]
+        return {
+            "snapshot_at": observed_at,
+            "competition": {"id": competition_id},
+            "matches": [{
+                "source_event_id": "event-1",
+                "competition": {"id": competition_id},
+            }],
+        }
+
+    with TemporaryDirectory() as tmp:
+        result = run_planned_league_refresh(
+            root=tmp,
+            observed_at="2026-08-24T12:00:00Z",
+            competition_ids=["epl_2026_27"],
+            env={"THE_ODDS_API_KEY_SECONDARY": "s" * 40},
+            odds_fetcher=fetch,
+            acceptance_report={
+                "schema_version": 1,
+                "competitions": {
+                    "epl_2026_27": evaluate_league_acceptance("epl_2026_27", evidence),
+                },
+            },
+            identity_registry=_epl_registry(),
+            snapshot_builder=build,
+        )
+
+        assert result["status"] == "refreshed"
+        assert calls == [("soccer_epl", ["THE_ODDS_API_KEY_SECONDARY"])]
+        assert result["snapshots"] == [{
+            "competition": {"id": "epl_2026_27"},
+            "snapshot_id": result["competitions"]["epl_2026_27"]["snapshot_id"],
+            "commit_status": "stored",
+        }]
+        assert (Path(tmp) / "data/cache/leagues/epl_2026_27/snapshot.json").exists()
+        assert not (Path(tmp) / "data/cache/leagues/laliga_2026_27/snapshot.json").exists()
