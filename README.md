@@ -85,6 +85,7 @@
 - 首版俱乐部评级保持 `club_rating_pending`，使用赔率去水后的市场共识并附加内部风险扣分；占位 1500 不得影响首选方向。世界杯、中超、legacy decision 和 reconstructed closing 不得混入六联赛正式胜率。
 - 离线实现阶段只使用保存样例和依赖注入，默认 dry-run，不读取 `.env`、不联网、不消耗 quota、不生成正式 closing 或统计。真实赔率/比分样例、90 分钟比分口径、生产调度、发布和部署均须后续单独确认。
 - 设计文档：[六联赛单场分析完整闭环设计](docs/superpowers/specs/2026-08-24-six-league-single-match-integration-design.md)。
+- Live 激活设计：[六联赛单场分析 Live 激活设计](docs/superpowers/specs/2026-08-24-six-league-live-activation-design.md)。六联赛同时进入赛程发现，按最近开球动态排序并逐联赛独立验收/启用；已经开赛的比赛不得补造赛前首选。
 - 当前已实现正式 profile、市场共识 snapshot、固定页面入口、严格 closing、90 分钟结果验证门、结算、独立统计和零写入 batch dry-run；`--live` / `--write` 仍返回 `live_acceptance_not_enabled`。尚未采集六联赛真实 scores 样例，不能声称生产赛果闭环已启用。
 
 ## 目录结构
