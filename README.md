@@ -120,7 +120,11 @@
   --refresh-after-lineups --live-refresh --refresh-guard --publish --notify
 ```
 
-runner 对 live 路径使用 `data/local/leagues/league_pre_match.lock` 的非阻塞真实文件锁，锁竞争时不调用 Task 4 / Task 5 或任何外部 live 依赖。锁内顺序是：优先重试已持久的 Task 5 committed/publish pending，再运行本地赛程门禁和首发刷新，然后经 quota guard 合并刷新、重读已提交分区并发布单份 aggregate，最后才构造 Task 6 规范通知。Task 4 receipt 只会在 Task 5 持久 `published` 成功后 ACK；publish 失败不会生成“推荐已更新”事件，notification 失败不回滚 snapshot，而是留在 Task 6 outbox 重试。
+runner 对 live 路径使用 `data/local/leagues/league_pre_match.lock` 的非阻塞真实文件锁，锁竞争时不调用 Task 4 / Task 5 或任何外部 live 依赖。锁内业务顺序是：优先收敛已持久的 Task 5 committed/publish pending，并把每个 durable ACK 立即绑定到它对应的 component/aggregate snapshot 和发布后首选；再运行 Task 4 赛程门禁与首发轮询；有新 receipt 时再经 quota guard 刷新和发布；所有 Task 5 / Task 4 业务已推进后，才独立重试 Task 6 pending 并投递新通知。Task 6 outbox 损坏或通知失败不会阻断 Task 5 publish pending 或 Task 4 polling；两个队列不互相充当持久证据。
+
+Task 4 receipt 只会在 Task 5 持久 `published` 成功后 ACK。Task 7 为每个 receipt 保存发布前/后 decision、component snapshot ID 和 aggregate snapshot ID；同轮多次发布不再统一重读最后一份 current，重启恢复时可按 Task 5 receipt 重读精确 history snapshot。Publish 失败不会生成“推荐已更新”事件；通知失败不回滚 snapshot，只有 Task 6 返回与事件指纹一致的 `sent` / `already_sent`，或能从真实 outbox 证明 canonical pending 已持久，才能清理 Task 7 receipt context。
+
+T-20 缺首发通知只遍历当前严格 `active` acceptance 的未开赛赛事，`POSTPONED` / `CANCELLED` / `FINISHED` 等 terminal fixture 不发通知。Task 4 当前的 competition/global 源错误计数无法证明具体比赛归因，Task 7 对此 fail closed：只在收到严格 event-scoped `failed` / `succeeded` 证据时才更新该 competition+event episode，不从聚合计数猜测单场失败或恢复。Recovery 先进 Task 6 durable outbox，之后才单调把 episode 置为 inactive；中途失败或重启不会丢 recovery 事件。
 
 运行时安全产物均位于 ignored 路径：
 
