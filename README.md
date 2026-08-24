@@ -90,6 +90,69 @@
 - 内部仍按联赛隔离 snapshot/history/closing/postmatch，公开发布则每轮只生成一份 `league-aggregate-*` snapshot。本轮未刷新的 `active` 联赛会从已提交缓存补齐，避免公开页只剩最后一个联赛；跨联赛身份错配、空 ID 或重复比赛会 fail-closed。
 - `worldcup.league_lifecycle` 以联赛分区运行封盘、严格 90 分钟结算和独立统计；单联赛失败隔离，dry-run 只计算不写入。当前未安装六联赛 LaunchAgent，也未推送或部署该聚合发布链路。
 
+### 六联赛 Confirmed Lineup 赛前编排（本地离线实现）
+
+`worldcup.league_pre_match_runner` 是六联赛独立赛前入口，不修改世界杯 `worldcup.pre_match_runner` 或 `xin.celab.football.pre-match`。默认命令只做本地 dry-run，不创建单实例锁，不读 `.env`，不联网、写盘、消耗 The Odds API quota、发布或通知：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_pre_match_runner \
+  --root /Users/eagod/ai-dev/足彩
+```
+
+观察模式只请求并原子保存 FotMob confirmed 11+11，不刷新赔率、不发布、不通知：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_pre_match_runner \
+  --root /Users/eagod/ai-dev/足彩 \
+  --live-lineups --write-lineups
+```
+
+全链路命令必须显式给齐分层开关；`--refresh-guard` 是真实赔率刷新的强制前提，`--publish` 前会在单实例锁内校验非占位 HTTPS endpoint 和 HMAC secret。以下只是运维命令契约；真实 FotMob、quota、publish 和 WxPusher 仍须 Task 8 分别确认：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_pre_match_runner \
+  --root /Users/eagod/ai-dev/足彩 \
+  --endpoint https://football.celab.xin/api/ingest/snapshot \
+  --live-lineups --write-lineups \
+  --refresh-after-lineups --live-refresh --refresh-guard --publish --notify
+```
+
+runner 对 live 路径使用 `data/local/leagues/league_pre_match.lock` 的非阻塞真实文件锁，锁竞争时不调用 Task 4 / Task 5 或任何外部 live 依赖。锁内顺序是：优先重试已持久的 Task 5 committed/publish pending，再运行本地赛程门禁和首发刷新，然后经 quota guard 合并刷新、重读已提交分区并发布单份 aggregate，最后才构造 Task 6 规范通知。Task 4 receipt 只会在 Task 5 持久 `published` 成功后 ACK；publish 失败不会生成“推荐已更新”事件，notification 失败不回滚 snapshot，而是留在 Task 6 outbox 重试。
+
+运行时安全产物均位于 ignored 路径：
+
+- confirmed lineup 分区：`data/cache/leagues/lineups/<competition_id>.json`
+- Task 4 轮询/交付：`data/local/leagues/lineup_state.json` 和 `lineup_refresh_pending.json`
+- Task 5 刷新/publish 阶段：`data/local/leagues/post_lineup_refresh_state.json`
+- Task 6 通知 outbox/sent receipt：`data/local/leagues/lineup_notification_state.json`
+- Task 7 脱敏通知上下文/source episode：`data/local/leagues/league_pre_match_state.json`
+- 单实例锁：`data/local/leagues/league_pre_match.lock`
+
+LaunchAgent generator 默认生成观察模式 JSON；label 固定为 `xin.celab.football.league-pre-match`，`StartInterval=300`，`RunAtLoad=false`，日志为 `~/Library/Logs/worldcup/league-pre-match.{out,err}.log`。不传 `--out` 不写 plist，传入也只生成草案，永不调用 `launchctl`：
+
+```bash
+# 默认观察模式 JSON 预览
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_pre_match_launch_agent \
+  --python /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  --workdir /Users/eagod/ai-dev/足彩
+
+# 全链路 plist 草案；包含 quota guard，仍不安装/加载
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_pre_match_launch_agent \
+  --python /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  --workdir /Users/eagod/ai-dev/足彩 \
+  --full-live --endpoint https://football.celab.xin/api/ingest/snapshot \
+  --out /Users/eagod/ai-dev/足彩/data/cache/xin.celab.football.league-pre-match.plist
+```
+
+每 300 秒唤醒不等于每 300 秒请求：未来 90 分钟没有未开赛 active 比赛时 FotMob 请求为 0；T-90..T-45 最快 15 分钟一次，T-45..T-0 最快 5 分钟一次，同日 calendar 合并、details 仅限 due match ID。FotMob 是免费非正式源，没有 SLA；schema、confirmed 语义或身份无法证明时只保留旧首发和旧推荐，不用 predicted/unknown 猜测。
+
+本阶段没有安装或加载上述 timer。未来如已经确认安装后需回滚，只 bootout 新 label `xin.celab.football.league-pre-match`，不影响世界杯、中超或赛后 timer；LaunchAgent 安装/加载仍属 Task 8 独立确认门。
+
 零副作用调度外壳示例：
 
 ```bash
@@ -140,6 +203,8 @@ worldcup/
   lineup_source_probe.py        # FIFA/FotMob 首发源可用性只读探测（默认 dry-run，不进模型）
   pre_match_runner.py           # 首发轮询 → 新 confirmed lineup → post-lineup refresh guard → 首发后 odds refresh 编排（默认 dry-run）
   pre_match_launch_agent.py     # 赛前首发轮询 LaunchAgent plist 生成器（不加载 launchd）
+  league_pre_match_runner.py    # 六联赛 confirmed lineup → quota guard → aggregate publish → outbox 单实例编排
+  league_pre_match_launch_agent.py # 六联赛独立 LaunchAgent plist 生成器（不调用 launchctl）
   odds_trend.py                 # 从 history 归档提取每场赔率走势点
   finished_record.py            # closing match_decision × 赛果定格，维护本地增量完赛 store
   postmatch_publish.py          # 严格 90 分钟赛果 → 独立完整 snapshot → HMAC 发布（默认 dry-run）
