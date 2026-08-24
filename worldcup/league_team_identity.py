@@ -6,6 +6,32 @@ from typing import Mapping, Sequence
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
 
 
+_ACCEPTED_TEAM_GROUPS: dict[str, dict[str, tuple[str, ...]]] = {
+    "serie_a_2026_27": {
+        "ac_milan": ("AC Milan",),
+        "as_roma": ("AS Roma",),
+        "atalanta": ("Atalanta BC",),
+        "bologna": ("Bologna",),
+        "cagliari": ("Cagliari",),
+        "como": ("Como",),
+        "fiorentina": ("Fiorentina",),
+        "frosinone": ("Frosinone",),
+        "genoa": ("Genoa",),
+        "inter_milan": ("Inter Milan",),
+        "juventus": ("Juventus",),
+        "lazio": ("Lazio",),
+        "lecce": ("Lecce",),
+        "monza": ("Monza",),
+        "napoli": ("Napoli",),
+        "parma": ("Parma",),
+        "sassuolo": ("Sassuolo",),
+        "torino": ("Torino",),
+        "udinese": ("Udinese",),
+        "venezia": ("Venezia",),
+    },
+}
+
+
 @dataclass(frozen=True)
 class LeagueTeamIdentityResult:
     source_name: str
@@ -64,3 +90,7 @@ class LeagueTeamIdentityRegistry:
             "home_canonical": home_result.canonical,
             "away_canonical": away_result.canonical,
         }
+
+
+def accepted_league_team_identity_registry() -> LeagueTeamIdentityRegistry:
+    return LeagueTeamIdentityRegistry(_ACCEPTED_TEAM_GROUPS)

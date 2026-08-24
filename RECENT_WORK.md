@@ -20,6 +20,7 @@
 - 后续 live 激活设计已确认：六联赛同时参加赛程发现，按最近 kickoff 动态优先，逐联赛独立通过 odds/球队身份/90 分钟 scores 门禁后启用；真实请求逐 key 预估成本并在每次响应后重算 quota，已开赛场不得补造首选。设计阶段未联网、未读 `.env`、未消耗 quota、未解除 live 门或部署。
 - Live 激活实施计划已拆为动态 planner、验收状态机、严格球队身份、scores 语义证据、probe bundle、active refresh、closing/postmatch/statistics、单一 scheduler 八个可独立验收任务；真实 probe、active 写入、LaunchAgent、推送和部署继续作为计划外独立确认门。
 - Live 激活本地实现新增动态 planner、证据绑定 acceptance、严格 identity、通用 scores source、90 分钟 result evidence、脱敏 probe、分区 snapshot/history store 和 pending-first scheduler；live 缺任何四类证据或严格 registry 都在 env/写盘前阻断，正式赛果同样禁止 slug identity。TDD 新增/扩展 28 项测试，完整回归 `1176/1176 tests passed, 1 optional fastapi module skipped`，`py_compile`、`git diff --check` 和敏感字段扫描通过。实现阶段未联网、未读取 `.env`、未消耗 quota、未安装 timer、未推送或部署。
+- 意甲真实接受门已完成离线证据：20 支 The Odds API 样本球队进入显式 competition-scoped registry，未知球队和跨联赛名称仍 fail-closed；12 场 h2h 样本全部生成唯一 `MATCH_PICK`，identity 缺口为 0，8 场 scores 与意甲官方赛报一致。ignored 诊断报告为 `active` 但显式 `formal_runtime_enabled=false`，未写正式 `acceptance.json`。TDD RED→GREEN 后完整回归 `1177/1177 tests passed, 1 optional fastapi module skipped`，`py_compile`、`git diff --check` 和敏感扫描通过；本阶段未联网、未消耗 quota、未正式激活、未提交/推送/部署。
 
 ## 2026-08-20 中超赛后样本 Sentinel
 
