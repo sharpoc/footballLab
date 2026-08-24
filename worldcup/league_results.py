@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from worldcup.collectors.club_aliases import canonicalize_club
 from worldcup.competitions import get_competition
+from worldcup.league_result_evidence import verify_result_contract_evidence
+from worldcup.league_team_identity import LeagueTeamIdentityRegistry
 
 
 def _utc(value: Any) -> str:
@@ -18,7 +19,8 @@ def parse_verified_league_results(
     raw: list[dict[str, Any]],
     competition_id: str,
     *,
-    score_semantics_verified: bool = False,
+    result_contract_evidence: dict[str, Any] | None = None,
+    identity_registry: LeagueTeamIdentityRegistry | None = None,
 ) -> dict[str, Any]:
     profile = get_competition(competition_id)
     results: list[dict[str, Any]] = []
@@ -31,11 +33,18 @@ def parse_verified_league_results(
         seen.add(event_id)
         if event.get("sport_key") != profile.theoddsapi_sport_key or event.get("completed") is not True:
             continue
-        if not score_semantics_verified:
+        if not verify_result_contract_evidence(result_contract_evidence, competition_id):
             pending.append({"source_event_id": event_id, "reason": "result_90min_semantics_unverified"})
+            continue
+        if identity_registry is None:
+            pending.append({"source_event_id": event_id, "reason": "strict_team_identity_unavailable"})
             continue
         home = str(event.get("home_team") or "").strip()
         away = str(event.get("away_team") or "").strip()
+        identity = identity_registry.resolve_fixture(competition_id, home, away)
+        if identity["status"] != "verified":
+            pending.append({"source_event_id": event_id, "reason": str(identity["reason"] or "unmatched_team")})
+            continue
         scores = {
             str(row.get("name") or "").strip(): row.get("score")
             for row in event.get("scores") or []
@@ -52,8 +61,8 @@ def parse_verified_league_results(
             "kickoff_at_utc": _utc(event.get("commence_time")),
             "home_team": home,
             "away_team": away,
-            "home_canonical": canonicalize_club(competition_id, home),
-            "away_canonical": canonicalize_club(competition_id, away),
+            "home_canonical": identity["home_canonical"],
+            "away_canonical": identity["away_canonical"],
             "home_score": int(home_raw),
             "away_score": int(away_raw),
             "captured_at": _utc(event.get("last_update") or event.get("commence_time")),

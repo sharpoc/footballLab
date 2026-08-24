@@ -19,6 +19,7 @@
 - TDD 聚焦验证通过；共享 `load_config()` 污染由测试内 deep copy 修复并复现验证；批处理补充单联赛失败隔离与 `partial` 状态回归；最终完整回归 `1148/1148 tests passed, 1 optional fastapi module skipped`，六个新模块 `py_compile` 与 `git diff --check` 通过。
 - 后续 live 激活设计已确认：六联赛同时参加赛程发现，按最近 kickoff 动态优先，逐联赛独立通过 odds/球队身份/90 分钟 scores 门禁后启用；真实请求逐 key 预估成本并在每次响应后重算 quota，已开赛场不得补造首选。设计阶段未联网、未读 `.env`、未消耗 quota、未解除 live 门或部署。
 - Live 激活实施计划已拆为动态 planner、验收状态机、严格球队身份、scores 语义证据、probe bundle、active refresh、closing/postmatch/statistics、单一 scheduler 八个可独立验收任务；真实 probe、active 写入、LaunchAgent、推送和部署继续作为计划外独立确认门。
+- Live 激活本地实现新增动态 planner、证据绑定 acceptance、严格 identity、通用 scores source、90 分钟 result evidence、脱敏 probe、分区 snapshot/history store 和 pending-first scheduler；live 缺任何四类证据或严格 registry 都在 env/写盘前阻断，正式赛果同样禁止 slug identity。TDD 新增/扩展 28 项测试，完整回归 `1176/1176 tests passed, 1 optional fastapi module skipped`，`py_compile`、`git diff --check` 和敏感字段扫描通过。实现阶段未联网、未读取 `.env`、未消耗 quota、未安装 timer、未推送或部署。
 
 ## 2026-08-20 中超赛后样本 Sentinel
 

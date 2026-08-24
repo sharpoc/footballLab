@@ -87,6 +87,15 @@
 - 设计文档：[六联赛单场分析完整闭环设计](docs/superpowers/specs/2026-08-24-six-league-single-match-integration-design.md)。
 - Live 激活设计：[六联赛单场分析 Live 激活设计](docs/superpowers/specs/2026-08-24-six-league-live-activation-design.md)。六联赛同时进入赛程发现，按最近开球动态排序并逐联赛独立验收/启用；已经开赛的比赛不得补造赛前首选。
 - 当前已实现正式 profile、市场共识 snapshot、固定页面入口、严格 closing、90 分钟结果验证门、结算、独立统计和零写入 batch dry-run；`--live` / `--write` 仍返回 `live_acceptance_not_enabled`。尚未采集六联赛真实 scores 样例，不能声称生产赛果闭环已启用。
+- Live 激活代码现包含最近开球动态 planner、证据状态机/原子 acceptance store、赛事级严格球队 registry、通用 sport-key scores transport、不可自证的 90 分钟 result evidence、脱敏 probe bundle、分赛事 snapshot/history store，以及 pending-first scheduler 包装。默认命令仍为 dry-run；live 必须同时具备四类证据指纹、严格 identity registry、显式 `live=True/write=True` 和注入式 transport，否则在读取 env 或写盘前阻断。当前未保存六联赛正式真实样例、未生成 active acceptance report、未安装 LaunchAgent，因此线上仍不会自动刷新。
+
+零副作用调度外壳示例：
+
+```bash
+python3 -m worldcup.league_scheduled_publish --now 2026-08-24T12:00:00Z
+```
+
+真实 probe、active 本地写入和 scheduler 安装分别属于实施计划 Gate B/C/D；不得仅修改 competition 配置解除门禁。
 
 ## 目录结构
 
