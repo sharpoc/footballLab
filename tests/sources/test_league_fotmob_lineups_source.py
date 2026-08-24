@@ -46,3 +46,38 @@ def test_details_url_encodes_match_id_and_uses_injected_transport():
     result = fetch_fotmob_details(match_id="10/01", transport=transport)
     assert seen == ["https://www.fotmob.com/api/matchDetails?matchId=10%2F01"]
     assert result == {"general": {"matchId": "10/01"}}
+
+
+def test_transport_mapping_envelope_is_rejected_without_leaking_metadata():
+    """A transport adapter envelope must not escape as if it were the provider JSON body."""
+    def transport(_url):
+        return {
+            "json_body": {"leagues": []},
+            "headers": {"authorization": "SECRET_AUTHORIZATION"},
+            "raw_response": "SECRET_RAW_RESPONSE",
+        }
+
+    try:
+        fetch_fotmob_calendar(date="20260824", transport=transport)
+    except TypeError as exc:
+        assert str(exc) == "fotmob_transport_response_invalid"
+        assert "SECRET" not in str(exc)
+    else:
+        raise AssertionError("mapping envelope must be rejected")
+
+
+def test_decoded_body_with_forbidden_metadata_is_rejected_recursively():
+    """HTTP-body metadata keys must not be returned from the source boundary."""
+    def transport(_url):
+        return FakeResponse({
+            "leagues": [],
+            "nested": {"headers": {"cookie": "SECRET_COOKIE"}},
+        })
+
+    try:
+        fetch_fotmob_calendar(date="20260824", transport=transport)
+    except ValueError as exc:
+        assert str(exc) == "fotmob_response_contains_forbidden_metadata"
+        assert "SECRET_COOKIE" not in str(exc)
+    else:
+        raise AssertionError("forbidden response metadata must be rejected")

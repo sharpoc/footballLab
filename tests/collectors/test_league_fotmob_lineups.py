@@ -1,3 +1,4 @@
+import copy
 import json
 from pathlib import Path
 
@@ -8,8 +9,10 @@ from worldcup.league_team_identity import LeagueTeamIdentityRegistry
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "fotmob_lineups"
 COMPETITION = "epl_2026_27"
 FETCHED_AT = "2026-08-24T12:20:00Z"
+PROVIDER_COMPETITION_ID = "47"
 LOCAL_FIXTURES = [{
     "event_id": "odds-epl-1",
+    "competition_id": COMPETITION,
     "kickoff_at_utc": "2026-08-24T13:00:00Z",
     "home_team": "Arsenal",
     "away_team": "Chelsea",
@@ -34,6 +37,7 @@ def _parse(calendar="calendar_confirmed.json", details="details_confirmed.json",
         "local_fixtures": LOCAL_FIXTURES,
         "registry": _registry(),
         "fetched_at": FETCHED_AT,
+        "provider_competition_id": PROVIDER_COMPETITION_ID,
     }
     values.update(overrides)
     return parse_confirmed_fotmob_lineups(**values)
@@ -151,3 +155,91 @@ def test_first_capture_at_or_after_kickoff_is_rejected():
 
     assert result["accepted"] == []
     assert result["rejected"][0]["reason"] == "post_kickoff"
+
+
+def test_cross_league_calendar_cannot_be_relabelled_as_the_requested_competition():
+    """Dropping the provider league ID would accept same-name clubs from another competition."""
+    result = _parse(calendar="calendar_cross_league.json")
+
+    assert result["accepted"] == []
+    assert result["rejected"] == [{
+        "provider": "fotmob",
+        "competition_id": COMPETITION,
+        "source_match_id": "1001",
+        "reason": "competition_mismatch",
+    }]
+
+
+def test_provider_competition_identity_must_be_present_in_calendar_and_details():
+    """Missing or conflicting provider competition evidence must not be inferred from team names."""
+    missing_approved_id = _parse(provider_competition_id=None)
+    missing_calendar_id = _parse(calendar="calendar_missing_competition.json")
+    wrong_details_id = _parse(details="details_cross_league.json")
+
+    assert missing_approved_id["accepted"] == []
+    assert missing_approved_id["rejected"][0]["reason"] == "competition_identity_unverified"
+    assert missing_calendar_id["accepted"] == []
+    assert missing_calendar_id["rejected"][0]["reason"] == "competition_identity_missing"
+    assert wrong_details_id["accepted"] == []
+    assert wrong_details_id["rejected"][0]["reason"] == "competition_mismatch"
+
+
+def test_local_fixture_competition_must_not_be_relabelled():
+    """A local row scoped to another league cannot inherit the parser's requested competition."""
+    wrong_local = [{**LOCAL_FIXTURES[0], "competition_id": "laliga_2026_27"}]
+    result = _parse(local_fixtures=wrong_local)
+
+    assert result["accepted"] == []
+    assert result["rejected"][0]["reason"] == "competition_mismatch"
+
+
+def test_duplicate_league_container_for_the_same_match_fails_closed():
+    """The same provider match repeated across containers is not a unique competition join."""
+    result = _parse(calendar="calendar_duplicate_container.json")
+
+    assert result["accepted"] == []
+    assert {row["reason"] for row in result["rejected"]} == {"duplicate_candidate"}
+
+
+def test_non_scalar_player_id_is_rejected_without_stringifying_raw_metadata():
+    """Stringifying a player-ID mapping would persist arbitrary raw metadata as public identity."""
+    details = copy.deepcopy(_load("details_confirmed.json"))
+    details["content"]["lineup"]["homeTeam"]["starters"][0]["id"] = {
+        "raw_response": "SECRET_PLAYER_ID",
+    }
+    result = _parse(details_by_match_id={"1001": details})
+
+    assert result["accepted"] == []
+    assert result["rejected"][0]["reason"] == "invalid_player_identity"
+    assert "SECRET_PLAYER_ID" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_non_scalar_names_and_formations_are_dropped_without_metadata_escape():
+    """Nested objects in display fields must never be serialized into safe lineup output."""
+    details = copy.deepcopy(_load("details_confirmed.json"))
+    lineup = details["content"]["lineup"]
+    lineup["homeTeam"]["formation"] = {"headers": {"authorization": "SECRET_FORMATION"}}
+    lineup["homeTeam"]["starters"][0]["name"]["fullName"] = {
+        "cookie": "SECRET_PLAYER_NAME",
+    }
+    result = _parse(details_by_match_id={"1001": details})
+
+    assert len(result["accepted"]) == 1
+    accepted = result["accepted"][0]
+    assert accepted["home_formation"] is None
+    assert accepted["home_starting"][0]["name"] is None
+    encoded = json.dumps(result, ensure_ascii=False)
+    assert "SECRET_FORMATION" not in encoded
+    assert "SECRET_PLAYER_NAME" not in encoded
+    assert "headers" not in encoded.casefold()
+    assert "authorization" not in encoded.casefold()
+    assert "cookie" not in encoded.casefold()
+
+
+def test_non_scalar_local_event_id_cannot_enter_safe_output():
+    """A mapping-shaped event ID must not be stringified into accepted or rejected rows."""
+    local = [{**LOCAL_FIXTURES[0], "event_id": {"raw_response": "SECRET_EVENT"}}]
+    result = _parse(local_fixtures=local)
+
+    assert result["accepted"] == []
+    assert "SECRET_EVENT" not in json.dumps(result, ensure_ascii=False)

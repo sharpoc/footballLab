@@ -1,5 +1,5 @@
 {
-  "general": {"matchId": 1001, "matchTimeUTC": "2026-08-24T13:00:00Z", "homeTeam": {"name": "Arsenal"}, "awayTeam": {"name": "Chelsea"}},
+  "general": {"matchId": 1001, "leagueId": 47, "matchTimeUTC": "2026-08-24T13:00:00Z", "homeTeam": {"name": "Arsenal"}, "awayTeam": {"name": "Chelsea"}},
   "content": {"lineup": {
     "homeTeam": {"starters": [{"id": 101},{"id": 102},{"id": 103},{"id": 104},{"id": 105},{"id": 106},{"id": 107},{"id": 108},{"id": 109},{"id": 110},{"id": 111}]},
     "awayTeam": {"starters": [{"id": 201},{"id": 202},{"id": 203},{"id": 204},{"id": 205},{"id": 206},{"id": 207},{"id": 208},{"id": 209},{"id": 210},{"id": 211}]}

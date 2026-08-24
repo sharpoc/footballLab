@@ -1,6 +1,7 @@
 {
   "general": {
     "matchId": 1001,
+    "leagueId": 47,
     "matchTimeUTC": "2026-08-24T13:00:00Z",
     "homeTeam": {"name": "Arsenal"},
     "awayTeam": {"name": "Chelsea"}

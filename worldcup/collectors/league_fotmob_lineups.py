@@ -16,8 +16,13 @@ _KICKOFF_TOLERANCE = timedelta(minutes=5)
 def _utc(value: Any) -> datetime:
     if isinstance(value, datetime):
         parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError("fotmob_lineup_datetime_invalid") from None
     else:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        raise ValueError("fotmob_lineup_datetime_invalid")
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("fotmob_lineup_datetime_must_be_timezone_aware")
     return parsed.astimezone(timezone.utc)
@@ -32,14 +37,15 @@ def _team_name(value: Any) -> str:
         return value.strip()
     block = _mapping(value)
     name = block.get("name")
-    return str(name).strip() if name not in (None, "") else ""
+    return name.strip() if isinstance(name, str) else ""
 
 
 def _match_id(match: Mapping[str, Any]) -> str:
     for key in ("id", "matchId"):
         value = match.get(key)
-        if value not in (None, ""):
-            return str(value)
+        parsed = _provider_id(value)
+        if parsed is not None:
+            return parsed
     return ""
 
 
@@ -49,21 +55,29 @@ def _calendar_kickoff(match: Mapping[str, Any]) -> datetime:
     return _utc(value)
 
 
-def _calendar_matches(payload: Any) -> list[Mapping[str, Any]]:
-    matches: list[Mapping[str, Any]] = []
+def _provider_id(value: Any) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _calendar_matches(payload: Any) -> list[tuple[str | None, Mapping[str, Any]]]:
+    matches: list[tuple[str | None, Mapping[str, Any]]] = []
     for league in _mapping(payload).get("leagues") or []:
         league_block = _mapping(league)
+        league_id = _provider_id(league_block.get("id")) or _provider_id(league_block.get("primaryId"))
         for match in league_block.get("matches") or []:
             if isinstance(match, Mapping):
-                matches.append(match)
+                matches.append((league_id, match))
     return matches
 
 
 def _fixture_name(fixture: Mapping[str, Any], side: str) -> str:
     for key in (f"{side}_team", f"{side}_team_name"):
         value = fixture.get(key)
-        if value not in (None, ""):
-            return str(value).strip()
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return ""
 
 
@@ -74,12 +88,11 @@ def _local_rows(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for fixture in fixtures:
-        event_id = str(
+        event_id = _provider_id(
             fixture.get("event_id")
             or fixture.get("source_event_id")
             or fixture.get("id")
-            or ""
-        ).strip()
+        )
         try:
             kickoff = _utc(fixture.get("kickoff_at_utc") or fixture.get("commence_time"))
         except (TypeError, ValueError):
@@ -89,12 +102,16 @@ def _local_rows(
             _fixture_name(fixture, "home"),
             _fixture_name(fixture, "away"),
         )
-        if event_id and identity["status"] == "verified":
+        if event_id is not None and identity["status"] == "verified":
+            local_competition = fixture.get("competition_id")
             rows.append({
                 "event_id": event_id,
                 "kickoff": kickoff,
                 "home_canonical": identity["home_canonical"],
                 "away_canonical": identity["away_canonical"],
+                "competition_matches": (
+                    local_competition in (None, "") or local_competition == competition_id
+                ),
             })
     return rows
 
@@ -114,7 +131,7 @@ def _player_name(player: Mapping[str, Any]) -> str | None:
         value = name.get("fullName") or name.get("name") or name.get("shortName")
     else:
         value = name
-    text = str(value).strip() if value not in (None, "") else ""
+    text = value.strip() if isinstance(value, str) else ""
     return text or None
 
 
@@ -125,13 +142,13 @@ def _players(block: Any) -> list[dict[str, str | None]] | None:
     players: list[dict[str, str | None]] = []
     for raw in starters:
         player = _mapping(raw)
-        value = player.get("id") or player.get("playerId")
-        player_id = str(value).strip() if value not in (None, "") else ""
-        if not player_id:
-            return None
+        value = player.get("id") if player.get("id") not in (None, "") else player.get("playerId")
+        player_id = _provider_id(value)
+        if player_id is None:
+            raise ValueError("invalid_player_identity")
         players.append({"player_id": player_id, "name": _player_name(player)})
     if len({player["player_id"] for player in players}) != 11:
-        return None
+        raise ValueError("invalid_player_identity")
     return sorted(players, key=lambda player: str(player["player_id"]))
 
 
@@ -174,10 +191,16 @@ def _details_rejection_reason(
     local: Mapping[str, Any],
     competition_id: str,
     registry: LeagueTeamIdentityRegistry,
+    provider_competition_id: str,
 ) -> tuple[str | None, Mapping[str, Any], Mapping[str, Any]]:
     root = _mapping(details)
     general = _mapping(root.get("general"))
-    if str(general.get("matchId") or "") != source_match_id:
+    details_competition_id = _provider_id(general.get("leagueId"))
+    if details_competition_id is None:
+        return "competition_identity_missing", {}, {}
+    if details_competition_id != provider_competition_id:
+        return "competition_mismatch", {}, {}
+    if _provider_id(general.get("matchId")) != source_match_id:
         return "details_match_id_mismatch", {}, {}
     identity = registry.resolve_fixture(
         competition_id,
@@ -200,8 +223,11 @@ def _details_rejection_reason(
     lineup = _mapping(_mapping(root.get("content")).get("lineup"))
     home_block = _mapping(lineup.get("homeTeam"))
     away_block = _mapping(lineup.get("awayTeam"))
-    home_players = _players(home_block)
-    away_players = _players(away_block)
+    try:
+        home_players = _players(home_block)
+        away_players = _players(away_block)
+    except ValueError:
+        return "invalid_player_identity", {}, {}
     if home_players is None or away_players is None:
         return "incomplete_starting_xi", {}, {}
     status = _lineup_status(lineup)
@@ -220,6 +246,13 @@ def _details_rejection_reason(
     }, {"home_players": home_players, "away_players": away_players}
 
 
+def _optional_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
 def parse_confirmed_fotmob_lineups(
     *,
     calendar_payload: Any,
@@ -228,18 +261,34 @@ def parse_confirmed_fotmob_lineups(
     local_fixtures: Sequence[Mapping[str, Any]],
     registry: LeagueTeamIdentityRegistry,
     fetched_at: Any,
+    provider_competition_id: str | int | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     if competition_id not in FORMAL_SINGLE_MATCH_IDS:
         raise ValueError("fotmob_lineup_competition_not_allowed")
     fetched = _utc(fetched_at)
+    approved_provider_competition_id = _provider_id(provider_competition_id)
     local_rows = _local_rows(competition_id, local_fixtures, registry)
     rejected: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
+    calendar_rows = _calendar_matches(calendar_payload)
+    calendar_source_counts = Counter(_match_id(match) for _league_id, match in calendar_rows)
 
-    for match in _calendar_matches(calendar_payload):
+    for calendar_competition_id, match in calendar_rows:
         source_match_id = _match_id(match)
         if not source_match_id:
             rejected.append(_rejection(competition_id, "", "invalid_match_id"))
+            continue
+        if calendar_source_counts[source_match_id] != 1:
+            rejected.append(_rejection(competition_id, source_match_id, "duplicate_candidate"))
+            continue
+        if approved_provider_competition_id is None:
+            rejected.append(_rejection(competition_id, source_match_id, "competition_identity_unverified"))
+            continue
+        if calendar_competition_id is None:
+            rejected.append(_rejection(competition_id, source_match_id, "competition_identity_missing"))
+            continue
+        if calendar_competition_id != approved_provider_competition_id:
+            rejected.append(_rejection(competition_id, source_match_id, "competition_mismatch"))
             continue
         identity = registry.resolve_fixture(
             competition_id,
@@ -263,13 +312,17 @@ def parse_confirmed_fotmob_lineups(
             reason = "home_away_mismatch" if reversed_rows else "fixture_not_found"
             rejected.append(_rejection(competition_id, source_match_id, reason))
             continue
+        competition_rows = [row for row in oriented if row["competition_matches"]]
+        if not competition_rows:
+            rejected.append(_rejection(competition_id, source_match_id, "competition_mismatch"))
+            continue
         try:
             kickoff = _calendar_kickoff(match)
         except (TypeError, ValueError):
             rejected.append(_rejection(competition_id, source_match_id, "invalid_kickoff"))
             continue
         within_tolerance = [
-            row for row in oriented
+            row for row in competition_rows
             if abs(kickoff - row["kickoff"]) <= _KICKOFF_TOLERANCE
         ]
         if not within_tolerance:
@@ -305,6 +358,7 @@ def parse_confirmed_fotmob_lineups(
             local=local,
             competition_id=competition_id,
             registry=registry,
+            provider_competition_id=approved_provider_competition_id,
         )
         if reason is not None:
             rejected.append(_rejection(competition_id, source_match_id, reason))
@@ -324,8 +378,8 @@ def parse_confirmed_fotmob_lineups(
             "lineup_status": "confirmed",
             "home_canonical": local["home_canonical"],
             "away_canonical": local["away_canonical"],
-            "home_formation": str(home_block.get("formation") or "").strip() or None,
-            "away_formation": str(away_block.get("formation") or "").strip() or None,
+            "home_formation": _optional_text(home_block.get("formation")),
+            "away_formation": _optional_text(away_block.get("formation")),
             "home_starting": home_players,
             "away_starting": away_players,
             "lineup_fingerprint": _fingerprint(
