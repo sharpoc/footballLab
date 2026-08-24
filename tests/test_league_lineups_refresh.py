@@ -5,13 +5,22 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from worldcup.league_lineup_store import LeagueLineupStore
-from worldcup.league_lineups_refresh import run_league_lineups_refresh
+from worldcup.league_lineups_refresh import (
+    run_league_lineups_refresh as _run_league_lineups_refresh,
+)
 from worldcup.league_team_identity import accepted_league_team_identity_registry
 
 
 NOW = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
 COMPETITION = "epl_2026_27"
+LALIGA = "laliga_2026_27"
 PROVIDER_COMPETITION = "47"
+
+
+def run_league_lineups_refresh(**kwargs):
+    requested_now = kwargs.get("now", NOW)
+    kwargs.setdefault("observed_clock", lambda: requested_now)
+    return _run_league_lineups_refresh(**kwargs)
 
 
 def _active_report():
@@ -246,6 +255,69 @@ def test_live_refresh_coalesces_calendar_by_date_and_fetches_only_due_details():
         assert [row["event_id"] for row in result["newly_confirmed"][COMPETITION]] == ["epl-1", "epl-2"]
         assert result["counts"]["calendar_fetch_count"] == 1
         assert result["counts"]["details_fetch_count"] == 2
+        assert result["source_events"] == [
+            {
+                "competition_id": COMPETITION,
+                "event_id": "epl-1",
+                "outcome": "succeeded",
+            },
+            {
+                "competition_id": COMPETITION,
+                "event_id": "epl-2",
+                "outcome": "succeeded",
+            },
+        ]
+
+
+def test_live_details_response_at_kickoff_cannot_commit_confirmed_lineup():
+    """A response received at kickoff must not inherit the request-start timestamp."""
+    kickoff = "2026-08-24T13:00:00+00:00"
+    fixture = _fixture("epl-crossed", kickoff, "Arsenal", "Chelsea")
+    calendar = _calendar(
+        _calendar_match("1001", kickoff, "Arsenal", "Chelsea")
+    )
+    moments = iter((
+        datetime(2026, 8, 24, 12, 59, 59, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 12, 59, 59, 500000, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc),
+    ))
+    last = datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc)
+
+    def observed_clock():
+        nonlocal last
+        try:
+            last = next(moments)
+        except StopIteration:
+            pass
+        return last
+
+    with TemporaryDirectory() as tmp:
+        result = run_league_lineups_refresh(
+            root=tmp,
+            now=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            live=True,
+            write=True,
+            observed_clock=observed_clock,
+            acceptance_report=_active_report(),
+            fixtures_by_competition={COMPETITION: [fixture]},
+            state=_empty_state(),
+            provider_competition_ids={COMPETITION: PROVIDER_COMPETITION},
+            identity_registry=accepted_league_team_identity_registry(),
+            calendar_fetcher=lambda **_kwargs: calendar,
+            details_fetcher=lambda **_kwargs: _details(
+                "1001", kickoff, "Arsenal", "Chelsea"
+            ),
+        )
+
+        assert result["newly_confirmed"] == {}
+        assert result["counts"]["accepted_count"] == 0
+        assert result["rejection_reasons"][COMPETITION]["post_kickoff"] == 1
+        assert not (
+            Path(tmp) / f"data/cache/leagues/lineups/{COMPETITION}.json"
+        ).exists()
+        assert not (
+            Path(tmp) / "data/local/leagues/lineup_refresh_pending.json"
+        ).exists()
 
 
 def test_one_details_failure_is_isolated_and_never_exposes_exception_text():
@@ -283,8 +355,121 @@ def test_one_details_failure_is_isolated_and_never_exposes_exception_text():
         assert [row["event_id"] for row in result["newly_confirmed"][COMPETITION]] == ["epl-1"]
         assert result["rejection_reasons"][COMPETITION]["details_fetch_failed"] == 1
         assert result["counts"]["source_failure_count"] == 1
+        assert result["source_events"] == [
+            {
+                "competition_id": COMPETITION,
+                "event_id": "epl-1",
+                "outcome": "succeeded",
+            },
+            {
+                "competition_id": COMPETITION,
+                "event_id": "epl-2",
+                "outcome": "failed",
+            },
+        ]
         assert "SECRET" not in json.dumps(result, ensure_ascii=False)
         assert "Cookie" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_calendar_failure_maps_only_the_exact_due_events_to_safe_failure_evidence():
+    fixtures = [
+        _fixture("epl-1", "2026-08-24T13:00:00+00:00", "Arsenal", "Chelsea"),
+        _fixture("epl-2", "2026-08-24T13:15:00+00:00", "Liverpool", "Everton"),
+    ]
+
+    with TemporaryDirectory() as tmp:
+        result = run_league_lineups_refresh(
+            root=tmp,
+            now=NOW,
+            live=True,
+            write=True,
+            acceptance_report=_active_report(),
+            fixtures_by_competition={COMPETITION: fixtures},
+            state=_empty_state(),
+            provider_competition_ids={COMPETITION: PROVIDER_COMPETITION},
+            identity_registry=accepted_league_team_identity_registry(),
+            calendar_fetcher=lambda **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("SECRET provider body")
+            ),
+            details_fetcher=_explode,
+        )
+
+        assert result["source_events"] == [
+            {
+                "competition_id": COMPETITION,
+                "event_id": "epl-1",
+                "outcome": "failed",
+            },
+            {
+                "competition_id": COMPETITION,
+                "event_id": "epl-2",
+                "outcome": "failed",
+            },
+        ]
+        assert result["counts"]["source_failure_count"] == 1
+        assert "SECRET" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_missing_provider_identity_is_event_scoped_without_hiding_healthy_competition():
+    epl = _fixture(
+        "epl-healthy",
+        "2026-08-24T13:00:00+00:00",
+        "Arsenal",
+        "Chelsea",
+    )
+    laliga = {
+        "competition_id": LALIGA,
+        "event_id": "laliga-missing-provider",
+        "kickoff_at_utc": "2026-08-24T13:00:00+00:00",
+        "home_team": "Real Madrid",
+        "away_team": "Barcelona",
+    }
+    acceptance = _active_report()
+    acceptance["competitions"][LALIGA] = {
+        "competition_id": LALIGA,
+        "state": "active",
+        "fingerprints": {
+            "sport_catalog": "laliga-sport",
+            "odds_sample": "laliga-odds",
+            "team_identity": "laliga-identity",
+            "result_contract": "laliga-result",
+        },
+    }
+    calendar = _calendar(
+        _calendar_match("1001", epl["kickoff_at_utc"], "Arsenal", "Chelsea")
+    )
+
+    with TemporaryDirectory() as tmp:
+        result = run_league_lineups_refresh(
+            root=tmp,
+            now=NOW,
+            live=True,
+            write=True,
+            acceptance_report=acceptance,
+            fixtures_by_competition={COMPETITION: [epl], LALIGA: [laliga]},
+            state=_empty_state(),
+            provider_competition_ids={COMPETITION: PROVIDER_COMPETITION},
+            identity_registry=accepted_league_team_identity_registry(),
+            calendar_fetcher=lambda **_kwargs: calendar,
+            details_fetcher=lambda **_kwargs: _details(
+                "1001", epl["kickoff_at_utc"], "Arsenal", "Chelsea"
+            ),
+        )
+
+        assert result["status"] == "partial"
+        assert result["counts"]["source_failure_count"] == 1
+        assert result["source_events"] == [
+            {
+                "competition_id": COMPETITION,
+                "event_id": "epl-healthy",
+                "outcome": "succeeded",
+            },
+            {
+                "competition_id": LALIGA,
+                "event_id": "laliga-missing-provider",
+                "outcome": "failed",
+            },
+        ]
 
 
 def test_cache_failure_prevents_state_commit_and_new_confirmation_output():

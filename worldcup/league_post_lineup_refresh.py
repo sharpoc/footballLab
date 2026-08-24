@@ -20,6 +20,7 @@ from worldcup.league_lineups_refresh import (
 )
 from worldcup.league_scheduled_publish import publish_committed_league_snapshots
 from worldcup.league_team_identity import LeagueTeamIdentityRegistry
+from worldcup.observed_clock import MonotonicUtcClock
 from worldcup.theoddsapi_keys import LOW_QUOTA_SWITCH_THRESHOLD, configured_key_slots
 
 
@@ -695,9 +696,10 @@ def run_post_lineup_refresh(
     live_store_factory: Callable[[str | Path], Any] = LeagueLiveStore,
     minimum_remaining: int = LOW_QUOTA_SWITCH_THRESHOLD,
     quota_max_age_seconds: int = QUOTA_LEDGER_MAX_AGE_SECONDS,
+    observed_clock: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     try:
-        now_dt = _utc(now)
+        requested_now = _utc(now)
         receipts = _normalize_receipts(newly_confirmed)
     except ValueError:
         return _result(
@@ -718,6 +720,17 @@ def run_post_lineup_refresh(
     if not receipts:
         return _result(
             status="not_due", plan=plan, durable=[], retryable=[], blocked=[]
+        )
+    try:
+        clock = MonotonicUtcClock(observed_clock)
+        now_dt = clock.now()
+    except ValueError:
+        return _result(
+            status="blocked",
+            plan=plan,
+            durable=[],
+            retryable=[],
+            blocked=[_ack_item(row, "observed_clock_invalid") for row in receipts],
         )
 
     try:
@@ -740,12 +753,12 @@ def run_post_lineup_refresh(
         existing = state["receipts"].get(row["token"])
         if isinstance(existing, Mapping) and existing.get("phase") == "published":
             durable_rows.append(row)
+        elif _utc(row["kickoff_at_utc"]) <= now_dt:
+            blocked_by_token[row["token"]] = _ack_item(row, "match_started")
         elif isinstance(existing, Mapping) and existing.get("phase") in {
             "refresh_started", "committed"
         }:
             unresolved.append(row)
-        elif _utc(row["kickoff_at_utc"]) <= now_dt:
-            blocked_by_token[row["token"]] = _ack_item(row, "match_started")
         else:
             unresolved.append(row)
     if durable_rows and not unresolved:
@@ -1002,6 +1015,25 @@ def run_post_lineup_refresh(
             new_rows = []
 
         if new_rows and selected is not None:
+            try:
+                request_observed_at = clock.now()
+            except ValueError:
+                for row in new_rows:
+                    blocked_by_token[row["token"]] = _ack_item(
+                        row, "observed_clock_invalid"
+                    )
+                new_rows = []
+            started_before_request = [
+                row for row in new_rows
+                if _utc(row["kickoff_at_utc"]) <= request_observed_at
+            ] if new_rows else []
+            if started_before_request:
+                started_tokens = {row["token"] for row in started_before_request}
+                for row in started_before_request:
+                    blocked_by_token[row["token"]] = _ack_item(row, "match_started")
+                new_rows = [row for row in new_rows if row["token"] not in started_tokens]
+
+        if new_rows and selected is not None:
             reservations[selected.provider] = reservations.get(selected.provider, 0) + 1
             attempt_rows = list(new_rows)
             attempt_receipts = [
@@ -1010,14 +1042,14 @@ def run_post_lineup_refresh(
             ]
             attempt_id = _attempt_snapshot_id(
                 competition_id,
-                now_dt.isoformat(),
+                request_observed_at.isoformat(),
                 [row["token"] for row in attempt_rows],
             )
             intent = {
                 row["token"]: {
                     "ack_key": dict(row["ack_key"]),
                     "phase": "refresh_started",
-                    "observed_at": now_dt.isoformat(),
+                    "observed_at": request_observed_at.isoformat(),
                     "acceptance_fingerprint": guarded_acceptance_fingerprint,
                     "attempt_id": attempt_id,
                     "attempt_receipts": attempt_receipts,
@@ -1061,7 +1093,7 @@ def run_post_lineup_refresh(
                         "ack_key": dict(row["ack_key"]),
                         "phase": "committed",
                         "snapshot_id": checked["snapshot_id"],
-                        "observed_at": now_dt.isoformat(),
+                        "observed_at": request_observed_at.isoformat(),
                         "acceptance_fingerprint": guarded_acceptance_fingerprint,
                     }
                     for row in rows
@@ -1070,10 +1102,10 @@ def run_post_lineup_refresh(
 
             refresh_kwargs: dict[str, Any] = {
                 "root": root,
-                "observed_at": now_dt.isoformat(),
+                "observed_at": request_observed_at.isoformat(),
                 "competition_ids": [competition_id],
                 "env": _selected_env(loaded_env, selected),
-                "odds_fetcher": odds_fetcher,
+                "odds_fetcher": None,
                 "acceptance_report": dict(acceptance),
                 "identity_registry": identity_registry,
                 "expected_event_ids_by_competition": {
@@ -1088,6 +1120,21 @@ def run_post_lineup_refresh(
             }
             if snapshot_builder is not None:
                 refresh_kwargs["snapshot_builder"] = snapshot_builder
+            crossed_kickoff = False
+
+            def guarded_odds_fetcher(sport_key: str, selected_env: Mapping[str, str]) -> Any:
+                nonlocal crossed_kickoff
+                payload = odds_fetcher(sport_key, selected_env)
+                received_at = clock.now()
+                if any(
+                    _utc(row["kickoff_at_utc"]) <= received_at
+                    for row in attempt_rows
+                ):
+                    crossed_kickoff = True
+                    raise ValueError("match_started")
+                return payload
+
+            refresh_kwargs["odds_fetcher"] = guarded_odds_fetcher
             try:
                 refresh_value = refresh_fn(**refresh_kwargs)
             except Exception:
@@ -1112,7 +1159,10 @@ def run_post_lineup_refresh(
                 expected_event_ids,
             ) is None:
                 for row in new_rows:
-                    retryable_by_token[row["token"]] = _ack_item(row, "refresh_failed")
+                    retryable_by_token[row["token"]] = _ack_item(
+                        row,
+                        "match_started" if crossed_kickoff else "refresh_failed",
+                    )
                 for row in committed_before_refresh:
                     publishable_tokens.discard(row["token"])
                 continue
@@ -1150,6 +1200,22 @@ def run_post_lineup_refresh(
             and row["token"] not in retryable_by_token
         ]
         if not committed_rows_for_competition:
+            continue
+        try:
+            publish_observed_at = clock.now()
+        except ValueError:
+            for row in committed_rows_for_competition:
+                retryable_by_token[row["token"]] = _ack_item(
+                    row, "observed_clock_invalid"
+                )
+            continue
+        if any(
+            _utc(row["kickoff_at_utc"]) <= publish_observed_at
+            for row in committed_rows_for_competition
+        ):
+            for row in committed_rows_for_competition:
+                blocked_by_token[row["token"]] = _ack_item(row, "match_started")
+                publishable_tokens.discard(row["token"])
             continue
         state_snapshot_ids = {
             state["receipts"][row["token"]].get("snapshot_id")

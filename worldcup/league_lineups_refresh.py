@@ -10,11 +10,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from worldcup.collectors.league_fotmob_lineups import parse_confirmed_fotmob_lineups
+from worldcup.collectors.league_fotmob_lineups import (
+    match_fotmob_lineup_sources,
+    parse_confirmed_fotmob_lineups,
+)
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
 from worldcup.league_acceptance import LeagueAcceptanceStore, acceptance_row_is_active
 from worldcup.league_lineup_planner import plan_league_lineup_poll
 from worldcup.league_lineup_store import LeagueLineupStore
+from worldcup.observed_clock import MonotonicUtcClock
 from worldcup.league_team_identity import (
     LeagueTeamIdentityRegistry,
     accepted_league_team_identity_registry,
@@ -94,6 +98,7 @@ def _blocked(reason: str) -> dict[str, Any]:
         "skipped": {},
         "rejection_reasons": {},
         "newly_confirmed": {},
+        "source_events": [],
         "next_due_at": None,
         "counts": {
             "fixture_count": 0,
@@ -269,6 +274,19 @@ def _provider_ids(
 def _increment(reasons: dict[str, dict[str, int]], competition_id: str, reason: str, count: int = 1) -> None:
     competition = reasons.setdefault(competition_id, {})
     competition[reason] = competition.get(reason, 0) + count
+
+
+def _source_event_rows(
+    outcomes: Mapping[tuple[str, str], str],
+) -> list[dict[str, str]]:
+    return [
+        {
+            "competition_id": competition_id,
+            "event_id": event_id,
+            "outcome": outcomes[(competition_id, event_id)],
+        }
+        for competition_id, event_id in sorted(outcomes)
+    ]
 
 
 def _summary(competition_id: str, row: Mapping[str, Any]) -> dict[str, Any]:
@@ -590,14 +608,24 @@ def run_league_lineups_refresh(
     details_transport: Callable[[str], Any] | None = None,
     env_loader: Callable[..., Any] | None = None,
     notifier: Callable[..., Any] | None = None,
+    observed_clock: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     del env_loader, notifier
     if live != write:
         return _blocked("live_write_must_be_explicit")
     try:
-        now_dt = _utc(now)
+        requested_now = _utc(now)
     except ValueError:
         return _blocked("invalid_now")
+    clock: MonotonicUtcClock | None = None
+    if live:
+        try:
+            clock = MonotonicUtcClock(observed_clock)
+            now_dt = clock.now()
+        except ValueError:
+            return _blocked("observed_clock_invalid")
+    else:
+        now_dt = requested_now
     try:
         acceptance_value = acceptance_loader(root) if acceptance_report is None else acceptance_report
         acceptance = _validate_acceptance(acceptance_value)
@@ -641,6 +669,7 @@ def run_league_lineups_refresh(
         "skipped": plan["skipped"],
         "rejection_reasons": {},
         "newly_confirmed": {},
+        "source_events": [],
         "next_due_at": plan["next_due_at"],
         "counts": counts,
     }
@@ -696,6 +725,7 @@ def run_league_lineups_refresh(
                 "skipped": plan["skipped"],
                 "rejection_reasons": {},
                 "newly_confirmed": deliveries,
+                "source_events": [],
                 "next_due_at": plan["next_due_at"],
                 "counts": counts,
             }
@@ -709,22 +739,27 @@ def run_league_lineups_refresh(
         for row in rows
     }
     rejection_reasons: dict[str, dict[str, int]] = {}
+    source_outcomes: dict[tuple[str, str], str] = {}
     usable_requests: list[dict[str, Any]] = []
     for request in requests:
         competition_id = request["competition_id"]
         if competition_id not in provider_ids:
             _increment(rejection_reasons, competition_id, "provider_competition_id_missing")
+            source_outcomes[(competition_id, request["event_id"])] = "failed"
+            counts["source_failure_count"] += 1
             continue
         usable_requests.append(request)
     if not usable_requests:
         result = _blocked("provider_competition_id_missing")
         result["skipped"] = plan["skipped"]
         result["rejection_reasons"] = rejection_reasons
+        result["source_events"] = _source_event_rows(source_outcomes)
         result["next_due_at"] = plan["next_due_at"]
         result["counts"].update({
             "fixture_count": counts["fixture_count"],
             "request_count": counts["request_count"],
             "rejection_count": sum(sum(row.values()) for row in rejection_reasons.values()),
+            "source_failure_count": len(source_outcomes),
         })
         return result
 
@@ -737,7 +772,7 @@ def run_league_lineups_refresh(
     accepted_by_competition: dict[str, list[dict[str, Any]]] = defaultdict(list)
     rejected_rows_by_competition: dict[str, list[dict[str, Any]]] = defaultdict(list)
     state_requests: list[dict[str, Any]] = []
-    had_source_failure = False
+    had_source_failure = counts["source_failure_count"] > 0
     for date in sorted(grouped):
         try:
             calendar_payload = calendar_fetcher(date=date, transport=calendar_transport)
@@ -748,6 +783,19 @@ def run_league_lineups_refresh(
             had_source_failure = True
             for competition_id, date_requests in grouped[date].items():
                 _increment(rejection_reasons, competition_id, "calendar_fetch_failed", len(date_requests))
+                for request in date_requests:
+                    source_outcomes[(competition_id, request["event_id"])] = "failed"
+                state_requests.extend(date_requests)
+            continue
+        try:
+            calendar_received_at = clock.now() if clock is not None else now_dt
+        except ValueError:
+            counts["source_failure_count"] += 1
+            had_source_failure = True
+            for competition_id, date_requests in grouped[date].items():
+                _increment(rejection_reasons, competition_id, "observed_clock_invalid", len(date_requests))
+                for request in date_requests:
+                    source_outcomes[(competition_id, request["event_id"])] = "failed"
                 state_requests.extend(date_requests)
             continue
         for competition_id in sorted(grouped[date]):
@@ -758,7 +806,7 @@ def run_league_lineups_refresh(
                 "competition_id": competition_id,
                 "local_fixtures": local_fixtures,
                 "registry": registry,
-                "fetched_at": now_dt,
+                "fetched_at": calendar_received_at,
                 "provider_competition_id": provider_ids[competition_id],
             }
             try:
@@ -766,10 +814,19 @@ def run_league_lineups_refresh(
                     parser(details_by_match_id={}, **parser_arguments),
                     competition_id,
                 )
+                event_source_ids = match_fotmob_lineup_sources(
+                    calendar_payload=calendar_payload,
+                    competition_id=competition_id,
+                    local_fixtures=local_fixtures,
+                    registry=registry,
+                    provider_competition_id=provider_ids[competition_id],
+                )
             except Exception:
                 _increment(rejection_reasons, competition_id, "parser_failed", len(date_requests))
                 counts["source_failure_count"] += 1
                 had_source_failure = True
+                for request in date_requests:
+                    source_outcomes[(competition_id, request["event_id"])] = "failed"
                 state_requests.extend(date_requests)
                 continue
             due_source_ids = sorted({
@@ -781,6 +838,7 @@ def run_league_lineups_refresh(
             })
             details_by_match_id: dict[str, Any] = {}
             failed_source_ids: set[str] = set()
+            details_received_at = calendar_received_at
             for source_match_id in due_source_ids:
                 try:
                     counts["details_fetch_count"] += 1
@@ -792,18 +850,43 @@ def run_league_lineups_refresh(
                     failed_source_ids.add(source_match_id)
                     counts["source_failure_count"] += 1
                     had_source_failure = True
+                try:
+                    details_received_at = clock.now() if clock is not None else now_dt
+                except ValueError:
+                    failed_source_ids.add(source_match_id)
+                    details_by_match_id.pop(source_match_id, None)
+                    counts["source_failure_count"] += 1
+                    had_source_failure = True
             try:
                 report = _validate_parser_report(
-                    parser(details_by_match_id=details_by_match_id, **parser_arguments),
+                    parser(
+                        details_by_match_id=details_by_match_id,
+                        **{**parser_arguments, "fetched_at": details_received_at},
+                    ),
                     competition_id,
                 )
             except Exception:
                 _increment(rejection_reasons, competition_id, "parser_failed", len(date_requests))
                 counts["source_failure_count"] += 1
                 had_source_failure = True
+                for request in date_requests:
+                    source_outcomes[(competition_id, request["event_id"])] = "failed"
                 state_requests.extend(date_requests)
                 continue
             state_requests.extend(date_requests)
+            failed_events = {
+                event_id
+                for event_id, source_match_id in event_source_ids.items()
+                if source_match_id in failed_source_ids
+            }
+            if failed_source_ids - set(event_source_ids.values()):
+                failed_events.update(request["event_id"] for request in date_requests)
+            for request in date_requests:
+                source_outcomes[(competition_id, request["event_id"])] = (
+                    "failed"
+                    if request["event_id"] in failed_events
+                    else "succeeded"
+                )
             accepted_by_competition[competition_id].extend(report.get("accepted", []))
             for row in report.get("rejected", []):
                 if not isinstance(row, Mapping):
@@ -830,8 +913,40 @@ def run_league_lineups_refresh(
             **base_result,
             "status": "error",
             "rejection_reasons": rejection_reasons,
+            "source_events": _source_event_rows(source_outcomes),
             "counts": counts,
         }
+
+    try:
+        commit_observed_at = clock.now() if clock is not None else now_dt
+    except ValueError:
+        for request in state_requests:
+            source_outcomes[(request["competition_id"], request["event_id"])] = "failed"
+        counts["source_failure_count"] += 1
+        return {
+            **base_result,
+            "status": "error",
+            "reason": "observed_clock_invalid",
+            "rejection_reasons": rejection_reasons,
+            "source_events": _source_event_rows(source_outcomes),
+            "counts": counts,
+        }
+    for competition_id, rows in list(accepted_by_competition.items()):
+        retained = [
+            row for row in rows
+            if _utc(row["kickoff_at_utc"]) > commit_observed_at
+        ]
+        rejected_after_response = len(rows) - len(retained)
+        if rejected_after_response:
+            _increment(
+                rejection_reasons,
+                competition_id,
+                "post_kickoff",
+                rejected_after_response,
+            )
+        accepted_by_competition[competition_id] = retained
+    counts["accepted_count"] = sum(len(rows) for rows in accepted_by_competition.values())
+    counts["rejection_count"] = sum(sum(row.values()) for row in rejection_reasons.values())
 
     store = store_factory(root)
     try:
@@ -857,11 +972,17 @@ def run_league_lineups_refresh(
             "status": "error",
             "reason": "cache_commit_failed",
             "rejection_reasons": rejection_reasons,
+            "source_events": _source_event_rows(source_outcomes),
             "counts": counts,
         }
         return result
 
-    next_state = _merge_state_for_poll(poll_state, state_requests, accepted_by_competition, now_dt)
+    next_state = _merge_state_for_poll(
+        poll_state,
+        state_requests,
+        accepted_by_competition,
+        commit_observed_at,
+    )
     try:
         store.commit_state(next_state)
         counts["state_commit_count"] += 1
@@ -871,12 +992,13 @@ def run_league_lineups_refresh(
             "status": "error",
             "reason": "state_commit_failed",
             "rejection_reasons": rejection_reasons,
+            "source_events": _source_event_rows(source_outcomes),
             "counts": counts,
         }
         return result
 
     next_plan = plan_league_lineup_poll(
-        now=now_dt,
+        now=commit_observed_at,
         fixtures_by_competition=fixtures,
         acceptance_report=acceptance,
         state=next_state,
@@ -892,6 +1014,7 @@ def run_league_lineups_refresh(
         "skipped": plan["skipped"],
         "rejection_reasons": rejection_reasons,
         "newly_confirmed": newly_confirmed,
+        "source_events": _source_event_rows(source_outcomes),
         "next_due_at": next_plan["next_due_at"],
         "counts": counts,
     }

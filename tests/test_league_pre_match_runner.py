@@ -1,28 +1,42 @@
 from __future__ import annotations
 
 import fcntl
+import io
 import json
+from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from worldcup.league_lineup_notifications import LeagueLineupNotificationOutbox
+from worldcup.league_acceptance import acceptance_fingerprint
+from worldcup.league_lineups_refresh import run_league_lineups_refresh
 from worldcup.league_post_lineup_refresh import (
     PostLineupRefreshStateStore,
     _ack_token,
     run_post_lineup_refresh,
 )
-from worldcup.league_team_identity import LeagueTeamIdentityRegistry
+from worldcup.league_team_identity import (
+    LeagueTeamIdentityRegistry,
+    accepted_league_team_identity_registry,
+)
+import worldcup.league_pre_match_runner as league_pre_match_runner_module
 from worldcup.league_pre_match_runner import (
     DEFAULT_LOCK_RELATIVE_PATH,
     LeaguePreMatchStateStore,
     STATE_RELATIVE_PATH,
-    run_league_pre_match,
+    run_league_pre_match as _run_league_pre_match,
 )
 
 
 NOW = "2026-08-24T12:00:00+00:00"
 EPL = "epl_2026_27"
 LALIGA = "laliga_2026_27"
+
+
+def run_league_pre_match(**kwargs):
+    requested_now = kwargs.get("now", NOW)
+    kwargs.setdefault("observed_clock", lambda: requested_now)
+    return _run_league_pre_match(**kwargs)
 
 
 def _fail(*_args, **_kwargs):
@@ -52,6 +66,14 @@ def _lineup_result(*rows: dict, status: str = "refreshed") -> dict:
         "skipped": {},
         "rejection_reasons": {},
         "newly_confirmed": grouped,
+        "source_events": [
+            {
+                "competition_id": row["ack_key"]["competition_id"],
+                "event_id": row["event_id"],
+                "outcome": "succeeded",
+            }
+            for row in rows
+        ],
         "next_due_at": None,
         "counts": {
             "fixture_count": len(rows),
@@ -168,7 +190,10 @@ def _write_pending(root: str | Path, *rows: dict) -> None:
     path = Path(root) / "data/local/leagues/lineup_refresh_pending.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     events = {
-        f"{EPL}:{row['event_id']}": {"competition_id": EPL, **row}
+        f"{row['ack_key']['competition_id']}:{row['event_id']}": {
+            "competition_id": row["ack_key"]["competition_id"],
+            **row,
+        }
         for row in rows
     }
     path.write_text(
@@ -202,6 +227,36 @@ def test_default_dry_run_does_not_lock_write_or_invoke_external_dependencies():
         assert result["status"] == "dry_run"
         assert calls == [{"root": tmp, "now": NOW, "live": False, "write": False}]
         assert list(Path(tmp).rglob("*")) == []
+
+
+def test_live_cli_rejects_explicit_backdated_now_before_runner_or_write():
+    """A live CLI caller cannot replace the safety clock with historical --now."""
+    with TemporaryDirectory() as tmp:
+        before = list(Path(tmp).rglob("*"))
+        original = league_pre_match_runner_module.run_league_pre_match
+        league_pre_match_runner_module.run_league_pre_match = _fail
+        output = io.StringIO()
+        try:
+            with redirect_stdout(output):
+                exit_code = league_pre_match_runner_module.main([
+                    "--root",
+                    tmp,
+                    "--now",
+                    "2020-01-01T00:00:00+00:00",
+                    "--live-lineups",
+                    "--write-lineups",
+                ])
+        finally:
+            league_pre_match_runner_module.run_league_pre_match = original
+
+        result = json.loads(output.getvalue())
+        assert exit_code == 2
+        assert result == {
+            "status": "blocked",
+            "reason": "live_now_override_forbidden",
+            "lock": "not_acquired",
+        }
+        assert list(Path(tmp).rglob("*")) == before
 
 
 def test_unsafe_layered_flags_are_rejected_before_any_dependency():
@@ -246,6 +301,11 @@ def test_nonblocking_real_lock_contention_invokes_nothing():
 
 def test_all_live_task4_task5_calls_run_inside_the_real_lock():
     with TemporaryDirectory() as tmp:
+        _write_task7_aggregate_contract(
+            tmp,
+            acceptance_states={EPL: "active"},
+            snapshots={EPL: "league-test"},
+        )
         lock_path = Path(tmp) / DEFAULT_LOCK_RELATIVE_PATH
         calls = []
 
@@ -308,10 +368,15 @@ def test_full_live_preflight_runs_inside_lock_and_blocks_before_lineups_or_task5
         }
 
 
-def test_pending_is_retried_before_lineups_and_not_retried_twice_with_new_due_receipt():
+def test_unclaimed_pending_is_coalesced_with_new_due_receipt_after_lineups():
     old = _receipt("old", "a")
     new = _receipt("new", "b")
     with TemporaryDirectory() as tmp:
+        _write_task7_aggregate_contract(
+            tmp,
+            acceptance_states={EPL: "active"},
+            snapshots={EPL: "league-test"},
+        )
         _write_pending(tmp, old)
         calls = []
 
@@ -319,7 +384,7 @@ def test_pending_is_retried_before_lineups_and_not_retried_twice_with_new_due_re
             ids = [row["event_id"] for rows in kwargs["newly_confirmed"].values() for row in rows]
             calls.append(("post", ids))
             rows = [row for values in kwargs["newly_confirmed"].values() for row in values]
-            return _post_result(durable=tuple(rows))
+            return _post_result(durable=tuple(rows), receipt_count=len(rows))
 
         def lineups(**_kwargs):
             calls.append(("lineups", []))
@@ -334,7 +399,135 @@ def test_pending_is_retried_before_lineups_and_not_retried_twice_with_new_due_re
         )
 
         assert result["status"] == "published"
-        assert calls == [("post", ["old"]), ("lineups", []), ("post", ["new"])]
+        assert calls == [("lineups", []), ("post", ["new", "old"])]
+
+
+def test_unclaimed_pending_and_new_same_sport_are_one_real_task5_provider_fetch():
+    """Outer-cycle coalescing must survive the Task 4 pending/new boundary."""
+    old = _receipt("old-pending", "c")
+    new = _receipt("new-due", "d")
+    acceptance = {
+        "schema_version": 1,
+        "competitions": {
+            EPL: {
+                "competition_id": EPL,
+                "state": "active",
+                "reason": None,
+                "fingerprints": {
+                    name: f"{EPL}-{name}"
+                    for name in (
+                        "sport_catalog",
+                        "odds_sample",
+                        "team_identity",
+                        "result_contract",
+                    )
+                },
+            },
+            LALIGA: {
+                "competition_id": LALIGA,
+                "state": "active",
+                "reason": None,
+                "fingerprints": {
+                    name: f"{LALIGA}-{name}"
+                    for name in (
+                        "sport_catalog",
+                        "odds_sample",
+                        "team_identity",
+                        "result_contract",
+                    )
+                },
+            },
+        },
+    }
+    registry = LeagueTeamIdentityRegistry({
+        EPL: {
+            "home": ("Home FC",),
+            "away": ("Away FC",),
+        }
+    })
+    calls = {"lineups": 0, "post": 0, "provider": 0, "publish": 0}
+    published_components = []
+
+    def snapshot_builder(payload, competition_id, observed_at, **_kwargs):
+        return {
+            "snapshot_at": observed_at,
+            "competition": {"id": competition_id},
+            "matches": [
+                {
+                    "source_event_id": str(row["id"]),
+                    "competition": {"id": competition_id},
+                    "match_decision": {"label": "MATCH_PICK"},
+                }
+                for row in payload
+            ],
+        }
+
+    def provider(_sport_key, _selected_env):
+        calls["provider"] += 1
+        return [{"id": old["event_id"]}, {"id": new["event_id"]}]
+
+    def publisher(snapshot):
+        calls["publish"] += 1
+        published_components.append({
+            row["competition_id"]: row["snapshot_id"]
+            for row in snapshot["components"]
+        })
+        return {"status": "stored"}
+
+    def post(**kwargs):
+        calls["post"] += 1
+        return run_post_lineup_refresh(
+            **kwargs,
+            env={"THE_ODDS_API_KEY_PRIMARY": "p" * 40},
+            quota_ledger={
+                "providers": {
+                    "theoddsapi_primary": {
+                        "remaining": 100,
+                        "observed_at": NOW,
+                    }
+                }
+            },
+            acceptance_report=acceptance,
+            snapshot_builder=snapshot_builder,
+        )
+
+    def lineups(**_kwargs):
+        calls["lineups"] += 1
+        return _lineup_result(old, new)
+
+    with TemporaryDirectory() as tmp:
+        acceptance_path = Path(tmp) / "data/local/leagues/acceptance.json"
+        acceptance_path.parent.mkdir(parents=True, exist_ok=True)
+        acceptance_path.write_text(json.dumps(acceptance), encoding="utf-8")
+        laliga_cache = Path(tmp) / f"data/cache/leagues/{LALIGA}/snapshot.json"
+        laliga_cache.parent.mkdir(parents=True, exist_ok=True)
+        laliga_cache.write_text(
+            json.dumps({
+                "snapshot_id": "laliga-cached",
+                "snapshot_at": "2026-08-24T11:00:00+00:00",
+                "competition": {"id": LALIGA},
+                "matches": [],
+            }),
+            encoding="utf-8",
+        )
+        _write_pending(tmp, old)
+
+        result = run_league_pre_match(
+            root=tmp,
+            now=NOW,
+            lineup_refresh_fn=lineups,
+            post_lineup_refresh_fn=post,
+            identity_registry=registry,
+            odds_fetcher=provider,
+            publish_fn=publisher,
+            **_full_flags(),
+        )
+
+        assert result["status"] == "published"
+        assert calls == {"lineups": 1, "post": 1, "provider": 1, "publish": 1}
+        assert len(published_components) == 1
+        assert set(published_components[0]) == {EPL, LALIGA}
+        assert published_components[0][LALIGA] == "laliga-cached"
 
 
 def test_lineup_write_failure_stops_before_post_lineup_refresh():
@@ -384,7 +577,302 @@ def test_quota_block_builds_one_degraded_event_after_durable_context_stage():
         assert result["status"] == "blocked"
         assert [event["event_type"] for event in delivered] == ["quota_blocked"]
         state = json.loads((Path(tmp) / STATE_RELATIVE_PATH).read_text(encoding="utf-8"))
-        assert state["receipts"] == {}
+        assert set(state["receipts"]) == {_ack_token(row["ack_key"])}
+
+
+def test_quota_notice_then_kickoff_keeps_pending_and_other_competition_due_continues():
+    """An expired receipt must be isolated instead of starving another league."""
+    old = _receipt("quota-expired", "7")
+    new = _receipt("laliga-due", "8")
+    new["kickoff_at_utc"] = "2026-08-24T13:20:00+00:00"
+    new["ack_key"] = {
+        **new["ack_key"],
+        "competition_id": LALIGA,
+    }
+    phase = 1
+    calls = []
+
+    def lineup_result(grouped):
+        rows = [row for values in grouped.values() for row in values]
+        due_rows = [old] if phase == 1 else [new]
+        return {
+            **_lineup_result(status="pending_delivery"),
+            "newly_confirmed": grouped,
+            "source_events": [
+                {
+                    "competition_id": row["ack_key"]["competition_id"],
+                    "event_id": row["event_id"],
+                    "outcome": "succeeded",
+                }
+                for row in due_rows
+            ],
+            "counts": {
+                **_lineup_result(status="pending_delivery")["counts"],
+                "fixture_count": len(rows),
+                "request_count": len(due_rows),
+                "accepted_count": len(due_rows),
+                "newly_confirmed_count": len(rows),
+                "cache_commit_count": len(due_rows),
+                "state_commit_count": 1,
+            },
+        }
+
+    def lineups(**_kwargs):
+        calls.append(("lineups", phase))
+        if phase == 1:
+            return lineup_result({EPL: [old]})
+        return lineup_result({EPL: [old], LALIGA: [new]})
+
+    def post(**kwargs):
+        rows = [
+            row
+            for grouped in kwargs["newly_confirmed"].values()
+            for row in grouped
+        ]
+        calls.append(("post", [row["event_id"] for row in rows]))
+        reason = (
+            "quota_below_minimum"
+            if rows == [old]
+            else "acceptance_not_active"
+        )
+        return {
+            "status": "blocked",
+            "plan": {
+                "competition_ids": sorted(kwargs["newly_confirmed"]),
+                "receipt_count": len(rows),
+            },
+            "acks": {
+                "durable": [],
+                "retryable": [],
+                "blocked": [
+                    {"ack_key": dict(row["ack_key"]), "reason": reason}
+                    for row in rows
+                ],
+            },
+            "refresh": None,
+            "publish": None,
+        }
+
+    class Outbox:
+        def retry_pending(self, **_kwargs):
+            return {"status": "complete", "sent": 0, "failed": 0}
+
+        def deliver(self, event, **_kwargs):
+            return {
+                "status": "sent",
+                "event_fingerprint": event["event_fingerprint"],
+            }
+
+    with TemporaryDirectory() as tmp:
+        _write_pending(tmp, old)
+
+        first = run_league_pre_match(
+            root=tmp,
+            now=NOW,
+            lineup_refresh_fn=lineups,
+            post_lineup_refresh_fn=post,
+            match_context_loader=lambda _root: {
+                f"{EPL}:{old['event_id']}": _context(old["event_id"]),
+            },
+            outbox_factory=lambda _root: Outbox(),
+            notifier=_fail,
+            **_full_flags(notify=True),
+        )
+        phase = 2
+        _write_pending(tmp, old, new)
+        second = run_league_pre_match(
+            root=tmp,
+            now="2026-08-24T12:41:00+00:00",
+            lineup_refresh_fn=lineups,
+            post_lineup_refresh_fn=post,
+            match_context_loader=lambda _root: {
+                f"{LALIGA}:{new['event_id']}": _context(
+                    new["event_id"],
+                    competition_id=LALIGA,
+                    kickoff_at_utc=new["kickoff_at_utc"],
+                ),
+            },
+            outbox_factory=lambda _root: Outbox(),
+            notifier=_fail,
+            **_full_flags(notify=True),
+        )
+
+        pending = json.loads(
+            (Path(tmp) / "data/local/leagues/lineup_refresh_pending.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert first["status"] == "blocked"
+        assert second["status"] == "blocked"
+        assert second["post_lineup_refresh"]["acks"]["blocked"] == [
+            {"ack_key": old["ack_key"], "reason": "match_started"},
+            {"ack_key": new["ack_key"], "reason": "acceptance_not_active"},
+        ]
+        assert calls == [
+            ("lineups", 1),
+            ("post", [old["event_id"]]),
+            ("lineups", 2),
+            ("post", [new["event_id"]]),
+        ]
+        assert f"{EPL}:{old['event_id']}" in pending["events"]
+
+
+def test_unstaged_started_pending_isolated_after_crash_while_other_league_runs():
+    """A crash between Task 4 pending write and Task 7 staging stays recoverable."""
+    old = _receipt("unstaged-expired", "9")
+    new = _receipt("laliga-recovery", "a")
+    new["kickoff_at_utc"] = "2026-08-24T13:20:00+00:00"
+    new["ack_key"] = {**new["ack_key"], "competition_id": LALIGA}
+    grouped = {EPL: [old], LALIGA: [new]}
+    rows = [old, new]
+    lineup_value = {
+        **_lineup_result(status="pending_delivery"),
+        "newly_confirmed": grouped,
+        "source_events": [],
+        "counts": {
+            **_lineup_result(status="pending_delivery")["counts"],
+            "fixture_count": 2,
+            "request_count": 0,
+            "accepted_count": 2,
+            "newly_confirmed_count": 2,
+            "cache_commit_count": 2,
+            "state_commit_count": 1,
+        },
+    }
+    post_calls = []
+
+    def post(**kwargs):
+        submitted = [
+            row
+            for values in kwargs["newly_confirmed"].values()
+            for row in values
+        ]
+        post_calls.extend(row["event_id"] for row in submitted)
+        return {
+            "status": "blocked",
+            "plan": {
+                "competition_ids": sorted(kwargs["newly_confirmed"]),
+                "receipt_count": len(submitted),
+            },
+            "acks": {
+                "durable": [],
+                "retryable": [],
+                "blocked": [
+                    {
+                        "ack_key": dict(row["ack_key"]),
+                        "reason": "acceptance_not_active",
+                    }
+                    for row in submitted
+                ],
+            },
+            "refresh": None,
+            "publish": None,
+        }
+
+    with TemporaryDirectory() as tmp:
+        _write_pending(tmp, *rows)
+        result = run_league_pre_match(
+            root=tmp,
+            now="2026-08-24T12:41:00+00:00",
+            lineup_refresh_fn=lambda **_kwargs: lineup_value,
+            post_lineup_refresh_fn=post,
+            match_context_loader=lambda _root: {
+                f"{LALIGA}:{new['event_id']}": _context(
+                    new["event_id"],
+                    competition_id=LALIGA,
+                    kickoff_at_utc=new["kickoff_at_utc"],
+                ),
+            },
+            outbox_factory=_fail,
+            notifier=_fail,
+            **_full_flags(notify=True),
+        )
+
+        assert result["status"] == "blocked"
+        assert post_calls == [new["event_id"]]
+        assert result["post_lineup_refresh"]["acks"]["blocked"][0] == {
+            "ack_key": old["ack_key"],
+            "reason": "match_started",
+        }
+
+
+def test_future_pending_without_context_is_retryable_while_other_league_runs():
+    missing = _receipt("missing-context", "b")
+    missing["kickoff_at_utc"] = "2026-08-24T13:10:00+00:00"
+    other = _receipt("other-league", "c")
+    other["kickoff_at_utc"] = "2026-08-24T13:20:00+00:00"
+    other["ack_key"] = {**other["ack_key"], "competition_id": LALIGA}
+    grouped = {EPL: [missing], LALIGA: [other]}
+    lineup_value = {
+        **_lineup_result(status="pending_delivery"),
+        "newly_confirmed": grouped,
+        "source_events": [
+            {
+                "competition_id": row["ack_key"]["competition_id"],
+                "event_id": row["event_id"],
+                "outcome": "succeeded",
+            }
+            for row in (missing, other)
+        ],
+        "counts": {
+            **_lineup_result(status="pending_delivery")["counts"],
+            "fixture_count": 2,
+            "request_count": 2,
+            "accepted_count": 2,
+            "newly_confirmed_count": 2,
+            "cache_commit_count": 2,
+            "state_commit_count": 1,
+        },
+    }
+    post_calls = []
+
+    def post(**kwargs):
+        submitted = [
+            row
+            for rows in kwargs["newly_confirmed"].values()
+            for row in rows
+        ]
+        post_calls.extend(row["event_id"] for row in submitted)
+        return {
+            "status": "blocked",
+            "plan": {"competition_ids": [LALIGA], "receipt_count": 1},
+            "acks": {
+                "durable": [],
+                "retryable": [],
+                "blocked": [{
+                    "ack_key": dict(other["ack_key"]),
+                    "reason": "acceptance_not_active",
+                }],
+            },
+            "refresh": None,
+            "publish": None,
+        }
+
+    with TemporaryDirectory() as tmp:
+        _write_pending(tmp, missing, other)
+        result = run_league_pre_match(
+            root=tmp,
+            now=NOW,
+            lineup_refresh_fn=lambda **_kwargs: lineup_value,
+            post_lineup_refresh_fn=post,
+            match_context_loader=lambda _root: {
+                f"{LALIGA}:{other['event_id']}": _context(
+                    other["event_id"],
+                    competition_id=LALIGA,
+                    kickoff_at_utc=other["kickoff_at_utc"],
+                )
+            },
+            outbox_factory=_fail,
+            notifier=_fail,
+            **_full_flags(notify=True),
+        )
+
+        assert result["status"] == "blocked"
+        assert post_calls == [other["event_id"]]
+        assert result["post_lineup_refresh"]["acks"]["retryable"] == [{
+            "ack_key": missing["ack_key"],
+            "reason": "receipt_context_unavailable",
+        }]
 
 
 def test_publish_failure_never_constructs_a_success_event():
@@ -430,6 +918,11 @@ def test_notification_failure_is_retained_by_the_real_outbox():
         return {f"{EPL}:notify-fail": _context("notify-fail", selection)}
 
     with TemporaryDirectory() as tmp:
+        _write_task7_aggregate_contract(
+            tmp,
+            acceptance_states={EPL: "active"},
+            snapshots={EPL: "league-test"},
+        )
         result = run_league_pre_match(
             root=tmp,
             now=NOW,
@@ -467,7 +960,10 @@ def test_orchestrator_state_commit_failure_prevents_task5_and_preserves_task4_re
         result = run_league_pre_match(
             root=tmp,
             now=NOW,
-            lineup_refresh_fn=_fail,
+            lineup_refresh_fn=lambda **_kwargs: _lineup_result(
+                row,
+                status="pending_delivery",
+            ),
             post_lineup_refresh_fn=_fail,
             match_context_loader=lambda _root: {
                 f"{EPL}:state-fail": _context("state-fail")
@@ -575,6 +1071,264 @@ def _source_result(event_id: str, outcome: str) -> dict:
         "outcome": outcome,
     }]
     return result
+
+
+def _fotmob_source_details(
+    *,
+    match_id: str,
+    provider_competition_id: str,
+    kickoff_at_utc: str,
+    home_team: str,
+    away_team: str,
+) -> dict:
+    return {
+        "general": {
+            "matchId": match_id,
+            "leagueId": provider_competition_id,
+            "matchTimeUTC": kickoff_at_utc,
+            "homeTeam": {"name": home_team},
+            "awayTeam": {"name": away_team},
+        },
+        "content": {
+            "lineup": {
+                "lineupStatus": "predicted",
+                "homeTeam": {
+                    "starters": [
+                        {"id": number, "name": {"fullName": f"Home {number}"}}
+                        for number in range(1, 12)
+                    ],
+                },
+                "awayTeam": {
+                    "starters": [
+                        {"id": number, "name": {"fullName": f"Away {number}"}}
+                        for number in range(21, 32)
+                    ],
+                },
+            },
+        },
+    }
+
+
+def _real_task4_source_runner(
+    *,
+    fixture_rows: list[dict],
+    failed_source_ids: set[str],
+):
+    provider_ids = {EPL: "47", LALIGA: "87"}
+    grouped: dict[str, list[dict]] = {}
+    details: dict[str, dict] = {}
+    fixtures_by_competition: dict[str, list[dict]] = {}
+    for row in fixture_rows:
+        competition_id = row["competition_id"]
+        provider_id = provider_ids[competition_id]
+        fixtures_by_competition.setdefault(competition_id, []).append({
+            "competition_id": competition_id,
+            "event_id": row["event_id"],
+            "kickoff_at_utc": row["kickoff_at_utc"],
+            "home_team": row["home_team"],
+            "away_team": row["away_team"],
+        })
+        grouped.setdefault(provider_id, []).append({
+            "id": row["source_match_id"],
+            "home": {"name": row["home_team"]},
+            "away": {"name": row["away_team"]},
+            "status": {"utcTime": row["kickoff_at_utc"]},
+        })
+        details[row["source_match_id"]] = _fotmob_source_details(
+            match_id=row["source_match_id"],
+            provider_competition_id=provider_id,
+            kickoff_at_utc=row["kickoff_at_utc"],
+            home_team=row["home_team"],
+            away_team=row["away_team"],
+        )
+    calendar = {
+        "leagues": [
+            {"id": provider_id, "matches": rows}
+            for provider_id, rows in sorted(grouped.items())
+        ]
+    }
+    acceptance = {
+        "schema_version": 1,
+        "competitions": {
+            competition_id: _acceptance_row(competition_id, "active")
+            for competition_id in sorted(fixtures_by_competition)
+        },
+    }
+
+    def run(**kwargs):
+        def fetch_details(*, match_id, transport=None):
+            del transport
+            if str(match_id) in failed_source_ids:
+                raise OSError("SECRET provider failure")
+            return details[str(match_id)]
+
+        return run_league_lineups_refresh(
+            **kwargs,
+            acceptance_report=acceptance,
+            fixtures_by_competition=fixtures_by_competition,
+            provider_competition_ids={
+                competition_id: provider_ids[competition_id]
+                for competition_id in fixtures_by_competition
+            },
+            identity_registry=accepted_league_team_identity_registry(),
+            calendar_fetcher=lambda **_kwargs: calendar,
+            details_fetcher=fetch_details,
+        )
+
+    return run
+
+
+def test_real_task4_to_task7_reaches_failure_threshold_then_recovers():
+    source_failures = {"1001"}
+    fixture = {
+        "competition_id": EPL,
+        "event_id": "real-episode",
+        "source_match_id": "1001",
+        "kickoff_at_utc": "2026-08-24T13:00:00+00:00",
+        "home_team": "Arsenal",
+        "away_team": "Chelsea",
+    }
+    delivered = []
+
+    class Outbox:
+        def retry_pending(self, **_kwargs):
+            return {"status": "complete", "sent": 0, "failed": 0}
+
+        def deliver(self, event, **_kwargs):
+            delivered.append(event["event_type"])
+            return {
+                "status": "sent",
+                "event_fingerprint": event["event_fingerprint"],
+            }
+
+    with TemporaryDirectory() as tmp:
+        common = {
+            "root": tmp,
+            "lineup_refresh_fn": _real_task4_source_runner(
+                fixture_rows=[fixture],
+                failed_source_ids=source_failures,
+            ),
+            "post_lineup_refresh_fn": _fail,
+            "match_context_loader": lambda _root: {
+                f"{EPL}:real-episode": _context(
+                    "real-episode",
+                    kickoff_at_utc=fixture["kickoff_at_utc"],
+                )
+            },
+            "outbox_factory": lambda _root: Outbox(),
+            "notifier": _fail,
+            "source_failure_threshold": 3,
+            **_full_flags(notify=True),
+        }
+        for observed_at in (
+            "2026-08-24T12:15:00+00:00",
+            "2026-08-24T12:20:00+00:00",
+            "2026-08-24T12:25:00+00:00",
+        ):
+            run_league_pre_match(now=observed_at, **common)
+        source_failures.clear()
+        recovered = run_league_pre_match(
+            now="2026-08-24T12:30:00+00:00",
+            **common,
+        )
+        state = json.loads((Path(tmp) / STATE_RELATIVE_PATH).read_text(encoding="utf-8"))
+
+        assert delivered == ["sustained_source_failure", "source_recovery"]
+        assert recovered["lineups"]["counts"]["source_failure_count"] == 0
+        assert state["source_episodes"][f"{EPL}:real-episode"]["active"] is False
+
+
+def test_real_task4_event_scope_prevents_cross_league_false_recovery():
+    failed_source_ids = {"1001"}
+    fixtures = [
+        {
+            "competition_id": EPL,
+            "event_id": "real-failed",
+            "source_match_id": "1001",
+            "kickoff_at_utc": "2026-08-24T13:00:00+00:00",
+            "home_team": "Arsenal",
+            "away_team": "Chelsea",
+        },
+        {
+            "competition_id": EPL,
+            "event_id": "real-healthy",
+            "source_match_id": "1002",
+            "kickoff_at_utc": "2026-08-24T13:00:00+00:00",
+            "home_team": "Liverpool",
+            "away_team": "Everton",
+        },
+        {
+            "competition_id": LALIGA,
+            "event_id": "real-other",
+            "source_match_id": "2001",
+            "kickoff_at_utc": "2026-08-24T13:00:00+00:00",
+            "home_team": "Real Madrid",
+            "away_team": "Barcelona",
+        },
+    ]
+    delivered = []
+
+    class Outbox:
+        def retry_pending(self, **_kwargs):
+            return {"status": "complete", "sent": 0, "failed": 0}
+
+        def deliver(self, event, **_kwargs):
+            delivered.append((event["event_type"], event["payload"]["event_id"]))
+            return {
+                "status": "sent",
+                "event_fingerprint": event["event_fingerprint"],
+            }
+
+    contexts = {
+        f"{row['competition_id']}:{row['event_id']}": _context(
+            row["event_id"],
+            competition_id=row["competition_id"],
+            kickoff_at_utc=row["kickoff_at_utc"],
+        )
+        for row in fixtures
+    }
+    with TemporaryDirectory() as tmp:
+        common = {
+            "root": tmp,
+            "post_lineup_refresh_fn": _fail,
+            "match_context_loader": lambda _root: contexts,
+            "outbox_factory": lambda _root: Outbox(),
+            "notifier": _fail,
+            "source_failure_threshold": 1,
+            **_full_flags(notify=True),
+        }
+        run_league_pre_match(
+            now="2026-08-24T12:15:00+00:00",
+            lineup_refresh_fn=_real_task4_source_runner(
+                fixture_rows=fixtures,
+                failed_source_ids=failed_source_ids,
+            ),
+            **common,
+        )
+        run_league_pre_match(
+            now="2026-08-24T12:20:00+00:00",
+            lineup_refresh_fn=_real_task4_source_runner(
+                fixture_rows=[fixtures[2]],
+                failed_source_ids=failed_source_ids,
+            ),
+            **common,
+        )
+        assert delivered == [("sustained_source_failure", "real-failed")]
+
+        failed_source_ids.clear()
+        run_league_pre_match(
+            now="2026-08-24T12:20:00+00:00",
+            lineup_refresh_fn=_real_task4_source_runner(
+                fixture_rows=fixtures[:2],
+                failed_source_ids=failed_source_ids,
+            ),
+            **common,
+        )
+
+        assert delivered == [
+            ("sustained_source_failure", "real-failed"),
+            ("source_recovery", "real-failed"),
+        ]
 
 
 def test_source_success_below_sustained_threshold_closes_silently():
@@ -818,7 +1572,7 @@ def test_malformed_lineup_dependency_fails_closed_without_leaking_or_calling_tas
         assert "secret" not in serialized
 
 
-def test_task5_pending_converges_before_corrupt_task6_retry_and_lineup_polling_continues():
+def test_corrupt_task6_retry_does_not_block_unclaimed_task4_pending_or_polling():
     old = _receipt("old-pending", "1")
     calls = []
 
@@ -844,6 +1598,11 @@ def test_task5_pending_converges_before_corrupt_task6_retry_and_lineup_polling_c
         return _lineup_result(status="no_due")
 
     with TemporaryDirectory() as tmp:
+        _write_task7_aggregate_contract(
+            tmp,
+            acceptance_states={EPL: "active"},
+            snapshots={EPL: "league-test"},
+        )
         _write_pending(tmp, old)
         result = run_league_pre_match(
             root=tmp,
@@ -861,7 +1620,7 @@ def test_task5_pending_converges_before_corrupt_task6_retry_and_lineup_polling_c
 
         assert result["status"] == "published"
         assert result["notification_retry"] == {"status": "failed"}
-        assert calls == ["task5", "task4", "notification_retry"]
+        assert calls == ["task4", "task5", "notification_retry"]
 
 
 def test_old_pending_and_new_receipt_bind_to_their_exact_successive_decisions():
@@ -906,6 +1665,11 @@ def test_old_pending_and_new_receipt_bind_to_their_exact_successive_decisions():
         else:
             current_selection = "draw"
             current_snapshot_id = "new-snapshot"
+        _write_task7_aggregate_contract(
+            tmp,
+            acceptance_states={EPL: "active"},
+            snapshots={EPL: current_snapshot_id},
+        )
         return _post_result(
             durable=rows,
             component_snapshot_id=current_snapshot_id,
@@ -914,6 +1678,11 @@ def test_old_pending_and_new_receipt_bind_to_their_exact_successive_decisions():
 
     with TemporaryDirectory() as tmp:
         _write_pending(tmp, old)
+        _commit_task5_contract_rows(
+            tmp,
+            committed=(old,),
+            snapshot_id="initial-snapshot",
+        )
         result = run_league_pre_match(
             root=tmp,
             now=NOW,
@@ -956,6 +1725,11 @@ def test_bound_receipt_rebuilds_notification_after_pre_pending_failure_and_resta
         nonlocal current_selection, current_snapshot_id
         current_selection = "away"
         current_snapshot_id = "after-binding"
+        _write_task7_aggregate_contract(
+            tmp,
+            acceptance_states={EPL: "active"},
+            snapshots={EPL: current_snapshot_id},
+        )
         return _post_result(
             durable=(row,),
             component_snapshot_id=current_snapshot_id,
@@ -1512,14 +2286,16 @@ def test_ack_state_commit_failure_reason_has_exact_bidirectional_task5_matrix():
             "published": (),
             "snapshot_id": "league-test",
             "result": _post_result(
-                retryable=(
-                    (current, "ack_state_commit_failed"),
-                    (waiting, "waiting_for_committed_publish"),
-                ),
+                retryable=((current, "ack_state_commit_failed"),),
                 status="publish_failed",
                 publish_status="stored",
-                receipt_count=2,
             ),
+            "after_result": _post_result(
+                retryable=((waiting, "waiting_for_committed_publish"),),
+                status="refresh_failed",
+                publish_status=None,
+            ),
+            "final_status": "refresh_failed",
         },
         {
             "name": "ack_write_visible_before_commit_failure",
@@ -1667,6 +2443,7 @@ def test_ack_state_commit_failure_reason_has_exact_bidirectional_task5_matrix():
         {
             "name": "missing_current_state",
             "valid": False,
+            "lineups_before_invalid": True,
             "rows": (current,),
             "committed": (),
             "published": (),
@@ -1745,11 +2522,21 @@ def test_ack_state_commit_failure_reason_has_exact_bidirectional_task5_matrix():
                 lineup_calls.append("called")
                 return _lineup_result(status="no_due")
 
+            def post(**kwargs):
+                rows = [
+                    row
+                    for grouped in kwargs["newly_confirmed"].values()
+                    for row in grouped
+                ]
+                if rows == [waiting] and "after_result" in case:
+                    return case["after_result"]
+                return case["result"]
+
             result = run_league_pre_match(
                 root=tmp,
                 now=NOW,
                 lineup_refresh_fn=lineups,
-                post_lineup_refresh_fn=lambda **_kwargs: case["result"],
+                post_lineup_refresh_fn=post,
                 match_context_loader=lambda _root: {
                     f"{EPL}:{row['event_id']}": _context(row["event_id"])
                     for row in case["rows"]
@@ -1769,12 +2556,16 @@ def test_ack_state_commit_failure_reason_has_exact_bidirectional_task5_matrix():
             )
 
             if case["valid"]:
-                assert result["status"] == "publish_failed", case["name"]
+                assert result["status"] == case.get(
+                    "final_status", "publish_failed"
+                ), case["name"]
                 assert lineup_calls == ["called"], case["name"]
             else:
                 assert result["status"] == "post_refresh_failed", case["name"]
                 assert result["reason"] == "post_lineup_result_invalid", case["name"]
-                assert lineup_calls == [], case["name"]
+                assert lineup_calls == (
+                    ["called"] if case.get("lineups_before_invalid") else []
+                ), case["name"]
             assert result["notifications"] == [], case["name"]
             assert set(task7_state["receipts"]) == {
                 _ack_token(row["ack_key"]) for row in case["rows"]
@@ -1887,6 +2678,96 @@ def test_ack_failure_components_are_exact_complete_active_aggregate():
             assert set(pending["events"]) == {
                 f"{EPL}:{current['event_id']}"
             }, case["name"]
+
+
+def test_every_success_publication_requires_exact_complete_active_cached_aggregate():
+    current = _receipt("ordinary-aggregate-current", "4")
+    cases = (
+        {
+            "name": "missing_active_component",
+            "valid": False,
+            "acceptance_states": {EPL: "active", LALIGA: "active"},
+            "snapshots": {EPL: "league-test", LALIGA: "laliga-cached"},
+            "components": ((EPL, "league-test"),),
+        },
+        {
+            "name": "nonactive_extra_component",
+            "valid": False,
+            "acceptance_states": {
+                EPL: "active",
+                LALIGA: "identity_verified",
+            },
+            "snapshots": {EPL: "league-test", LALIGA: "laliga-cached"},
+            "components": (
+                (EPL, "league-test"),
+                (LALIGA, "laliga-cached"),
+            ),
+        },
+        {
+            "name": "active_cache_snapshot_mismatch",
+            "valid": False,
+            "acceptance_states": {EPL: "active", LALIGA: "active"},
+            "snapshots": {EPL: "league-test", LALIGA: "laliga-cached"},
+            "components": (
+                (EPL, "league-test"),
+                (LALIGA, "laliga-forged"),
+            ),
+        },
+        {
+            "name": "complete_multi_active",
+            "valid": True,
+            "acceptance_states": {EPL: "active", LALIGA: "active"},
+            "snapshots": {EPL: "league-test", LALIGA: "laliga-cached"},
+            "components": (
+                (EPL, "league-test"),
+                (LALIGA, "laliga-cached"),
+            ),
+        },
+    )
+
+    for case in cases:
+        delivered = []
+
+        class Outbox:
+            def retry_pending(self, **_kwargs):
+                return {"status": "complete", "sent": 0, "failed": 0}
+
+            def deliver(self, event, **_kwargs):
+                delivered.append(event)
+                return {
+                    "status": "sent",
+                    "event_fingerprint": event["event_fingerprint"],
+                }
+
+        with TemporaryDirectory() as tmp:
+            _write_task7_aggregate_contract(
+                tmp,
+                acceptance_states=case["acceptance_states"],
+                snapshots=case["snapshots"],
+            )
+            result = run_league_pre_match(
+                root=tmp,
+                now=NOW,
+                lineup_refresh_fn=lambda **_kwargs: _lineup_result(current),
+                post_lineup_refresh_fn=lambda **_kwargs: _post_result(
+                    durable=(current,),
+                    components=case["components"],
+                ),
+                match_context_loader=lambda _root: {
+                    f"{EPL}:{current['event_id']}": _context(current["event_id"])
+                },
+                outbox_factory=lambda _root: Outbox(),
+                notifier=_fail,
+                **_full_flags(notify=True),
+            )
+
+            if case["valid"]:
+                assert result["status"] == "published", case["name"]
+                assert len(delivered) == 1, case["name"]
+            else:
+                assert result["status"] == "post_refresh_failed", case["name"]
+                assert result["reason"] == "post_lineup_result_invalid", case["name"]
+                assert delivered == [], case["name"]
 
 
 def test_task5_failure_status_matrix_cannot_use_persisted_durable_ack_as_success():
@@ -2056,7 +2937,7 @@ def test_real_multi_active_task5_ack_failure_keeps_cached_extra_and_does_not_sta
 
         def commit(self, state):
             self.commits += 1
-            if self.commits == 2:
+            if self.commits == 1:
                 raise OSError("injected ack state commit failure")
             return self.delegate.commit(state)
 
@@ -2149,6 +3030,33 @@ def test_real_multi_active_task5_ack_failure_keeps_cached_extra_and_does_not_sta
             }),
             encoding="utf-8",
         )
+        epl_cache = Path(tmp) / f"data/cache/leagues/{EPL}/snapshot.json"
+        epl_cache.parent.mkdir(parents=True, exist_ok=True)
+        epl_cache.write_text(
+            json.dumps({
+                "snapshot_id": "league-test",
+                "snapshot_at": "2026-08-24T11:55:00+00:00",
+                "competition": {"id": EPL},
+                "matches": [{
+                    "source_event_id": old["event_id"],
+                    "competition": {"id": EPL},
+                    "match_decision": {"label": "MATCH_PICK"},
+                }],
+            }),
+            encoding="utf-8",
+        )
+        PostLineupRefreshStateStore(tmp).commit({
+            "schema_version": 1,
+            "receipts": {
+                _ack_token(old["ack_key"]): {
+                    "ack_key": dict(old["ack_key"]),
+                    "phase": "committed",
+                    "snapshot_id": "league-test",
+                    "observed_at": "2026-08-24T11:55:00+00:00",
+                    "acceptance_fingerprint": acceptance_fingerprint(acceptance),
+                }
+            },
+        })
         _write_pending(tmp, old)
         result = run_league_pre_match(
             root=tmp,
@@ -2181,7 +3089,7 @@ def test_real_multi_active_task5_ack_failure_keeps_cached_extra_and_does_not_sta
         }]
         assert calls == {
             "lineups": 1,
-            "provider": 1,
+            "provider": 0,
             "publish": 1,
             "post": [[old["event_id"]], [new["event_id"]]],
         }
@@ -2283,6 +3191,11 @@ def test_malformed_task6_delivery_never_clears_the_receipt_context():
             return {"unexpected": {"raw_response": "not durable"}}
 
     with TemporaryDirectory() as tmp:
+        _write_task7_aggregate_contract(
+            tmp,
+            acceptance_states={EPL: "active"},
+            snapshots={EPL: "league-test"},
+        )
         result = run_league_pre_match(
             root=tmp,
             now=NOW,
@@ -2326,6 +3239,12 @@ def test_task4_pseudo_success_with_inconsistent_receipt_count_fails_closed():
 
 
 def test_task4_event_source_evidence_must_match_failure_and_request_counts():
+    missing_event_evidence = _lineup_result(status="polled")
+    missing_event_evidence.pop("source_events")
+    missing_event_evidence["counts"].update({
+        "fixture_count": 1,
+        "request_count": 1,
+    })
     failed_without_failure = _lineup_result(status="polled")
     failed_without_failure["source_events"] = [{
         "competition_id": EPL,
@@ -2339,7 +3258,11 @@ def test_task4_event_source_evidence_must_match_failure_and_request_counts():
         "outcome": "succeeded",
     }]
 
-    for malformed in (failed_without_failure, succeeded_without_request):
+    for malformed in (
+        missing_event_evidence,
+        failed_without_failure,
+        succeeded_without_request,
+    ):
         with TemporaryDirectory() as tmp:
             result = run_league_pre_match(
                 root=tmp,
@@ -2352,6 +3275,27 @@ def test_task4_event_source_evidence_must_match_failure_and_request_counts():
 
             assert result["status"] == "lineup_failed"
             assert result["reason"] == "lineup_result_invalid"
+
+
+def test_task4_event_source_evidence_must_belong_to_current_strict_context():
+    forged = _source_result("not-the-current-event", "failed")
+
+    with TemporaryDirectory() as tmp:
+        result = run_league_pre_match(
+            root=tmp,
+            now=NOW,
+            lineup_refresh_fn=lambda **_kwargs: forged,
+            post_lineup_refresh_fn=_fail,
+            match_context_loader=lambda _root: {
+                f"{EPL}:actual-event": _context("actual-event")
+            },
+            outbox_factory=_fail,
+            notifier=_fail,
+            **_full_flags(notify=True),
+        )
+
+        assert result["status"] == "lineup_failed"
+        assert result["reason"] == "lineup_result_invalid"
 
 
 def test_restart_binds_unfinished_receipt_from_exact_history_not_newer_current_snapshot():
@@ -2386,6 +3330,11 @@ def test_restart_binds_unfinished_receipt_from_exact_history_not_newer_current_s
         nonlocal current_selection, current_snapshot_id
         current_selection = "away"
         current_snapshot_id = "old-snapshot"
+        _write_task7_aggregate_contract(
+            tmp,
+            acceptance_states={EPL: "active"},
+            snapshots={EPL: "old-snapshot"},
+        )
         return _post_result(
             durable=(row,),
             component_snapshot_id="old-snapshot",

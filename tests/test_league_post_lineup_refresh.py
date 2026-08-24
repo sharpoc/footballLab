@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -8,7 +9,7 @@ from worldcup.league_acceptance import acceptance_fingerprint
 from worldcup.league_live_store import LeagueLiveStore
 from worldcup.league_post_lineup_refresh import (
     PostLineupRefreshStateStore,
-    run_post_lineup_refresh,
+    run_post_lineup_refresh as _run_post_lineup_refresh,
 )
 from worldcup.league_team_identity import LeagueTeamIdentityRegistry
 
@@ -16,6 +17,12 @@ from worldcup.league_team_identity import LeagueTeamIdentityRegistry
 NOW = "2026-08-24T12:00:00+00:00"
 EPL = "epl_2026_27"
 LALIGA = "laliga_2026_27"
+
+
+def run_post_lineup_refresh(**kwargs):
+    requested_now = kwargs.get("now", NOW)
+    kwargs.setdefault("observed_clock", lambda: requested_now)
+    return _run_post_lineup_refresh(**kwargs)
 
 
 def _fail(*_args, **_kwargs):
@@ -244,6 +251,62 @@ def test_available_next_key_coalesces_same_competition_and_acks_after_hmac_publi
             )
         )
         assert all(row["phase"] == "published" for row in state["receipts"].values())
+
+
+def test_provider_response_crossing_kickoff_never_commits_or_publishes():
+    """A paid response received at kickoff is unusable for a pre-match refresh."""
+    receipt = _receipt(
+        EPL,
+        "epl-crossed",
+        "c",
+        kickoff="2026-08-24T13:00:00+00:00",
+    )
+    moments = iter((
+        datetime(2026, 8, 24, 12, 59, 58, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 12, 59, 59, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc),
+    ))
+    last = datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc)
+
+    def observed_clock():
+        nonlocal last
+        try:
+            last = next(moments)
+        except StopIteration:
+            pass
+        return last
+
+    fetches = []
+    publications = []
+    with TemporaryDirectory() as tmp:
+        _write_acceptance(tmp, EPL)
+        _write_task4_pending(tmp, {EPL: [receipt]})
+        result = run_post_lineup_refresh(
+            root=tmp,
+            now="2020-01-01T00:00:00+00:00",
+            observed_clock=observed_clock,
+            newly_confirmed={EPL: [receipt]},
+            live=True,
+            env=_env(),
+            quota_ledger=_quota(theoddsapi_primary=100),
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            odds_fetcher=lambda *_args: fetches.append("called") or [
+                {"id": receipt["event_id"]}
+            ],
+            snapshot_builder=_snapshot_builder,
+            publish_fn=lambda snapshot: publications.append(snapshot) or {
+                "status": "stored"
+            },
+        )
+
+        assert fetches == ["called"]
+        assert publications == []
+        assert result["acks"]["durable"] == []
+        assert _ack_events(result, "retryable") == ["epl-crossed"]
+        assert not (
+            Path(tmp) / f"data/cache/leagues/{EPL}/snapshot.json"
+        ).exists()
 
 
 def test_started_receipt_is_blocked_and_never_reads_env_or_quota():
@@ -606,7 +669,7 @@ def test_new_same_competition_receipt_waits_for_older_publish_then_refreshes():
         assert fetches == [1, 2]
 
 
-def test_committed_publish_retry_crosses_kickoff_without_quota_or_provider():
+def test_committed_publish_retry_after_kickoff_is_blocked_without_provider_or_publish():
     receipt = _receipt(EPL, "epl-1", "7", "2026-08-24T13:00:00+00:00")
     with TemporaryDirectory() as tmp:
         _write_acceptance(tmp, EPL)
@@ -634,12 +697,16 @@ def test_committed_publish_retry_crosses_kickoff_without_quota_or_provider():
             env_loader=_fail,
             quota_loader=_fail,
             refresh_fn=_fail,
-            publish_fn=lambda _snapshot: {"status": "stored"},
+            publish_fn=_fail,
         )
 
         assert first["status"] == "publish_failed"
-        assert second["status"] == "published"
-        assert second["acks"]["durable"] == [{"ack_key": receipt["ack_key"]}]
+        assert second["status"] == "blocked"
+        assert second["acks"]["durable"] == []
+        assert second["acks"]["blocked"] == [{
+            "ack_key": receipt["ack_key"],
+            "reason": "match_started",
+        }]
 
 
 def test_visible_snapshot_after_commit_crash_is_reconciled_without_second_quota_or_provider():
@@ -1070,7 +1137,7 @@ def test_wrong_current_snapshot_id_never_satisfies_attempt_recovery():
         assert publisher_calls == []
 
 
-def test_old_committed_queue_publishes_before_claiming_new_same_competition_attempt():
+def test_started_committed_receipt_is_blocked_while_future_new_attempt_proceeds():
     old = _receipt(EPL, "old-started-event", "3", "2026-08-24T13:00:00+00:00")
     new = _receipt(EPL, "new-event", "4", "2026-08-24T14:00:00+00:00")
     provider_calls = []
@@ -1117,19 +1184,19 @@ def test_old_committed_queue_publishes_before_claiming_new_same_competition_atte
         )
 
         assert first["status"] == "publish_failed"
-        assert provider_calls == ["soccer_epl"]
-        assert _ack_events(second, "durable") == ["old-started-event"]
-        assert second["acks"]["retryable"] == [{
-            "ack_key": new["ack_key"],
-            "reason": "waiting_for_committed_publish",
+        assert provider_calls == ["soccer_epl", "soccer_epl"]
+        assert _ack_events(second, "durable") == ["new-event"]
+        assert second["acks"]["blocked"] == [{
+            "ack_key": old["ack_key"],
+            "reason": "match_started",
         }]
         assert [
             row["source_event_id"] for row in publisher_calls[0]["matches"]
-        ] == ["old-started-event"]
+        ] == ["new-event"]
 
 
 def test_same_competition_old_then_new_snapshots_converge_in_two_publish_attempts():
-    old = _receipt(EPL, "old-event", "5", "2026-08-24T13:00:00+00:00")
+    old = _receipt(EPL, "old-event", "5", "2026-08-24T13:30:00+00:00")
     new = _receipt(EPL, "new-event", "6", "2026-08-24T14:00:00+00:00")
     provider_events = []
 

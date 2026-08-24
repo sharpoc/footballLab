@@ -253,22 +253,16 @@ def _optional_text(value: Any) -> str | None:
     return text or None
 
 
-def parse_confirmed_fotmob_lineups(
+def _calendar_candidates(
     *,
     calendar_payload: Any,
-    details_by_match_id: Mapping[str, Any],
     competition_id: str,
     local_fixtures: Sequence[Mapping[str, Any]],
     registry: LeagueTeamIdentityRegistry,
-    fetched_at: Any,
-    provider_competition_id: str | int | None = None,
-) -> dict[str, list[dict[str, Any]]]:
-    if competition_id not in FORMAL_SINGLE_MATCH_IDS:
-        raise ValueError("fotmob_lineup_competition_not_allowed")
-    fetched = _utc(fetched_at)
-    approved_provider_competition_id = _provider_id(provider_competition_id)
+    provider_competition_id: str | None,
+) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     local_rows = _local_rows(competition_id, local_fixtures, registry)
-    rejected: list[dict[str, Any]] = []
+    rejected: list[dict[str, str]] = []
     candidates: list[dict[str, Any]] = []
     calendar_rows = _calendar_matches(calendar_payload)
     calendar_source_counts = Counter(_match_id(match) for _league_id, match in calendar_rows)
@@ -281,13 +275,25 @@ def parse_confirmed_fotmob_lineups(
         if calendar_source_counts[source_match_id] != 1:
             rejected.append(_rejection(competition_id, source_match_id, "duplicate_candidate"))
             continue
-        if approved_provider_competition_id is None:
-            rejected.append(_rejection(competition_id, source_match_id, "competition_identity_unverified"))
+        if provider_competition_id is None:
+            rejected.append(
+                _rejection(
+                    competition_id,
+                    source_match_id,
+                    "competition_identity_unverified",
+                )
+            )
             continue
         if calendar_competition_id is None:
-            rejected.append(_rejection(competition_id, source_match_id, "competition_identity_missing"))
+            rejected.append(
+                _rejection(
+                    competition_id,
+                    source_match_id,
+                    "competition_identity_missing",
+                )
+            )
             continue
-        if calendar_competition_id != approved_provider_competition_id:
+        if calendar_competition_id != provider_competition_id:
             rejected.append(_rejection(competition_id, source_match_id, "competition_mismatch"))
             continue
         identity = registry.resolve_fixture(
@@ -335,6 +341,58 @@ def parse_confirmed_fotmob_lineups(
             "source_match_id": source_match_id,
             "local": within_tolerance[0],
         })
+    return rejected, candidates
+
+
+def match_fotmob_lineup_sources(
+    *,
+    calendar_payload: Any,
+    competition_id: str,
+    local_fixtures: Sequence[Mapping[str, Any]],
+    registry: LeagueTeamIdentityRegistry,
+    provider_competition_id: str | int | None,
+) -> dict[str, str]:
+    """Return only strict, one-to-one local-event to provider-match identities."""
+    if competition_id not in FORMAL_SINGLE_MATCH_IDS:
+        raise ValueError("fotmob_lineup_competition_not_allowed")
+    _rejected, candidates = _calendar_candidates(
+        calendar_payload=calendar_payload,
+        competition_id=competition_id,
+        local_fixtures=local_fixtures,
+        registry=registry,
+        provider_competition_id=_provider_id(provider_competition_id),
+    )
+    source_counts = Counter(candidate["source_match_id"] for candidate in candidates)
+    event_counts = Counter(candidate["local"]["event_id"] for candidate in candidates)
+    return {
+        candidate["local"]["event_id"]: candidate["source_match_id"]
+        for candidate in candidates
+        if source_counts[candidate["source_match_id"]] == 1
+        and event_counts[candidate["local"]["event_id"]] == 1
+    }
+
+
+def parse_confirmed_fotmob_lineups(
+    *,
+    calendar_payload: Any,
+    details_by_match_id: Mapping[str, Any],
+    competition_id: str,
+    local_fixtures: Sequence[Mapping[str, Any]],
+    registry: LeagueTeamIdentityRegistry,
+    fetched_at: Any,
+    provider_competition_id: str | int | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    if competition_id not in FORMAL_SINGLE_MATCH_IDS:
+        raise ValueError("fotmob_lineup_competition_not_allowed")
+    fetched = _utc(fetched_at)
+    approved_provider_competition_id = _provider_id(provider_competition_id)
+    rejected, candidates = _calendar_candidates(
+        calendar_payload=calendar_payload,
+        competition_id=competition_id,
+        local_fixtures=local_fixtures,
+        registry=registry,
+        provider_competition_id=approved_provider_competition_id,
+    )
 
     source_counts = Counter(candidate["source_match_id"] for candidate in candidates)
     event_counts = Counter(candidate["local"]["event_id"] for candidate in candidates)

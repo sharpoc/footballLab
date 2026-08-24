@@ -40,6 +40,7 @@ from worldcup.league_post_lineup_refresh import (
 )
 from worldcup.league_team_identity import accepted_league_team_identity_registry
 from worldcup.notifications import send_wxpusher_notification
+from worldcup.observed_clock import MonotonicUtcClock
 from worldcup.publish import DEFAULT_ENDPOINT, _default_sender
 from worldcup.quota import load_quota_ledger
 from worldcup.refresh_runner import _load_env
@@ -417,10 +418,11 @@ def _validate_lineup_result(value: Any) -> dict[str, Any]:
         "skipped",
         "rejection_reasons",
         "newly_confirmed",
+        "source_events",
         "next_due_at",
         "counts",
     }
-    allowed = required | {"reason", "source_events"}
+    allowed = required | {"reason"}
     if (
         not isinstance(value, Mapping)
         or set(value) < required
@@ -469,7 +471,7 @@ def _validate_lineup_result(value: Any) -> dict[str, Any]:
 
     rejection_reasons = counters(value.get("rejection_reasons"))
     skipped = counters(value.get("skipped"))
-    source_events_value = value.get("source_events") or []
+    source_events_value = value.get("source_events")
     if not isinstance(source_events_value, list):
         raise ValueError("lineup_result_invalid")
     source_events: list[dict[str, str]] = []
@@ -500,12 +502,14 @@ def _validate_lineup_result(value: Any) -> dict[str, Any]:
     newly_confirmed_count = sum(len(rows) for rows in grouped.values())
     rejection_count = sum(sum(reasons.values()) for reasons in rejection_reasons.values())
     failed_evidence = any(row["outcome"] == "failed" for row in source_events)
-    succeeded_evidence = any(row["outcome"] == "succeeded" for row in source_events)
+    expected_source_event_count = (
+        0 if value["status"] == "dry_run" else projected_counts["request_count"]
+    )
     if (
         projected_counts["newly_confirmed_count"] != newly_confirmed_count
         or projected_counts["rejection_count"] != rejection_count
-        or (failed_evidence and projected_counts["source_failure_count"] == 0)
-        or (succeeded_evidence and projected_counts["request_count"] == 0)
+        or len(source_events) != expected_source_event_count
+        or failed_evidence != (projected_counts["source_failure_count"] > 0)
     ):
         raise ValueError("lineup_result_invalid")
     reason = value.get("reason")
@@ -519,6 +523,54 @@ def _validate_lineup_result(value: Any) -> dict[str, Any]:
         "source_events": source_events,
         "next_due_at": value.get("next_due_at") if isinstance(value.get("next_due_at"), str) else None,
     }
+
+
+def _validate_complete_active_aggregate(
+    *,
+    root: str | Path,
+    component_snapshot_ids: Mapping[str, str],
+) -> None:
+    try:
+        acceptance = LeagueAcceptanceStore(
+            Path(root) / "data/local/leagues/acceptance.json"
+        ).read()
+        acceptance_rows = (
+            acceptance.get("competitions")
+            if isinstance(acceptance, Mapping)
+            else None
+        )
+        if not isinstance(acceptance_rows, Mapping):
+            raise ValueError("post_lineup_result_invalid")
+        active_competitions = {
+            competition_id
+            for competition_id, row in acceptance_rows.items()
+            if acceptance_row_is_active(row, competition_id)
+        }
+        if set(component_snapshot_ids) != active_competitions:
+            raise ValueError("post_lineup_result_invalid")
+        for competition_id, snapshot_id in component_snapshot_ids.items():
+            cached = json.loads(
+                (
+                    Path(root)
+                    / "data/cache/leagues"
+                    / competition_id
+                    / "snapshot.json"
+                ).read_text(encoding="utf-8")
+            )
+            declared = (
+                cached.get("competition")
+                if isinstance(cached, Mapping)
+                else None
+            )
+            if (
+                not isinstance(cached, Mapping)
+                or cached.get("snapshot_id") != snapshot_id
+                or not isinstance(declared, Mapping)
+                or declared.get("id") != competition_id
+            ):
+                raise ValueError("post_lineup_result_invalid")
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        raise ValueError("post_lineup_result_invalid") from None
 
 
 def _validate_post_result(
@@ -651,6 +703,11 @@ def _validate_post_result(
         "partial", "publish_failed", "published"
     }:
         raise ValueError("post_lineup_result_invalid")
+    if publish_status is not None:
+        _validate_complete_active_aggregate(
+            root=root,
+            component_snapshot_ids=component_snapshot_ids,
+        )
 
     status = value["status"]
     durable_count = len(checked_acks["durable"])
@@ -719,47 +776,6 @@ def _validate_post_result(
             or not current_competitions.issubset(component_snapshot_ids)
         ):
             raise ValueError("post_lineup_result_invalid")
-        try:
-            acceptance = LeagueAcceptanceStore(
-                Path(root) / "data/local/leagues/acceptance.json"
-            ).read()
-            acceptance_rows = (
-                acceptance.get("competitions")
-                if isinstance(acceptance, Mapping)
-                else None
-            )
-            if not isinstance(acceptance_rows, Mapping):
-                raise ValueError("post_lineup_result_invalid")
-            active_competitions = {
-                competition_id
-                for competition_id, row in acceptance_rows.items()
-                if acceptance_row_is_active(row, competition_id)
-            }
-            if set(component_snapshot_ids) != active_competitions:
-                raise ValueError("post_lineup_result_invalid")
-            for competition_id, snapshot_id in component_snapshot_ids.items():
-                cached = json.loads(
-                    (
-                        Path(root)
-                        / "data/cache/leagues"
-                        / competition_id
-                        / "snapshot.json"
-                    ).read_text(encoding="utf-8")
-                )
-                declared = (
-                    cached.get("competition")
-                    if isinstance(cached, Mapping)
-                    else None
-                )
-                if (
-                    not isinstance(cached, Mapping)
-                    or cached.get("snapshot_id") != snapshot_id
-                    or not isinstance(declared, Mapping)
-                    or declared.get("id") != competition_id
-                ):
-                    raise ValueError("post_lineup_result_invalid")
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            raise ValueError("post_lineup_result_invalid") from None
     if status == "partial":
         if (
             durable_count == 0
@@ -1093,6 +1109,35 @@ def _merge_receipts(*groups: Mapping[str, list[Mapping[str, Any]]]) -> dict[str,
     return _group_receipts(merged)
 
 
+def _split_task5_recovery_receipts(
+    root: str | Path,
+    receipts: Mapping[str, list[Mapping[str, Any]]],
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+    state = PostLineupRefreshStateStore(root).read()
+    recovery: dict[str, list[dict[str, Any]]] = {}
+    unclaimed: dict[str, list[dict[str, Any]]] = {}
+    for row in _normalize_receipts(receipts):
+        state_row = state["receipts"].get(row["token"])
+        target = (
+            recovery
+            if isinstance(state_row, Mapping)
+            and state_row.get("phase") in {"refresh_started", "committed", "published"}
+            else unclaimed
+        )
+        target.setdefault(row["competition_id"], []).append({
+            name: row[name]
+            for name in (
+                "event_id",
+                "source_match_id",
+                "kickoff_at_utc",
+                "fetched_at",
+                "lineup_fingerprint",
+                "ack_key",
+            )
+        })
+    return _group_receipts(recovery), _group_receipts(unclaimed)
+
+
 def _stage_jobs(
     *,
     store: Any,
@@ -1138,6 +1183,95 @@ def _stage_jobs(
     checked = _validate_state(updated)
     if changed:
         store.commit(checked)
+    return checked
+
+
+def _partition_stageable_receipts(
+    *,
+    receipts: Mapping[str, list[Mapping[str, Any]]],
+    state: Mapping[str, Any],
+    contexts: Mapping[str, Any],
+    now: datetime,
+) -> tuple[
+    dict[str, list[dict[str, Any]]],
+    dict[str, list[dict[str, Any]]],
+]:
+    stageable: dict[str, list[dict[str, Any]]] = {}
+    isolated = {"retryable": [], "blocked": []}
+    for row in _normalize_receipts(receipts):
+        ack = {"ack_key": dict(row["ack_key"])}
+        if _utc(row["kickoff_at_utc"]) <= now:
+            isolated["blocked"].append({**ack, "reason": "match_started"})
+            continue
+        if row["token"] not in state["receipts"]:
+            try:
+                context = _validate_context(
+                    contexts.get(f"{row['competition_id']}:{row['event_id']}"),
+                    row["competition_id"],
+                    row["event_id"],
+                )
+                if context["kickoff_at_utc"] != row["kickoff_at_utc"]:
+                    raise ValueError("league_pre_match_context_invalid")
+            except ValueError:
+                isolated["retryable"].append(
+                    {**ack, "reason": "receipt_context_unavailable"}
+                )
+                continue
+        stageable.setdefault(row["competition_id"], []).append({
+            name: row[name]
+            for name in (
+                "event_id",
+                "source_match_id",
+                "kickoff_at_utc",
+                "fetched_at",
+                "lineup_fingerprint",
+                "ack_key",
+            )
+        })
+    return _group_receipts(stageable), isolated
+
+
+def _with_isolated_acks(
+    *,
+    post: Mapping[str, Any] | None,
+    isolated: Mapping[str, list[Mapping[str, Any]]],
+    submitted: Mapping[str, list[Mapping[str, Any]]],
+) -> dict[str, Any]:
+    if post is None:
+        checked = {
+            "status": "blocked" if isolated["blocked"] else "refresh_failed",
+            "acks": {"durable": [], "retryable": [], "blocked": []},
+            "publish_status": None,
+            "aggregate_snapshot_id": None,
+            "component_snapshot_ids": {},
+        }
+    else:
+        checked = {
+            **post,
+            "acks": {
+                name: [dict(row) for row in post["acks"][name]]
+                for name in ("durable", "retryable", "blocked")
+            },
+        }
+    for name in ("retryable", "blocked"):
+        checked["acks"][name].extend(dict(row) for row in isolated[name])
+    if post is not None and any(isolated.values()) and checked["acks"]["durable"]:
+        checked["status"] = "partial"
+    for name in ("durable", "retryable", "blocked"):
+        checked["acks"][name].sort(
+            key=lambda row: (
+                row["ack_key"]["competition_id"],
+                row["ack_key"]["event_id"],
+                row["ack_key"]["lineup_fingerprint"],
+            )
+        )
+    actual_tokens = {
+        _ack_token(row["ack_key"])
+        for name in ("durable", "retryable", "blocked")
+        for row in checked["acks"][name]
+    }
+    if actual_tokens != _tokens(submitted):
+        raise ValueError("post_lineup_result_invalid")
     return checked
 
 
@@ -1503,8 +1637,8 @@ def _notification_events_for_post(
     root: str | Path,
     post: Mapping[str, Any],
     state: Mapping[str, Any],
-) -> list[tuple[dict[str, Any], str]]:
-    events: list[tuple[dict[str, Any], str]] = []
+) -> list[tuple[dict[str, Any], str | None]]:
+    events: list[tuple[dict[str, Any], str | None]] = []
     for item in post["acks"]["blocked"]:
         if item.get("reason") not in _QUOTA_BLOCK_REASONS:
             continue
@@ -1520,7 +1654,9 @@ def _notification_events_for_post(
             kickoff_at_utc=job["kickoff_at_utc"],
             source_fingerprint=job["lineup_fingerprint"],
         )
-        events.append((event, token))
+        # A quota warning is informational; it does not durably resolve the
+        # confirmed-lineup receipt and therefore must not clear its context.
+        events.append((event, None))
     return events
 
 
@@ -1742,6 +1878,7 @@ def _call_post(
     odds_fetcher: Callable[..., Any] | None,
     publish_fn: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None,
     identity_registry: Any,
+    observed_clock: Callable[[], Any] | None,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "root": root,
@@ -1749,6 +1886,8 @@ def _call_post(
         "newly_confirmed": receipts,
         "live": live,
     }
+    if observed_clock is not None:
+        kwargs["observed_clock"] = observed_clock
     if env_loader is not None:
         kwargs["env_loader"] = env_loader
     if quota_loader is not None:
@@ -1790,6 +1929,7 @@ def run_league_pre_match(
     notifier: Callable[..., Mapping[str, Any]] = send_wxpusher_notification,
     identity_registry: Any = None,
     live_preflight: Callable[[], Mapping[str, Any]] | None = None,
+    observed_clock: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     if not _flags_are_safe(
         live_lineups=live_lineups,
@@ -1802,7 +1942,7 @@ def run_league_pre_match(
     ):
         return {"status": "blocked", "reason": "unsafe_flag_combination", "lock": "not_acquired"}
     try:
-        now_dt = _utc(now)
+        requested_now = _utc(now)
     except ValueError:
         return {"status": "blocked", "reason": "invalid_now", "lock": "not_acquired"}
     if (
@@ -1811,6 +1951,20 @@ def run_league_pre_match(
         or source_failure_threshold < 1
     ):
         return {"status": "blocked", "reason": "invalid_failure_threshold", "lock": "not_acquired"}
+
+    clock: MonotonicUtcClock | None = None
+    if live_lineups:
+        try:
+            clock = MonotonicUtcClock(observed_clock)
+            now_dt = clock.now()
+        except ValueError:
+            return {
+                "status": "blocked",
+                "reason": "observed_clock_invalid",
+                "lock": "not_acquired",
+            }
+    else:
+        now_dt = requested_now
 
     if not live_lineups:
         try:
@@ -1888,6 +2042,10 @@ def run_league_pre_match(
             task4_pending = _pending_deliveries(_read_pending(root))
             task7_pending = _jobs_as_receipts(state) if notify else {}
             pending = _merge_receipts(task4_pending, task7_pending)
+            recovery_pending, unclaimed_pending = _split_task5_recovery_receipts(
+                root,
+                pending,
+            )
         except Exception:
             return {
                 "status": "pending_failed",
@@ -1899,13 +2057,23 @@ def run_league_pre_match(
         pending_result = None
         post_results: list[dict[str, Any]] = []
         attempted_tokens: set[str] = set()
-        if refresh_after_lineups and pending:
+        if refresh_after_lineups and recovery_pending:
+            recovery_stageable = recovery_pending
+            recovery_isolated = {"retryable": [], "blocked": []}
             if notify:
                 try:
+                    recovery_stageable, recovery_isolated = (
+                        _partition_stageable_receipts(
+                            receipts=recovery_pending,
+                            state=state,
+                            contexts=contexts_current,
+                            now=now_dt,
+                        )
+                    )
                     state = _stage_jobs(
                         store=state_store,
                         state=state,
-                        receipts=pending,
+                        receipts=recovery_stageable,
                         contexts=contexts_current,
                     )
                 except Exception:
@@ -1915,18 +2083,34 @@ def run_league_pre_match(
                         "lock": "acquired",
                         "notifications": notifications,
                     }
+            checked_pending = None
+            if recovery_stageable:
+                try:
+                    checked_pending = _call_post(
+                        post_lineup_refresh_fn,
+                        root=root,
+                        now=now_dt.isoformat(),
+                        receipts=recovery_stageable,
+                        live=live_refresh,
+                        env_loader=env_loader,
+                        quota_loader=quota_loader,
+                        odds_fetcher=odds_fetcher,
+                        publish_fn=publish_fn if publish else None,
+                        identity_registry=identity_registry,
+                        observed_clock=clock.now if clock is not None else None,
+                    )
+                except Exception:
+                    return {
+                        "status": "post_refresh_failed",
+                        "reason": "post_lineup_result_invalid",
+                        "lock": "acquired",
+                        "notifications": notifications,
+                    }
             try:
-                pending_result = _call_post(
-                    post_lineup_refresh_fn,
-                    root=root,
-                    now=now_dt.isoformat(),
-                    receipts=pending,
-                    live=live_refresh,
-                    env_loader=env_loader,
-                    quota_loader=quota_loader,
-                    odds_fetcher=odds_fetcher,
-                    publish_fn=publish_fn if publish else None,
-                    identity_registry=identity_registry,
+                pending_result = _with_isolated_acks(
+                    post=checked_pending,
+                    isolated=recovery_isolated,
+                    submitted=recovery_pending,
                 )
             except Exception:
                 return {
@@ -1935,7 +2119,7 @@ def run_league_pre_match(
                     "lock": "acquired",
                     "notifications": notifications,
                 }
-            if notify:
+            if notify and recovery_stageable:
                 try:
                     contexts_current = _eligible_contexts(
                         _validate_contexts(match_context_loader(root)), now_dt
@@ -1955,12 +2139,30 @@ def run_league_pre_match(
                         "notifications": notifications,
                     }
             post_results.append(pending_result)
-            attempted_tokens.update(_tokens(pending))
+            attempted_tokens.update(_tokens(recovery_pending))
 
         try:
             lineups = _validate_lineup_result(lineup_refresh_fn(
-                root=root, now=now_dt.isoformat(), live=True, write=True
+                root=root,
+                now=now_dt.isoformat(),
+                live=True,
+                write=True,
+                observed_clock=clock.now if clock is not None else None,
             ))
+            if notify:
+                receipt_keys = {
+                    f"{competition_id}:{row['event_id']}"
+                    for competition_id, rows in lineups["newly_confirmed"].items()
+                    for row in rows
+                }
+                if any(
+                    f"{row['competition_id']}:{row['event_id']}"
+                    not in contexts_current
+                    and f"{row['competition_id']}:{row['event_id']}"
+                    not in receipt_keys
+                    for row in lineups["source_events"]
+                ):
+                    raise ValueError("lineup_result_invalid")
         except Exception:
             return {
                 "status": "lineup_failed",
@@ -1970,15 +2172,27 @@ def run_league_pre_match(
             }
 
         is_write_failure = lineups.get("reason") in {"cache_commit_failed", "state_commit_failed"}
-        new_receipts = _without_tokens(lineups["newly_confirmed"], attempted_tokens)
+        combined_after_poll = _merge_receipts(
+            unclaimed_pending,
+            lineups["newly_confirmed"],
+        )
+        new_receipts = _without_tokens(combined_after_poll, attempted_tokens)
         post_result = None
         if refresh_after_lineups and new_receipts and not is_write_failure:
+            new_stageable = new_receipts
+            new_isolated = {"retryable": [], "blocked": []}
             if notify:
                 try:
+                    new_stageable, new_isolated = _partition_stageable_receipts(
+                        receipts=new_receipts,
+                        state=state,
+                        contexts=contexts_current,
+                        now=now_dt,
+                    )
                     state = _stage_jobs(
                         store=state_store,
                         state=state,
-                        receipts=new_receipts,
+                        receipts=new_stageable,
                         contexts=contexts_current,
                     )
                 except Exception:
@@ -1988,18 +2202,34 @@ def run_league_pre_match(
                         "lock": "acquired",
                         "notifications": notifications,
                     }
+            checked_post = None
+            if new_stageable:
+                try:
+                    checked_post = _call_post(
+                        post_lineup_refresh_fn,
+                        root=root,
+                        now=now_dt.isoformat(),
+                        receipts=new_stageable,
+                        live=live_refresh,
+                        env_loader=env_loader,
+                        quota_loader=quota_loader,
+                        odds_fetcher=odds_fetcher,
+                        publish_fn=publish_fn if publish else None,
+                        identity_registry=identity_registry,
+                        observed_clock=clock.now if clock is not None else None,
+                    )
+                except Exception:
+                    return {
+                        "status": "post_refresh_failed",
+                        "reason": "post_lineup_result_invalid",
+                        "lock": "acquired",
+                        "notifications": notifications,
+                    }
             try:
-                post_result = _call_post(
-                    post_lineup_refresh_fn,
-                    root=root,
-                    now=now_dt.isoformat(),
-                    receipts=new_receipts,
-                    live=live_refresh,
-                    env_loader=env_loader,
-                    quota_loader=quota_loader,
-                    odds_fetcher=odds_fetcher,
-                    publish_fn=publish_fn if publish else None,
-                    identity_registry=identity_registry,
+                post_result = _with_isolated_acks(
+                    post=checked_post,
+                    isolated=new_isolated,
+                    submitted=new_receipts,
                 )
             except Exception:
                 return {
@@ -2008,7 +2238,7 @@ def run_league_pre_match(
                     "lock": "acquired",
                     "notifications": notifications,
                 }
-            if notify:
+            if notify and new_stageable:
                 try:
                     contexts_current = _eligible_contexts(
                         _validate_contexts(match_context_loader(root)), now_dt
@@ -2072,7 +2302,7 @@ def run_league_pre_match(
             )
 
             completed_tokens: set[str] = set()
-            receipt_events: list[tuple[dict[str, Any], str]] = []
+            receipt_events: list[tuple[dict[str, Any], str | None]] = []
             for checked_post in post_results:
                 try:
                     receipt_events.extend(_notification_events_for_post(
@@ -2094,7 +2324,7 @@ def run_league_pre_match(
                         outbox, event, notifier=notifier
                     )
                 notifications.append(projected)
-                if durable_outbox:
+                if durable_outbox and token is not None:
                     completed_tokens.add(token)
             if completed_tokens:
                 candidate = {
@@ -2226,7 +2456,10 @@ run_league_pre_match_cycle = run_league_pre_match
 
 
 def _cli_odds_fetcher(
-    *, root: str | Path, quota_path: str | Path, observed_at: str
+    *,
+    root: str | Path,
+    quota_path: str | Path,
+    observed_clock: Callable[[], Any],
 ) -> Callable[[str, Mapping[str, str]], Any]:
     def fetch(sport_key: str, env: Mapping[str, str]) -> Any:
         slots = configured_key_slots(env)
@@ -2237,7 +2470,7 @@ def _cli_odds_fetcher(
             api_key=selected.api_key,
             sport_key=sport_key,
             quota_path=Path(root) / quota_path,
-            observed_at=observed_at,
+            observed_at=_utc(observed_clock()).isoformat(),
             quota_provider=selected.provider,
             markets=DEFAULT_MARKETS,
         )
@@ -2249,7 +2482,10 @@ def _cli_odds_fetcher(
 
 
 def _cli_publisher(
-    *, env_path: str | Path, endpoint: str, observed_at: str
+    *,
+    env_path: str | Path,
+    endpoint: str,
+    observed_clock: Callable[[], Any],
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
     def publish(snapshot: Mapping[str, Any]) -> Mapping[str, Any]:
         env = _load_env(env_path)
@@ -2257,7 +2493,10 @@ def _cli_publisher(
         if not secret or endpoint == DEFAULT_ENDPOINT:
             return {"status": "failed"}
         request = build_ingest_request(
-            snapshot=dict(snapshot), endpoint=endpoint, secret=secret, timestamp=observed_at
+            snapshot=dict(snapshot),
+            endpoint=endpoint,
+            secret=secret,
+            timestamp=_utc(observed_clock()).isoformat(),
         )
         try:
             response = _default_sender(request)
@@ -2314,11 +2553,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--publish", action="store_true")
     parser.add_argument("--notify", action="store_true")
     args = parser.parse_args(argv)
+    live_requested = any((
+        args.live_lineups,
+        args.write_lineups,
+        args.refresh_after_lineups,
+        args.live_refresh,
+        args.refresh_guard,
+        args.publish,
+        args.notify,
+    ))
+    if live_requested and args.now is not None:
+        print(json.dumps({
+            "status": "blocked",
+            "reason": "live_now_override_forbidden",
+            "lock": "not_acquired",
+        }, ensure_ascii=False, sort_keys=True))
+        return 2
     observed_at = args.now or _now_utc_iso()
     root = Path(args.root)
     env_path = root / args.env
     quota_path = Path(args.quota_path)
     env_cache: dict[str, Mapping[str, str]] = {}
+    live_clock = MonotonicUtcClock()
 
     def load_live_env() -> Mapping[str, str]:
         if "value" not in env_cache:
@@ -2339,15 +2595,20 @@ def main(argv: list[str] | None = None) -> int:
         env_loader=load_live_env,
         quota_loader=lambda: load_quota_ledger(root / quota_path),
         odds_fetcher=_cli_odds_fetcher(
-            root=root, quota_path=quota_path, observed_at=observed_at
+            root=root,
+            quota_path=quota_path,
+            observed_clock=live_clock.now,
         ),
         publish_fn=_cli_publisher(
-            env_path=env_path, endpoint=args.endpoint, observed_at=observed_at
+            env_path=env_path,
+            endpoint=args.endpoint,
+            observed_clock=live_clock.now,
         ),
         identity_registry=accepted_league_team_identity_registry(),
         live_preflight=_cli_live_preflight(
             env_loader=load_live_env, endpoint=args.endpoint
         ),
+        observed_clock=live_clock.now,
     )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 2 if result.get("status") == "blocked" and result.get("reason") == "unsafe_flag_combination" else 0
