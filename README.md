@@ -78,6 +78,14 @@
 - sidecar 使用独立 `daily_odds_state.json` 提交 `sport_key|anchor` 幂等键：只有 snapshot writer 成功后才提交，进程重启可复用已提交键；provider response 不完整、h2h 缺失、event identity/重复 ID/改期、赔率过期、quota unknown/不足或日预算不足时 fail-closed，部分失败只保留失败 key 重跑。默认 dry-run/disabled，不注册旧 scheduler 或 LaunchAgent，也不改变旧 `analysis_snapshot.json`、`project_daily_picks(snapshot)`、旧 `/api/daily-picks` 和 `/daily-picks`。
 - sidecar 只读入口为 `/api/daily-picks-sidecar` 与 `/daily-picks-sidecar`，页面刷新只读取已生成快照，不联网；旧单场菜单和 API 保持原契约。sidecar 的组合只来自同一全局 Top4，过滤同 event/同球队冲突，显示独立性近似组合分数，不显示资金或执行建议。
 
+### 六联赛单场分析完整闭环（已确认设计，待实施）
+
+- 意甲、巴甲、西甲、英超、德甲和法甲将采用“通用联赛闭环 + 六个 competition profile”接入现有 `/preview` 单场分析，而不是只添加赛事名称，也不把每日精选 sidecar 冒充正式单场 snapshot。
+- 目标链路为：分赛事赔率刷新 → MatchPick v3 唯一首选 → 开球前最后合法 snapshot 封盘 → 严格 90 分钟赛果结算 → 分联赛 `decision_tally` / `decision_sample` / `decision_coverage` 与六联赛同口径汇总。
+- 首版俱乐部评级保持 `club_rating_pending`，使用赔率去水后的市场共识并附加内部风险扣分；占位 1500 不得影响首选方向。世界杯、中超、legacy decision 和 reconstructed closing 不得混入六联赛正式胜率。
+- 离线实现阶段只使用保存样例和依赖注入，默认 dry-run，不读取 `.env`、不联网、不消耗 quota、不生成正式 closing 或统计。真实赔率/比分样例、90 分钟比分口径、生产调度、发布和部署均须后续单独确认。
+- 设计文档：[六联赛单场分析完整闭环设计](docs/superpowers/specs/2026-08-24-six-league-single-match-integration-design.md)。
+
 ## 目录结构
 
 ```text
@@ -704,6 +712,8 @@ THE_ODDS_API_KEY=...
 THE_ODDS_API_KEY_PRIMARY=...
 THE_ODDS_API_KEY_SECONDARY=...
 THE_ODDS_API_KEY_TERTIARY=...
+THE_ODDS_API_KEY_QUATERNARY=...
+THE_ODDS_API_KEY_QUINARY=...
 ODDS_API_IO_KEY=...
 ODDSPAPI_KEY=...
 INGEST_HMAC_SECRET=...
@@ -711,7 +721,7 @@ WORLDCUP_STORE=
 DATABASE_URL=
 ```
 
-`THE_ODDS_API_KEY` 保持旧入口兼容，也会作为 primary fallback；自动轮换使用 `THE_ODDS_API_KEY_PRIMARY`、`THE_ODDS_API_KEY_SECONDARY`、`THE_ODDS_API_KEY_TERTIARY` 三个显式槽位。当前槽位剩余额度降到 30 或以下时，优先切换到仍未探测或剩余大于 30 的下一槽位；只有没有新鲜槽位时才继续使用低额度余额。`.env` 已被 `.gitignore` 忽略，真实 key 不要写入文档或提交。
+`THE_ODDS_API_KEY` 保持旧入口兼容，也会作为 primary fallback；自动轮换使用 `THE_ODDS_API_KEY_PRIMARY`、`THE_ODDS_API_KEY_SECONDARY`、`THE_ODDS_API_KEY_TERTIARY`、`THE_ODDS_API_KEY_QUATERNARY`、`THE_ODDS_API_KEY_QUINARY` 五个显式槽位。当前槽位剩余额度降到 30 或以下时，优先切换到仍未探测或剩余大于 30 的下一槽位；只有没有新鲜槽位时才继续使用低额度余额。`.env` 已被 `.gitignore` 忽略，真实 key 不要写入文档或提交。
 
 ## 下一步
 
@@ -728,7 +738,7 @@ DATABASE_URL=
 - macmini 不直连 RDS/OSS，后续只调用 ECS ingest API。
 - source refresh 失败但本地缓存存在时，可以继续用上一轮缓存生成快照；必须在 `data_quality.source_errors` 和 `data_quality.stale_sources` 标记，不能静默当作新鲜数据。
 - Elo 来源为本地基线重放：`data/cache/elo_baseline_*.tsv` + openfootball 完赛比分按 eloratings 公式（K=60、中立场）增量重放生成 `elo_world.tsv`；eloratings 抓取仅用于重新锚定基线，抓取失败只记 `data_quality.source_errors`，不标 `stale_sources`、不单独阻断本场首选。重放计算失败时回退沿用现有 `elo_world.tsv` 并记 `elo_local` 错误。实现见 `worldcup/elo_local.py`。
-- The Odds API 按免费额度使用：常规每天 1 次，每场保留 T-12小时 / T-6小时 / T-90 / T-55 / T-35 / T-25 临赛锚点。调度按本地 quota ledger 依次使用 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY` / `THE_ODDS_API_KEY_TERTIARY`；当前槽位剩余额度降到 30 或以下时，优先切到仍未探测或剩余大于 30 的下一槽位，并保留旧槽位低额度作为应急。只有三个槽位都没有新鲜额度时才继续使用尚存低额度并降级为低额度锚点；全部耗尽时暂停并报告 `quota_exhausted`。任一槽位剩余额度跌破 100 / 30 / 10 / 0 时会随当轮发布自动发 WxPusher 额度告警（每个槽位每个阈值只发一次；`--no-notify` 可静音）。更换或新增 key 后，需经确认执行一次 `worldcup.scheduled_publish --live --force`，用真实 API 响应把新槽额度写回 quota ledger；仅修改 `.env` 不会伪造或重置额度。
+- The Odds API 按免费额度使用：常规每天 1 次，每场保留 T-12小时 / T-6小时 / T-90 / T-55 / T-35 / T-25 临赛锚点。调度按本地 quota ledger 依次使用 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY` / `THE_ODDS_API_KEY_TERTIARY` / `THE_ODDS_API_KEY_QUATERNARY` / `THE_ODDS_API_KEY_QUINARY`；当前槽位剩余额度降到 30 或以下时，优先切到仍未探测或剩余大于 30 的下一槽位，并保留旧槽位低额度作为应急。只有五个槽位都没有新鲜额度时才继续使用尚存低额度并降级为低额度锚点；全部耗尽时暂停并报告 `quota_exhausted`。任一槽位剩余额度跌破 100 / 30 / 10 / 0 时会随当轮发布自动发 WxPusher 额度告警（每个槽位每个阈值只发一次；`--no-notify` 可静音）。更换或新增 key 后，需经确认执行一次 `worldcup.scheduled_publish --live --force`，用真实 API 响应把新槽额度写回 quota ledger；仅修改 `.env` 不会伪造或重置额度。
 - FIFA public API 首发抓取不消耗 The Odds API quota，也不需要 key；它是公开源，不是付费 SLA 数据源。`worldcup.lineups_refresh` 抓不到官方首发时只能记录 missing 或发缺失通知，不能伪造 confirmed；默认只在开赛前 35 分钟内发缺首发通知，避免过早提醒。`--write` 合并保留旧 confirmed cache，避免未公布轮询清空已确认首发。FIFA `source_match_no` 与 openfootball/本地 snapshot 编号可能不是同一套编号，首发绑定不得只依赖编号，必须通过双方 canonical team + UTC kickoff 校验。`worldcup.pre_match_runner` 只有在 `newly_confirmed > 0` 时才会允许触发首发后 odds refresh；`--refresh-guard` 会先 dry-run 检查调度决策和 quota，`--live-refresh` 会消耗 The Odds API quota，当前已安装的 `xin.celab.football.pre-match` 不包含该参数。如需改为自动首发后 odds refresh，必须单独确认后更新 plist 并重新加载 launchd。
 - ingest 必须绑定 `timestamp`、`run_id`、`snapshot_id` 和 body hash 做 HMAC；dry-run 不发送请求，也不能打印 secret。
 - ingest server 默认防重放窗口为 300 秒；服务端必须用 `X-Worldcup-Idempotency-Key` 做幂等。
