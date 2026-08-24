@@ -716,9 +716,50 @@ def _validate_post_result(
         if (
             {_ack_token(item["ack_key"]) for item in ack_commit_failures}
             != current_tokens
-            or set(component_snapshot_ids) != current_competitions
+            or not current_competitions.issubset(component_snapshot_ids)
         ):
             raise ValueError("post_lineup_result_invalid")
+        try:
+            acceptance = LeagueAcceptanceStore(
+                Path(root) / "data/local/leagues/acceptance.json"
+            ).read()
+            acceptance_rows = (
+                acceptance.get("competitions")
+                if isinstance(acceptance, Mapping)
+                else None
+            )
+            if not isinstance(acceptance_rows, Mapping):
+                raise ValueError("post_lineup_result_invalid")
+            active_competitions = {
+                competition_id
+                for competition_id, row in acceptance_rows.items()
+                if acceptance_row_is_active(row, competition_id)
+            }
+            if set(component_snapshot_ids) != active_competitions:
+                raise ValueError("post_lineup_result_invalid")
+            for competition_id, snapshot_id in component_snapshot_ids.items():
+                cached = json.loads(
+                    (
+                        Path(root)
+                        / "data/cache/leagues"
+                        / competition_id
+                        / "snapshot.json"
+                    ).read_text(encoding="utf-8")
+                )
+                declared = (
+                    cached.get("competition")
+                    if isinstance(cached, Mapping)
+                    else None
+                )
+                if (
+                    not isinstance(cached, Mapping)
+                    or cached.get("snapshot_id") != snapshot_id
+                    or not isinstance(declared, Mapping)
+                    or declared.get("id") != competition_id
+                ):
+                    raise ValueError("post_lineup_result_invalid")
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            raise ValueError("post_lineup_result_invalid") from None
     if status == "partial":
         if (
             durable_count == 0

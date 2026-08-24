@@ -78,6 +78,7 @@ def _post_result(
     component_snapshot_id: str = "league-test",
     aggregate_snapshot_id: str = "league-aggregate-test",
     receipt_count: int = 1,
+    components: tuple[tuple[str, str], ...] | None = None,
 ) -> dict:
     def ack(row: dict, reason: str | None = None) -> dict:
         value = {"ack_key": dict(row["ack_key"])}
@@ -93,10 +94,14 @@ def _post_result(
             "aggregate": {
                 "snapshot_id": aggregate_snapshot_id,
                 "run_id": aggregate_snapshot_id,
-                "components": [{
-                    "competition_id": EPL,
-                    "snapshot_id": component_snapshot_id,
-                }],
+                "components": [
+                    {"competition_id": competition_id, "snapshot_id": snapshot_id}
+                    for competition_id, snapshot_id in (
+                        components
+                        if components is not None
+                        else ((EPL, component_snapshot_id),)
+                    )
+                ],
             },
         }
     return {
@@ -1420,6 +1425,40 @@ def _commit_task5_contract_rows(
         })
 
 
+def _write_task7_aggregate_contract(
+    root: str | Path,
+    *,
+    acceptance_states: dict[str, str],
+    snapshots: dict[str, str],
+) -> None:
+    acceptance_path = Path(root) / "data/local/leagues/acceptance.json"
+    acceptance_path.parent.mkdir(parents=True, exist_ok=True)
+    acceptance_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "competitions": {
+                competition_id: _acceptance_row(competition_id, state)
+                for competition_id, state in acceptance_states.items()
+            },
+        }),
+        encoding="utf-8",
+    )
+    for competition_id, snapshot_id in snapshots.items():
+        snapshot_path = (
+            Path(root) / f"data/cache/leagues/{competition_id}/snapshot.json"
+        )
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot_path.write_text(
+            json.dumps({
+                "snapshot_id": snapshot_id,
+                "snapshot_at": "2026-08-24T11:00:00+00:00",
+                "competition": {"id": competition_id},
+                "matches": [],
+            }),
+            encoding="utf-8",
+        )
+
+
 def test_ack_state_commit_failure_reason_has_exact_bidirectional_task5_matrix():
     current = _receipt("ack-matrix-current", "5")
     waiting = _receipt("ack-matrix-waiting", "6")
@@ -1685,6 +1724,11 @@ def test_ack_state_commit_failure_reason_has_exact_bidirectional_task5_matrix():
 
     for case in cases:
         with TemporaryDirectory() as tmp:
+            _write_task7_aggregate_contract(
+                tmp,
+                acceptance_states={EPL: "active"},
+                snapshots={EPL: "league-test"},
+            )
             _commit_task5_contract_rows(
                 tmp,
                 committed=case["committed"],
@@ -1741,6 +1785,107 @@ def test_ack_state_commit_failure_reason_has_exact_bidirectional_task5_matrix():
             ), case["name"]
             assert set(pending["events"]) == {
                 f"{EPL}:{row['event_id']}" for row in case["rows"]
+            }, case["name"]
+
+
+def test_ack_failure_components_are_exact_complete_active_aggregate():
+    current = _receipt("aggregate-membership-current", "9")
+    cases = (
+        {
+            "name": "missing_active_component",
+            "valid": False,
+            "acceptance_states": {EPL: "active", LALIGA: "active"},
+            "snapshots": {EPL: "league-test", LALIGA: "laliga-cached"},
+            "components": ((EPL, "league-test"),),
+        },
+        {
+            "name": "complete_active_cached_extra",
+            "valid": True,
+            "acceptance_states": {EPL: "active", LALIGA: "active"},
+            "snapshots": {EPL: "league-test", LALIGA: "laliga-cached"},
+            "components": (
+                (EPL, "league-test"),
+                (LALIGA, "laliga-cached"),
+            ),
+        },
+        {
+            "name": "nonactive_extra_component",
+            "valid": False,
+            "acceptance_states": {
+                EPL: "active",
+                LALIGA: "identity_verified",
+            },
+            "snapshots": {EPL: "league-test", LALIGA: "laliga-cached"},
+            "components": (
+                (EPL, "league-test"),
+                (LALIGA, "laliga-cached"),
+            ),
+        },
+        {
+            "name": "active_extra_cache_snapshot_mismatch",
+            "valid": False,
+            "acceptance_states": {EPL: "active", LALIGA: "active"},
+            "snapshots": {EPL: "league-test", LALIGA: "laliga-cached"},
+            "components": (
+                (EPL, "league-test"),
+                (LALIGA, "laliga-forged"),
+            ),
+        },
+    )
+
+    for case in cases:
+        with TemporaryDirectory() as tmp:
+            _write_task7_aggregate_contract(
+                tmp,
+                acceptance_states=case["acceptance_states"],
+                snapshots=case["snapshots"],
+            )
+            _commit_task5_contract_rows(tmp, committed=(current,))
+            _write_pending(tmp, current)
+            lineup_calls = []
+
+            def lineups(**_kwargs):
+                lineup_calls.append("called")
+                return _lineup_result(status="no_due")
+
+            result = run_league_pre_match(
+                root=tmp,
+                now=NOW,
+                lineup_refresh_fn=lineups,
+                post_lineup_refresh_fn=lambda **_kwargs: _post_result(
+                    retryable=((current, "ack_state_commit_failed"),),
+                    status="publish_failed",
+                    components=case["components"],
+                ),
+                match_context_loader=lambda _root: {
+                    f"{EPL}:{current['event_id']}": _context(current["event_id"])
+                },
+                outbox_factory=_fail,
+                notifier=_fail,
+                **_full_flags(notify=True),
+            )
+            task7_state = json.loads(
+                (Path(tmp) / STATE_RELATIVE_PATH).read_text(encoding="utf-8")
+            )
+            pending = json.loads(
+                (
+                    Path(tmp)
+                    / "data/local/leagues/lineup_refresh_pending.json"
+                ).read_text(encoding="utf-8")
+            )
+
+            if case["valid"]:
+                assert result["status"] == "publish_failed", case["name"]
+                assert lineup_calls == ["called"], case["name"]
+            else:
+                assert result["status"] == "post_refresh_failed", case["name"]
+                assert result["reason"] == "post_lineup_result_invalid", case["name"]
+                assert lineup_calls == [], case["name"]
+            assert result["notifications"] == [], case["name"]
+            job = task7_state["receipts"][_ack_token(current["ack_key"])]
+            assert job["current_decision"] is None, case["name"]
+            assert set(pending["events"]) == {
+                f"{EPL}:{current['event_id']}"
             }, case["name"]
 
 
@@ -1852,7 +1997,7 @@ def test_task5_success_status_matrix_allows_already_acked_and_mixed_partial():
         }
 
 
-def test_real_task5_ack_state_commit_failure_remains_retryable_and_does_not_block_new_due():
+def test_real_multi_active_task5_ack_failure_keeps_cached_extra_and_does_not_starve_due():
     old = _receipt("ack-state-old", "1")
     new = _receipt("ack-state-new", "2")
     acceptance = {
@@ -1871,7 +2016,21 @@ def test_real_task5_ack_state_commit_failure_remains_retryable_and_does_not_bloc
                         "result_contract",
                     )
                 },
-            }
+            },
+            LALIGA: {
+                "competition_id": LALIGA,
+                "state": "active",
+                "reason": None,
+                "fingerprints": {
+                    name: f"{LALIGA}-{name}"
+                    for name in (
+                        "sport_catalog",
+                        "odds_sample",
+                        "team_identity",
+                        "result_contract",
+                    )
+                },
+            },
         },
     }
     registry = LeagueTeamIdentityRegistry({
@@ -1882,6 +2041,7 @@ def test_real_task5_ack_state_commit_failure_remains_retryable_and_does_not_bloc
     })
     calls = {"lineups": 0, "provider": 0, "publish": 0, "post": []}
     delivered = []
+    published_components = []
 
     class AckFailingStateStore:
         def __init__(self, root):
@@ -1918,8 +2078,12 @@ def test_real_task5_ack_state_commit_failure_remains_retryable_and_does_not_bloc
         calls["provider"] += 1
         return [{"id": old["event_id"]}]
 
-    def publisher(_snapshot):
+    def publisher(snapshot):
         calls["publish"] += 1
+        published_components.append({
+            row["competition_id"]: row["snapshot_id"]
+            for row in snapshot["components"]
+        })
         return {"status": "stored"}
 
     def post(**kwargs):
@@ -1971,6 +2135,20 @@ def test_real_task5_ack_state_commit_failure_remains_retryable_and_does_not_bloc
         acceptance_path = Path(tmp) / "data/local/leagues/acceptance.json"
         acceptance_path.parent.mkdir(parents=True, exist_ok=True)
         acceptance_path.write_text(json.dumps(acceptance), encoding="utf-8")
+        laliga_cache = Path(tmp) / f"data/cache/leagues/{LALIGA}/snapshot.json"
+        laliga_cache.parent.mkdir(parents=True, exist_ok=True)
+        laliga_cache.write_text(
+            json.dumps({
+                "snapshot_id": "laliga-cached",
+                "snapshot_at": "2026-08-24T11:00:00+00:00",
+                "competition": {"id": LALIGA},
+                "matches": [{
+                    "source_event_id": "laliga-cached-event",
+                    "competition": {"id": LALIGA},
+                }],
+            }),
+            encoding="utf-8",
+        )
         _write_pending(tmp, old)
         result = run_league_pre_match(
             root=tmp,
@@ -2007,6 +2185,9 @@ def test_real_task5_ack_state_commit_failure_remains_retryable_and_does_not_bloc
             "publish": 1,
             "post": [[old["event_id"]], [new["event_id"]]],
         }
+        assert len(published_components) == 1
+        assert set(published_components[0]) == {EPL, LALIGA}
+        assert published_components[0][LALIGA] == "laliga-cached"
         assert list(pending["events"]) == [f"{EPL}:{old['event_id']}"]
         old_job = task7_state["receipts"][_ack_token(old["ack_key"])]
         assert old_job["current_decision"] is None
