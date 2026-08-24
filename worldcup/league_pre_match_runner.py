@@ -646,6 +646,36 @@ def _validate_post_result(
     if publish_status is not None and value["status"] not in {"partial", "published"}:
         raise ValueError("post_lineup_result_invalid")
 
+    status = value["status"]
+    durable_count = len(checked_acks["durable"])
+    retryable_count = len(checked_acks["retryable"])
+    blocked_count = len(checked_acks["blocked"])
+    unresolved_count = retryable_count + blocked_count
+    failed_publication = (
+        isinstance(publication, Mapping)
+        and publication.get("status") == "publish_failed"
+    )
+    if status == "partial":
+        if (
+            durable_count == 0
+            or (publish_status is None and unresolved_count == 0)
+            or (failed_publication and retryable_count == 0)
+        ):
+            raise ValueError("post_lineup_result_invalid")
+    elif status == "blocked":
+        if durable_count or publication is not None or unresolved_count == 0:
+            raise ValueError("post_lineup_result_invalid")
+    elif status == "refresh_failed":
+        if durable_count or publication is not None or retryable_count == 0:
+            raise ValueError("post_lineup_result_invalid")
+    elif status == "publish_failed":
+        if durable_count or retryable_count == 0 or publish_status is not None:
+            raise ValueError("post_lineup_result_invalid")
+    elif status in {"dry_run", "not_due"}:
+        raise ValueError("post_lineup_result_invalid")
+    if failed_publication and status not in {"partial", "publish_failed"}:
+        raise ValueError("post_lineup_result_invalid")
+
     for item in checked_acks["durable"]:
         competition_id = item["ack_key"]["competition_id"]
         if publish_status is not None:
@@ -760,14 +790,19 @@ def _validate_job(value: Any, token: str) -> dict[str, Any]:
 def _validate_episode(value: Any, key: str) -> dict[str, Any]:
     expected = {
         "competition_id", "event_id", "episode_id", "failure_count",
-        "failure_threshold", "active", "recovery_pending", "home_team",
-        "away_team", "kickoff_at_utc", "started_at", "last_failure_at",
+        "failure_threshold", "active", "failure_pending", "failure_notified",
+        "recovery_pending", "home_team", "away_team", "kickoff_at_utc",
+        "started_at", "last_failure_at",
     }
     if not isinstance(value, Mapping) or set(value) != expected or ":" not in key:
         raise ValueError("league_pre_match_state_invalid")
     competition_id, event_id = key.split(":", 1)
     count = value.get("failure_count")
     threshold = value.get("failure_threshold")
+    active = value.get("active")
+    failure_pending = value.get("failure_pending")
+    failure_notified = value.get("failure_notified")
+    recovery_pending = value.get("recovery_pending")
     if (
         value.get("competition_id") != competition_id
         or value.get("event_id") != event_id
@@ -780,9 +815,15 @@ def _validate_episode(value: Any, key: str) -> dict[str, Any]:
         or isinstance(threshold, bool)
         or not isinstance(threshold, int)
         or threshold < 1
-        or not isinstance(value.get("active"), bool)
-        or not isinstance(value.get("recovery_pending"), bool)
-        or (value.get("recovery_pending") is True and value.get("active") is not True)
+        or not isinstance(active, bool)
+        or not isinstance(failure_pending, bool)
+        or not isinstance(failure_notified, bool)
+        or not isinstance(recovery_pending, bool)
+        or (failure_pending and failure_notified)
+        or (not active and (failure_pending or recovery_pending))
+        or (recovery_pending and not (failure_pending or failure_notified))
+        or (count < threshold and (failure_pending or failure_notified or recovery_pending))
+        or (active and count >= threshold and not (failure_pending or failure_notified))
     ):
         raise ValueError("league_pre_match_state_invalid")
     return {
@@ -791,8 +832,10 @@ def _validate_episode(value: Any, key: str) -> dict[str, Any]:
         "episode_id": value["episode_id"],
         "failure_count": count,
         "failure_threshold": threshold,
-        "active": value["active"],
-        "recovery_pending": value["recovery_pending"],
+        "active": active,
+        "failure_pending": failure_pending,
+        "failure_notified": failure_notified,
+        "recovery_pending": recovery_pending,
         "home_team": _safe_display(value.get("home_team")),
         "away_team": _safe_display(value.get("away_team")),
         "kickoff_at_utc": _utc(value.get("kickoff_at_utc")).isoformat(),
@@ -1233,13 +1276,12 @@ def _update_source_episodes(
     contexts: Mapping[str, Any],
     now: datetime,
     configured_threshold: int,
-) -> tuple[dict[str, Any], list[tuple[dict[str, Any], str]]]:
+) -> dict[str, Any]:
     updated = {
         "schema_version": 1,
         "receipts": {key: dict(value) for key, value in state["receipts"].items()},
         "source_episodes": {key: dict(value) for key, value in state["source_episodes"].items()},
     }
-    events: list[tuple[dict[str, Any], str]] = []
     evidence = {
         f"{row['competition_id']}:{row['event_id']}": row["outcome"]
         for row in lineups["source_events"]
@@ -1252,13 +1294,20 @@ def _update_source_episodes(
         outcome = evidence.get(key)
         if outcome == "failed":
             if not isinstance(current, Mapping) or current.get("active") is not True:
+                previous_episode_id = (
+                    current.get("episode_id") if isinstance(current, Mapping) else ""
+                )
                 current = {
                     "competition_id": competition_id,
                     "event_id": context["event_id"],
-                    "episode_id": _digest(f"{key}|{now.isoformat()}"),
+                    "episode_id": _digest(
+                        f"{key}|{now.isoformat()}|{previous_episode_id}"
+                    ),
                     "failure_count": 0,
                     "failure_threshold": configured_threshold,
                     "active": True,
+                    "failure_pending": False,
+                    "failure_notified": False,
                     "recovery_pending": False,
                     "home_team": context["home_team"],
                     "away_team": context["away_team"],
@@ -1269,30 +1318,55 @@ def _update_source_episodes(
             current = {
                 **dict(current),
                 "failure_count": int(current["failure_count"]) + 1,
+                "recovery_pending": False,
                 "last_failure_at": now.isoformat(),
             }
+            if (
+                current["failure_count"] >= current["failure_threshold"]
+                and current.get("failure_notified") is not True
+            ):
+                current["failure_pending"] = True
             updated["source_episodes"][key] = current
-            if current["failure_count"] >= current["failure_threshold"]:
-                events.append((build_source_failure_event(
-                    competition_id=competition_id,
-                    event_id=context["event_id"],
-                    home_team=context["home_team"],
-                    away_team=context["away_team"],
-                    kickoff_at_utc=context["kickoff_at_utc"],
-                    source_fingerprint=current["episode_id"],
-                    failure_count=current["failure_count"],
-                    failure_threshold=current["failure_threshold"],
-                ), key))
         elif (
             outcome == "succeeded"
             and isinstance(current, Mapping)
             and current.get("active") is True
         ):
-            updated["source_episodes"][key] = {
-                **dict(current),
-                "recovery_pending": True,
-            }
-    return _validate_state(updated), events
+            if (
+                current.get("failure_pending") is True
+                or current.get("failure_notified") is True
+            ):
+                updated["source_episodes"][key] = {
+                    **dict(current),
+                    "recovery_pending": True,
+                }
+            else:
+                updated["source_episodes"][key] = {
+                    **dict(current),
+                    "active": False,
+                    "recovery_pending": False,
+                }
+    return _validate_state(updated)
+
+
+def _pending_failure_events(
+    state: Mapping[str, Any],
+) -> list[tuple[dict[str, Any], str]]:
+    events: list[tuple[dict[str, Any], str]] = []
+    for key, episode in sorted(state["source_episodes"].items()):
+        if episode.get("active") is not True or episode.get("failure_pending") is not True:
+            continue
+        events.append((build_source_failure_event(
+            competition_id=episode["competition_id"],
+            event_id=episode["event_id"],
+            home_team=episode["home_team"],
+            away_team=episode["away_team"],
+            kickoff_at_utc=episode["kickoff_at_utc"],
+            source_fingerprint=episode["episode_id"],
+            failure_count=episode["failure_count"],
+            failure_threshold=episode["failure_threshold"],
+        ), key))
+    return events
 
 
 def _pending_recovery_events(
@@ -1300,7 +1374,11 @@ def _pending_recovery_events(
 ) -> list[tuple[dict[str, Any], str]]:
     events: list[tuple[dict[str, Any], str]] = []
     for key, episode in sorted(state["source_episodes"].items()):
-        if episode.get("active") is not True or episode.get("recovery_pending") is not True:
+        if (
+            episode.get("active") is not True
+            or episode.get("failure_notified") is not True
+            or episode.get("recovery_pending") is not True
+        ):
             continue
         events.append((build_source_recovery_event(
             competition_id=episode["competition_id"],
@@ -1689,9 +1767,8 @@ def run_league_pre_match(
                 except Exception:
                     notification_retry = {"status": "failed"}
 
-            source_events: list[tuple[dict[str, Any], str]] = []
             try:
-                updated_state, source_events = _update_source_episodes(
+                updated_state = _update_source_episodes(
                     state=state,
                     lineups=lineups,
                     contexts=contexts_current,
@@ -1701,8 +1778,45 @@ def run_league_pre_match(
                 state_store.commit(updated_state)
                 state = updated_state
             except Exception:
-                source_events = []
                 notification_retry = {"status": "failed"}
+
+            try:
+                failure_events = _pending_failure_events(state)
+            except Exception:
+                failure_events = []
+                notification_retry = {"status": "failed"}
+            failure_notified_keys: set[str] = set()
+            for event, episode_key in failure_events:
+                if outbox is None:
+                    projected = _notification_projection(event, None)
+                else:
+                    projected, _durable_outbox = _deliver_event(
+                        outbox, event, notifier=notifier
+                    )
+                notifications.append(projected)
+                if projected["status"] in {"already_sent", "sent"}:
+                    failure_notified_keys.add(episode_key)
+            if failure_notified_keys:
+                candidate = {
+                    **state,
+                    "source_episodes": {
+                        key: (
+                            {
+                                **episode,
+                                "failure_pending": False,
+                                "failure_notified": True,
+                            }
+                            if key in failure_notified_keys else episode
+                        )
+                        for key, episode in state["source_episodes"].items()
+                    },
+                }
+                try:
+                    checked_candidate = _validate_state(candidate)
+                    state_store.commit(checked_candidate)
+                    state = checked_candidate
+                except Exception:
+                    notification_retry = {"status": "failed"}
 
             try:
                 missing_events = _missing_events(root, contexts_current, now_dt)
@@ -1714,15 +1828,6 @@ def run_league_pre_match(
                     projected = _notification_projection(event, None)
                 else:
                     projected, _durable = _deliver_event(outbox, event, notifier=notifier)
-                notifications.append(projected)
-
-            for event, _episode_key in source_events:
-                if outbox is None:
-                    projected, durable_outbox = _notification_projection(event, None), False
-                else:
-                    projected, durable_outbox = _deliver_event(
-                        outbox, event, notifier=notifier
-                    )
                 notifications.append(projected)
 
             recovered_keys: set[str] = set()
