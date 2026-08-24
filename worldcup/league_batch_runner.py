@@ -17,11 +17,15 @@ def _validate_expected_snapshot(
     snapshot: Any,
     competition_id: str,
     expected_event_ids: Sequence[str],
+    forbidden_event_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
     if not isinstance(snapshot, Mapping):
         raise ValueError("planned_refresh_snapshot_invalid")
     expected = {str(value).strip() for value in expected_event_ids}
     if not expected or "" in expected:
+        raise ValueError("planned_refresh_expected_events_invalid")
+    forbidden = {str(value).strip() for value in forbidden_event_ids}
+    if "" in forbidden or expected.intersection(forbidden):
         raise ValueError("planned_refresh_expected_events_invalid")
     matches = snapshot.get("matches")
     if not isinstance(matches, list) or not matches:
@@ -48,6 +52,8 @@ def _validate_expected_snapshot(
         for event_id in expected
     ):
         raise ValueError("planned_refresh_trigger_events_missing")
+    if forbidden.intersection(decisions):
+        raise ValueError("planned_refresh_forbidden_events_present")
     return dict(snapshot)
 
 
@@ -68,6 +74,7 @@ def run_league_batch(
     live_env: Mapping[str, str] | None = None,
     store_factory: Callable[[str | Path], Any] = LeagueLiveStore,
     expected_event_ids_by_competition: Mapping[str, Sequence[str]] | None = None,
+    forbidden_event_ids_by_competition: Mapping[str, Sequence[str]] | None = None,
     expected_snapshot_ids_by_competition: Mapping[str, str] | None = None,
     commit_callback: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
@@ -97,6 +104,11 @@ def run_league_batch(
     expected_events = (
         dict(expected_event_ids_by_competition)
         if isinstance(expected_event_ids_by_competition, Mapping)
+        else {}
+    )
+    forbidden_events = (
+        dict(forbidden_event_ids_by_competition)
+        if isinstance(forbidden_event_ids_by_competition, Mapping)
         else {}
     )
     expected_snapshot_ids = (
@@ -158,6 +170,7 @@ def run_league_batch(
                     snapshot,
                     profile.id,
                     expected_events[profile.id],
+                    forbidden_events.get(profile.id, ()),
                 )
             count = len(snapshot.get("matches") or [])
             if store is not None:
@@ -217,6 +230,7 @@ def run_planned_league_refresh(
     expected_event_ids_by_competition: Mapping[str, Sequence[str]],
     expected_snapshot_ids_by_competition: Mapping[str, str],
     guarded_acceptance_fingerprint: str,
+    forbidden_event_ids_by_competition: Mapping[str, Sequence[str]] | None = None,
     snapshot_builder: Callable[..., dict[str, Any]] = build_league_competition_snapshot,
     store_factory: Callable[[str | Path], Any] = LeagueLiveStore,
     commit_callback: Callable[[Mapping[str, Any]], Any] | None = None,
@@ -248,6 +262,20 @@ def run_planned_league_refresh(
         )
     ):
         return {"status": "blocked", "reason": "planned_refresh_snapshot_ids_invalid"}
+    forbidden_events = (
+        dict(forbidden_event_ids_by_competition)
+        if isinstance(forbidden_event_ids_by_competition, Mapping)
+        else {}
+    )
+    if (
+        not set(forbidden_events).issubset(selected)
+        or any(
+            not isinstance(rows, Sequence)
+            or isinstance(rows, (str, bytes))
+            for rows in forbidden_events.values()
+        )
+    ):
+        return {"status": "blocked", "reason": "planned_refresh_forbidden_events_invalid"}
     if (
         not isinstance(guarded_acceptance_fingerprint, str)
         or guarded_acceptance_fingerprint != acceptance_fingerprint(acceptance_report)
@@ -266,6 +294,7 @@ def run_planned_league_refresh(
         snapshot_builder=snapshot_builder,
         store_factory=store_factory,
         expected_event_ids_by_competition=expected_event_ids_by_competition,
+        forbidden_event_ids_by_competition=forbidden_events,
         expected_snapshot_ids_by_competition=expected_snapshot_ids_by_competition,
         commit_callback=commit_callback,
     )

@@ -881,12 +881,21 @@ def run_league_lineups_refresh(
             }
             if failed_source_ids - set(event_source_ids.values()):
                 failed_events.update(request["event_id"] for request in date_requests)
+            accepted_events = {
+                row["event_id"]
+                for row in report.get("accepted", [])
+                if isinstance(row, Mapping)
+                and isinstance(row.get("event_id"), str)
+            }
             for request in date_requests:
-                source_outcomes[(competition_id, request["event_id"])] = (
-                    "failed"
-                    if request["event_id"] in failed_events
-                    else "succeeded"
-                )
+                event_id = request["event_id"]
+                if event_id in failed_events:
+                    outcome = "failed"
+                elif event_id in accepted_events:
+                    outcome = "succeeded"
+                else:
+                    outcome = "rejected"
+                source_outcomes[(competition_id, event_id)] = outcome
             accepted_by_competition[competition_id].extend(report.get("accepted", []))
             for row in report.get("rejected", []):
                 if not isinstance(row, Mapping):
@@ -936,6 +945,10 @@ def run_league_lineups_refresh(
             row for row in rows
             if _utc(row["kickoff_at_utc"]) > commit_observed_at
         ]
+        retained_events = {row["event_id"] for row in retained}
+        for row in rows:
+            if row["event_id"] not in retained_events:
+                source_outcomes[(competition_id, row["event_id"])] = "rejected"
         rejected_after_response = len(rows) - len(retained)
         if rejected_after_response:
             _increment(

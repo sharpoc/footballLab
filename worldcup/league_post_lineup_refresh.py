@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
+from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS, formal_single_match_competitions
 from worldcup.league_acceptance import acceptance_fingerprint, acceptance_row_is_active
 from worldcup.league_batch_runner import run_planned_league_refresh
 from worldcup.league_live_store import LeagueLiveStore
@@ -26,6 +26,15 @@ from worldcup.theoddsapi_keys import LOW_QUOTA_SWITCH_THRESHOLD, configured_key_
 
 AckItem = dict[str, Any]
 QUOTA_LEDGER_MAX_AGE_SECONDS = 3600
+_TERMINAL_FIXTURE_STATUSES = frozenset({
+    "POSTPONED",
+    "CANCELLED",
+    "CANCELED",
+    "STARTED",
+    "LIVE",
+    "IN_PROGRESS",
+    "FINISHED",
+})
 
 
 def _utc(value: Any) -> datetime:
@@ -72,6 +81,29 @@ def _attempt_snapshot_id(
     )
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
     return f"league-attempt-{digest}"
+
+
+def _sport_key(competition_id: str) -> str:
+    profiles = {
+        profile.id: profile.theoddsapi_sport_key
+        for profile in formal_single_match_competitions()
+    }
+    value = profiles.get(competition_id)
+    if not isinstance(value, str) or not value:
+        raise ValueError("post_lineup_competition_invalid")
+    return value
+
+
+def _without_provider_events(payload: Any, forbidden_event_ids: set[str]) -> Any:
+    if not forbidden_event_ids or not isinstance(payload, list):
+        return payload
+    retained = []
+    for row in payload:
+        raw_id = row.get("id") if isinstance(row, Mapping) else None
+        event_id = str(raw_id) if isinstance(raw_id, (str, int)) else None
+        if event_id not in forbidden_event_ids:
+            retained.append(row)
+    return retained
 
 
 def _normalize_receipts(value: Any) -> list[dict[str, Any]]:
@@ -630,6 +662,66 @@ def _ack_item(row: Mapping[str, Any], reason: str | None = None) -> AckItem:
     return item
 
 
+def _partition_receipt_eligibility(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    observed_at: datetime,
+    context_loader: Callable[[], Any] | None,
+) -> tuple[list[dict[str, Any]], list[AckItem], list[AckItem]]:
+    """Revalidate each receipt against fresh event-scoped context."""
+    raw_contexts: Mapping[str, Any] | None = None
+    if context_loader is not None:
+        try:
+            loaded = context_loader()
+        except Exception:
+            loaded = None
+        raw_contexts = loaded if isinstance(loaded, Mapping) else {}
+
+    eligible: list[dict[str, Any]] = []
+    retryable: list[AckItem] = []
+    blocked: list[AckItem] = []
+    for source_row in rows:
+        row = dict(source_row)
+        if _utc(row["kickoff_at_utc"]) <= observed_at:
+            blocked.append(_ack_item(row, "match_started"))
+            continue
+        if raw_contexts is None:
+            eligible.append(row)
+            continue
+        key = f"{row['competition_id']}:{row['event_id']}"
+        context = raw_contexts.get(key)
+        if not isinstance(context, Mapping):
+            retryable.append(_ack_item(row, "receipt_context_unavailable"))
+            continue
+        try:
+            context_kickoff = _utc(context.get("kickoff_at_utc"))
+        except ValueError:
+            retryable.append(_ack_item(row, "receipt_context_unavailable"))
+            continue
+        fixture_status = context.get("fixture_status")
+        acceptance_active = context.get("acceptance_active")
+        if (
+            context.get("competition_id") != row["competition_id"]
+            or context.get("event_id") != row["event_id"]
+            or context_kickoff != _utc(row["kickoff_at_utc"])
+            or not isinstance(fixture_status, str)
+            or not isinstance(acceptance_active, bool)
+        ):
+            retryable.append(_ack_item(row, "receipt_context_unavailable"))
+            continue
+        if acceptance_active is not True:
+            blocked.append(_ack_item(row, "acceptance_not_active"))
+            continue
+        if fixture_status.strip().upper() in _TERMINAL_FIXTURE_STATUSES:
+            blocked.append(_ack_item(row, "fixture_not_eligible"))
+            continue
+        if context_kickoff <= observed_at:
+            blocked.append(_ack_item(row, "match_started"))
+            continue
+        eligible.append(row)
+    return eligible, retryable, blocked
+
+
 def _remove_task4_pending(root: str | Path, ack_keys: list[Mapping[str, Any]]) -> int:
     path = _pending_path(root)
     if not path.exists():
@@ -697,6 +789,7 @@ def run_post_lineup_refresh(
     minimum_remaining: int = LOW_QUOTA_SWITCH_THRESHOLD,
     quota_max_age_seconds: int = QUOTA_LEDGER_MAX_AGE_SECONDS,
     observed_clock: Callable[[], Any] | None = None,
+    receipt_context_loader: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     try:
         requested_now = _utc(now)
@@ -749,19 +842,28 @@ def run_post_lineup_refresh(
     unresolved: list[dict[str, Any]] = []
     blocked_by_token: dict[str, AckItem] = {}
     retryable_by_token: dict[str, AckItem] = {}
-    for row in receipts:
+    initially_eligible, initial_retryable, initial_blocked = (
+        _partition_receipt_eligibility(
+            receipts,
+            observed_at=now_dt,
+            context_loader=receipt_context_loader,
+        )
+    )
+    for item in initial_retryable:
+        retryable_by_token[_ack_token(item["ack_key"])] = item
+    for item in initial_blocked:
+        blocked_by_token[_ack_token(item["ack_key"])] = item
+    for row in initially_eligible:
         existing = state["receipts"].get(row["token"])
         if isinstance(existing, Mapping) and existing.get("phase") == "published":
             durable_rows.append(row)
-        elif _utc(row["kickoff_at_utc"]) <= now_dt:
-            blocked_by_token[row["token"]] = _ack_item(row, "match_started")
         elif isinstance(existing, Mapping) and existing.get("phase") in {
             "refresh_started", "committed"
         }:
             unresolved.append(row)
         else:
             unresolved.append(row)
-    if durable_rows and not unresolved:
+    if durable_rows and not unresolved and not retryable_by_token:
         try:
             _remove_task4_pending(root, [row["ack_key"] for row in durable_rows])
         except (OSError, TypeError, ValueError):
@@ -770,7 +872,7 @@ def run_post_lineup_refresh(
             status="partial" if blocked_by_token else "already_acked",
             plan=plan,
             durable=[_ack_item(row) for row in durable_rows],
-            retryable=[],
+            retryable=list(retryable_by_token.values()),
             blocked=list(blocked_by_token.values()),
         )
 
@@ -783,7 +885,7 @@ def run_post_lineup_refresh(
             status="blocked",
             plan=plan,
             durable=[_ack_item(row) for row in durable_rows],
-            retryable=[],
+            retryable=list(retryable_by_token.values()),
             blocked=list(blocked_by_token.values())
             + [_ack_item(row, "acceptance_invalid") for row in unresolved],
         )
@@ -1023,15 +1125,38 @@ def run_post_lineup_refresh(
                         row, "observed_clock_invalid"
                     )
                 new_rows = []
-            started_before_request = [
-                row for row in new_rows
-                if _utc(row["kickoff_at_utc"]) <= request_observed_at
-            ] if new_rows else []
-            if started_before_request:
-                started_tokens = {row["token"] for row in started_before_request}
-                for row in started_before_request:
-                    blocked_by_token[row["token"]] = _ack_item(row, "match_started")
-                new_rows = [row for row in new_rows if row["token"] not in started_tokens]
+            if new_rows:
+                new_rows, eligibility_retryable, eligibility_blocked = (
+                    _partition_receipt_eligibility(
+                        new_rows,
+                        observed_at=request_observed_at,
+                        context_loader=receipt_context_loader,
+                    )
+                )
+                for item in eligibility_retryable:
+                    retryable_by_token[_ack_token(item["ack_key"])] = item
+                for item in eligibility_blocked:
+                    blocked_by_token[_ack_token(item["ack_key"])] = item
+                try:
+                    request_observed_at = clock.now()
+                except ValueError:
+                    for row in new_rows:
+                        retryable_by_token[row["token"]] = _ack_item(
+                            row, "observed_clock_invalid"
+                        )
+                    new_rows = []
+                if new_rows:
+                    new_rows, timing_retryable, timing_blocked = (
+                        _partition_receipt_eligibility(
+                            new_rows,
+                            observed_at=request_observed_at,
+                            context_loader=None,
+                        )
+                    )
+                    for item in timing_retryable:
+                        retryable_by_token[_ack_token(item["ack_key"])] = item
+                    for item in timing_blocked:
+                        blocked_by_token[_ack_token(item["ack_key"])] = item
 
         if new_rows and selected is not None:
             reservations[selected.provider] = reservations.get(selected.provider, 0) + 1
@@ -1077,6 +1202,143 @@ def run_post_lineup_refresh(
                 })
                 continue
 
+            selected_env = _selected_env(loaded_env, selected)
+            expected_sport_key = _sport_key(competition_id)
+            try:
+                provider_payload = odds_fetcher(expected_sport_key, selected_env)
+            except Exception:
+                for row in attempt_rows:
+                    retryable_by_token[row["token"]] = _ack_item(row, "refresh_failed")
+                refresh_summaries.append({
+                    "status": "error",
+                    "competition_id": competition_id,
+                    "snapshot_count": 0,
+                })
+                continue
+            try:
+                response_observed_at = clock.now()
+            except ValueError:
+                for row in attempt_rows:
+                    retryable_by_token[row["token"]] = _ack_item(
+                        row, "observed_clock_invalid"
+                    )
+                refresh_summaries.append({
+                    "status": "error",
+                    "competition_id": competition_id,
+                    "snapshot_count": 0,
+                })
+                continue
+
+            original_attempt_rows = list(attempt_rows)
+            (
+                postfetch_rows,
+                eligibility_retryable,
+                eligibility_blocked,
+            ) = _partition_receipt_eligibility(
+                original_attempt_rows,
+                observed_at=response_observed_at,
+                context_loader=receipt_context_loader,
+            )
+            for item in eligibility_retryable:
+                retryable_by_token[_ack_token(item["ack_key"])] = item
+            for item in eligibility_blocked:
+                blocked_by_token[_ack_token(item["ack_key"])] = item
+            try:
+                response_observed_at = clock.now()
+            except ValueError:
+                for row in postfetch_rows:
+                    retryable_by_token[row["token"]] = _ack_item(
+                        row, "observed_clock_invalid"
+                    )
+                postfetch_rows = []
+            if postfetch_rows:
+                postfetch_rows, timing_retryable, timing_blocked = (
+                    _partition_receipt_eligibility(
+                        postfetch_rows,
+                        observed_at=response_observed_at,
+                        context_loader=None,
+                    )
+                )
+                for item in timing_retryable:
+                    retryable_by_token[_ack_token(item["ack_key"])] = item
+                for item in timing_blocked:
+                    blocked_by_token[_ack_token(item["ack_key"])] = item
+            valid_tokens = {row["token"] for row in postfetch_rows}
+            invalid_rows = [
+                row for row in original_attempt_rows if row["token"] not in valid_tokens
+            ]
+            forbidden_event_ids = {row["event_id"] for row in invalid_rows}
+            if not postfetch_rows:
+                refresh_summaries.append({
+                    "status": "blocked",
+                    "competition_id": competition_id,
+                    "snapshot_count": 0,
+                })
+                continue
+
+            attempt_rows = list(postfetch_rows)
+            attempt_receipts = [
+                {"token": row["token"], "event_id": row["event_id"]}
+                for row in sorted(attempt_rows, key=lambda item: item["token"])
+            ]
+            attempt_id = _attempt_snapshot_id(
+                competition_id,
+                request_observed_at.isoformat(),
+                [row["token"] for row in attempt_rows],
+            )
+            if invalid_rows:
+                rebased_intent: dict[str, Any] = {
+                    row["token"]: {
+                        "ack_key": dict(row["ack_key"]),
+                        "phase": "refresh_started",
+                        "observed_at": request_observed_at.isoformat(),
+                        "acceptance_fingerprint": guarded_acceptance_fingerprint,
+                        "attempt_id": attempt_id,
+                        "attempt_receipts": attempt_receipts,
+                    }
+                    for row in attempt_rows
+                }
+                for row in invalid_rows:
+                    isolated_membership = [{
+                        "token": row["token"],
+                        "event_id": row["event_id"],
+                    }]
+                    rebased_intent[row["token"]] = {
+                        "ack_key": dict(row["ack_key"]),
+                        "phase": "refresh_started",
+                        "observed_at": request_observed_at.isoformat(),
+                        "acceptance_fingerprint": guarded_acceptance_fingerprint,
+                        "attempt_id": _attempt_snapshot_id(
+                            competition_id,
+                            request_observed_at.isoformat(),
+                            [row["token"]],
+                        ),
+                        "attempt_receipts": isolated_membership,
+                    }
+                try:
+                    state_store.commit({
+                        "schema_version": 1,
+                        "receipts": rebased_intent,
+                    })
+                    rebased_state = _validate_state(state_store.read())
+                    for row in attempt_rows:
+                        state_row = rebased_state["receipts"].get(row["token"])
+                        if (
+                            not isinstance(state_row, Mapping)
+                            or state_row.get("phase") != "refresh_started"
+                            or state_row.get("attempt_id") != attempt_id
+                            or state_row.get("attempt_receipts") != attempt_receipts
+                        ):
+                            raise ValueError("post_lineup_attempt_rebase_failed")
+                except Exception:
+                    for row in attempt_rows:
+                        retryable_by_token[row["token"]] = _ack_item(
+                            row, "state_commit_failed"
+                        )
+                    continue
+            provider_payload = _without_provider_events(
+                provider_payload, forbidden_event_ids
+            )
             expected_event_ids = [row["event_id"] for row in attempt_rows]
 
             def commit_callback(
@@ -1104,12 +1366,15 @@ def run_post_lineup_refresh(
                 "root": root,
                 "observed_at": request_observed_at.isoformat(),
                 "competition_ids": [competition_id],
-                "env": _selected_env(loaded_env, selected),
+                "env": selected_env,
                 "odds_fetcher": None,
                 "acceptance_report": dict(acceptance),
                 "identity_registry": identity_registry,
                 "expected_event_ids_by_competition": {
                     competition_id: expected_event_ids,
+                },
+                "forbidden_event_ids_by_competition": {
+                    competition_id: sorted(forbidden_event_ids),
                 },
                 "expected_snapshot_ids_by_competition": {
                     competition_id: attempt_id,
@@ -1120,21 +1385,18 @@ def run_post_lineup_refresh(
             }
             if snapshot_builder is not None:
                 refresh_kwargs["snapshot_builder"] = snapshot_builder
-            crossed_kickoff = False
+            payload_served = False
 
-            def guarded_odds_fetcher(sport_key: str, selected_env: Mapping[str, str]) -> Any:
-                nonlocal crossed_kickoff
-                payload = odds_fetcher(sport_key, selected_env)
-                received_at = clock.now()
-                if any(
-                    _utc(row["kickoff_at_utc"]) <= received_at
-                    for row in attempt_rows
-                ):
-                    crossed_kickoff = True
-                    raise ValueError("match_started")
-                return payload
+            def cached_odds_fetcher(
+                sport_key: str, _selected_env: Mapping[str, str]
+            ) -> Any:
+                nonlocal payload_served
+                if sport_key != expected_sport_key or payload_served:
+                    raise ValueError("post_lineup_cached_fetch_invalid")
+                payload_served = True
+                return provider_payload
 
-            refresh_kwargs["odds_fetcher"] = guarded_odds_fetcher
+            refresh_kwargs["odds_fetcher"] = cached_odds_fetcher
             try:
                 refresh_value = refresh_fn(**refresh_kwargs)
             except Exception:
@@ -1158,10 +1420,10 @@ def run_post_lineup_refresh(
                 committed_receipt["snapshot_id"],
                 expected_event_ids,
             ) is None:
-                for row in new_rows:
+                for row in attempt_rows:
                     retryable_by_token[row["token"]] = _ack_item(
                         row,
-                        "match_started" if crossed_kickoff else "refresh_failed",
+                        "refresh_failed",
                     )
                 for row in committed_before_refresh:
                     publishable_tokens.discard(row["token"])
@@ -1209,13 +1471,51 @@ def run_post_lineup_refresh(
                     row, "observed_clock_invalid"
                 )
             continue
-        if any(
-            _utc(row["kickoff_at_utc"]) <= publish_observed_at
-            for row in committed_rows_for_competition
-        ):
+        (
+            committed_rows_for_competition,
+            eligibility_retryable,
+            eligibility_blocked,
+        ) = _partition_receipt_eligibility(
+            committed_rows_for_competition,
+            observed_at=publish_observed_at,
+            context_loader=receipt_context_loader,
+        )
+        for item in eligibility_retryable:
+            token = _ack_token(item["ack_key"])
+            retryable_by_token[token] = item
+            publishable_tokens.discard(token)
+        for item in eligibility_blocked:
+            token = _ack_token(item["ack_key"])
+            blocked_by_token[token] = item
+            publishable_tokens.discard(token)
+        try:
+            publish_observed_at = clock.now()
+        except ValueError:
             for row in committed_rows_for_competition:
-                blocked_by_token[row["token"]] = _ack_item(row, "match_started")
+                retryable_by_token[row["token"]] = _ack_item(
+                    row, "observed_clock_invalid"
+                )
                 publishable_tokens.discard(row["token"])
+            committed_rows_for_competition = []
+        if committed_rows_for_competition:
+            (
+                committed_rows_for_competition,
+                timing_retryable,
+                timing_blocked,
+            ) = _partition_receipt_eligibility(
+                committed_rows_for_competition,
+                observed_at=publish_observed_at,
+                context_loader=None,
+            )
+            for item in timing_retryable:
+                token = _ack_token(item["ack_key"])
+                retryable_by_token[token] = item
+                publishable_tokens.discard(token)
+            for item in timing_blocked:
+                token = _ack_token(item["ack_key"])
+                blocked_by_token[token] = item
+                publishable_tokens.discard(token)
+        if not committed_rows_for_competition:
             continue
         state_snapshot_ids = {
             state["receipts"][row["token"]].get("snapshot_id")
@@ -1287,6 +1587,64 @@ def run_post_lineup_refresh(
         )
         return _result(
             status=status,
+            plan=plan,
+            durable=[_ack_item(row) for row in durable_rows],
+            retryable=retryable,
+            blocked=blocked,
+            refresh=refresh_result,
+        )
+    try:
+        final_publish_observed_at = clock.now()
+    except ValueError:
+        for row in committed_rows:
+            retryable_by_token[row["token"]] = _ack_item(
+                row, "observed_clock_invalid"
+            )
+        committed_rows = []
+    if committed_rows:
+        committed_rows, eligibility_retryable, eligibility_blocked = (
+            _partition_receipt_eligibility(
+                committed_rows,
+                observed_at=final_publish_observed_at,
+                context_loader=receipt_context_loader,
+            )
+        )
+        for item in eligibility_retryable:
+            retryable_by_token[_ack_token(item["ack_key"])] = item
+        for item in eligibility_blocked:
+            blocked_by_token[_ack_token(item["ack_key"])] = item
+        try:
+            final_publish_observed_at = clock.now()
+        except ValueError:
+            for row in committed_rows:
+                retryable_by_token[row["token"]] = _ack_item(
+                    row, "observed_clock_invalid"
+                )
+            committed_rows = []
+        if committed_rows:
+            committed_rows, timing_retryable, timing_blocked = (
+                _partition_receipt_eligibility(
+                    committed_rows,
+                    observed_at=final_publish_observed_at,
+                    context_loader=None,
+                )
+            )
+            for item in timing_retryable:
+                retryable_by_token[_ack_token(item["ack_key"])] = item
+            for item in timing_blocked:
+                blocked_by_token[_ack_token(item["ack_key"])] = item
+    if not committed_rows:
+        retryable = sorted_retryable()
+        blocked = sorted(
+            blocked_by_token.values(),
+            key=lambda item: (
+                item["ack_key"]["competition_id"], item["ack_key"]["event_id"]
+            ),
+        )
+        return _result(
+            status="partial" if durable_rows else (
+                "refresh_failed" if retryable else "blocked"
+            ),
             plan=plan,
             durable=[_ack_item(row) for row in durable_rows],
             retryable=retryable,

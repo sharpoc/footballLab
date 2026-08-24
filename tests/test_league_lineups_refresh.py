@@ -269,6 +269,65 @@ def test_live_refresh_coalesces_calendar_by_date_and_fetches_only_due_details():
         ]
 
 
+def test_fotmob_parser_rejections_are_rejected_not_source_success():
+    """Schema, identity, and lineup-status rejection cannot prove recovery."""
+    kickoff = "2026-08-24T13:00:00+00:00"
+    confirmed = _details("1001", kickoff, "Arsenal", "Chelsea")
+    predicted = json.loads(json.dumps(confirmed))
+    predicted["content"]["lineup"]["lineupStatus"] = "predicted"
+    mismatched_schema = json.loads(json.dumps(confirmed))
+    mismatched_schema["general"]["matchId"] = "9999"
+    cases = (
+        (
+            "predicted",
+            _calendar_match("1001", kickoff, "Arsenal", "Chelsea"),
+            lambda **_kwargs: predicted,
+        ),
+        (
+            "schema_mismatch",
+            _calendar_match("1001", kickoff, "Arsenal", "Chelsea"),
+            lambda **_kwargs: mismatched_schema,
+        ),
+        (
+            "empty_details",
+            _calendar_match("1001", kickoff, "Arsenal", "Chelsea"),
+            lambda **_kwargs: {},
+        ),
+        (
+            "identity_mismatch",
+            _calendar_match("1001", kickoff, "Unknown United", "Chelsea"),
+            _explode,
+        ),
+    )
+
+    for case_name, calendar_match, details_fetcher in cases:
+        with TemporaryDirectory() as tmp:
+            result = run_league_lineups_refresh(
+                root=tmp,
+                now=NOW,
+                live=True,
+                write=True,
+                acceptance_report=_active_report(),
+                fixtures_by_competition={
+                    COMPETITION: [_fixture(f"event-{case_name}", kickoff)]
+                },
+                state=_empty_state(),
+                provider_competition_ids={COMPETITION: PROVIDER_COMPETITION},
+                identity_registry=accepted_league_team_identity_registry(),
+                calendar_fetcher=lambda **_kwargs: _calendar(calendar_match),
+                details_fetcher=details_fetcher,
+            )
+
+            assert result["counts"]["accepted_count"] == 0
+            assert result["counts"]["rejection_count"] >= 1
+            assert result["counts"]["source_failure_count"] == 0
+            assert result["source_events"] == [{
+                "competition_id": COMPETITION,
+                "event_id": f"event-{case_name}",
+                "outcome": "rejected",
+            }]
+
+
 def test_live_details_response_at_kickoff_cannot_commit_confirmed_lineup():
     """A response received at kickoff must not inherit the request-start timestamp."""
     kickoff = "2026-08-24T13:00:00+00:00"

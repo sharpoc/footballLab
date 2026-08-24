@@ -76,6 +76,19 @@ def _receipt(competition_id, event_id, fingerprint_char, kickoff="2026-08-24T13:
     }
 
 
+def _receipt_context(receipt, fixture_status="SCHEDULED", acceptance_active=True):
+    competition_id = receipt["ack_key"]["competition_id"]
+    return {
+        f"{competition_id}:{receipt['event_id']}": {
+            "competition_id": competition_id,
+            "event_id": receipt["event_id"],
+            "kickoff_at_utc": receipt["kickoff_at_utc"],
+            "fixture_status": fixture_status,
+            "acceptance_active": acceptance_active,
+        },
+    }
+
+
 def _write_task4_pending(root, grouped):
     events = {}
     for competition_id, rows in grouped.items():
@@ -264,6 +277,7 @@ def test_provider_response_crossing_kickoff_never_commits_or_publishes():
     moments = iter((
         datetime(2026, 8, 24, 12, 59, 58, tzinfo=timezone.utc),
         datetime(2026, 8, 24, 12, 59, 59, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 12, 59, 59, tzinfo=timezone.utc),
         datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc),
     ))
     last = datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc)
@@ -303,7 +317,170 @@ def test_provider_response_crossing_kickoff_never_commits_or_publishes():
         assert fetches == ["called"]
         assert publications == []
         assert result["acks"]["durable"] == []
-        assert _ack_events(result, "retryable") == ["epl-crossed"]
+        assert _ack_events(result, "blocked") == ["epl-crossed"]
+        assert not (
+            Path(tmp) / f"data/cache/leagues/{EPL}/snapshot.json"
+        ).exists()
+
+
+def test_shared_fetch_crossing_early_kickoff_still_publishes_later_receipt_once():
+    """One expired member must not poison the later member's claimed attempt."""
+    early = _receipt(
+        EPL,
+        "early-crossed",
+        "8",
+        kickoff="2026-08-24T13:00:00+00:00",
+    )
+    later = _receipt(
+        EPL,
+        "later-valid",
+        "9",
+        kickoff="2026-08-24T14:00:00+00:00",
+    )
+    moments = iter((
+        datetime(2026, 8, 24, 12, 59, 58, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 12, 59, 59, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 12, 59, 59, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc),
+    ))
+    last = datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc)
+
+    def observed_clock():
+        nonlocal last
+        try:
+            last = next(moments)
+        except StopIteration:
+            pass
+        return last
+
+    contexts = {
+        **_receipt_context(early),
+        **_receipt_context(later),
+    }
+    provider_calls = []
+    publications = []
+    with TemporaryDirectory() as tmp:
+        _write_acceptance(tmp, EPL)
+        result = run_post_lineup_refresh(
+            root=tmp,
+            now="2020-01-01T00:00:00+00:00",
+            observed_clock=observed_clock,
+            newly_confirmed={EPL: [early, later]},
+            live=True,
+            env=_env(),
+            quota_ledger=_quota(theoddsapi_primary=100),
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            receipt_context_loader=lambda: contexts,
+            odds_fetcher=lambda *_args: provider_calls.append("soccer_epl") or [
+                {"id": early["event_id"]},
+                {"id": later["event_id"]},
+            ],
+            snapshot_builder=_snapshot_builder,
+            publish_fn=lambda snapshot: publications.append(snapshot) or {
+                "status": "stored"
+            },
+        )
+
+        assert provider_calls == ["soccer_epl"]
+        assert _ack_events(result, "durable") == [later["event_id"]]
+        assert result["acks"]["blocked"] == [{
+            "ack_key": early["ack_key"],
+            "reason": "match_started",
+        }]
+        assert [
+            row["source_event_id"] for row in publications[0]["matches"]
+        ] == [later["event_id"]]
+        state = PostLineupRefreshStateStore(tmp).read()["receipts"]
+        phases = {row["ack_key"]["event_id"]: row["phase"] for row in state.values()}
+        assert phases[later["event_id"]] == "published"
+        restarted = run_post_lineup_refresh(
+            root=tmp,
+            now="2026-08-24T13:00:01+00:00",
+            newly_confirmed={EPL: [early, later]},
+            live=True,
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            receipt_context_loader=lambda: contexts,
+            env_loader=_fail,
+            quota_loader=_fail,
+            odds_fetcher=_fail,
+            refresh_fn=_fail,
+            publish_fn=_fail,
+        )
+
+        assert _ack_events(restarted, "durable") == [later["event_id"]]
+        assert _ack_events(restarted, "blocked") == [early["event_id"]]
+
+
+def test_snapshot_builder_reintroducing_expired_member_fails_closed():
+    early = _receipt(
+        EPL,
+        "forbidden-early",
+        "a",
+        kickoff="2026-08-24T13:00:00+00:00",
+    )
+    later = _receipt(
+        EPL,
+        "allowed-later",
+        "b",
+        kickoff="2026-08-24T14:00:00+00:00",
+    )
+    moments = iter((
+        datetime(2026, 8, 24, 12, 59, 58, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 12, 59, 59, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 12, 59, 59, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc),
+    ))
+    last = datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc)
+
+    def observed_clock():
+        nonlocal last
+        try:
+            last = next(moments)
+        except StopIteration:
+            pass
+        return last
+
+    def malicious_builder(payload, competition_id, observed_at, **_kwargs):
+        assert [row["id"] for row in payload] == [later["event_id"]]
+        return _snapshot_builder(
+            [{"id": early["event_id"]}, {"id": later["event_id"]}],
+            competition_id,
+            observed_at,
+        )
+
+    publications = []
+    contexts = {**_receipt_context(early), **_receipt_context(later)}
+    with TemporaryDirectory() as tmp:
+        _write_acceptance(tmp, EPL)
+        result = run_post_lineup_refresh(
+            root=tmp,
+            now="2020-01-01T00:00:00+00:00",
+            observed_clock=observed_clock,
+            newly_confirmed={EPL: [early, later]},
+            live=True,
+            env=_env(),
+            quota_ledger=_quota(theoddsapi_primary=100),
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            receipt_context_loader=lambda: contexts,
+            odds_fetcher=lambda *_args: [
+                {"id": early["event_id"]},
+                {"id": later["event_id"]},
+            ],
+            snapshot_builder=malicious_builder,
+            publish_fn=lambda snapshot: publications.append(snapshot) or {
+                "status": "stored"
+            },
+        )
+
+        assert publications == []
+        assert _ack_events(result, "retryable") == [later["event_id"]]
+        assert _ack_events(result, "blocked") == [early["event_id"]]
         assert not (
             Path(tmp) / f"data/cache/leagues/{EPL}/snapshot.json"
         ).exists()
@@ -333,6 +510,179 @@ def test_started_receipt_is_blocked_and_never_reads_env_or_quota():
             "reason": "match_started",
         }]
         assert json.loads(pending_path.read_text(encoding="utf-8"))["events"]
+
+
+def test_fresh_terminal_context_blocks_each_receipt_before_provider():
+    """A staged receipt must not trust the context captured in an earlier cycle."""
+    terminal_statuses = ("POSTPONED", "CANCELLED", "FINISHED", "STARTED")
+    for index, fixture_status in enumerate(terminal_statuses):
+        receipt = _receipt(EPL, f"terminal-{index}", str(index + 1))
+        context_reads = 0
+        provider_calls = []
+
+        def load_contexts():
+            nonlocal context_reads
+            context_reads += 1
+            status = "SCHEDULED" if context_reads == 1 else fixture_status
+            return _receipt_context(receipt, status)
+
+        with TemporaryDirectory() as tmp:
+            _write_acceptance(tmp, EPL)
+            result = run_post_lineup_refresh(
+                root=tmp,
+                now=NOW,
+                newly_confirmed={EPL: [receipt]},
+                live=True,
+                env=_env(),
+                quota_ledger=_quota(theoddsapi_primary=100),
+                acceptance_report=_acceptance(EPL),
+                identity_registry=_registry(EPL),
+                receipt_context_loader=load_contexts,
+                odds_fetcher=lambda *_args: provider_calls.append("called") or [
+                    {"id": receipt["event_id"]}
+                ],
+                snapshot_builder=_snapshot_builder,
+                publish_fn=_fail,
+            )
+
+            assert context_reads >= 2
+            assert provider_calls == []
+            assert result["acks"]["durable"] == []
+            assert result["acks"]["blocked"] == [{
+                "ack_key": receipt["ack_key"],
+                "reason": "fixture_not_eligible",
+            }]
+
+
+def test_context_read_crossing_kickoff_blocks_provider_before_call():
+    receipt = _receipt(
+        EPL,
+        "context-crossed-before-provider",
+        "6",
+        kickoff="2026-08-24T13:00:00+00:00",
+    )
+    wall = {"value": datetime(2026, 8, 24, 12, 59, 59, tzinfo=timezone.utc)}
+    context_reads = 0
+    provider_calls = []
+
+    def load_contexts():
+        nonlocal context_reads
+        context_reads += 1
+        if context_reads == 2:
+            wall["value"] = datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc)
+        return _receipt_context(receipt)
+
+    with TemporaryDirectory() as tmp:
+        _write_acceptance(tmp, EPL)
+        result = run_post_lineup_refresh(
+            root=tmp,
+            now="2020-01-01T00:00:00+00:00",
+            observed_clock=lambda: wall["value"],
+            newly_confirmed={EPL: [receipt]},
+            live=True,
+            env=_env(),
+            quota_ledger=_quota(theoddsapi_primary=100),
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            receipt_context_loader=load_contexts,
+            odds_fetcher=lambda *_args: provider_calls.append("called") or [],
+            snapshot_builder=_snapshot_builder,
+            publish_fn=_fail,
+        )
+
+        assert provider_calls == []
+        assert result["acks"]["blocked"] == [{
+            "ack_key": receipt["ack_key"],
+            "reason": "match_started",
+        }]
+
+
+def test_context_becoming_cancelled_after_commit_blocks_publication():
+    """The publisher must re-read eligibility after a successful refresh commit."""
+    receipt = _receipt(EPL, "cancel-before-publish", "7")
+    status = {"value": "SCHEDULED"}
+    publications = []
+
+    class StatusChangingStore(LeagueLiveStore):
+        def commit_snapshot(self, competition_id, snapshot):
+            result = super().commit_snapshot(competition_id, snapshot)
+            status["value"] = "CANCELLED"
+            return result
+
+    with TemporaryDirectory() as tmp:
+        _write_acceptance(tmp, EPL)
+        result = run_post_lineup_refresh(
+            root=tmp,
+            now=NOW,
+            newly_confirmed={EPL: [receipt]},
+            live=True,
+            env=_env(),
+            quota_ledger=_quota(theoddsapi_primary=100),
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            receipt_context_loader=lambda: _receipt_context(
+                receipt, status["value"]
+            ),
+            odds_fetcher=lambda *_args: [{"id": receipt["event_id"]}],
+            snapshot_builder=_snapshot_builder,
+            live_store_factory=StatusChangingStore,
+            publish_fn=lambda snapshot: publications.append(snapshot) or {
+                "status": "stored"
+            },
+        )
+
+        assert publications == []
+        assert result["acks"]["durable"] == []
+        assert result["acks"]["blocked"] == [{
+            "ack_key": receipt["ack_key"],
+            "reason": "fixture_not_eligible",
+        }]
+
+
+def test_final_context_read_crossing_kickoff_blocks_publisher():
+    receipt = _receipt(
+        EPL,
+        "context-crossed-before-publish",
+        "5",
+        kickoff="2026-08-24T13:00:00+00:00",
+    )
+    wall = {"value": datetime(2026, 8, 24, 12, 59, 59, tzinfo=timezone.utc)}
+    context_reads = 0
+    publications = []
+
+    def load_contexts():
+        nonlocal context_reads
+        context_reads += 1
+        if context_reads == 5:
+            wall["value"] = datetime(2026, 8, 24, 13, 0, 0, tzinfo=timezone.utc)
+        return _receipt_context(receipt)
+
+    with TemporaryDirectory() as tmp:
+        _write_acceptance(tmp, EPL)
+        result = run_post_lineup_refresh(
+            root=tmp,
+            now="2020-01-01T00:00:00+00:00",
+            observed_clock=lambda: wall["value"],
+            newly_confirmed={EPL: [receipt]},
+            live=True,
+            env=_env(),
+            quota_ledger=_quota(theoddsapi_primary=100),
+            acceptance_report=_acceptance(EPL),
+            identity_registry=_registry(EPL),
+            receipt_context_loader=load_contexts,
+            odds_fetcher=lambda *_args: [{"id": receipt["event_id"]}],
+            snapshot_builder=_snapshot_builder,
+            publish_fn=lambda snapshot: publications.append(snapshot) or {
+                "status": "stored"
+            },
+        )
+
+        assert context_reads >= 5
+        assert publications == []
+        assert result["acks"]["blocked"] == [{
+            "ack_key": receipt["ack_key"],
+            "reason": "match_started",
+        }]
 
 
 def test_durable_same_fingerprint_never_repeats_quota_refresh_snapshot_or_publish():

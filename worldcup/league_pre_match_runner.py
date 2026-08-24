@@ -278,8 +278,6 @@ def _load_match_contexts(root: str | Path) -> dict[str, dict[str, Any]]:
         return contexts
     for competition_id in sorted(set(rows).intersection(FORMAL_SINGLE_MATCH_IDS)):
         active = acceptance_row_is_active(rows.get(competition_id), competition_id)
-        if not active:
-            continue
         path = root_path / "data/cache/leagues" / competition_id / "snapshot.json"
         if not path.exists():
             continue
@@ -305,11 +303,6 @@ def _load_match_contexts(root: str | Path) -> dict[str, dict[str, Any]]:
             fixture_status = str(
                 row.get("fixture_status") or row.get("status") or ""
             ).strip().upper()
-            if (
-                fixture_status in _TERMINAL_FIXTURE_STATUSES
-                or str(row.get("lineup_status") or "").strip().upper() == "CONFIRMED"
-            ):
-                continue
             try:
                 checked = _validate_context(
                     {
@@ -489,7 +482,7 @@ def _validate_lineup_result(value: Any) -> dict[str, Any]:
             competition_id not in FORMAL_SINGLE_MATCH_IDS
             or not isinstance(event_id, str)
             or not event_id.strip()
-            or outcome not in {"failed", "succeeded"}
+            or outcome not in {"failed", "rejected", "succeeded"}
             or key in source_event_keys
         ):
             raise ValueError("lineup_result_invalid")
@@ -1203,20 +1196,28 @@ def _partition_stageable_receipts(
         if _utc(row["kickoff_at_utc"]) <= now:
             isolated["blocked"].append({**ack, "reason": "match_started"})
             continue
-        if row["token"] not in state["receipts"]:
-            try:
-                context = _validate_context(
-                    contexts.get(f"{row['competition_id']}:{row['event_id']}"),
-                    row["competition_id"],
-                    row["event_id"],
-                )
-                if context["kickoff_at_utc"] != row["kickoff_at_utc"]:
-                    raise ValueError("league_pre_match_context_invalid")
-            except ValueError:
-                isolated["retryable"].append(
-                    {**ack, "reason": "receipt_context_unavailable"}
-                )
-                continue
+        try:
+            context = _validate_context(
+                contexts.get(f"{row['competition_id']}:{row['event_id']}"),
+                row["competition_id"],
+                row["event_id"],
+            )
+            if context["kickoff_at_utc"] != row["kickoff_at_utc"]:
+                raise ValueError("league_pre_match_context_invalid")
+        except ValueError:
+            isolated["retryable"].append(
+                {**ack, "reason": "receipt_context_unavailable"}
+            )
+            continue
+        if context["acceptance_active"] is not True:
+            isolated["blocked"].append({**ack, "reason": "acceptance_not_active"})
+            continue
+        if context["fixture_status"] in _TERMINAL_FIXTURE_STATUSES:
+            isolated["blocked"].append({**ack, "reason": "fixture_not_eligible"})
+            continue
+        if _utc(context["kickoff_at_utc"]) <= now:
+            isolated["blocked"].append({**ack, "reason": "match_started"})
+            continue
         stageable.setdefault(row["competition_id"], []).append({
             name: row[name]
             for name in (
@@ -1662,10 +1663,13 @@ def _notification_events_for_post(
 
 def _notification_events_for_bound_receipts(
     state: Mapping[str, Any],
+    eligible_contexts: Mapping[str, Any],
 ) -> list[tuple[dict[str, Any], str]]:
     events: list[tuple[dict[str, Any], str]] = []
     for token, job in sorted(state["receipts"].items()):
         if job.get("current_decision") is None:
+            continue
+        if f"{job['competition_id']}:{job['event_id']}" not in eligible_contexts:
             continue
         event = build_published_refresh_event(
             competition_id=job["competition_id"],
@@ -1879,6 +1883,7 @@ def _call_post(
     publish_fn: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None,
     identity_registry: Any,
     observed_clock: Callable[[], Any] | None,
+    receipt_context_loader: Callable[[], Any] | None,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "root": root,
@@ -1888,6 +1893,8 @@ def _call_post(
     }
     if observed_clock is not None:
         kwargs["observed_clock"] = observed_clock
+    if receipt_context_loader is not None:
+        kwargs["receipt_context_loader"] = receipt_context_loader
     if env_loader is not None:
         kwargs["env_loader"] = env_loader
     if quota_loader is not None:
@@ -2022,14 +2029,15 @@ def run_league_pre_match(
         notification_retry = None
         state_store = None
         state = _empty_state()
+        contexts_all: dict[str, dict[str, Any]] = {}
         contexts_current: dict[str, dict[str, Any]] = {}
         if notify:
             try:
                 state_store = state_store_factory(root)
                 state = _validate_state(state_store.read())
-                contexts_current = _eligible_contexts(
-                    _validate_contexts(match_context_loader(root)), now_dt
-                )
+                contexts_all = _validate_contexts(match_context_loader(root))
+                context_now = clock.now() if clock is not None else now_dt
+                contexts_current = _eligible_contexts(contexts_all, context_now)
             except Exception:
                 return {
                     "status": "state_failed",
@@ -2066,7 +2074,7 @@ def run_league_pre_match(
                         _partition_stageable_receipts(
                             receipts=recovery_pending,
                             state=state,
-                            contexts=contexts_current,
+                            contexts=contexts_all,
                             now=now_dt,
                         )
                     )
@@ -2098,6 +2106,7 @@ def run_league_pre_match(
                         publish_fn=publish_fn if publish else None,
                         identity_registry=identity_registry,
                         observed_clock=clock.now if clock is not None else None,
+                        receipt_context_loader=lambda: match_context_loader(root),
                     )
                 except Exception:
                     return {
@@ -2121,9 +2130,9 @@ def run_league_pre_match(
                 }
             if notify and recovery_stageable:
                 try:
-                    contexts_current = _eligible_contexts(
-                        _validate_contexts(match_context_loader(root)), now_dt
-                    )
+                    contexts_all = _validate_contexts(match_context_loader(root))
+                    binding_now = clock.now() if clock is not None else now_dt
+                    contexts_current = _eligible_contexts(contexts_all, binding_now)
                     state = _bind_published_jobs(
                         root=root,
                         store=state_store,
@@ -2183,11 +2192,14 @@ def run_league_pre_match(
             new_isolated = {"retryable": [], "blocked": []}
             if notify:
                 try:
+                    contexts_all = _validate_contexts(match_context_loader(root))
+                    stage_now = clock.now() if clock is not None else now_dt
+                    contexts_current = _eligible_contexts(contexts_all, stage_now)
                     new_stageable, new_isolated = _partition_stageable_receipts(
                         receipts=new_receipts,
                         state=state,
-                        contexts=contexts_current,
-                        now=now_dt,
+                        contexts=contexts_all,
+                        now=stage_now,
                     )
                     state = _stage_jobs(
                         store=state_store,
@@ -2217,6 +2229,7 @@ def run_league_pre_match(
                         publish_fn=publish_fn if publish else None,
                         identity_registry=identity_registry,
                         observed_clock=clock.now if clock is not None else None,
+                        receipt_context_loader=lambda: match_context_loader(root),
                     )
                 except Exception:
                     return {
@@ -2240,9 +2253,9 @@ def run_league_pre_match(
                 }
             if notify and new_stageable:
                 try:
-                    contexts_current = _eligible_contexts(
-                        _validate_contexts(match_context_loader(root)), now_dt
-                    )
+                    contexts_all = _validate_contexts(match_context_loader(root))
+                    binding_now = clock.now() if clock is not None else now_dt
+                    contexts_current = _eligible_contexts(contexts_all, binding_now)
                     state = _bind_published_jobs(
                         root=root,
                         store=state_store,
@@ -2301,6 +2314,14 @@ def run_league_pre_match(
                 else {"status": "failed"}
             )
 
+            try:
+                contexts_all = _validate_contexts(match_context_loader(root))
+                notification_now = clock.now() if clock is not None else now_dt
+                contexts_current = _eligible_contexts(contexts_all, notification_now)
+            except Exception:
+                contexts_current = {}
+                notification_retry = {"status": "failed"}
+
             completed_tokens: set[str] = set()
             receipt_events: list[tuple[dict[str, Any], str | None]] = []
             for checked_post in post_results:
@@ -2313,7 +2334,9 @@ def run_league_pre_match(
                 except Exception:
                     notification_retry = {"status": "failed"}
             try:
-                receipt_events.extend(_notification_events_for_bound_receipts(state))
+                receipt_events.extend(
+                    _notification_events_for_bound_receipts(state, contexts_current)
+                )
             except Exception:
                 notification_retry = {"status": "failed"}
             for event, token in receipt_events:
