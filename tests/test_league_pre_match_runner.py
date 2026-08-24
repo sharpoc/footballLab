@@ -1387,6 +1387,363 @@ def _commit_published_task5_receipt(root: str | Path, row: dict) -> None:
     })
 
 
+def _commit_task5_contract_rows(
+    root: str | Path,
+    *,
+    committed: tuple[dict, ...] = (),
+    published: tuple[dict, ...] = (),
+    snapshot_id: str = "league-test",
+    published_aggregate_snapshot_id: str = "persisted-aggregate",
+) -> None:
+    receipts = {
+        _ack_token(row["ack_key"]): {
+            "ack_key": dict(row["ack_key"]),
+            "phase": "committed",
+            "snapshot_id": snapshot_id,
+        }
+        for row in committed
+    }
+    receipts.update({
+        _ack_token(row["ack_key"]): {
+            "ack_key": dict(row["ack_key"]),
+            "phase": "published",
+            "snapshot_id": snapshot_id,
+            "aggregate_snapshot_id": published_aggregate_snapshot_id,
+            "publish_status": "stored",
+        }
+        for row in published
+    })
+    if receipts:
+        PostLineupRefreshStateStore(root).commit({
+            "schema_version": 1,
+            "receipts": receipts,
+        })
+
+
+def test_ack_state_commit_failure_reason_has_exact_bidirectional_task5_matrix():
+    current = _receipt("ack-matrix-current", "5")
+    waiting = _receipt("ack-matrix-waiting", "6")
+    durable = _receipt("ack-matrix-durable", "7")
+    second_current = _receipt("ack-matrix-second-current", "8")
+
+    failed_publication = _post_result(
+        retryable=((current, "ack_state_commit_failed"),),
+        status="publish_failed",
+        publish_status=None,
+    )
+    failed_publication["publish"] = {
+        "status": "publish_failed",
+        "reason": "league_aggregate_ingest_not_confirmed",
+        "publish": {"status": "failed"},
+        "aggregate": None,
+    }
+
+    cases = (
+        {
+            "name": "stored_exact_current",
+            "valid": True,
+            "rows": (current,),
+            "committed": (current,),
+            "published": (),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                retryable=((current, "ack_state_commit_failed"),),
+                status="publish_failed",
+                publish_status="stored",
+            ),
+        },
+        {
+            "name": "duplicate_exact_current",
+            "valid": True,
+            "rows": (current,),
+            "committed": (current,),
+            "published": (),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                retryable=((current, "ack_state_commit_failed"),),
+                status="publish_failed",
+                publish_status="duplicate",
+            ),
+        },
+        {
+            "name": "current_failure_with_noncurrent_waiting_retry",
+            "valid": True,
+            "rows": (current, waiting),
+            "committed": (current,),
+            "published": (),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                retryable=(
+                    (current, "ack_state_commit_failed"),
+                    (waiting, "waiting_for_committed_publish"),
+                ),
+                status="publish_failed",
+                publish_status="stored",
+                receipt_count=2,
+            ),
+        },
+        {
+            "name": "ack_write_visible_before_commit_failure",
+            "valid": True,
+            "rows": (current,),
+            "committed": (),
+            "published": (current,),
+            "snapshot_id": "league-test",
+            "published_aggregate_snapshot_id": "league-aggregate-test",
+            "result": _post_result(
+                retryable=((current, "ack_state_commit_failed"),),
+                status="publish_failed",
+                publish_status="stored",
+            ),
+        },
+        {
+            "name": "partial_with_success_publication",
+            "valid": False,
+            "rows": (durable, current),
+            "committed": (current,),
+            "published": (durable,),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                durable=(durable,),
+                retryable=((current, "ack_state_commit_failed"),),
+                status="partial",
+                publish_status="stored",
+                receipt_count=2,
+            ),
+        },
+        {
+            "name": "partial_without_publication",
+            "valid": False,
+            "rows": (durable, current),
+            "committed": (current,),
+            "published": (durable,),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                durable=(durable,),
+                retryable=((current, "ack_state_commit_failed"),),
+                status="partial",
+                publish_status=None,
+                receipt_count=2,
+            ),
+        },
+        {
+            "name": "published",
+            "valid": False,
+            "rows": (current,),
+            "committed": (current,),
+            "published": (),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                retryable=((current, "ack_state_commit_failed"),),
+                status="published",
+            ),
+        },
+        {
+            "name": "already_acked",
+            "valid": False,
+            "rows": (current,),
+            "committed": (current,),
+            "published": (),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                retryable=((current, "ack_state_commit_failed"),),
+                status="already_acked",
+                publish_status=None,
+            ),
+        },
+        {
+            "name": "blocked_retryable",
+            "valid": False,
+            "rows": (current,),
+            "committed": (current,),
+            "published": (),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                retryable=((current, "ack_state_commit_failed"),),
+                status="blocked",
+                publish_status=None,
+            ),
+        },
+        {
+            "name": "blocked_group_reason",
+            "valid": False,
+            "rows": (current,),
+            "committed": (current,),
+            "published": (),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                blocked=((current, "ack_state_commit_failed"),),
+                status="blocked",
+                publish_status=None,
+            ),
+        },
+        {
+            "name": "refresh_failed",
+            "valid": False,
+            "rows": (current,),
+            "committed": (current,),
+            "published": (),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                retryable=((current, "ack_state_commit_failed"),),
+                status="refresh_failed",
+                publish_status=None,
+            ),
+        },
+        {
+            "name": "publish_failed_without_publication",
+            "valid": False,
+            "rows": (current,),
+            "committed": (current,),
+            "published": (),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                retryable=((current, "ack_state_commit_failed"),),
+                status="publish_failed",
+                publish_status=None,
+            ),
+        },
+        {
+            "name": "publish_failed_with_failed_publication",
+            "valid": False,
+            "rows": (current,),
+            "committed": (current,),
+            "published": (),
+            "snapshot_id": "league-test",
+            "result": failed_publication,
+        },
+        {
+            "name": "published_receipt_claimed_as_current",
+            "valid": False,
+            "rows": (current,),
+            "committed": (),
+            "published": (current,),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                retryable=((current, "ack_state_commit_failed"),),
+                status="publish_failed",
+                publish_status="stored",
+            ),
+        },
+        {
+            "name": "missing_current_state",
+            "valid": False,
+            "rows": (current,),
+            "committed": (),
+            "published": (),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                retryable=((current, "ack_state_commit_failed"),),
+                status="publish_failed",
+                publish_status="stored",
+            ),
+        },
+        {
+            "name": "current_snapshot_mismatch",
+            "valid": False,
+            "rows": (current,),
+            "committed": (current,),
+            "published": (),
+            "snapshot_id": "different-snapshot",
+            "result": _post_result(
+                retryable=((current, "ack_state_commit_failed"),),
+                status="publish_failed",
+                publish_status="stored",
+            ),
+        },
+        {
+            "name": "incomplete_current_retryable_membership",
+            "valid": False,
+            "rows": (current, second_current),
+            "committed": (current, second_current),
+            "published": (),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                retryable=(
+                    (current, "ack_state_commit_failed"),
+                    (second_current, "waiting_for_committed_publish"),
+                ),
+                status="publish_failed",
+                publish_status="stored",
+                receipt_count=2,
+            ),
+        },
+        {
+            "name": "unknown_status",
+            "valid": False,
+            "rows": (current,),
+            "committed": (current,),
+            "published": (),
+            "snapshot_id": "league-test",
+            "result": _post_result(
+                retryable=((current, "ack_state_commit_failed"),),
+                status="error",
+                publish_status="stored",
+            ),
+        },
+    )
+
+    for case in cases:
+        with TemporaryDirectory() as tmp:
+            _commit_task5_contract_rows(
+                tmp,
+                committed=case["committed"],
+                published=case["published"],
+                snapshot_id=case["snapshot_id"],
+                published_aggregate_snapshot_id=case.get(
+                    "published_aggregate_snapshot_id", "persisted-aggregate"
+                ),
+            )
+            _write_pending(tmp, *case["rows"])
+            lineup_calls = []
+
+            def lineups(**_kwargs):
+                lineup_calls.append("called")
+                return _lineup_result(status="no_due")
+
+            result = run_league_pre_match(
+                root=tmp,
+                now=NOW,
+                lineup_refresh_fn=lineups,
+                post_lineup_refresh_fn=lambda **_kwargs: case["result"],
+                match_context_loader=lambda _root: {
+                    f"{EPL}:{row['event_id']}": _context(row["event_id"])
+                    for row in case["rows"]
+                },
+                outbox_factory=_fail,
+                notifier=_fail,
+                **_full_flags(notify=True),
+            )
+            task7_state = json.loads(
+                (Path(tmp) / STATE_RELATIVE_PATH).read_text(encoding="utf-8")
+            )
+            pending = json.loads(
+                (
+                    Path(tmp)
+                    / "data/local/leagues/lineup_refresh_pending.json"
+                ).read_text(encoding="utf-8")
+            )
+
+            if case["valid"]:
+                assert result["status"] == "publish_failed", case["name"]
+                assert lineup_calls == ["called"], case["name"]
+            else:
+                assert result["status"] == "post_refresh_failed", case["name"]
+                assert result["reason"] == "post_lineup_result_invalid", case["name"]
+                assert lineup_calls == [], case["name"]
+            assert result["notifications"] == [], case["name"]
+            assert set(task7_state["receipts"]) == {
+                _ack_token(row["ack_key"]) for row in case["rows"]
+            }, case["name"]
+            assert all(
+                row["current_decision"] is None
+                for row in task7_state["receipts"].values()
+            ), case["name"]
+            assert set(pending["events"]) == {
+                f"{EPL}:{row['event_id']}" for row in case["rows"]
+            }, case["name"]
+
+
 def test_task5_failure_status_matrix_cannot_use_persisted_durable_ack_as_success():
     row = _receipt("failure-matrix", "a")
     for status in ("blocked", "refresh_failed", "publish_failed", "error"):

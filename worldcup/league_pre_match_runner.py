@@ -608,7 +608,10 @@ def _validate_post_result(
             component_snapshot_ids[component["competition_id"]] = _safe_snapshot_id(
                 component.get("snapshot_id")
             )
-        if not set(submitted).issubset(component_snapshot_ids):
+        if (
+            value["status"] != "publish_failed"
+            and not set(submitted).issubset(component_snapshot_ids)
+        ):
             raise ValueError("post_lineup_result_invalid")
     elif isinstance(publication, Mapping):
         failed_publish = publication.get("publish")
@@ -658,6 +661,64 @@ def _validate_post_result(
         isinstance(publication, Mapping)
         and publication.get("status") == "publish_failed"
     )
+    ack_commit_failures = [
+        item for item in checked_acks["retryable"]
+        if item.get("reason") == "ack_state_commit_failed"
+    ]
+    blocked_ack_commit_failures = [
+        item for item in checked_acks["blocked"]
+        if item.get("reason") == "ack_state_commit_failed"
+    ]
+    if ack_commit_failures or blocked_ack_commit_failures:
+        if (
+            blocked_ack_commit_failures
+            or status != "publish_failed"
+            or publish_status not in {"stored", "duplicate"}
+        ):
+            raise ValueError("post_lineup_result_invalid")
+        try:
+            task5_state = PostLineupRefreshStateStore(root).read()
+            submitted_rows = {
+                row["token"]: row for row in _normalize_receipts(submitted)
+            }
+        except Exception:
+            raise ValueError("post_lineup_result_invalid") from None
+        durable_tokens = {
+            _ack_token(item["ack_key"]) for item in checked_acks["durable"]
+        }
+        current_tokens: set[str] = set()
+        current_competitions: set[str] = set()
+        for token, row in submitted_rows.items():
+            if token in durable_tokens:
+                continue
+            state_row = task5_state["receipts"].get(token)
+            if not isinstance(state_row, Mapping):
+                continue
+            competition_id = row["competition_id"]
+            component_snapshot_id = component_snapshot_ids.get(competition_id)
+            if state_row.get("phase") == "committed":
+                if component_snapshot_id != state_row.get("snapshot_id"):
+                    raise ValueError("post_lineup_result_invalid")
+            elif state_row.get("phase") == "published":
+                if not (
+                    component_snapshot_id == state_row.get("snapshot_id")
+                    and aggregate_snapshot_id
+                    == state_row.get("aggregate_snapshot_id")
+                    and publish_status == state_row.get("publish_status")
+                ):
+                    continue
+            else:
+                continue
+            if component_snapshot_id is None:
+                raise ValueError("post_lineup_result_invalid")
+            current_tokens.add(token)
+            current_competitions.add(competition_id)
+        if (
+            {_ack_token(item["ack_key"]) for item in ack_commit_failures}
+            != current_tokens
+            or set(component_snapshot_ids) != current_competitions
+        ):
+            raise ValueError("post_lineup_result_invalid")
     if status == "partial":
         if (
             durable_count == 0
@@ -678,10 +739,6 @@ def _validate_post_result(
             if durable_count:
                 raise ValueError("post_lineup_result_invalid")
         else:
-            ack_commit_failures = [
-                item for item in checked_acks["retryable"]
-                if item.get("reason") == "ack_state_commit_failed"
-            ]
             if not ack_commit_failures or any(
                 item["ack_key"]["competition_id"] not in component_snapshot_ids
                 for item in ack_commit_failures
