@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -11,6 +12,7 @@ from worldcup.league_lineup_notifications import (
     build_quota_blocked_event,
     build_source_failure_event,
     build_source_recovery_event,
+    render_notification_event,
 )
 
 
@@ -31,6 +33,7 @@ def _published_event(*, publish_status="stored", current_selection="away"):
         confirmed_at="2026-08-24T18:05:00+00:00",
         publish_status=publish_status,
         previous_decision={
+            "schema_version": 2,
             "label": "MATCH_PICK",
             "market": "1X2",
             "selection": "home",
@@ -41,6 +44,7 @@ def _published_event(*, publish_status="stored", current_selection="away"):
             "raw_provider_response": "secret UID and header",
         },
         current_decision={
+            "schema_version": 2,
             "label": "MATCH_PICK",
             "market": "1X2",
             "selection": current_selection,
@@ -52,23 +56,48 @@ def _published_event(*, publish_status="stored", current_selection="away"):
     )
 
 
+def _build_with_current_decision(current_decision):
+    return build_published_refresh_event(
+        **MATCH,
+        lineup_fingerprint=LINEUP_FINGERPRINT,
+        confirmed_at="2026-08-24T18:05:00+00:00",
+        publish_status="stored",
+        previous_decision={
+            "schema_version": 2,
+            "label": "MATCH_PICK",
+            "market": "1X2",
+            "selection": "home",
+            "line": None,
+            "p_hit_safe": 0.55,
+            "odds": 2.10,
+        },
+        current_decision=current_decision,
+    )
+
+
 def _state_path(root: Path) -> Path:
     return root / "data/local/leagues/lineup_notification_state.json"
 
 
+def _render(event):
+    return render_notification_event(event)
+
+
 def test_published_refresh_changed_message_is_safe_and_uses_beijing_time():
     event = _published_event()
+    rendered = _render(event)
 
     assert event is not None
+    assert set(event) == {"schema_version", "event_type", "event_fingerprint", "payload"}
     assert event["event_type"] == "published_refresh_changed"
-    assert event["summary"] == "意甲 2026/27首发后本场首选已更新"
-    assert "Inter Milan vs AC Milan" in event["content"]
-    assert "2026-08-25 02:45（北京时间）" in event["content"]
-    assert "胜平负 - 主队 → 胜平负 - 客队" in event["content"]
-    assert "新安全概率：62.0%" in event["content"]
-    assert "新参考赔率：1.88" in event["content"]
-    assert "仅供研究分析，不构成投注建议。" in event["content"]
-    serialized = json.dumps(event, ensure_ascii=False)
+    assert rendered["summary"] == "意甲 2026/27首发后本场首选已更新"
+    assert "Inter Milan vs AC Milan" in rendered["content"]
+    assert "2026-08-25 02:45（北京时间）" in rendered["content"]
+    assert "胜平负 - 主队 → 胜平负 - 客队" in rendered["content"]
+    assert "新安全概率：62.0%" in rendered["content"]
+    assert "新参考赔率：1.88" in rendered["content"]
+    assert "仅供研究分析，不构成投注建议。" in rendered["content"]
+    serialized = json.dumps([event, rendered], ensure_ascii=False)
     for forbidden in ("金额", "EV", "Edge", "edge", "grade", "legacy", "raw", "header", "secret", "UID"):
         assert forbidden not in serialized
 
@@ -79,8 +108,76 @@ def test_published_refresh_unchanged_has_explicit_wording_and_stable_fingerprint
 
     assert first is not None
     assert first["event_type"] == "published_refresh_unchanged"
-    assert "首发后复核：方向未变" in first["content"]
+    assert "首发后复核：方向未变" in _render(first)["content"]
     assert first["event_fingerprint"] == second["event_fingerprint"]
+
+
+def test_published_event_accepts_only_v2_market_pick_contracts():
+    valid = (
+        {"schema_version": 2, "label": "MATCH_PICK", "market": "1X2", "selection": "draw", "line": None, "p_hit_safe": 0.5, "odds": 2.0},
+        {"schema_version": 2, "label": "MATCH_PICK", "market": "DNB", "selection": "home", "line": 0.0, "p_hit_safe": 0.0, "odds": 1.01},
+        {"schema_version": 2, "label": "MATCH_PICK", "market": "AH", "selection": "away", "line": 0.25, "p_hit_safe": 1.0, "odds": 3.5},
+        {"schema_version": 2, "label": "MATCH_PICK", "market": "OU", "selection": "over", "line": 2.5, "p_hit_safe": 0.61, "odds": 1.88},
+        {"schema_version": 2, "label": "NO_CLEAN_MARKET"},
+    )
+
+    for decision in valid:
+        event = _build_with_current_decision(decision)
+        assert event is not None
+        assert _render(event)["content"]
+
+
+def test_published_event_rejects_legacy_unknown_and_malformed_pick_contracts():
+    base = {
+        "schema_version": 2,
+        "label": "MATCH_PICK",
+        "market": "1X2",
+        "selection": "away",
+        "line": None,
+        "p_hit_safe": 0.62,
+        "odds": 1.88,
+    }
+    invalid = (
+        {**base, "schema_version": 1},
+        {**base, "label": "LEGACY_S"},
+        {**base, "label": ""},
+        {**base, "label": None},
+        {**base, "label": "UNKNOWN"},
+        {**base, "market": "UNKNOWN"},
+        {**base, "selection": "over"},
+        {**base, "line": 0.0},
+        {**base, "p_hit_safe": -0.01},
+        {**base, "p_hit_safe": 1.01},
+        {**base, "p_hit_safe": float("nan")},
+        {**base, "p_hit_safe": float("inf")},
+        {**base, "odds": -9},
+        {**base, "odds": 0},
+        {**base, "odds": 1.0},
+        {**base, "odds": float("nan")},
+        {**base, "odds": float("inf")},
+        {**base, "market": "DNB", "selection": "draw", "line": 0.0},
+        {**base, "market": "DNB", "selection": "home", "line": 0.25},
+        {**base, "market": "AH", "selection": "home", "line": None},
+        {**base, "market": "AH", "selection": "home", "line": 0.0},
+        {**base, "market": "OU", "selection": "under", "line": None},
+        {**base, "market": "OU", "selection": "under", "line": -2.5},
+        {
+            "schema_version": 2,
+            "label": "NO_CLEAN_MARKET",
+            "market": "1X2",
+            "selection": "home",
+            "p_hit_safe": 0.6,
+            "odds": 2.0,
+        },
+    )
+
+    for decision in invalid:
+        try:
+            _build_with_current_decision(decision)
+        except ValueError as exc:
+            assert str(exc) == "league_lineup_notification_event_invalid"
+        else:
+            raise AssertionError(f"invalid decision was accepted: {decision!r}")
 
 
 def test_publish_failure_never_creates_a_success_event():
@@ -105,10 +202,10 @@ def test_degraded_and_recovery_events_are_safe_and_deduplicated_by_episode():
         error_details="provider response had raw Cookie",
     )
 
-    assert "首发未确认，保留原推荐" in missing["content"]
-    assert "首发已保存，赔率刷新被额度保护阻断，保留原推荐" in quota["content"]
-    assert "首发数据源连续失败（3 次）" in failed["content"]
-    assert "首发数据源已恢复" in recovered["content"]
+    assert "首发未确认，保留原推荐" in _render(missing)["content"]
+    assert "首发已保存，赔率刷新被额度保护阻断，保留原推荐" in _render(quota)["content"]
+    assert "首发数据源连续失败（3 次）" in _render(failed)["content"]
+    assert "首发数据源已恢复" in _render(recovered)["content"]
     assert missing["event_fingerprint"] == build_missing_lineup_event(**common)["event_fingerprint"]
     assert len(
         {
@@ -118,7 +215,7 @@ def test_degraded_and_recovery_events_are_safe_and_deduplicated_by_episode():
             recovered["event_fingerprint"],
         }
     ) == 4
-    serialized = json.dumps([failed, recovered], ensure_ascii=False)
+    serialized = json.dumps([failed, recovered, _render(failed), _render(recovered)], ensure_ascii=False)
     for forbidden in ("Authorization", "header", "secret", "UID", "provider response", "raw", "Cookie"):
         assert forbidden not in serialized
 
@@ -146,8 +243,9 @@ def test_dry_run_and_sent_duplicate_never_call_notifier_or_write():
         assert sent["status"] == "sent"
         assert duplicate == {"status": "already_sent", "event_fingerprint": event["event_fingerprint"]}
         assert len(calls) == 1
-        assert calls[0][0] == (event["content"],)
-        assert calls[0][1] == {"summary": event["summary"]}
+        rendered = _render(event)
+        assert calls[0][0] == (rendered["content"],)
+        assert calls[0][1] == {"summary": rendered["summary"]}
         state = json.loads(_state_path(root).read_text(encoding="utf-8"))
         assert state["pending"] == {}
         assert list(state["sent"]) == [event["event_fingerprint"]]
@@ -217,7 +315,8 @@ def test_restart_can_retry_pending_without_rebuilding_the_source_event():
 
         assert dry_run == {"status": "dry_run", "pending": 1}
         assert result == {"status": "complete", "sent": 1, "failed": 0}
-        assert calls == [((event["content"],), {"summary": event["summary"]})]
+        rendered = _render(event)
+        assert calls == [((rendered["content"],), {"summary": rendered["summary"]})]
         state = json.loads(_state_path(root).read_text(encoding="utf-8"))
         assert state["pending"] == {}
         assert list(state["sent"]) == [event["event_fingerprint"]]
@@ -241,6 +340,110 @@ def test_malformed_state_fails_closed_without_calling_notifier():
             assert str(exc) == "league_lineup_notification_state_invalid"
         else:
             raise AssertionError("malformed state was accepted")
+
+        assert calls == []
+
+
+def test_forged_message_or_payload_mismatch_fails_before_notifier():
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        event = _published_event()
+        calls = []
+        forged_message = {**event, "summary": "下注金额 100", "content": "EV provider response raw header"}
+        forged_payload = {
+            **event,
+            "payload": {**event["payload"], "home_team": "Forged Team"},
+        }
+
+        for forged in (forged_message, forged_payload):
+            try:
+                LeagueLineupNotificationOutbox(root).deliver(
+                    forged,
+                    notify=True,
+                    notifier=lambda *_args, **_kwargs: calls.append(True),
+                )
+            except ValueError as exc:
+                assert str(exc) == "league_lineup_notification_event_invalid"
+            else:
+                raise AssertionError("forged event was accepted")
+
+        assert calls == []
+        assert not _state_path(root).exists()
+
+
+def test_forged_shape_valid_pending_state_fails_before_retry_notifier():
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        event = _published_event()
+        fingerprint = event["event_fingerprint"]
+        forged = {**event, "content": "下注金额 100；EV；provider response；raw header"}
+        path = _state_path(root)
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "pending": {fingerprint: forged},
+                    "sent": {},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        calls = []
+
+        try:
+            LeagueLineupNotificationOutbox(root).retry_pending(
+                notify=True,
+                notifier=lambda *_args, **_kwargs: calls.append(True),
+            )
+        except ValueError as exc:
+            assert str(exc) == "league_lineup_notification_state_invalid"
+        else:
+            raise AssertionError("forged pending state was accepted")
+
+        assert calls == []
+
+
+def test_sensitive_display_payload_fails_even_with_recomputed_fingerprint():
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        event = build_missing_lineup_event(
+            **MATCH,
+            source_fingerprint="episode-sensitive",
+        )
+        payload = {
+            **event["payload"],
+            "home_team": "下注金额 EV provider_response raw header",
+        }
+        encoded = json.dumps(
+            {"event_type": event["event_type"], "payload": payload},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        fingerprint = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        forged = {**event, "event_fingerprint": fingerprint, "payload": payload}
+        path = _state_path(root)
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {"schema_version": 1, "pending": {fingerprint: forged}, "sent": {}},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        calls = []
+
+        try:
+            LeagueLineupNotificationOutbox(root).retry_pending(
+                notify=True,
+                notifier=lambda *_args, **_kwargs: calls.append(True),
+            )
+        except ValueError as exc:
+            assert str(exc) == "league_lineup_notification_state_invalid"
+        else:
+            raise AssertionError("sensitive display payload was accepted")
 
         assert calls == []
 

@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,17 +29,18 @@ _EVENT_TYPES = frozenset(
         "source_recovery",
     }
 )
-_FORBIDDEN_TEXT = (
-    "authorization",
-    "cookie",
-    "edge",
-    "header",
-    "legacy",
-    "provider_response",
-    "raw",
-    "secret",
-    "token",
-    "uid",
+_COMMON_PAYLOAD_FIELDS = frozenset(
+    {
+        "competition_id",
+        "event_id",
+        "home_team",
+        "away_team",
+        "kickoff_at_utc",
+        "source_fingerprint",
+    }
+)
+_SENSITIVE_DISPLAY_WORD = re.compile(
+    r"\b(amount|authorization|cookie|edge|ev|header|legacy|raw|secret|token|uid)\b"
 )
 
 
@@ -46,6 +48,20 @@ def _required_text(value: Any, error: str = "league_lineup_notification_event_in
     if not isinstance(value, str) or not value.strip():
         raise ValueError(error)
     return value.strip()
+
+
+def _safe_display_text(value: Any) -> str:
+    text = _required_text(value)
+    if len(text) > 160 or any(ord(char) < 32 or ord(char) == 127 for char in text):
+        raise ValueError("league_lineup_notification_event_invalid")
+    normalized = re.sub(r"[_-]+", " ", text).casefold()
+    if (
+        "金额" in normalized
+        or re.search(r"\bprovider\s+response\b", normalized)
+        or _SENSITIVE_DISPLAY_WORD.search(normalized)
+    ):
+        raise ValueError("league_lineup_notification_event_invalid")
+    return text
 
 
 def _aware_datetime(value: Any) -> datetime:
@@ -81,14 +97,13 @@ def _source_hash(value: Any) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
-def _event_fingerprint(event_type: str, competition_id: str, event_id: str, source_hash: str) -> str:
+def _event_fingerprint(event_type: str, payload: Mapping[str, Any]) -> str:
     encoded = json.dumps(
         {
-            "competition_id": competition_id,
-            "event_id": event_id,
             "event_type": event_type,
-            "source_fingerprint": source_hash,
+            "payload": payload,
         },
+        ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -107,32 +122,69 @@ def _safe_float(value: Any) -> float | None:
     return parsed
 
 
-def _safe_pick(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, Mapping):
-        return None
-    if value.get("label") == "NO_CLEAN_MARKET":
-        return None
+def _safe_pick(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or value.get("schema_version") != 2:
+        raise ValueError("league_lineup_notification_event_invalid")
+    label = value.get("label")
+    if label == "NO_CLEAN_MARKET":
+        if any(
+            value.get(field) is not None
+            for field in ("market", "selection", "line", "p_hit_safe", "odds")
+        ):
+            raise ValueError("league_lineup_notification_event_invalid")
+        return {"schema_version": 2, "label": "NO_CLEAN_MARKET"}
+    if label != "MATCH_PICK":
+        raise ValueError("league_lineup_notification_event_invalid")
+
     market = value.get("market")
     selection = value.get("selection")
-    if not isinstance(market, str) or not market or not isinstance(selection, str) or not selection:
-        return None
+    allowed_selections = {
+        "1X2": {"home", "draw", "away"},
+        "DNB": {"home", "away"},
+        "AH": {"home", "away"},
+        "OU": {"over", "under"},
+    }
+    if market not in allowed_selections or selection not in allowed_selections[market]:
+        raise ValueError("league_lineup_notification_event_invalid")
+
+    raw_line = value.get("line")
+    line = _safe_float(raw_line)
+    if market == "1X2":
+        if raw_line is not None:
+            raise ValueError("league_lineup_notification_event_invalid")
+        line = None
+    elif line is None:
+        raise ValueError("league_lineup_notification_event_invalid")
+    elif market == "DNB" and abs(line) > 1e-12:
+        raise ValueError("league_lineup_notification_event_invalid")
+    elif market == "AH" and abs(line) <= 1e-12:
+        raise ValueError("league_lineup_notification_event_invalid")
+    elif market == "OU" and line <= 0:
+        raise ValueError("league_lineup_notification_event_invalid")
+
+    probability = _safe_float(value.get("p_hit_safe"))
+    odds = _safe_float(value.get("odds"))
+    if probability is None or not 0.0 <= probability <= 1.0 or odds is None or odds <= 1.0:
+        raise ValueError("league_lineup_notification_event_invalid")
     return {
+        "schema_version": 2,
+        "label": "MATCH_PICK",
         "market": market,
         "selection": selection,
-        "line": _safe_float(value.get("line")),
-        "p_hit_safe": _safe_float(value.get("p_hit_safe")),
-        "odds": _safe_float(value.get("odds")),
+        "line": line,
+        "p_hit_safe": probability,
+        "odds": odds,
     }
 
 
-def _pick_identity(value: dict[str, Any] | None) -> tuple[Any, ...] | None:
-    if value is None:
+def _pick_identity(value: dict[str, Any]) -> tuple[Any, ...] | None:
+    if value["label"] == "NO_CLEAN_MARKET":
         return None
     return value["market"], value["selection"], value["line"]
 
 
-def _pick_label(value: dict[str, Any] | None) -> str:
-    if value is None:
+def _pick_label(value: dict[str, Any]) -> str:
+    if value["label"] == "NO_CLEAN_MARKET":
         return "暂无可靠首选"
     return format_match_decision_market_label(value)
 
@@ -150,9 +202,9 @@ def _safe_common(
         raise ValueError("league_lineup_notification_event_invalid")
     return {
         "competition_id": competition_id,
-        "event_id": _required_text(event_id),
-        "home_team": _required_text(home_team),
-        "away_team": _required_text(away_team),
+        "event_id": _safe_display_text(event_id),
+        "home_team": _safe_display_text(home_team),
+        "away_team": _safe_display_text(away_team),
         "kickoff_at_utc": _utc_text(kickoff_at_utc),
         "source_fingerprint": _source_hash(source_fingerprint),
     }
@@ -164,9 +216,9 @@ def _validate_common_payload(value: Mapping[str, Any]) -> dict[str, str]:
         raise ValueError("league_lineup_notification_event_invalid")
     return {
         "competition_id": competition_id,
-        "event_id": _required_text(value.get("event_id")),
-        "home_team": _required_text(value.get("home_team")),
-        "away_team": _required_text(value.get("away_team")),
+        "event_id": _safe_display_text(value.get("event_id")),
+        "home_team": _safe_display_text(value.get("home_team")),
+        "away_team": _safe_display_text(value.get("away_team")),
         "kickoff_at_utc": _utc_text(value.get("kickoff_at_utc")),
         "source_fingerprint": value["source_fingerprint"],
     }
@@ -175,33 +227,23 @@ def _validate_common_payload(value: Mapping[str, Any]) -> dict[str, str]:
 def _build_event(
     *,
     event_type: str,
-    common: Mapping[str, str],
-    summary: str,
-    lines: list[str],
+    payload: Mapping[str, Any],
 ) -> dict[str, Any]:
-    content = "\n".join([*lines, "", DISCLAIMER])
     event = {
         "schema_version": 1,
         "event_type": event_type,
-        "event_fingerprint": _event_fingerprint(
-            event_type,
-            common["competition_id"],
-            common["event_id"],
-            common["source_fingerprint"],
-        ),
-        "summary": summary,
-        "content": content,
-        "payload": dict(common),
+        "event_fingerprint": _event_fingerprint(event_type, payload),
+        "payload": dict(payload),
     }
     return _validate_event(event)
 
 
-def _base_lines(common: Mapping[str, str]) -> list[str]:
-    competition_name = get_competition(common["competition_id"]).name
+def _base_lines(payload: Mapping[str, Any]) -> list[str]:
+    competition_name = get_competition(payload["competition_id"]).name
     return [
         f"联赛：{competition_name}",
-        f"比赛：{common['home_team']} vs {common['away_team']}",
-        f"开球：{_beijing_text(common['kickoff_at_utc'])}",
+        f"比赛：{payload['home_team']} vs {payload['away_team']}",
+        f"开球：{_beijing_text(payload['kickoff_at_utc'])}",
     ]
 
 
@@ -237,25 +279,15 @@ def build_published_refresh_event(
     after = _safe_pick(current_decision)
     changed = _pick_identity(before) != _pick_identity(after)
     event_type = "published_refresh_changed" if changed else "published_refresh_unchanged"
-    competition_name = get_competition(competition_id).name
-    lines = [
-        *_base_lines(common),
-        f"双方首发已确认：{_beijing_text(confirmed_at_utc)}",
-    ]
-    if changed:
-        lines.append(f"本场首选：{_pick_label(before)} → {_pick_label(after)}")
-    else:
-        lines.append("首发后复核：方向未变")
-        lines.append(f"本场首选：{_pick_label(after)}")
-    probability = None if after is None else after["p_hit_safe"]
-    odds = None if after is None else after["odds"]
-    lines.append(f"新安全概率：{format_probability(probability)}")
-    lines.append(f"新参考赔率：{'—' if odds is None else f'{odds:.2f}'}")
+    payload = {
+        **common,
+        "confirmed_at": confirmed_at_utc,
+        "previous_decision": before,
+        "current_decision": after,
+    }
     return _build_event(
         event_type=event_type,
-        common=common,
-        summary=f"{competition_name}首发后本场首选已更新",
-        lines=lines,
+        payload=payload,
     )
 
 
@@ -268,7 +300,7 @@ def _build_degraded_event(
     away_team: str,
     kickoff_at_utc: str,
     source_fingerprint: str,
-    message: str,
+    extra_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     common = _safe_common(
         competition_id=competition_id,
@@ -278,19 +310,15 @@ def _build_degraded_event(
         kickoff_at_utc=kickoff_at_utc,
         source_fingerprint=source_fingerprint,
     )
-    competition_name = get_competition(competition_id).name
     return _build_event(
         event_type=event_type,
-        common=common,
-        summary=f"{competition_name}首发跟踪提醒",
-        lines=[*_base_lines(common), message],
+        payload={**common, **dict(extra_payload or {})},
     )
 
 
 def build_missing_lineup_event(**kwargs: Any) -> dict[str, Any]:
     return _build_degraded_event(
         event_type="missing_confirmed",
-        message="首发未确认，保留原推荐",
         **kwargs,
     )
 
@@ -298,7 +326,6 @@ def build_missing_lineup_event(**kwargs: Any) -> dict[str, Any]:
 def build_quota_blocked_event(**kwargs: Any) -> dict[str, Any]:
     return _build_degraded_event(
         event_type="quota_blocked",
-        message="首发已保存，赔率刷新被额度保护阻断，保留原推荐",
         **kwargs,
     )
 
@@ -314,7 +341,7 @@ def build_source_failure_event(
         raise ValueError("league_lineup_notification_event_invalid")
     return _build_degraded_event(
         event_type="sustained_source_failure",
-        message=f"首发数据源连续失败（{failure_count} 次），保留原推荐",
+        extra_payload={"failure_count": failure_count},
         **kwargs,
     )
 
@@ -323,50 +350,109 @@ def build_source_recovery_event(*, error_details: Any = None, **kwargs: Any) -> 
     del error_details
     return _build_degraded_event(
         event_type="source_recovery",
-        message="首发数据源已恢复，将继续按规则跟踪确认首发",
         **kwargs,
     )
 
 
+def _validate_projected_pick(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError("league_lineup_notification_event_invalid")
+    expected = (
+        {"schema_version", "label"}
+        if value.get("label") == "NO_CLEAN_MARKET"
+        else {"schema_version", "label", "market", "selection", "line", "p_hit_safe", "odds"}
+    )
+    if set(value) != expected:
+        raise ValueError("league_lineup_notification_event_invalid")
+    return _safe_pick(value)
+
+
 def _validate_event(value: Any) -> dict[str, Any]:
-    expected = {"schema_version", "event_type", "event_fingerprint", "summary", "content", "payload"}
+    expected = {"schema_version", "event_type", "event_fingerprint", "payload"}
     if not isinstance(value, Mapping) or set(value) != expected or value.get("schema_version") != 1:
         raise ValueError("league_lineup_notification_event_invalid")
     event_type = value.get("event_type")
     payload = value.get("payload")
-    payload_expected = {
-        "competition_id",
-        "event_id",
-        "home_team",
-        "away_team",
-        "kickoff_at_utc",
-        "source_fingerprint",
-    }
-    if event_type not in _EVENT_TYPES or not isinstance(payload, Mapping) or set(payload) != payload_expected:
+    if event_type not in _EVENT_TYPES or not isinstance(payload, Mapping):
+        raise ValueError("league_lineup_notification_event_invalid")
+    payload_expected = set(_COMMON_PAYLOAD_FIELDS)
+    if event_type in {"published_refresh_changed", "published_refresh_unchanged"}:
+        payload_expected.update({"confirmed_at", "previous_decision", "current_decision"})
+    elif event_type == "sustained_source_failure":
+        payload_expected.add("failure_count")
+    if set(payload) != payload_expected:
         raise ValueError("league_lineup_notification_event_invalid")
     common = _validate_common_payload(payload)
-    summary = _required_text(value.get("summary"))
-    content = _required_text(value.get("content"))
-    lowered = f"{summary}\n{content}".casefold()
-    if DISCLAIMER not in content or any(forbidden in lowered for forbidden in _FORBIDDEN_TEXT):
-        raise ValueError("league_lineup_notification_event_invalid")
+    normalized_payload: dict[str, Any] = dict(common)
+    if event_type in {"published_refresh_changed", "published_refresh_unchanged"}:
+        confirmed_at = _utc_text(payload.get("confirmed_at"))
+        if _aware_datetime(confirmed_at) >= _aware_datetime(common["kickoff_at_utc"]):
+            raise ValueError("league_lineup_notification_event_invalid")
+        before = _validate_projected_pick(payload.get("previous_decision"))
+        after = _validate_projected_pick(payload.get("current_decision"))
+        expected_type = (
+            "published_refresh_changed"
+            if _pick_identity(before) != _pick_identity(after)
+            else "published_refresh_unchanged"
+        )
+        if event_type != expected_type:
+            raise ValueError("league_lineup_notification_event_invalid")
+        normalized_payload.update(
+            {
+                "confirmed_at": confirmed_at,
+                "previous_decision": before,
+                "current_decision": after,
+            }
+        )
+    elif event_type == "sustained_source_failure":
+        failure_count = payload.get("failure_count")
+        if isinstance(failure_count, bool) or not isinstance(failure_count, int) or failure_count < 1:
+            raise ValueError("league_lineup_notification_event_invalid")
+        normalized_payload["failure_count"] = failure_count
     fingerprint = value.get("event_fingerprint")
-    expected_fingerprint = _event_fingerprint(
-        event_type,
-        common["competition_id"],
-        common["event_id"],
-        common["source_fingerprint"],
-    )
+    expected_fingerprint = _event_fingerprint(event_type, normalized_payload)
     if not _valid_hash(fingerprint) or fingerprint != expected_fingerprint:
         raise ValueError("league_lineup_notification_event_invalid")
     return {
         "schema_version": 1,
         "event_type": event_type,
         "event_fingerprint": fingerprint,
-        "summary": summary,
-        "content": content,
-        "payload": common,
+        "payload": normalized_payload,
     }
+
+
+def render_notification_event(value: Mapping[str, Any]) -> dict[str, str]:
+    event = _validate_event(value)
+    event_type = event["event_type"]
+    payload = event["payload"]
+    competition_name = get_competition(payload["competition_id"]).name
+    lines = _base_lines(payload)
+    if event_type in {"published_refresh_changed", "published_refresh_unchanged"}:
+        before = payload["previous_decision"]
+        after = payload["current_decision"]
+        lines.append(f"双方首发已确认：{_beijing_text(payload['confirmed_at'])}")
+        if event_type == "published_refresh_changed":
+            lines.append(f"本场首选：{_pick_label(before)} → {_pick_label(after)}")
+        else:
+            lines.append("首发后复核：方向未变")
+            lines.append(f"本场首选：{_pick_label(after)}")
+        probability = None if after["label"] == "NO_CLEAN_MARKET" else after["p_hit_safe"]
+        odds = None if after["label"] == "NO_CLEAN_MARKET" else after["odds"]
+        lines.append(f"新安全概率：{format_probability(probability)}")
+        lines.append(f"新参考赔率：{'—' if odds is None else f'{odds:.2f}'}")
+        summary = f"{competition_name}首发后本场首选已更新"
+    else:
+        messages = {
+            "missing_confirmed": "首发未确认，保留原推荐",
+            "quota_blocked": "首发已保存，赔率刷新被额度保护阻断，保留原推荐",
+            "sustained_source_failure": (
+                f"首发数据源连续失败（{payload.get('failure_count')} 次），保留原推荐"
+            ),
+            "source_recovery": "首发数据源已恢复，将继续按规则跟踪确认首发",
+        }
+        lines.append(messages[event_type])
+        summary = f"{competition_name}首发跟踪提醒"
+    return {"summary": summary, "content": "\n".join([*lines, "", DISCLAIMER])}
 
 
 def _empty_state() -> dict[str, Any]:
@@ -470,10 +556,11 @@ class LeagueLineupNotificationOutbox:
             state["pending"].setdefault(fingerprint, checked)
             _atomic_write(self.path, state)
             pending_event = state["pending"][fingerprint]
+            rendered = render_notification_event(pending_event)
             try:
                 notification_result = notifier(
-                    pending_event["content"],
-                    summary=pending_event["summary"],
+                    rendered["content"],
+                    summary=rendered["summary"],
                 )
             except Exception:
                 return {"status": "failed", **result}
