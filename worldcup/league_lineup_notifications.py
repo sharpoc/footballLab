@@ -18,6 +18,7 @@ from worldcup.notifications import send_wxpusher_notification
 
 DISCLAIMER = "仅供研究分析，不构成投注建议。"
 STATE_RELATIVE_PATH = Path("data/local/leagues/lineup_notification_state.json")
+DEFAULT_SOURCE_FAILURE_THRESHOLD = 3
 _BEIJING = ZoneInfo("Asia/Shanghai")
 _EVENT_TYPES = frozenset(
     {
@@ -144,7 +145,12 @@ def _safe_pick(value: Any) -> dict[str, Any]:
         "AH": {"home", "away"},
         "OU": {"over", "under"},
     }
-    if market not in allowed_selections or selection not in allowed_selections[market]:
+    if (
+        not isinstance(market, str)
+        or not isinstance(selection, str)
+        or market not in allowed_selections
+        or selection not in allowed_selections[market]
+    ):
         raise ValueError("league_lineup_notification_event_invalid")
 
     raw_line = value.get("line")
@@ -161,6 +167,8 @@ def _safe_pick(value: Any) -> dict[str, Any]:
         raise ValueError("league_lineup_notification_event_invalid")
     elif market == "OU" and line <= 0:
         raise ValueError("league_lineup_notification_event_invalid")
+    if market == "DNB":
+        line = 0.0
 
     probability = _safe_float(value.get("p_hit_safe"))
     odds = _safe_float(value.get("odds"))
@@ -333,15 +341,23 @@ def build_quota_blocked_event(**kwargs: Any) -> dict[str, Any]:
 def build_source_failure_event(
     *,
     failure_count: int,
+    failure_threshold: int = DEFAULT_SOURCE_FAILURE_THRESHOLD,
     error_details: Any = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
     del error_details
-    if isinstance(failure_count, bool) or not isinstance(failure_count, int) or failure_count < 1:
+    if (
+        isinstance(failure_count, bool)
+        or not isinstance(failure_count, int)
+        or isinstance(failure_threshold, bool)
+        or not isinstance(failure_threshold, int)
+        or failure_threshold < 1
+        or failure_count < failure_threshold
+    ):
         raise ValueError("league_lineup_notification_event_invalid")
     return _build_degraded_event(
         event_type="sustained_source_failure",
-        extra_payload={"failure_count": failure_count},
+        extra_payload={"failure_threshold": failure_threshold},
         **kwargs,
     )
 
@@ -379,7 +395,7 @@ def _validate_event(value: Any) -> dict[str, Any]:
     if event_type in {"published_refresh_changed", "published_refresh_unchanged"}:
         payload_expected.update({"confirmed_at", "previous_decision", "current_decision"})
     elif event_type == "sustained_source_failure":
-        payload_expected.add("failure_count")
+        payload_expected.add("failure_threshold")
     if set(payload) != payload_expected:
         raise ValueError("league_lineup_notification_event_invalid")
     common = _validate_common_payload(payload)
@@ -405,10 +421,14 @@ def _validate_event(value: Any) -> dict[str, Any]:
             }
         )
     elif event_type == "sustained_source_failure":
-        failure_count = payload.get("failure_count")
-        if isinstance(failure_count, bool) or not isinstance(failure_count, int) or failure_count < 1:
+        failure_threshold = payload.get("failure_threshold")
+        if (
+            isinstance(failure_threshold, bool)
+            or not isinstance(failure_threshold, int)
+            or failure_threshold < 1
+        ):
             raise ValueError("league_lineup_notification_event_invalid")
-        normalized_payload["failure_count"] = failure_count
+        normalized_payload["failure_threshold"] = failure_threshold
     fingerprint = value.get("event_fingerprint")
     expected_fingerprint = _event_fingerprint(event_type, normalized_payload)
     if not _valid_hash(fingerprint) or fingerprint != expected_fingerprint:
@@ -446,7 +466,7 @@ def render_notification_event(value: Mapping[str, Any]) -> dict[str, str]:
             "missing_confirmed": "首发未确认，保留原推荐",
             "quota_blocked": "首发已保存，赔率刷新被额度保护阻断，保留原推荐",
             "sustained_source_failure": (
-                f"首发数据源连续失败（{payload.get('failure_count')} 次），保留原推荐"
+                f"首发数据源连续失败（{payload.get('failure_threshold')} 次），保留原推荐"
             ),
             "source_recovery": "首发数据源已恢复，将继续按规则跟踪确认首发",
         }

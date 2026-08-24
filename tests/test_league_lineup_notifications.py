@@ -143,7 +143,9 @@ def test_published_event_rejects_legacy_unknown_and_malformed_pick_contracts():
         {**base, "label": ""},
         {**base, "label": None},
         {**base, "label": "UNKNOWN"},
+        {**base, "market": ["1X2"]},
         {**base, "market": "UNKNOWN"},
+        {**base, "selection": ["away"]},
         {**base, "selection": "over"},
         {**base, "line": 0.0},
         {**base, "p_hit_safe": -0.01},
@@ -178,6 +180,19 @@ def test_published_event_rejects_legacy_unknown_and_malformed_pick_contracts():
             assert str(exc) == "league_lineup_notification_event_invalid"
         else:
             raise AssertionError(f"invalid decision was accepted: {decision!r}")
+
+
+def test_negative_zero_dnb_line_is_canonical_positive_zero():
+    positive = _build_with_current_decision(
+        {"schema_version": 2, "label": "MATCH_PICK", "market": "DNB", "selection": "home", "line": 0.0, "p_hit_safe": 0.55, "odds": 1.88}
+    )
+    negative = _build_with_current_decision(
+        {"schema_version": 2, "label": "MATCH_PICK", "market": "DNB", "selection": "home", "line": -0.0, "p_hit_safe": 0.55, "odds": 1.88}
+    )
+
+    assert positive["event_fingerprint"] == negative["event_fingerprint"]
+    assert negative["payload"]["current_decision"]["line"] == 0.0
+    assert "-0.0" not in json.dumps(negative)
 
 
 def test_publish_failure_never_creates_a_success_event():
@@ -218,6 +233,94 @@ def test_degraded_and_recovery_events_are_safe_and_deduplicated_by_episode():
     serialized = json.dumps([failed, recovered, _render(failed), _render(recovered)], ensure_ascii=False)
     for forbidden in ("Authorization", "header", "secret", "UID", "provider response", "raw", "Cookie"):
         assert forbidden not in serialized
+
+
+def test_sustained_failure_count_growth_is_one_business_event_and_one_send():
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        common = {
+            **MATCH,
+            "source_fingerprint": "failure-episode-1",
+        }
+        events = [
+            build_source_failure_event(**common, failure_count=count)
+            for count in (3, 4, 5)
+        ]
+        calls = []
+        outbox = LeagueLineupNotificationOutbox(root)
+        statuses = [
+            outbox.deliver(
+                event,
+                notify=True,
+                notifier=lambda *_args, **_kwargs: (
+                    calls.append(True) or {"status": "sent", "exit_code": 0}
+                ),
+            )["status"]
+            for event in events
+        ]
+
+        assert len({event["event_fingerprint"] for event in events}) == 1
+        assert statuses == ["sent", "already_sent", "already_sent"]
+        assert calls == [True]
+        state = json.loads(_state_path(root).read_text(encoding="utf-8"))
+        assert len(state["sent"]) == 1
+        assert state["pending"] == {}
+
+
+def test_failed_failure_event_retries_same_pending_when_count_grows():
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        common = {
+            **MATCH,
+            "source_fingerprint": "failure-episode-retry",
+        }
+        count_three = build_source_failure_event(**common, failure_count=3)
+        count_four = build_source_failure_event(**common, failure_count=4)
+        outbox = LeagueLineupNotificationOutbox(root)
+        calls = []
+
+        first = outbox.deliver(
+            count_three,
+            notify=True,
+            notifier=lambda *_args, **_kwargs: (
+                calls.append("failed") or {"status": "failed", "exit_code": 9}
+            ),
+        )
+        pending = json.loads(_state_path(root).read_text(encoding="utf-8"))
+        second = outbox.deliver(
+            count_four,
+            notify=True,
+            notifier=lambda *_args, **_kwargs: (
+                calls.append("sent") or {"status": "sent", "exit_code": 0}
+            ),
+        )
+        final_state = json.loads(_state_path(root).read_text(encoding="utf-8"))
+
+        assert count_three["event_fingerprint"] == count_four["event_fingerprint"]
+        assert first["status"] == "failed"
+        assert len(pending["pending"]) == 1
+        assert second["status"] == "sent"
+        assert calls == ["failed", "sent"]
+        assert final_state["pending"] == {}
+        assert len(final_state["sent"]) == 1
+
+
+def test_new_failure_episode_and_recovery_each_have_independent_dedupe_identity():
+    common = {**MATCH, "failure_count": 3}
+    first = build_source_failure_event(**common, source_fingerprint="failure-episode-1")
+    second = build_source_failure_event(**common, source_fingerprint="failure-episode-2")
+    recovery_one = build_source_recovery_event(
+        **MATCH,
+        source_fingerprint="failure-episode-1",
+    )
+    recovery_repeat = build_source_recovery_event(
+        **MATCH,
+        source_fingerprint="failure-episode-1",
+    )
+
+    assert first["event_fingerprint"] != second["event_fingerprint"]
+    assert first["event_fingerprint"] != recovery_one["event_fingerprint"]
+    assert recovery_one["event_fingerprint"] == recovery_repeat["event_fingerprint"]
 
 
 def test_dry_run_and_sent_duplicate_never_call_notifier_or_write():
