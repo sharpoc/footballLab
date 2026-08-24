@@ -1,3 +1,4 @@
+import hashlib
 import json
 import threading
 import time
@@ -11,13 +12,26 @@ from worldcup.league_lineup_store import LeagueLineupStore
 COMPETITION = "epl_2026_27"
 
 
-def _confirmed(event_id="epl-event-1", fingerprint="a" * 64):
-    return {
+def _lineup_fingerprint(row):
+    identity = {
+        "competition_id": row["competition_id"],
+        "event_id": row["event_id"],
+        "source_match_id": row["source_match_id"],
+        "kickoff_at_utc": row["kickoff_at_utc"],
+        "home_player_ids": sorted(player["player_id"] for player in row["home_starting"]),
+        "away_player_ids": sorted(player["player_id"] for player in row["away_starting"]),
+    }
+    payload = json.dumps(identity, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _confirmed(event_id="epl-event-1", source_match_id="1001", fingerprint=None, home_first_id="1"):
+    row = {
         "schema_version": 1,
         "provider": "fotmob",
         "competition_id": COMPETITION,
         "event_id": event_id,
-        "source_match_id": "1001",
+        "source_match_id": source_match_id,
         "kickoff_at_utc": "2026-08-24T13:00:00+00:00",
         "fetched_at": "2026-08-24T12:20:00+00:00",
         "lineup_status": "confirmed",
@@ -25,10 +39,13 @@ def _confirmed(event_id="epl-event-1", fingerprint="a" * 64):
         "away_canonical": "chelsea",
         "home_formation": "4-3-3",
         "away_formation": "4-2-3-1",
-        "home_starting": [{"player_id": str(number), "name": f"Home {number}"} for number in range(1, 12)],
+        "home_starting": [{"player_id": home_first_id, "name": "Home 1"}] + [
+            {"player_id": str(number), "name": f"Home {number}"} for number in range(2, 12)
+        ],
         "away_starting": [{"player_id": str(number), "name": f"Away {number}"} for number in range(21, 32)],
-        "lineup_fingerprint": fingerprint,
     }
+    row["lineup_fingerprint"] = _lineup_fingerprint(row) if fingerprint is None else fingerprint
+    return row
 
 
 def _report(*accepted):
@@ -83,7 +100,7 @@ def test_confirmed_cache_is_idempotent_non_degrading_and_rejects_a_conflict():
         assert store.read_competition(COMPETITION)["accepted"] == [original]
 
         try:
-            store.commit_confirmed(COMPETITION, _report(_confirmed(fingerprint="b" * 64)))
+            store.commit_confirmed(COMPETITION, _report(_confirmed(home_first_id="99")))
         except ValueError as exc:
             assert str(exc) == "league_lineup_fingerprint_conflict"
         else:
@@ -132,7 +149,7 @@ def test_failed_atomic_replace_keeps_the_prior_confirmed_cache_untouched():
         store = LeagueLineupStore(tmp)
         original = _confirmed()
         assert store.commit_confirmed(COMPETITION, _report(original)) == "stored"
-        next_event = _confirmed(event_id="epl-event-2", fingerprint="b" * 64)
+        next_event = _confirmed(event_id="epl-event-2", source_match_id="1002")
         with patch("worldcup.league_lineup_store.os.replace", side_effect=OSError("injected replace failure")):
             try:
                 store.commit_confirmed(COMPETITION, _report(next_event))
@@ -154,7 +171,7 @@ def test_fcntl_lock_serializes_a_competing_cache_commit():
         result = []
 
         def commit() -> None:
-            result.append(store.commit_confirmed(COMPETITION, _report(_confirmed(event_id="epl-event-2", fingerprint="b" * 64))))
+            result.append(store.commit_confirmed(COMPETITION, _report(_confirmed(event_id="epl-event-2", source_match_id="1002"))))
             completed.set()
 
         with lock_path.open("a+", encoding="utf-8") as lock:
@@ -180,7 +197,7 @@ def test_state_requires_aware_timestamps_and_committed_confirmed_fingerprints():
                 "epl_2026_27:epl-event-1": {
                     "last_polled_at": "2026-08-24T12:20:00+00:00",
                     "confirmed": True,
-                    "accepted_fingerprint": "a" * 64,
+                    "accepted_fingerprint": _confirmed()["lineup_fingerprint"],
                 },
             },
         }
@@ -223,3 +240,95 @@ def test_state_is_idempotent_and_fails_closed_for_malformed_committed_json():
             assert str(exc) == "league_lineup_invalid_state"
         else:
             raise AssertionError("malformed committed state must fail closed")
+
+
+def test_state_commit_preserves_malformed_existing_state_instead_of_repairing_it():
+    """Replacing corrupt state during a normal commit would erase the polling safety evidence."""
+    with TemporaryDirectory() as tmp:
+        store = LeagueLineupStore(tmp)
+        path = Path(tmp) / "data/local/leagues/lineup_state.json"
+        path.parent.mkdir(parents=True)
+        malformed = b'{"schema_version":1,'
+        path.write_bytes(malformed)
+
+        try:
+            store.commit_state({"schema_version": 1, "events": {}})
+        except ValueError as exc:
+            assert str(exc) == "league_lineup_invalid_state"
+        else:
+            raise AssertionError("corrupt existing state must block commit")
+        assert path.read_bytes() == malformed
+
+
+def test_state_merge_only_preserves_confirmations_newer_polls_and_concurrent_events():
+    """Overwriting a stale full-state snapshot would re-poll confirmed events or lose another writer's event."""
+    with TemporaryDirectory() as tmp:
+        store = LeagueLineupStore(tmp)
+        confirmed = _confirmed()
+        assert store.commit_confirmed(COMPETITION, _report(confirmed)) == "stored"
+        latest = {"schema_version": 1, "events": {
+            "epl_2026_27:epl-event-1": {
+                "last_polled_at": "2026-08-24T12:20:00+00:00",
+                "confirmed": True,
+                "accepted_fingerprint": confirmed["lineup_fingerprint"],
+            },
+        }}
+        assert store.commit_state(latest) == "stored"
+
+        stale = {"schema_version": 1, "events": {
+            "epl_2026_27:epl-event-1": {
+                "last_polled_at": "2026-08-24T12:00:00+00:00",
+                "confirmed": False,
+            },
+        }}
+        assert store.commit_state(stale) == "unchanged"
+        assert store.read_state() == latest
+        assert store.commit_state({"schema_version": 1, "events": {}}) == "unchanged"
+        assert store.read_state() == latest
+
+        first = {"schema_version": 1, "events": {
+            "epl_2026_27:epl-event-2": {"last_polled_at": "2026-08-24T12:21:00+00:00", "confirmed": False},
+        }}
+        second = {"schema_version": 1, "events": {
+            "epl_2026_27:epl-event-3": {"last_polled_at": "2026-08-24T12:22:00+00:00", "confirmed": False},
+        }}
+        threads = [threading.Thread(target=store.commit_state, args=(value,)) for value in (first, second)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=2)
+            assert thread.is_alive() is False
+        assert set(store.read_state()["events"]) == {
+            "epl_2026_27:epl-event-1", "epl_2026_27:epl-event-2", "epl_2026_27:epl-event-3",
+        }
+
+
+def test_cache_rejects_post_kickoff_and_forged_fingerprint_evidence():
+    """A shape-valid arbitrary hash or post-kickoff capture is not valid pre-match confirmation evidence."""
+    with TemporaryDirectory() as tmp:
+        store = LeagueLineupStore(tmp)
+        post_kickoff = _confirmed()
+        post_kickoff["fetched_at"] = "2026-08-24T13:00:00+00:00"
+        post_kickoff["lineup_fingerprint"] = _lineup_fingerprint(post_kickoff)
+        forged = _confirmed(fingerprint="f" * 64)
+        for candidate in (post_kickoff, forged):
+            try:
+                store.commit_confirmed(COMPETITION, _report(candidate))
+            except ValueError as exc:
+                assert str(exc) == "league_lineup_invalid_report"
+            else:
+                raise AssertionError("unbound confirmed evidence must fail")
+
+
+def test_cache_keeps_a_one_to_one_source_match_binding_across_commits():
+    """Binding one FotMob match to two local events would defeat the parser's unique identity join."""
+    with TemporaryDirectory() as tmp:
+        store = LeagueLineupStore(tmp)
+        assert store.commit_confirmed(COMPETITION, _report(_confirmed())) == "stored"
+        duplicate_source = _confirmed(event_id="epl-event-2", source_match_id="1001")
+        try:
+            store.commit_confirmed(COMPETITION, _report(duplicate_source))
+        except ValueError as exc:
+            assert str(exc) == "league_lineup_source_match_conflict"
+        else:
+            raise AssertionError("provider match must have one local event")
