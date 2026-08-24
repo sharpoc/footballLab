@@ -58,6 +58,11 @@ _PARSER_ACCEPTED_FIELDS = frozenset({
     "away_starting",
     "lineup_fingerprint",
 })
+LINEUP_PENDING_ACK_KEY_FIELDS = (
+    "competition_id",
+    "event_id",
+    "lineup_fingerprint",
+)
 
 
 def _utc(value: Any) -> datetime:
@@ -266,13 +271,18 @@ def _increment(reasons: dict[str, dict[str, int]], competition_id: str, reason: 
     competition[reason] = competition.get(reason, 0) + count
 
 
-def _summary(row: Mapping[str, Any]) -> dict[str, Any]:
+def _summary(competition_id: str, row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "event_id": row["event_id"],
         "source_match_id": row["source_match_id"],
         "kickoff_at_utc": row["kickoff_at_utc"],
         "fetched_at": row["fetched_at"],
         "lineup_fingerprint": row["lineup_fingerprint"],
+        "ack_key": {
+            "competition_id": competition_id,
+            "event_id": row["event_id"],
+            "lineup_fingerprint": row["lineup_fingerprint"],
+        },
     }
 
 
@@ -288,7 +298,7 @@ def _validate_pending(value: Any) -> dict[str, Any]:
     checked: dict[str, dict[str, Any]] = {}
     expected = {
         "competition_id", "event_id", "source_match_id", "kickoff_at_utc", "fetched_at",
-        "lineup_fingerprint",
+        "lineup_fingerprint", "ack_key",
     }
     for key, row in value["events"].items():
         if not isinstance(key, str) or ":" not in key or not isinstance(row, Mapping) or set(row) != expected:
@@ -300,11 +310,17 @@ def _validate_pending(value: Any) -> dict[str, Any]:
             raise ValueError("lineup_refresh_pending_invalid")
         source_match_id = _scalar_id(row.get("source_match_id"))
         fingerprint = row.get("lineup_fingerprint")
+        ack_key = row.get("ack_key")
         if (
             source_match_id is None
             or not isinstance(fingerprint, str)
             or len(fingerprint) != 64
             or any(char not in "0123456789abcdef" for char in fingerprint)
+            or not isinstance(ack_key, Mapping)
+            or set(ack_key) != set(LINEUP_PENDING_ACK_KEY_FIELDS)
+            or ack_key.get("competition_id") != competition_id
+            or _scalar_id(ack_key.get("event_id")) != event_id
+            or ack_key.get("lineup_fingerprint") != fingerprint
         ):
             raise ValueError("lineup_refresh_pending_invalid")
         checked[key] = {
@@ -314,6 +330,11 @@ def _validate_pending(value: Any) -> dict[str, Any]:
             "kickoff_at_utc": _utc(row.get("kickoff_at_utc")).isoformat(),
             "fetched_at": _utc(row.get("fetched_at")).isoformat(),
             "lineup_fingerprint": fingerprint,
+            "ack_key": {
+                "competition_id": competition_id,
+                "event_id": event_id,
+                "lineup_fingerprint": fingerprint,
+            },
         }
     return {"schema_version": 1, "events": {key: checked[key] for key in sorted(checked)}}
 
@@ -352,7 +373,6 @@ def _update_pending(
     root: str | Path,
     *,
     add: Mapping[str, list[Mapping[str, Any]]] | None = None,
-    remove: set[str] | None = None,
 ) -> dict[str, Any]:
     path = _pending_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -365,7 +385,7 @@ def _update_pending(
             if competition_id not in FORMAL_SINGLE_MATCH_IDS or not isinstance(rows, list):
                 raise ValueError("lineup_refresh_pending_invalid")
             for row in rows:
-                summary = {"competition_id": competition_id, **_summary(row)}
+                summary = {"competition_id": competition_id, **_summary(competition_id, row)}
                 checked = _validate_pending({
                     "schema_version": 1,
                     "events": {f"{competition_id}:{summary['event_id']}": summary},
@@ -375,8 +395,6 @@ def _update_pending(
                 if previous is not None and previous["lineup_fingerprint"] != receipt["lineup_fingerprint"]:
                     raise ValueError("lineup_refresh_pending_conflict")
                 events[key] = receipt
-        for key in remove or set():
-            events.pop(key, None)
         updated = _validate_pending({"schema_version": 1, "events": events})
         _atomic_write_pending(path, updated)
         return updated
@@ -633,6 +651,10 @@ def run_league_lineups_refresh(
     if pending["events"]:
         pending_groups = _pending_groups(pending)
         pending_count = sum(len(rows) for rows in pending_groups.values())
+        needs_state_recovery = any(
+            poll_state["events"].get(key, {}).get("confirmed") is not True
+            for key in pending["events"]
+        )
         recovery_store = store_factory(root)
         recovered_state = _state_from_pending(poll_state, pending, now_dt)
         try:
@@ -645,15 +667,6 @@ def run_league_lineups_refresh(
                 "reason": "state_commit_failed",
                 "counts": counts,
             }
-        try:
-            _update_pending(root, remove=set(pending["events"]))
-        except Exception:
-            return {
-                **base_result,
-                "status": "error",
-                "reason": "pending_clear_failed",
-                "counts": counts,
-            }
         counts["accepted_count"] = pending_count
         counts["newly_confirmed_count"] = pending_count
         recovered_plan = plan_league_lineup_poll(
@@ -663,7 +676,7 @@ def run_league_lineups_refresh(
             state=recovered_state,
         )
         return {
-            "status": "recovered",
+            "status": "recovered" if needs_state_recovery else "pending_delivery",
             "skipped": plan["skipped"],
             "rejection_reasons": {},
             "newly_confirmed": {
@@ -747,6 +760,7 @@ def run_league_lineups_refresh(
                 _increment(rejection_reasons, competition_id, "parser_failed", len(date_requests))
                 counts["source_failure_count"] += 1
                 had_source_failure = True
+                state_requests.extend(date_requests)
                 continue
             due_source_ids = sorted({
                 row["source_match_id"]
@@ -777,6 +791,7 @@ def run_league_lineups_refresh(
                 _increment(rejection_reasons, competition_id, "parser_failed", len(date_requests))
                 counts["source_failure_count"] += 1
                 had_source_failure = True
+                state_requests.extend(date_requests)
                 continue
             state_requests.extend(date_requests)
             accepted_by_competition[competition_id].extend(report.get("accepted", []))
@@ -852,23 +867,6 @@ def run_league_lineups_refresh(
         }
         return result
 
-    pending_keys = {
-        f"{competition_id}:{row['event_id']}"
-        for competition_id, rows in new_candidates.items()
-        for row in rows
-    }
-    if pending_keys:
-        try:
-            _update_pending(root, remove=pending_keys)
-        except Exception:
-            return {
-                **base_result,
-                "status": "error",
-                "reason": "pending_clear_failed",
-                "rejection_reasons": rejection_reasons,
-                "counts": counts,
-            }
-
     next_plan = plan_league_lineup_poll(
         now=now_dt,
         fixtures_by_competition=fixtures,
@@ -876,7 +874,7 @@ def run_league_lineups_refresh(
         state=next_state,
     )
     newly_confirmed = {
-        competition_id: [_summary(row) for row in rows]
+        competition_id: [_summary(competition_id, row) for row in rows]
         for competition_id, rows in sorted(new_candidates.items())
     }
     counts["newly_confirmed_count"] = sum(len(rows) for rows in newly_confirmed.values())
