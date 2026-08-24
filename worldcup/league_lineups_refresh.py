@@ -410,6 +410,16 @@ def _pending_groups(pending: Mapping[str, Any]) -> dict[str, list[dict[str, Any]
     }
 
 
+def _pending_deliveries(pending: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    return {
+        competition_id: [
+            {name: value for name, value in row.items() if name != "competition_id"}
+            for row in rows
+        ]
+        for competition_id, rows in _pending_groups(pending).items()
+    }
+
+
 def _recoverable_cache_receipts(
     root: str | Path,
     acceptance: Mapping[str, Any],
@@ -649,8 +659,6 @@ def run_league_lineups_refresh(
             "reason": "lineup_recovery_failed",
         }
     if pending["events"]:
-        pending_groups = _pending_groups(pending)
-        pending_count = sum(len(rows) for rows in pending_groups.values())
         needs_state_recovery = any(
             poll_state["events"].get(key, {}).get("confirmed") is not True
             for key in pending["events"]
@@ -659,7 +667,7 @@ def run_league_lineups_refresh(
         recovered_state = _state_from_pending(poll_state, pending, now_dt)
         try:
             recovery_store.commit_state(recovered_state)
-            counts["state_commit_count"] = 1
+            counts["state_commit_count"] += 1
         except Exception:
             return {
                 **base_result,
@@ -667,28 +675,30 @@ def run_league_lineups_refresh(
                 "reason": "state_commit_failed",
                 "counts": counts,
             }
-        counts["accepted_count"] = pending_count
-        counts["newly_confirmed_count"] = pending_count
-        recovered_plan = plan_league_lineup_poll(
+        poll_state = recovered_state
+        plan = plan_league_lineup_poll(
             now=now_dt,
             fixtures_by_competition=fixtures,
             acceptance_report=acceptance,
             state=recovered_state,
         )
-        return {
-            "status": "recovered" if needs_state_recovery else "pending_delivery",
-            "skipped": plan["skipped"],
-            "rejection_reasons": {},
-            "newly_confirmed": {
-                competition_id: [
-                    {name: value for name, value in row.items() if name != "competition_id"}
-                    for row in rows
-                ]
-                for competition_id, rows in pending_groups.items()
-            },
-            "next_due_at": recovered_plan["next_due_at"],
-            "counts": counts,
-        }
+        counts["fixture_count"] = plan["counts"]["fixture_count"]
+        counts["request_count"] = plan["counts"]["request_count"]
+        base_result["skipped"] = plan["skipped"]
+        base_result["next_due_at"] = plan["next_due_at"]
+        if not plan["requests"]:
+            deliveries = _pending_deliveries(pending)
+            delivery_count = sum(len(rows) for rows in deliveries.values())
+            counts["accepted_count"] = delivery_count
+            counts["newly_confirmed_count"] = delivery_count
+            return {
+                "status": "recovered" if needs_state_recovery else "pending_delivery",
+                "skipped": plan["skipped"],
+                "rejection_reasons": {},
+                "newly_confirmed": deliveries,
+                "next_due_at": plan["next_due_at"],
+                "counts": counts,
+            }
     requests = plan["requests"]
     if not requests:
         return base_result
@@ -824,7 +834,6 @@ def run_league_lineups_refresh(
         }
 
     store = store_factory(root)
-    new_candidates: dict[str, list[dict[str, Any]]] = {}
     try:
         for competition_id in sorted(accepted_by_competition):
             accepted_rows = accepted_by_competition[competition_id]
@@ -841,8 +850,7 @@ def run_league_lineups_refresh(
             counts["cache_commit_count"] += 1
             new_rows = [row for row in accepted_rows if row["lineup_fingerprint"] not in existing_fingerprints]
             if new_rows:
-                new_candidates[competition_id] = new_rows
-                _update_pending(root, add={competition_id: new_rows})
+                pending = _update_pending(root, add={competition_id: new_rows})
     except Exception:
         result = {
             **base_result,
@@ -856,7 +864,7 @@ def run_league_lineups_refresh(
     next_state = _merge_state_for_poll(poll_state, state_requests, accepted_by_competition, now_dt)
     try:
         store.commit_state(next_state)
-        counts["state_commit_count"] = 1
+        counts["state_commit_count"] += 1
     except Exception:
         result = {
             **base_result,
@@ -873,10 +881,7 @@ def run_league_lineups_refresh(
         acceptance_report=acceptance,
         state=next_state,
     )
-    newly_confirmed = {
-        competition_id: [_summary(competition_id, row) for row in rows]
-        for competition_id, rows in sorted(new_candidates.items())
-    }
+    newly_confirmed = _pending_deliveries(pending)
     counts["newly_confirmed_count"] = sum(len(rows) for rows in newly_confirmed.values())
     if had_source_failure:
         status = "partial" if counts["accepted_count"] else "error"

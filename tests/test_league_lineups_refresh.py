@@ -377,6 +377,100 @@ def test_unacknowledged_cached_fingerprint_is_redelivered_without_network():
         assert pending["events"][f"{COMPETITION}:epl-1"]["ack_key"] == first_row["ack_key"]
 
 
+def test_unacknowledged_pending_does_not_starve_a_new_due_fixture():
+    """Treating pending delivery as an early return would skip another match's lineup window."""
+    first_fixture = _fixture("epl-1", "2026-08-24T13:00:00+00:00")
+    second_fixture = _fixture(
+        "epl-2",
+        "2026-08-24T13:15:00+00:00",
+        "Liverpool",
+        "Everton",
+    )
+    first_calendar = _calendar(
+        _calendar_match("1001", first_fixture["kickoff_at_utc"], "Arsenal", "Chelsea")
+    )
+    second_calendar = _calendar(
+        _calendar_match("1001", first_fixture["kickoff_at_utc"], "Arsenal", "Chelsea"),
+        _calendar_match("1002", second_fixture["kickoff_at_utc"], "Liverpool", "Everton"),
+    )
+    calendar_dates = []
+    detail_ids = []
+
+    def fetch_calendar(*, date, transport=None):
+        del transport
+        calendar_dates.append(date)
+        return second_calendar
+
+    def fetch_details(*, match_id, transport=None):
+        del transport
+        detail_ids.append(match_id)
+        if match_id != "1002":
+            raise AssertionError("only the newly due fixture may fetch details")
+        return _details(
+            "1002",
+            second_fixture["kickoff_at_utc"],
+            "Liverpool",
+            "Everton",
+            100,
+        )
+
+    with TemporaryDirectory() as tmp:
+        first = run_league_lineups_refresh(
+            root=tmp,
+            now=NOW,
+            live=True,
+            write=True,
+            acceptance_report=_active_report(),
+            fixtures_by_competition={COMPETITION: [first_fixture]},
+            state=_empty_state(),
+            provider_competition_ids={COMPETITION: PROVIDER_COMPETITION},
+            identity_registry=accepted_league_team_identity_registry(),
+            calendar_fetcher=lambda **_kwargs: first_calendar,
+            details_fetcher=lambda **_kwargs: _details(
+                "1001", first_fixture["kickoff_at_utc"], "Arsenal", "Chelsea"
+            ),
+        )
+        first_ack_key = first["newly_confirmed"][COMPETITION][0]["ack_key"]
+
+        second = run_league_lineups_refresh(
+            root=tmp,
+            now=NOW,
+            live=True,
+            write=True,
+            acceptance_report=_active_report(),
+            fixtures_by_competition={COMPETITION: [first_fixture, second_fixture]},
+            provider_competition_ids={COMPETITION: PROVIDER_COMPETITION},
+            identity_registry=accepted_league_team_identity_registry(),
+            calendar_fetcher=fetch_calendar,
+            details_fetcher=fetch_details,
+        )
+
+        delivered = second["newly_confirmed"][COMPETITION]
+        assert second["status"] == "refreshed", second
+        assert second["counts"]["request_count"] == 1
+        assert second["counts"]["calendar_fetch_count"] == 1
+        assert second["counts"]["details_fetch_count"] == 1
+        assert second["counts"]["newly_confirmed_count"] == 2
+        assert calendar_dates == ["20260824"]
+        assert detail_ids == ["1002"]
+        assert [row["event_id"] for row in delivered] == ["epl-1", "epl-2"]
+        assert delivered[0]["ack_key"] == first_ack_key
+        assert delivered[1]["ack_key"] == {
+            "competition_id": COMPETITION,
+            "event_id": "epl-2",
+            "lineup_fingerprint": delivered[1]["lineup_fingerprint"],
+        }
+        pending = json.loads(
+            (Path(tmp) / "data/local/leagues/lineup_refresh_pending.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert list(pending["events"]) == [
+            f"{COMPETITION}:epl-1",
+            f"{COMPETITION}:epl-2",
+        ]
+
+
 def test_cache_receipt_survives_state_failure_and_is_redelivered_until_ack():
     """Losing the cache-to-state transaction receipt would permanently skip the Task 5 trigger."""
     fixture = _fixture("epl-1", "2026-08-24T13:00:00+00:00")
