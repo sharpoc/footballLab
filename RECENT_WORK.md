@@ -4,7 +4,13 @@
 
 历史归档：[docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md](docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md)（164 条）
 
-较早记录压缩摘要（2026-07-10 至 2026-07-19）：完成 MatchPick v3、首选鲜度、中超俱乐部评级门槛、已开赛待赛果展示、延期状态、三槽 quota 切换和世界杯赛后同步等阶段；保留的关键约束已同步到 README、AGENTS/CLAUDE 与 Git 历史。2026-07-19 首次赛后 live 因当时外部配置受阻，未产生业务写入。
+较早记录压缩摘要（2026-07-10 至 2026-07-19）：完成 MatchPick v3、首选鲜度、中超俱乐部评级门槛、已开赛待赛果展示、延期状态、quota 槽位切换和世界杯赛后同步等阶段；当前槽位数以最新记录和 README 为准。保留的关键约束已同步到 README、AGENTS/CLAUDE 与 Git 历史。2026-07-19 首次赛后 live 因当时外部配置受阻，未产生业务写入。
+
+## 2026-08-24 The Odds API 五 Key 轮换
+
+- 显式 Key 槽位从 primary / secondary / tertiary 扩展为 primary / secondary / tertiary / quaternary / quinary，保持现有顺序轮换和低额度策略：当前槽位剩余额度 <=30 时优先选下一个未探测或 >30 的槽位，全部无新鲜额度时才选仍有余额的最早槽位，全耗尽则暂停。
+- 同步 `worldcup.theoddsapi_keys`、readiness 必需变量名、scheduler/publish 安全提示、`.env.example`、README 和 AGENTS/CLAUDE；真实 Key 未写入文件，聊天中暴露的 Key 仍应撤销后重生。
+- TDD 分别验证第四、第五槽 RED→GREEN，readiness 缺槽变量名 RED→GREEN；聚焦 Key 测试 `13/13`，完整回归 `1129/1129 tests passed, 1 optional fastapi module skipped`，`py_compile` 与 `git diff --check` 通过。未读取/修改 `.env`、未联网、未消耗 quota、未 commit/push/deploy。
 
 ## 2026-08-20 中超赛后样本 Sentinel
 

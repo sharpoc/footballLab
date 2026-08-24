@@ -7,6 +7,8 @@ LEGACY_PROVIDER = "theoddsapi"
 PRIMARY_PROVIDER = "theoddsapi_primary"
 SECONDARY_PROVIDER = "theoddsapi_secondary"
 TERTIARY_PROVIDER = "theoddsapi_tertiary"
+QUATERNARY_PROVIDER = "theoddsapi_quaternary"
+QUINARY_PROVIDER = "theoddsapi_quinary"
 LOW_QUOTA_SWITCH_THRESHOLD = 30
 
 
@@ -28,6 +30,8 @@ def configured_key_slots(env: Mapping[str, str]) -> tuple[KeySlotSelection, ...]
     primary = _clean(env.get("THE_ODDS_API_KEY_PRIMARY")) or _clean(env.get("THE_ODDS_API_KEY"))
     secondary = _clean(env.get("THE_ODDS_API_KEY_SECONDARY"))
     tertiary = _clean(env.get("THE_ODDS_API_KEY_TERTIARY"))
+    quaternary = _clean(env.get("THE_ODDS_API_KEY_QUATERNARY"))
+    quinary = _clean(env.get("THE_ODDS_API_KEY_QUINARY"))
     slots: list[KeySlotSelection] = []
     if primary:
         slots.append(KeySlotSelection(primary, PRIMARY_PROVIDER, "primary"))
@@ -35,6 +39,10 @@ def configured_key_slots(env: Mapping[str, str]) -> tuple[KeySlotSelection, ...]
         slots.append(KeySlotSelection(secondary, SECONDARY_PROVIDER, "secondary"))
     if tertiary:
         slots.append(KeySlotSelection(tertiary, TERTIARY_PROVIDER, "tertiary"))
+    if quaternary:
+        slots.append(KeySlotSelection(quaternary, QUATERNARY_PROVIDER, "quaternary"))
+    if quinary:
+        slots.append(KeySlotSelection(quinary, QUINARY_PROVIDER, "quinary"))
     return tuple(slots)
 
 

@@ -340,6 +340,7 @@ def test_readiness_weak_secret_is_error():
     Path(td, ".env.example").write_text(
         "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nTHE_ODDS_API_KEY_PRIMARY=\n"
         "THE_ODDS_API_KEY_SECONDARY=\nTHE_ODDS_API_KEY_TERTIARY=\n"
+        "THE_ODDS_API_KEY_QUATERNARY=\nTHE_ODDS_API_KEY_QUINARY=\n"
         "ODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\n"
         "WORLDCUP_STORE=\nDATABASE_URL=\n"
     )
@@ -358,6 +359,7 @@ def test_readiness_valid_secret_is_ok():
     Path(td, ".env.example").write_text(
         "API_FOOTBALL_KEY=\nTHE_ODDS_API_KEY=\nTHE_ODDS_API_KEY_PRIMARY=\n"
         "THE_ODDS_API_KEY_SECONDARY=\nTHE_ODDS_API_KEY_TERTIARY=\n"
+        "THE_ODDS_API_KEY_QUATERNARY=\nTHE_ODDS_API_KEY_QUINARY=\n"
         "ODDS_API_IO_KEY=\nODDSPAPI_KEY=\nINGEST_HMAC_SECRET=\n"
         "WORLDCUP_STORE=\nDATABASE_URL=\n"
     )

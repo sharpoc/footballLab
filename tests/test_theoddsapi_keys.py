@@ -79,6 +79,50 @@ def test_choose_key_slot_rotates_to_unknown_tertiary_after_secondary_is_low():
     assert selected.slot == "tertiary"
 
 
+def test_choose_key_slot_rotates_to_unknown_quaternary_after_tertiary_is_low():
+    env = {
+        "THE_ODDS_API_KEY_PRIMARY": "primary",
+        "THE_ODDS_API_KEY_SECONDARY": "secondary",
+        "THE_ODDS_API_KEY_TERTIARY": "tertiary",
+        "THE_ODDS_API_KEY_QUATERNARY": "quaternary",
+    }
+    providers = {
+        PRIMARY_PROVIDER: {"remaining": 0},
+        SECONDARY_PROVIDER: {"remaining": 26},
+        TERTIARY_PROVIDER: {"remaining": 10},
+    }
+
+    selected = choose_key_slot(env, providers)
+
+    assert selected is not None
+    assert selected.api_key == "quaternary"
+    assert selected.provider == "theoddsapi_quaternary"
+    assert selected.slot == "quaternary"
+
+
+def test_choose_key_slot_rotates_to_unknown_quinary_after_quaternary_is_low():
+    env = {
+        "THE_ODDS_API_KEY_PRIMARY": "primary",
+        "THE_ODDS_API_KEY_SECONDARY": "secondary",
+        "THE_ODDS_API_KEY_TERTIARY": "tertiary",
+        "THE_ODDS_API_KEY_QUATERNARY": "quaternary",
+        "THE_ODDS_API_KEY_QUINARY": "quinary",
+    }
+    providers = {
+        PRIMARY_PROVIDER: {"remaining": 0},
+        SECONDARY_PROVIDER: {"remaining": 26},
+        TERTIARY_PROVIDER: {"remaining": 10},
+        "theoddsapi_quaternary": {"remaining": 30},
+    }
+
+    selected = choose_key_slot(env, providers)
+
+    assert selected is not None
+    assert selected.api_key == "quinary"
+    assert selected.provider == "theoddsapi_quinary"
+    assert selected.slot == "quinary"
+
+
 def test_choose_key_slot_uses_low_quota_reserve_when_no_fresh_slot_remains():
     env = {
         "THE_ODDS_API_KEY_PRIMARY": "primary",

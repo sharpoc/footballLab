@@ -11,6 +11,8 @@ ENV_EXAMPLE_TEMPLATE = (
     "THE_ODDS_API_KEY_PRIMARY=\n"
     "THE_ODDS_API_KEY_SECONDARY=\n"
     "THE_ODDS_API_KEY_TERTIARY=\n"
+    "THE_ODDS_API_KEY_QUATERNARY=\n"
+    "THE_ODDS_API_KEY_QUINARY=\n"
     "ODDS_API_IO_KEY=\n"
     "ODDSPAPI_KEY=\n"
     "INGEST_HMAC_SECRET=\n"
@@ -82,6 +84,32 @@ def test_readiness_rejects_env_example_with_values_or_missing_names():
         assert result["checks"]["env_example"]["status"] == "error"
         assert result["checks"]["env_example"]["message"] == "contains_values"
         assert "real-ish-value" not in str(result)
+
+
+def test_readiness_requires_fourth_and_fifth_odds_key_names_in_env_example():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        incomplete_template = ENV_EXAMPLE_TEMPLATE.replace(
+            "THE_ODDS_API_KEY_QUATERNARY=\n", ""
+        ).replace("THE_ODDS_API_KEY_QUINARY=\n", "")
+        _write(
+            root / ".env",
+            "THE_ODDS_API_KEY=x\nINGEST_HMAC_SECRET=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        )
+        _write(root / ".env.example", incomplete_template)
+        _write(
+            root / ".gitignore",
+            ".env\n.env.*\n!.env.example\ndata/cache/\ndata/local/\ndata/probe/\n",
+        )
+
+        result = run_readiness_checks(root)
+
+        assert result["checks"]["env_example"]["status"] == "error"
+        assert result["checks"]["env_example"]["message"] == "missing_names"
+        assert result["checks"]["env_example"]["names"] == [
+            "THE_ODDS_API_KEY_QUATERNARY",
+            "THE_ODDS_API_KEY_QUINARY",
+        ]
 
 
 def test_readiness_accepts_sqlite_store_without_database_url():

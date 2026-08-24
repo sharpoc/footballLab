@@ -44,7 +44,7 @@
 - 明确 `fixture_status=POSTPONED` 的场次只从公开 `project_match_rows` / API / preview / static export 隐藏，内部 snapshot/cache/history 必须保留；已进入 `finished.matches` 的比赛同样从公开实时列表移除。不得仅按开球时间推断完赛，已开赛但未确认赛果的场次仍展示“赛果待确认”。
 - 世界杯赛后公开同步必须使用独立 `postmatch_publish` 产物和 state/outbox，不得覆盖 `analysis_snapshot.json` 或影响 odds scheduler/quota；live 必须显式传入非占位 endpoint 并持有单实例文件锁，公开结算严格只接受 openfootball `score.ft` 的 90 分钟非负整数比分，忽略 `score.et`、`score.p` 和 legacy `score1/score2`。源回退/重复、比分修订、finished 回退/冲突或比分不一致必须阻断发布；单场 closing 缺失不得补造首选，也不得拖住其他已有 closing 的完赛场，必须在 `decision_coverage.missing_closing_count`、`skipped_no_closing` 和 `run.postmatch.partial_publish` 中透明记录。pending 必须绑定 endpoint，只有 ingest 返回 `stored` / `duplicate` 才算成功，之后先落 state、再清 pending。
 - scheduler 默认 dry-run，只读取本地 snapshot / quota 并输出 JSON 决策；The Odds API 按免费额度使用，低额度时必须降频。
-- The Odds API 使用 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY` / `THE_ODDS_API_KEY_TERTIARY` 三个显式槽位依次轮换；当前槽位剩余额度降到 30 或以下时，优先切换到仍未探测或剩余大于 30 的下一槽位并保留低额度应急余额。只有三个槽位都没有新鲜额度时才按低额度锚点降频，全部耗尽时暂停刷新。真实 token 只允许写入 ignored `.env`，不得进入代码、文档、日志或回复。
+- The Odds API 使用 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY` / `THE_ODDS_API_KEY_TERTIARY` / `THE_ODDS_API_KEY_QUATERNARY` / `THE_ODDS_API_KEY_QUINARY` 五个显式槽位依次轮换；当前槽位剩余额度降到 30 或以下时，优先切换到仍未探测或剩余大于 30 的下一槽位并保留低额度应急余额。只有五个槽位都没有新鲜额度时才按低额度锚点降频，全部耗尽时暂停刷新。真实 token 只允许写入 ignored `.env`，不得进入代码、文档、日志或回复。
 - scheduled refresh 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会调用 refresh runner。
 - 正常额度时，世界杯与中超调度都必须把 `match_decision.valid_until - 20 分钟` 作为刷新候选，避免有效首选先过期再等下一个赛前锚点；quota 低于等于 30 时允许按既有低额度锚点降级。
 - scheduled publish 对瞬时 TLS/网络/5xx 做有限重试；仍失败时必须保留不含 secret 的 `*.publish_pending.json` 状态，下次唤醒只重试发布现有 snapshot，不重复刷新或消耗 quota。
