@@ -6,7 +6,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from worldcup.league_lineup_notifications import LeagueLineupNotificationOutbox
-from worldcup.league_post_lineup_refresh import PostLineupRefreshStateStore, _ack_token
+from worldcup.league_post_lineup_refresh import (
+    PostLineupRefreshStateStore,
+    _ack_token,
+    run_post_lineup_refresh,
+)
+from worldcup.league_team_identity import LeagueTeamIdentityRegistry
 from worldcup.league_pre_match_runner import (
     DEFAULT_LOCK_RELATIVE_PATH,
     LeaguePreMatchStateStore,
@@ -1488,6 +1493,245 @@ def test_task5_success_status_matrix_allows_already_acked_and_mixed_partial():
             "published_refresh_unchanged",
             "quota_blocked",
         }
+
+
+def test_real_task5_ack_state_commit_failure_remains_retryable_and_does_not_block_new_due():
+    old = _receipt("ack-state-old", "1")
+    new = _receipt("ack-state-new", "2")
+    acceptance = {
+        "schema_version": 1,
+        "competitions": {
+            EPL: {
+                "competition_id": EPL,
+                "state": "active",
+                "reason": None,
+                "fingerprints": {
+                    name: f"{EPL}-{name}"
+                    for name in (
+                        "sport_catalog",
+                        "odds_sample",
+                        "team_identity",
+                        "result_contract",
+                    )
+                },
+            }
+        },
+    }
+    registry = LeagueTeamIdentityRegistry({
+        EPL: {
+            "home": ("Home FC",),
+            "away": ("Away FC",),
+        }
+    })
+    calls = {"lineups": 0, "provider": 0, "publish": 0, "post": []}
+    delivered = []
+
+    class AckFailingStateStore:
+        def __init__(self, root):
+            self.delegate = PostLineupRefreshStateStore(root)
+            self.commits = 0
+
+        def read(self):
+            return self.delegate.read()
+
+        def claim_refresh(self, state):
+            return self.delegate.claim_refresh(state)
+
+        def commit(self, state):
+            self.commits += 1
+            if self.commits == 2:
+                raise OSError("injected ack state commit failure")
+            return self.delegate.commit(state)
+
+    def snapshot_builder(payload, competition_id, observed_at, **_kwargs):
+        return {
+            "snapshot_at": observed_at,
+            "competition": {"id": competition_id},
+            "matches": [
+                {
+                    "source_event_id": str(row["id"]),
+                    "competition": {"id": competition_id},
+                    "match_decision": {"label": "MATCH_PICK"},
+                }
+                for row in payload
+            ],
+        }
+
+    def provider(_sport_key, _selected_env):
+        calls["provider"] += 1
+        return [{"id": old["event_id"]}]
+
+    def publisher(_snapshot):
+        calls["publish"] += 1
+        return {"status": "stored"}
+
+    def post(**kwargs):
+        rows = [
+            row
+            for competition_rows in kwargs["newly_confirmed"].values()
+            for row in competition_rows
+        ]
+        calls["post"].append([row["event_id"] for row in rows])
+        if rows[0]["event_id"] == new["event_id"]:
+            return _post_result(
+                blocked=((new, "acceptance_not_active"),),
+                status="blocked",
+                publish_status=None,
+            )
+        return run_post_lineup_refresh(
+            **kwargs,
+            env={"THE_ODDS_API_KEY_PRIMARY": "p" * 40},
+            quota_ledger={
+                "providers": {
+                    "theoddsapi_primary": {
+                        "remaining": 100,
+                        "observed_at": NOW,
+                    }
+                }
+            },
+            acceptance_report=acceptance,
+            identity_registry=registry,
+            snapshot_builder=snapshot_builder,
+            state_store_factory=AckFailingStateStore,
+        )
+
+    def lineups(**_kwargs):
+        calls["lineups"] += 1
+        return _lineup_result(new)
+
+    class Outbox:
+        def retry_pending(self, **_kwargs):
+            return {"status": "complete", "sent": 0, "failed": 0}
+
+        def deliver(self, event, **_kwargs):
+            delivered.append(event)
+            return {
+                "status": "sent",
+                "event_fingerprint": event["event_fingerprint"],
+            }
+
+    with TemporaryDirectory() as tmp:
+        acceptance_path = Path(tmp) / "data/local/leagues/acceptance.json"
+        acceptance_path.parent.mkdir(parents=True, exist_ok=True)
+        acceptance_path.write_text(json.dumps(acceptance), encoding="utf-8")
+        _write_pending(tmp, old)
+        result = run_league_pre_match(
+            root=tmp,
+            now=NOW,
+            lineup_refresh_fn=lineups,
+            post_lineup_refresh_fn=post,
+            match_context_loader=lambda _root: {
+                f"{EPL}:{old['event_id']}": _context(old["event_id"]),
+                f"{EPL}:{new['event_id']}": _context(new["event_id"]),
+            },
+            odds_fetcher=provider,
+            publish_fn=publisher,
+            outbox_factory=lambda _root: Outbox(),
+            notifier=_fail,
+            **_full_flags(notify=True),
+        )
+        pending = json.loads(
+            (Path(tmp) / "data/local/leagues/lineup_refresh_pending.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        task7_state = json.loads(
+            (Path(tmp) / STATE_RELATIVE_PATH).read_text(encoding="utf-8")
+        )
+
+        assert result["pending_retry"]["status"] == "publish_failed"
+        assert result["pending_retry"]["acks"]["retryable"] == [{
+            "ack_key": old["ack_key"],
+            "reason": "ack_state_commit_failed",
+        }]
+        assert calls == {
+            "lineups": 1,
+            "provider": 1,
+            "publish": 1,
+            "post": [[old["event_id"]], [new["event_id"]]],
+        }
+        assert list(pending["events"]) == [f"{EPL}:{old['event_id']}"]
+        old_job = task7_state["receipts"][_ack_token(old["ack_key"])]
+        assert old_job["current_decision"] is None
+        assert delivered == []
+
+
+def test_real_task6_pending_recovery_is_superseded_before_relapse_delivery():
+    sent = []
+    recovery_available = False
+
+    def notifier(content, **_kwargs):
+        if "数据源已恢复" in content:
+            if not recovery_available:
+                return {"status": "failed", "exit_code": 1}
+            sent.append("recovery")
+            return {"status": "sent", "exit_code": 0}
+        if "数据源连续失败" in content:
+            sent.append("failure")
+            return {"status": "sent", "exit_code": 0}
+        raise AssertionError("unexpected notification type")
+
+    with TemporaryDirectory() as tmp:
+        common = {
+            "root": tmp,
+            "now": NOW,
+            "post_lineup_refresh_fn": _fail,
+            "match_context_loader": lambda _root: {
+                f"{EPL}:causal": _context("causal")
+            },
+            "notifier": notifier,
+            "source_failure_threshold": 1,
+            **_full_flags(notify=True),
+        }
+        run_league_pre_match(
+            lineup_refresh_fn=lambda **_kwargs: _source_result("causal", "failed"),
+            **common,
+        )
+        recovery = run_league_pre_match(
+            lineup_refresh_fn=lambda **_kwargs: _source_result("causal", "succeeded"),
+            **common,
+        )
+        pending_after_recovery = json.loads(
+            (
+                Path(tmp)
+                / "data/local/leagues/lineup_notification_state.json"
+            ).read_text(encoding="utf-8")
+        )
+        recovery_available = True
+        relapsed = run_league_pre_match(
+            lineup_refresh_fn=lambda **_kwargs: _source_result("causal", "failed"),
+            **common,
+        )
+        run_league_pre_match(
+            lineup_refresh_fn=lambda **_kwargs: _lineup_result(status="no_due"),
+            **common,
+        )
+        notification_state = json.loads(
+            (
+                Path(tmp)
+                / "data/local/leagues/lineup_notification_state.json"
+            ).read_text(encoding="utf-8")
+        )
+        task7_state = json.loads(
+            (Path(tmp) / STATE_RELATIVE_PATH).read_text(encoding="utf-8")
+        )
+        episode = task7_state["source_episodes"][f"{EPL}:causal"]
+
+        assert recovery["notifications"][-1]["status"] == "failed"
+        assert len(pending_after_recovery["pending"]) == 1
+        assert relapsed["notifications"] == []
+        assert sent == ["failure"]
+        assert notification_state["pending"] == {}
+        assert {
+            receipt["event_type"]
+            for receipt in notification_state["sent"].values()
+        } == {"sustained_source_failure"}
+        assert episode["generation"] == 1
+        assert episode["active"] is True
+        assert episode["failure_notified"] is True
+        assert episode["recovery_pending"] is False
+        assert len(episode["failure_notification_fingerprint"]) == 64
+        assert len(episode["recovery_notification_fingerprint"]) == 64
 
 
 def test_malformed_task6_delivery_never_clears_the_receipt_context():
