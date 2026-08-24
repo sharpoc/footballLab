@@ -120,11 +120,11 @@
   --refresh-after-lineups --live-refresh --refresh-guard --publish --notify
 ```
 
-runner 对 live 路径使用 `data/local/leagues/league_pre_match.lock` 的非阻塞真实文件锁，锁竞争时不调用 Task 4 / Task 5 或任何外部 live 依赖。锁内业务顺序是：优先收敛已持久的 Task 5 committed/publish pending，并把每个 durable ACK 立即绑定到它对应的 component/aggregate snapshot 和发布后首选；再运行 Task 4 赛程门禁与首发轮询；有新 receipt 时再经 quota guard 刷新和发布；所有 Task 5 / Task 4 业务已推进后，才独立重试 Task 6 pending 并投递新通知。Task 6 outbox 损坏或通知失败不会阻断 Task 5 publish pending 或 Task 4 polling；两个队列不互相充当持久证据。
+runner 对 live 路径使用 `data/local/leagues/league_pre_match.lock` 的非阻塞真实文件锁，锁竞争时不调用 Task 4 / Task 5 或任何外部 live 依赖。锁内业务顺序是：优先收敛已持久的 Task 5 committed/publish pending，并把每个 durable ACK 立即绑定到它对应的 component/aggregate snapshot 和发布后首选；再运行 Task 4 赛程门禁与首发轮询；有新 receipt 时再经 quota guard 刷新和发布；所有 Task 5 / Task 4 业务已推进后，才独立重试 Task 6 pending 并投递新通知。Task 6 outbox 损坏或通知失败不会阻断 Task 5 publish pending 或 Task 4 polling；两个队列不互相充当持久证据。已绑定 receipt 本身就是待通知的 durable intent：即使进程在 Task 6 pending 写入前中断，下轮也会直接从其持久的 exact pre/post decision 重建通知，不依赖新的 Task 5 返回或当前 snapshot。
 
-Task 4 receipt 只会在 Task 5 持久 `published` 成功后 ACK。Task 7 为每个 receipt 保存发布前/后 decision、component snapshot ID 和 aggregate snapshot ID；同轮多次发布不再统一重读最后一份 current，重启恢复时可按 Task 5 receipt 重读精确 history snapshot。Publish 失败不会生成“推荐已更新”事件；通知失败不回滚 snapshot，只有 Task 6 返回与事件指纹一致的 `sent` / `already_sent`，或能从真实 outbox 证明 canonical pending 已持久，才能清理 Task 7 receipt context。
+Task 4 receipt 只会在 Task 5 持久 `published` 成功后 ACK。Task 7 为每个 receipt 保存发布前/后 decision、component snapshot ID 和 aggregate snapshot ID；同轮多次发布不再统一重读最后一份 current，重启恢复时可按 Task 5 receipt 重读精确 history snapshot。Task 5 顶层 status 是权威结果：`publish_failed` / `blocked` / 非法 error 即使夹带嵌套 `published/stored` 也不得产生成功通知或清理 receipt；矛盾返回整体 fail closed。通知失败不回滚 snapshot，只有 Task 6 返回与事件指纹一致的 `sent` / `already_sent`，或能从真实 outbox 证明 canonical pending 已持久，才能清理 Task 7 receipt context。
 
-T-20 缺首发通知只遍历当前严格 `active` acceptance 的未开赛赛事，`POSTPONED` / `CANCELLED` / `FINISHED` 等 terminal fixture 不发通知。Task 4 当前的 competition/global 源错误计数无法证明具体比赛归因，Task 7 对此 fail closed：只在收到严格 event-scoped `failed` / `succeeded` 证据时才更新该 competition+event episode，不从聚合计数猜测单场失败或恢复。Recovery 先进 Task 6 durable outbox，之后才单调把 episode 置为 inactive；中途失败或重启不会丢 recovery 事件。
+T-20 缺首发通知只遍历当前严格 `active` acceptance、Task 4 lineup state 形状完整且 fixture status 明确为 `SCHEDULED` 的未开赛赛事；空/未知 status、损坏 JSON、非 mapping events 及 `POSTPONED` / `CANCELLED` / `FINISHED` 等状态均 fail closed 为不发。Task 4 当前的 competition/global 源错误计数无法证明具体比赛归因，Task 7 对此 fail closed：只在收到严格 event-scoped `failed` / `succeeded` 证据时才更新该 competition+event episode，不从聚合计数猜测单场失败或恢复。Exact `succeeded` 证据先持久为绑定 episode ID 的 `recovery_pending` intent，再尝试 Task 6；只有通知已 sent/already-sent 或 canonical pending 已持久后，才清除 intent 并单调把 episode 置为 inactive。因此即使重启后没有新 `succeeded` 证据或当前 match context，也能重建同一 recovery 事件，不从其他比赛推断恢复。
 
 运行时安全产物均位于 ignored 路径：
 

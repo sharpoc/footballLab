@@ -28,6 +28,7 @@ from worldcup.league_lineup_notifications import (
 from worldcup.league_lineups_refresh import (
     _pending_deliveries,
     _read_pending,
+    _validate_state as _validate_lineup_state,
     run_league_lineups_refresh,
 )
 from worldcup.league_post_lineup_refresh import (
@@ -59,6 +60,7 @@ _TERMINAL_FIXTURE_STATUSES = frozenset({
     "IN_PROGRESS",
     "FINISHED",
 })
+_MISSING_ELIGIBLE_FIXTURE_STATUSES = frozenset({"SCHEDULED"})
 _QUOTA_BLOCK_REASONS = frozenset({
     "quota_unknown",
     "quota_below_minimum",
@@ -576,6 +578,8 @@ def _validate_post_result(
     if publication is not None and not isinstance(publication, Mapping):
         raise ValueError("post_lineup_result_invalid")
     if isinstance(publication, Mapping) and publication.get("status") == "published":
+        if value["status"] not in {"partial", "published"}:
+            raise ValueError("post_lineup_result_invalid")
         if set(publication) != {"status", "publish", "aggregate"}:
             raise ValueError("post_lineup_result_invalid")
         receipt = publication.get("publish")
@@ -639,9 +643,7 @@ def _validate_post_result(
         or len(checked_acks["durable"]) != len(submitted_tokens)
     ):
         raise ValueError("post_lineup_result_invalid")
-    if publish_status is not None and value["status"] not in {
-        "partial", "publish_failed", "published"
-    }:
+    if publish_status is not None and value["status"] not in {"partial", "published"}:
         raise ValueError("post_lineup_result_invalid")
 
     for item in checked_acks["durable"]:
@@ -758,7 +760,8 @@ def _validate_job(value: Any, token: str) -> dict[str, Any]:
 def _validate_episode(value: Any, key: str) -> dict[str, Any]:
     expected = {
         "competition_id", "event_id", "episode_id", "failure_count",
-        "failure_threshold", "active", "started_at", "last_failure_at",
+        "failure_threshold", "active", "recovery_pending", "home_team",
+        "away_team", "kickoff_at_utc", "started_at", "last_failure_at",
     }
     if not isinstance(value, Mapping) or set(value) != expected or ":" not in key:
         raise ValueError("league_pre_match_state_invalid")
@@ -778,6 +781,8 @@ def _validate_episode(value: Any, key: str) -> dict[str, Any]:
         or not isinstance(threshold, int)
         or threshold < 1
         or not isinstance(value.get("active"), bool)
+        or not isinstance(value.get("recovery_pending"), bool)
+        or (value.get("recovery_pending") is True and value.get("active") is not True)
     ):
         raise ValueError("league_pre_match_state_invalid")
     return {
@@ -787,6 +792,10 @@ def _validate_episode(value: Any, key: str) -> dict[str, Any]:
         "failure_count": count,
         "failure_threshold": threshold,
         "active": value["active"],
+        "recovery_pending": value["recovery_pending"],
+        "home_team": _safe_display(value.get("home_team")),
+        "away_team": _safe_display(value.get("away_team")),
+        "kickoff_at_utc": _utc(value.get("kickoff_at_utc")).isoformat(),
         "started_at": _utc(value.get("started_at")).isoformat(),
         "last_failure_at": _utc(value.get("last_failure_at")).isoformat(),
     }
@@ -1171,10 +1180,15 @@ def _notification_events_for_post(
             source_fingerprint=job["lineup_fingerprint"],
         )
         events.append((event, token))
-    for item in post["acks"]["durable"]:
-        token = _ack_token(item["ack_key"])
-        job = state["receipts"].get(token)
-        if not isinstance(job, Mapping) or job.get("current_decision") is None:
+    return events
+
+
+def _notification_events_for_bound_receipts(
+    state: Mapping[str, Any],
+) -> list[tuple[dict[str, Any], str]]:
+    events: list[tuple[dict[str, Any], str]] = []
+    for token, job in sorted(state["receipts"].items()):
+        if job.get("current_decision") is None:
             continue
         event = build_published_refresh_event(
             competition_id=job["competition_id"],
@@ -1199,14 +1213,11 @@ def _confirmed_keys(root: str | Path) -> set[str]:
         return set()
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return set()
-    events = value.get("events") if isinstance(value, Mapping) else None
-    if not isinstance(events, Mapping):
-        return set()
+        events = _validate_lineup_state(value)["events"]
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid_lineup_state") from exc
     return {
-        key for key, row in events.items()
-        if isinstance(key, str) and isinstance(row, Mapping) and row.get("confirmed") is True
+        key for key, row in events.items() if row["confirmed"] is True
     }
 
 
@@ -1222,13 +1233,13 @@ def _update_source_episodes(
     contexts: Mapping[str, Any],
     now: datetime,
     configured_threshold: int,
-) -> tuple[dict[str, Any], list[tuple[dict[str, Any], str, bool]]]:
+) -> tuple[dict[str, Any], list[tuple[dict[str, Any], str]]]:
     updated = {
         "schema_version": 1,
         "receipts": {key: dict(value) for key, value in state["receipts"].items()},
         "source_episodes": {key: dict(value) for key, value in state["source_episodes"].items()},
     }
-    events: list[tuple[dict[str, Any], str, bool]] = []
+    events: list[tuple[dict[str, Any], str]] = []
     evidence = {
         f"{row['competition_id']}:{row['event_id']}": row["outcome"]
         for row in lineups["source_events"]
@@ -1248,6 +1259,10 @@ def _update_source_episodes(
                     "failure_count": 0,
                     "failure_threshold": configured_threshold,
                     "active": True,
+                    "recovery_pending": False,
+                    "home_team": context["home_team"],
+                    "away_team": context["away_team"],
+                    "kickoff_at_utc": context["kickoff_at_utc"],
                     "started_at": now.isoformat(),
                     "last_failure_at": now.isoformat(),
                 }
@@ -1267,21 +1282,35 @@ def _update_source_episodes(
                     source_fingerprint=current["episode_id"],
                     failure_count=current["failure_count"],
                     failure_threshold=current["failure_threshold"],
-                ), key, False))
+                ), key))
         elif (
             outcome == "succeeded"
             and isinstance(current, Mapping)
             and current.get("active") is True
         ):
-            events.append((build_source_recovery_event(
-                competition_id=competition_id,
-                event_id=context["event_id"],
-                home_team=context["home_team"],
-                away_team=context["away_team"],
-                kickoff_at_utc=context["kickoff_at_utc"],
-                source_fingerprint=current["episode_id"],
-            ), key, True))
+            updated["source_episodes"][key] = {
+                **dict(current),
+                "recovery_pending": True,
+            }
     return _validate_state(updated), events
+
+
+def _pending_recovery_events(
+    state: Mapping[str, Any],
+) -> list[tuple[dict[str, Any], str]]:
+    events: list[tuple[dict[str, Any], str]] = []
+    for key, episode in sorted(state["source_episodes"].items()):
+        if episode.get("active") is not True or episode.get("recovery_pending") is not True:
+            continue
+        events.append((build_source_recovery_event(
+            competition_id=episode["competition_id"],
+            event_id=episode["event_id"],
+            home_team=episode["home_team"],
+            away_team=episode["away_team"],
+            kickoff_at_utc=episode["kickoff_at_utc"],
+            source_fingerprint=episode["episode_id"],
+        ), key))
+    return events
 
 
 def _missing_events(
@@ -1295,7 +1324,7 @@ def _missing_events(
         if (
             key in confirmed
             or context.get("acceptance_active") is not True
-            or context.get("fixture_status") in _TERMINAL_FIXTURE_STATUSES
+            or context.get("fixture_status") not in _MISSING_ELIGIBLE_FIXTURE_STATUSES
             or not _in_window(context, now, 20)
         ):
             continue
@@ -1621,26 +1650,30 @@ def run_league_pre_match(
             )
 
             completed_tokens: set[str] = set()
+            receipt_events: list[tuple[dict[str, Any], str]] = []
             for checked_post in post_results:
                 try:
-                    built_events = _notification_events_for_post(
+                    receipt_events.extend(_notification_events_for_post(
                         root=root,
                         post=checked_post,
                         state=state,
-                    )
+                    ))
                 except Exception:
-                    built_events = []
                     notification_retry = {"status": "failed"}
-                for event, token in built_events:
-                    if outbox is None:
-                        projected, durable_outbox = _notification_projection(event, None), False
-                    else:
-                        projected, durable_outbox = _deliver_event(
-                            outbox, event, notifier=notifier
-                        )
-                    notifications.append(projected)
-                    if durable_outbox:
-                        completed_tokens.add(token)
+            try:
+                receipt_events.extend(_notification_events_for_bound_receipts(state))
+            except Exception:
+                notification_retry = {"status": "failed"}
+            for event, token in receipt_events:
+                if outbox is None:
+                    projected, durable_outbox = _notification_projection(event, None), False
+                else:
+                    projected, durable_outbox = _deliver_event(
+                        outbox, event, notifier=notifier
+                    )
+                notifications.append(projected)
+                if durable_outbox:
+                    completed_tokens.add(token)
             if completed_tokens:
                 candidate = {
                     **state,
@@ -1656,7 +1689,7 @@ def run_league_pre_match(
                 except Exception:
                     notification_retry = {"status": "failed"}
 
-            source_events: list[tuple[dict[str, Any], str, bool]] = []
+            source_events: list[tuple[dict[str, Any], str]] = []
             try:
                 updated_state, source_events = _update_source_episodes(
                     state=state,
@@ -1683,8 +1716,7 @@ def run_league_pre_match(
                     projected, _durable = _deliver_event(outbox, event, notifier=notifier)
                 notifications.append(projected)
 
-            recovered_keys: set[str] = set()
-            for event, episode_key, is_recovery in source_events:
+            for event, _episode_key in source_events:
                 if outbox is None:
                     projected, durable_outbox = _notification_projection(event, None), False
                 else:
@@ -1692,14 +1724,29 @@ def run_league_pre_match(
                         outbox, event, notifier=notifier
                     )
                 notifications.append(projected)
-                if is_recovery and durable_outbox:
+
+            recovered_keys: set[str] = set()
+            try:
+                recovery_events = _pending_recovery_events(state)
+            except Exception:
+                recovery_events = []
+                notification_retry = {"status": "failed"}
+            for event, episode_key in recovery_events:
+                if outbox is None:
+                    projected, durable_outbox = _notification_projection(event, None), False
+                else:
+                    projected, durable_outbox = _deliver_event(
+                        outbox, event, notifier=notifier
+                    )
+                notifications.append(projected)
+                if durable_outbox:
                     recovered_keys.add(episode_key)
             if recovered_keys:
                 candidate = {
                     **state,
                     "source_episodes": {
                         key: (
-                            {**episode, "active": False}
+                            {**episode, "active": False, "recovery_pending": False}
                             if key in recovered_keys else episode
                         )
                         for key, episode in state["source_episodes"].items()

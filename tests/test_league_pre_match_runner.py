@@ -687,6 +687,82 @@ def test_old_pending_and_new_receipt_bind_to_their_exact_successive_decisions():
         assert decisions == {"old": ("home", "away"), "new": ("away", "draw")}
 
 
+def test_bound_receipt_rebuilds_notification_after_pre_pending_failure_and_restart():
+    row = _receipt("bound-restart", "9")
+    current_selection = "home"
+    current_snapshot_id = "before-binding"
+    delivered = []
+
+    def contexts(_root):
+        return {
+            f"{EPL}:bound-restart": _context(
+                "bound-restart",
+                current_selection,
+                snapshot_id=current_snapshot_id,
+            )
+        }
+
+    def post(**_kwargs):
+        nonlocal current_selection, current_snapshot_id
+        current_selection = "away"
+        current_snapshot_id = "after-binding"
+        return _post_result(
+            durable=(row,),
+            component_snapshot_id=current_snapshot_id,
+            aggregate_snapshot_id="aggregate-after-binding",
+        )
+
+    class Outbox:
+        def retry_pending(self, **_kwargs):
+            return {"status": "complete", "sent": 0, "failed": 0}
+
+        def deliver(self, event, **_kwargs):
+            delivered.append(event)
+            return {
+                "status": "sent",
+                "event_fingerprint": event["event_fingerprint"],
+            }
+
+    with TemporaryDirectory() as tmp:
+        first = run_league_pre_match(
+            root=tmp,
+            now=NOW,
+            lineup_refresh_fn=lambda **_kwargs: _lineup_result(row),
+            post_lineup_refresh_fn=post,
+            match_context_loader=contexts,
+            outbox_factory=_fail,
+            notifier=_fail,
+            **_full_flags(notify=True),
+        )
+        state_after_failure = json.loads(
+            (Path(tmp) / STATE_RELATIVE_PATH).read_text(encoding="utf-8")
+        )
+        restarted = run_league_pre_match(
+            root=tmp,
+            now=NOW,
+            lineup_refresh_fn=lambda **_kwargs: _lineup_result(status="no_due"),
+            post_lineup_refresh_fn=_fail,
+            match_context_loader=lambda _root: {},
+            outbox_factory=lambda _root: Outbox(),
+            notifier=_fail,
+            **_full_flags(notify=True),
+        )
+        state_after_restart = json.loads(
+            (Path(tmp) / STATE_RELATIVE_PATH).read_text(encoding="utf-8")
+        )
+
+        assert first["notifications"][0]["status"] == "failed"
+        bound = next(iter(state_after_failure["receipts"].values()))
+        assert bound["previous_decision"]["selection"] == "home"
+        assert bound["current_decision"]["selection"] == "away"
+        assert restarted["status"] == "lineups_checked"
+        assert len(delivered) == 1
+        assert delivered[0]["event_type"] == "published_refresh_changed"
+        assert delivered[0]["payload"]["previous_decision"]["selection"] == "home"
+        assert delivered[0]["payload"]["current_decision"]["selection"] == "away"
+        assert state_after_restart["receipts"] == {}
+
+
 def test_source_evidence_is_event_scoped_and_other_events_cannot_recover_it():
     delivered = []
 
@@ -756,6 +832,7 @@ def test_source_evidence_is_event_scoped_and_other_events_cannot_recover_it():
 def test_recovery_remains_active_until_outbox_is_durable_and_retries_after_restart():
     delivery_attempts = []
     fail_recovery_write = False
+    context_available = True
 
     class Outbox:
         def retry_pending(self, **_kwargs):
@@ -791,14 +868,17 @@ def test_recovery_remains_active_until_outbox_is_durable_and_retries_after_resta
         "outcome": "succeeded",
     }]
 
+    def contexts(_root):
+        if not context_available:
+            return {}
+        return {f"{EPL}:recovery": _context("recovery")}
+
     with TemporaryDirectory() as tmp:
         common = {
             "root": tmp,
             "now": NOW,
             "post_lineup_refresh_fn": _fail,
-            "match_context_loader": lambda _root: {
-                f"{EPL}:recovery": _context("recovery")
-            },
+            "match_context_loader": contexts,
             "outbox_factory": lambda _root: Outbox(),
             "notifier": _fail,
             "source_failure_threshold": 1,
@@ -814,13 +894,18 @@ def test_recovery_remains_active_until_outbox_is_durable_and_retries_after_resta
             (Path(tmp) / STATE_RELATIVE_PATH).read_text(encoding="utf-8")
         )
         fail_recovery_write = False
+        context_available = False
         restarted = run_league_pre_match(
-            lineup_refresh_fn=lambda **_kwargs: recovered,
+            lineup_refresh_fn=lambda **_kwargs: _lineup_result(status="no_due"),
             **common,
         )
 
         assert failed_delivery["notifications"][-1]["status"] == "failed"
         assert state_after_failure["source_episodes"][f"{EPL}:recovery"]["active"] is True
+        assert (
+            state_after_failure["source_episodes"][f"{EPL}:recovery"]["recovery_pending"]
+            is True
+        )
         assert restarted["notifications"][-1]["status"] == "sent"
         assert delivery_attempts == [
             "sustained_source_failure",
@@ -900,6 +985,8 @@ def test_missing_t20_requires_active_acceptance_and_nonterminal_current_fixture(
         ("active", "POSTPONED", 0),
         ("active", "CANCELLED", 0),
         ("active", "FINISHED", 0),
+        ("active", "", 0),
+        ("active", "NOT_A_REAL_STATUS", 0),
         ("active", "SCHEDULED", 1),
     )
     for index, (acceptance_state, fixture_status, expected_count) in enumerate(cases):
@@ -927,6 +1014,51 @@ def test_missing_t20_requires_active_acceptance_and_nonterminal_current_fixture(
                 assert delivered[0]["event_type"] == "missing_confirmed"
 
 
+def test_malformed_lineup_state_suppresses_missing_notification_for_whole_cycle():
+    delivered = []
+
+    class Outbox:
+        def retry_pending(self, **_kwargs):
+            return {"status": "complete", "sent": 0, "failed": 0}
+
+        def deliver(self, event, **_kwargs):
+            delivered.append(event)
+            return {
+                "status": "sent",
+                "event_fingerprint": event["event_fingerprint"],
+            }
+
+    malformed_payloads = (
+        "{broken-json",
+        json.dumps({"schema_version": 1, "events": []}),
+    )
+    for index, payload in enumerate(malformed_payloads):
+        with TemporaryDirectory() as tmp:
+            delivered.clear()
+            _write_context_fixture(
+                tmp,
+                acceptance_state="active",
+                fixture_status="SCHEDULED",
+                event_id=f"malformed-lineup-state-{index}",
+            )
+            state_path = Path(tmp) / "data/local/leagues/lineup_state.json"
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(payload, encoding="utf-8")
+
+            result = run_league_pre_match(
+                root=tmp,
+                now=NOW,
+                lineup_refresh_fn=lambda **_kwargs: _lineup_result(status="no_due"),
+                post_lineup_refresh_fn=_fail,
+                outbox_factory=lambda _root: Outbox(),
+                notifier=_fail,
+                **_full_flags(notify=True),
+            )
+
+            assert result["status"] == "lineups_checked"
+            assert delivered == []
+
+
 def test_task5_ack_membership_and_publish_semantics_fail_closed():
     row = _receipt("membership", "4")
     unknown = _receipt("unknown", "5")
@@ -940,6 +1072,7 @@ def test_task5_ack_membership_and_publish_semantics_fail_closed():
         _post_result(durable=(row, row)),
         _post_result(durable=(), status="published"),
         _post_result(durable=(row,), status="published", publish_status=None),
+        _post_result(durable=(row,), status="publish_failed"),
     )
     malformed_reason = _post_result(
         blocked=((row, "quota_below_minimum"),),
