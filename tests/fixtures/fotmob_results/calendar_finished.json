@@ -1,0 +1,20 @@
+{
+  "leagues": [{
+    "id": 47,
+    "name": "Premier League",
+    "ccode": "ENG",
+    "matches": [{
+      "id": 1001,
+      "home": {"id": 9825, "name": "Arsenal"},
+      "away": {"id": 8455, "name": "Chelsea"},
+      "status": {
+        "utcTime": "2026-08-28T19:00:00Z",
+        "started": true,
+        "cancelled": false,
+        "finished": true,
+        "scoreStr": "2 - 1",
+        "reason": {"short": "FT", "long": "Full-Time", "extraTime": false}
+      }
+    }]
+  }]
+}

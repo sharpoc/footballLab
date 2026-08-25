@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import json
+from pathlib import Path
 
 from worldcup.collectors.league_fotmob_results import parse_fotmob_league_results
 from worldcup.league_result_evidence import build_result_contract_evidence
@@ -11,6 +13,12 @@ from worldcup.league_team_identity import LeagueTeamIdentityRegistry
 COMPETITION = "epl_2026_27"
 CAPTURED_AT = datetime(2026, 8, 29, 0, 0, tzinfo=timezone.utc)
 KICKOFF = "2026-08-28T19:00:00Z"
+FOTMOB_SAMPLE_SHA256 = "a861a1aa1c83b7193ea68a6705abc44647fb49194ee80a557356b55fe5bf1e00"
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "fotmob_results"
+
+
+def _load(name: str) -> dict[str, object]:
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
 def _registry() -> LeagueTeamIdentityRegistry:
@@ -25,7 +33,8 @@ def _fotmob_evidence(competition_id: str) -> dict[str, object]:
         sport_key="soccer_epl",
         provider_schema="fotmob_league_results_v1",
         score_scope="football_90min",
-        source_reference="saved-fotmob-finished-sample-sha256",
+        source_reference=FOTMOB_SAMPLE_SHA256,
+        provider="fotmob",
     )
 
 
@@ -99,7 +108,7 @@ def _parse(calendar: dict[str, object], details: dict[str, dict[str, object]], *
 
 def test_finished_integer_score_with_strict_identity_is_accepted():
     """Dropping terminal, identity, or score validation could write a non-90-minute result."""
-    parsed = _parse(_calendar(status="finished"), {"1001": _details()})
+    parsed = _parse(_load("calendar_finished.json"), {"1001": _load("details_1001_finished.json")})
 
     result = parsed["results"][0]
     assert set(parsed) == {"competition_id", "results", "pending", "source_events", "source_fingerprint"}
@@ -127,6 +136,21 @@ def test_unverified_semantics_and_wrong_competition_fail_closed():
         raise AssertionError("wrong competition must fail closed")
 
 
+def test_legacy_evidence_cannot_authorize_the_fotmob_parser():
+    """A valid The Odds API proof is not evidence that a FotMob result is a 90-minute final."""
+    legacy = build_result_contract_evidence(
+        competition_id=COMPETITION,
+        sport_key="soccer_epl",
+        provider_schema="theoddsapi_scores_v1",
+        score_scope="football_90min",
+        source_reference="saved-sample-sha256",
+    )
+
+    parsed = _parse(_calendar(status="finished"), {"1001": _details()}, result_contract_evidence=legacy)
+    assert parsed["results"] == []
+    assert parsed["pending"] == [{"source_event_id": "1001", "reason": "result_90min_semantics_unverified"}]
+
+
 def test_scheduled_postponed_and_live_events_remain_pending():
     """Inferring completion from a score string would settle non-terminal matches."""
     for status in ("scheduled", "postponed", "live"):
@@ -135,17 +159,31 @@ def test_scheduled_postponed_and_live_events_remain_pending():
         assert parsed["pending"] == [{"source_event_id": "1001", "reason": "result_not_finished"}]
 
 
-def test_duplicate_event_ids_and_containers_fail_closed():
+def test_duplicate_event_ids_fail_closed():
     """Taking the first repeated provider ID would make a result depend on payload ordering."""
     duplicate_event = _calendar(status="finished")
     duplicate_event["leagues"][0]["matches"].append(deepcopy(duplicate_event["leagues"][0]["matches"][0]))
-    duplicate_container = _calendar(status="finished")
-    duplicate_container["leagues"].append(deepcopy(duplicate_container["leagues"][0]))
+    parsed = _parse(duplicate_event, {"1001": _details()})
+    assert parsed["results"] == []
+    assert parsed["pending"] == [{"source_event_id": "1001", "reason": "duplicate_source_event"}]
 
-    for calendar in (duplicate_event, duplicate_container):
-        parsed = _parse(calendar, {"1001": _details()})
-        assert parsed["results"] == []
-        assert parsed["pending"] == [{"source_event_id": "1001", "reason": "duplicate_source_event"}]
+
+def test_multiple_target_competition_containers_fail_closed_even_with_distinct_events():
+    """Selecting two same-league containers could silently mix separate provider partitions."""
+    calendar = _calendar(status="finished")
+    other_container = deepcopy(calendar["leagues"][0])
+    other_container["matches"][0]["id"] = 1002
+    other_container["matches"][0]["home"]["name"] = "Chelsea"
+    other_container["matches"][0]["away"]["name"] = "Arsenal"
+    calendar["leagues"].append(other_container)
+    details = _details(event_id=1002, home="Chelsea", away="Arsenal")
+
+    try:
+        _parse(calendar, {"1001": _details(), "1002": details})
+    except ValueError as exc:
+        assert str(exc) == "fotmob_result_competition_container_duplicate"
+    else:
+        raise AssertionError("multiple target competition containers must fail closed")
 
 
 def test_missing_details_and_invalid_scores_are_never_accepted():
@@ -185,6 +223,22 @@ def test_extra_time_or_penalty_only_fields_cannot_supply_a_90_minute_score():
         parsed = _parse(_calendar(status="finished"), {"1001": details})
         assert parsed["results"] == []
         assert parsed["pending"] == [{"source_event_id": "1001", "reason": "result_90min_score_unverified"}]
+
+
+def test_calendar_and_detail_90_minute_terminal_score_must_agree():
+    """Trusting only detail semantics or score can settle a disagreement between two FotMob response shapes."""
+    calendar_aet = _calendar(status="finished")
+    calendar_aet["leagues"][0]["matches"][0]["status"]["reason"] = {
+        "short": "AET", "long": "After extra time", "extraTime": True,
+    }
+    detail_score_mismatch = _details(home_score=3, away_score=1)
+
+    for calendar, details in (
+        (calendar_aet, _details()),
+        (_calendar(status="finished"), detail_score_mismatch),
+    ):
+        parsed = _parse(calendar, {"1001": details})
+        assert parsed["results"] == []
 
 
 def test_naive_capture_time_is_rejected_before_any_result_is_emitted():

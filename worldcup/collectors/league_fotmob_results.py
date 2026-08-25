@@ -149,10 +149,12 @@ def _pending_reason_for_status(calendar: Mapping[str, Any], details: Mapping[str
     details_status = _mapping(_mapping(details.get("header")).get("status"))
     if calendar_status.get("finished") is not True or details_status.get("finished") is not True:
         return "result_not_finished"
-    if not _has_verified_90min_semantics(details_status):
+    if not _has_verified_90min_semantics(calendar_status) or not _has_verified_90min_semantics(details_status):
         return "result_90min_score_unverified"
-    if _finished_90min(details_status) is None:
+    if _finished_90min(calendar_status) is None or _finished_90min(details_status) is None:
         return "invalid_90min_score"
+    if _finished_90min(calendar_status) != _finished_90min(details_status):
+        return "result_score_mismatch"
     return None
 
 
@@ -162,6 +164,12 @@ def _expected_rows(
     competition_id: str,
 ) -> list[Mapping[str, Any]]:
     expected_league_id = _FOTMOB_COMPETITION_IDS[competition_id]
+    target_containers = [
+        league for league in _mapping(calendar_payload).get("leagues") or []
+        if _provider_id(_mapping(league).get("id")) == expected_league_id
+    ]
+    if len(target_containers) > 1:
+        raise ValueError("fotmob_result_competition_container_duplicate")
     selected: list[Mapping[str, Any]] = []
     for league_id, match in _calendar_rows(calendar_payload):
         source_event_id = _event_id(match)
@@ -273,7 +281,11 @@ def parse_fotmob_league_results(
 ) -> dict[str, Any]:
     if competition_id not in FORMAL_SINGLE_MATCH_IDS:
         raise ValueError("fotmob_result_competition_not_allowed")
-    if not verify_result_contract_evidence(result_contract_evidence, competition_id):
+    if not verify_result_contract_evidence(
+        result_contract_evidence,
+        competition_id,
+        provider_schema="fotmob_league_results_v1",
+    ):
         return _pending_all(calendar_payload, competition_id, "result_90min_semantics_unverified")
     return _parse_verified_rows(
         calendar_payload,

@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any, Mapping
 
 from worldcup.competitions import get_competition
 
 
-_SCHEMAS = frozenset({"theoddsapi_scores_v1", "fotmob_league_results_v1"})
+_THEODDSAPI_SCHEMA = "theoddsapi_scores_v1"
+_FOTMOB_SCHEMA = "fotmob_league_results_v1"
+_SCHEMAS = frozenset({_THEODDSAPI_SCHEMA, _FOTMOB_SCHEMA})
 _SCOPE = "football_90min"
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _fingerprint(payload: Mapping[str, Any]) -> str:
@@ -23,6 +27,7 @@ def build_result_contract_evidence(
     provider_schema: str,
     score_scope: str,
     source_reference: str,
+    provider: str | None = None,
 ) -> dict[str, Any]:
     profile = get_competition(competition_id)
     core = {
@@ -32,16 +37,29 @@ def build_result_contract_evidence(
         "score_scope": str(score_scope),
         "source_reference": str(source_reference),
     }
+    if core["provider_schema"] == _FOTMOB_SCHEMA:
+        core["provider"] = str(provider or "")
     verified = (
         profile.theoddsapi_sport_key == core["sport_key"]
         and core["provider_schema"] in _SCHEMAS
         and core["score_scope"] == _SCOPE
-        and bool(core["source_reference"].strip())
+        and _source_reference_is_valid(core)
     )
     return {**core, "verified": verified, "fingerprint": _fingerprint(core)}
 
 
-def verify_result_contract_evidence(evidence: Mapping[str, Any] | None, competition_id: str) -> bool:
+def _source_reference_is_valid(core: Mapping[str, str]) -> bool:
+    if core["provider_schema"] == _FOTMOB_SCHEMA:
+        return core.get("provider") == "fotmob" and _SHA256.fullmatch(core["source_reference"]) is not None
+    return bool(core["source_reference"].strip())
+
+
+def verify_result_contract_evidence(
+    evidence: Mapping[str, Any] | None,
+    competition_id: str,
+    *,
+    provider_schema: str | None = None,
+) -> bool:
     if not isinstance(evidence, Mapping):
         return False
     try:
@@ -55,12 +73,15 @@ def verify_result_contract_evidence(evidence: Mapping[str, Any] | None, competit
         "score_scope": str(evidence.get("score_scope") or ""),
         "source_reference": str(evidence.get("source_reference") or ""),
     }
+    if core["provider_schema"] == _FOTMOB_SCHEMA:
+        core["provider"] = str(evidence.get("provider") or "")
     return (
         evidence.get("verified") is True
         and core["competition_id"] == competition_id
         and core["sport_key"] == profile.theoddsapi_sport_key
         and core["provider_schema"] in _SCHEMAS
+        and (provider_schema is None or core["provider_schema"] == provider_schema)
         and core["score_scope"] == _SCOPE
-        and bool(core["source_reference"].strip())
+        and _source_reference_is_valid(core)
         and str(evidence.get("fingerprint") or "") == _fingerprint(core)
     )
