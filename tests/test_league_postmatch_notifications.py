@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -36,6 +37,17 @@ def _event():
     )
     assert event is not None
     return event
+
+
+def _threshold_event(aggregate_fingerprint=AGGREGATE_FINGERPRINT):
+    events = build_threshold_events(
+        previous_decided=19,
+        current_decided=20,
+        sent_thresholds=set(),
+        aggregate_fingerprint=aggregate_fingerprint,
+    )
+    assert len(events) == 1
+    return events[0]
 
 
 def _fails_once():
@@ -100,6 +112,105 @@ def test_threshold_events_cross_each_unsent_boundary_once_with_deterministic_ide
         )
         assert outbox.deliver(first[0])["status"] == "sent"
         assert outbox.sent_thresholds() == {20}
+        state = json.loads((Path(tmp) / "outbox.json").read_text(encoding="utf-8"))
+        assert state["sent"][first[0]["event_fingerprint"]]["event"] == first[0]
+
+
+def test_stale_threshold_aggregate_cannot_enqueue_or_send_a_second_milestone_intent():
+    """Using aggregate fingerprint alone would make a failed 20-sample intent send twice."""
+    with TemporaryDirectory() as tmp:
+        path = Path(tmp) / "outbox.json"
+        calls = []
+        outbox = LeaguePostmatchNotificationOutbox(
+            path,
+            notifier=lambda *_args, **_kwargs: calls.append(True) or {"status": "failed"},
+        )
+        first = _threshold_event("a" * 64)
+        stale = _threshold_event("b" * 64)
+
+        assert outbox.deliver(first)["status"] == "failed"
+        assert outbox.deliver(stale)["status"] == "already_pending"
+        state = json.loads(path.read_text(encoding="utf-8"))
+
+        assert calls == [True]
+        assert list(state["pending"]) == [first["event_fingerprint"]]
+        assert state["sent"] == {}
+
+
+def test_concurrent_stale_threshold_events_result_in_only_one_sender_attempt():
+    """Two runner instances crossing one milestone must not both send it."""
+    with TemporaryDirectory() as tmp:
+        path = Path(tmp) / "outbox.json"
+        first = _threshold_event("a" * 64)
+        stale = _threshold_event("b" * 64)
+        barrier = threading.Barrier(3)
+        calls = []
+        results = []
+
+        def sender(*_args, **_kwargs):
+            calls.append(True)
+            return {"status": "sent"}
+
+        def deliver(event):
+            barrier.wait()
+            results.append(LeaguePostmatchNotificationOutbox(path, notifier=sender).deliver(event))
+
+        workers = [threading.Thread(target=deliver, args=(event,)) for event in (first, stale)]
+        for worker in workers:
+            worker.start()
+        barrier.wait()
+        for worker in workers:
+            worker.join(timeout=5)
+
+        assert all(not worker.is_alive() for worker in workers)
+        assert len(calls) == 1
+        assert sorted(result["status"] for result in results) == ["already_sent", "sent"]
+        state = json.loads(path.read_text(encoding="utf-8"))
+        assert len(state["pending"]) + len(state["sent"]) == 1
+
+
+def test_sent_threshold_receipts_reject_forged_hashes_malformed_events_and_duplicates():
+    """A sent receipt without its canonical event could suppress a real future milestone."""
+    with TemporaryDirectory() as tmp:
+        path = Path(tmp) / "outbox.json"
+        event = _threshold_event()
+        second = _threshold_event("b" * 64)
+        malformed = {**event, "payload": {"threshold": 50, "aggregate_fingerprint": "a" * 64}}
+        invalid_states = [
+            {
+                "schema_version": 1,
+                "pending": {},
+                "sent": {
+                    "b" * 64: {
+                        "event_type": "evaluation_threshold",
+                        "threshold": 20,
+                        "sent_at": "2026-08-29T00:00:00+00:00",
+                    }
+                },
+            },
+            {
+                "schema_version": 1,
+                "pending": {},
+                "sent": {event["event_fingerprint"]: {"event": malformed, "sent_at": "2026-08-29T00:00:00+00:00"}},
+            },
+            {
+                "schema_version": 1,
+                "pending": {},
+                "sent": {
+                    event["event_fingerprint"]: {"event": event, "sent_at": "2026-08-29T00:00:00+00:00"},
+                    second["event_fingerprint"]: {"event": second, "sent_at": "2026-08-29T00:00:00+00:00"},
+                },
+            },
+        ]
+
+        for state in invalid_states:
+            path.write_text(json.dumps(state), encoding="utf-8")
+            try:
+                LeaguePostmatchNotificationOutbox(path, notifier=lambda *_args, **_kwargs: {"status": "sent"}).sent_thresholds()
+            except ValueError as exc:
+                assert str(exc) == "league_postmatch_notification_state_invalid"
+            else:
+                raise AssertionError("forged sent receipt suppressed a real threshold")
 
 
 def test_failed_delivery_remains_pending_without_duplicate_sent_receipt():

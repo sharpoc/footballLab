@@ -231,10 +231,7 @@ def _empty_state() -> dict[str, Any]:
 
 
 def _receipt(event: Mapping[str, Any], sent_at: str) -> dict[str, Any]:
-    receipt = {"event_type": event["event_type"], "sent_at": sent_at}
-    if event["event_type"] == "evaluation_threshold":
-        receipt["threshold"] = event["payload"]["threshold"]
-    return receipt
+    return {"event": dict(event), "sent_at": sent_at}
 
 
 def _validate_state(value: Any) -> dict[str, Any]:
@@ -248,6 +245,7 @@ def _validate_state(value: Any) -> dict[str, Any]:
     ):
         raise ValueError(error)
     pending: dict[str, dict[str, Any]] = {}
+    pending_thresholds: dict[int, str] = {}
     for fingerprint, event in value["pending"].items():
         try:
             checked = _validate_event(event)
@@ -256,28 +254,38 @@ def _validate_state(value: Any) -> dict[str, Any]:
         if fingerprint != checked["event_fingerprint"]:
             raise ValueError(error)
         pending[fingerprint] = checked
+        if checked["event_type"] == "evaluation_threshold":
+            threshold = checked["payload"]["threshold"]
+            if threshold in pending_thresholds:
+                raise ValueError(error)
+            pending_thresholds[threshold] = fingerprint
     sent: dict[str, dict[str, Any]] = {}
+    sent_thresholds: dict[int, str] = {}
     for fingerprint, receipt in value["sent"].items():
         if not _valid_hash(fingerprint) or not isinstance(receipt, Mapping):
             raise ValueError(error)
-        event_type = receipt.get("event_type")
-        expected = {"event_type", "sent_at"}
-        if event_type == "evaluation_threshold":
-            expected.add("threshold")
-        if event_type not in _EVENT_TYPES or set(receipt) != expected:
+        if set(receipt) != {"event", "sent_at"}:
             raise ValueError(error)
         try:
             sent_at = _utc_text(receipt.get("sent_at"), error)
         except ValueError as exc:
             raise ValueError(error) from exc
-        normalized = {"event_type": event_type, "sent_at": sent_at}
-        if event_type == "evaluation_threshold":
-            threshold = receipt.get("threshold")
-            if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold not in _THRESHOLDS:
+        try:
+            event = _validate_event(receipt.get("event"))
+        except ValueError as exc:
+            raise ValueError(error) from exc
+        if fingerprint != event["event_fingerprint"]:
+            raise ValueError(error)
+        normalized = {"event": event, "sent_at": sent_at}
+        if event["event_type"] == "evaluation_threshold":
+            threshold = event["payload"]["threshold"]
+            if threshold in sent_thresholds:
                 raise ValueError(error)
-            normalized["threshold"] = threshold
+            sent_thresholds[threshold] = fingerprint
         sent[fingerprint] = normalized
     if set(pending).intersection(sent):
+        raise ValueError(error)
+    if set(pending_thresholds).intersection(sent_thresholds):
         raise ValueError(error)
     return {"schema_version": 1, "pending": pending, "sent": sent}
 
@@ -334,6 +342,21 @@ class LeaguePostmatchNotificationOutbox:
             state = _read_state(self.path)
             if fingerprint in state["sent"]:
                 return {"status": "already_sent", **result}
+            if checked["event_type"] == "evaluation_threshold":
+                threshold = checked["payload"]["threshold"]
+                for sent_event in state["sent"].values():
+                    if (
+                        sent_event["event"]["event_type"] == "evaluation_threshold"
+                        and sent_event["event"]["payload"]["threshold"] == threshold
+                    ):
+                        return {"status": "already_sent", **result}
+                for pending_event in state["pending"].values():
+                    if (
+                        pending_event["event_type"] == "evaluation_threshold"
+                        and pending_event["payload"]["threshold"] == threshold
+                        and pending_event["event_fingerprint"] != fingerprint
+                    ):
+                        return {"status": "already_pending", **result}
             state["pending"].setdefault(fingerprint, checked)
             _atomic_write(self.path, state)
             rendered = render_postmatch_notification(state["pending"][fingerprint])
@@ -369,7 +392,7 @@ class LeaguePostmatchNotificationOutbox:
         """Expose durable threshold receipts for the later runner without rebuilding events."""
         state = _read_state(self.path)
         return {
-            receipt["threshold"]
+            receipt["event"]["payload"]["threshold"]
             for receipt in state["sent"].values()
-            if receipt["event_type"] == "evaluation_threshold"
+            if receipt["event"]["event_type"] == "evaluation_threshold"
         }
