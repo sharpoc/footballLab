@@ -4,6 +4,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
 from worldcup.engine.handicap import ev_handicap
 from worldcup.league_team_identity import league_team_display_name_zh
 from worldcup.query import summarize_finished_block
@@ -311,6 +312,8 @@ def format_team_label(team: str | None, competition_id: str | None = None) -> st
         league_label = league_team_display_name_zh(competition_id, str(team))
         if league_label:
             return league_label
+        if competition_id in FORMAL_SINGLE_MATCH_IDS:
+            return str(team)
     return TEAM_LABELS_ZH.get(str(team), str(team))
 
 
