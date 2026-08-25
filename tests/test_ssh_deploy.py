@@ -14,6 +14,7 @@ from worldcup.ssh_deploy import (
     FetchResult,
     _deploy_script,
     _rollback_script,
+    _scan_forbidden,
     main,
     run_ssh_deploy,
 )
@@ -75,6 +76,18 @@ def ok_fetcher(url: str, timeout: int) -> FetchResult:
     if url.endswith("/preview"):
         return FetchResult(ok=True, status_code=200, body="仅用于研究分析，不构成投注建议", error=None)
     raise AssertionError(f"unexpected url: {url}")
+
+
+def test_forbidden_scan_allows_unit_inside_normal_identity_values() -> None:
+    body = '{"away_team":"Newcastle United","home_canonical":"united_states"}'
+
+    assert _scan_forbidden(body) == []
+
+
+def test_forbidden_scan_still_blocks_standalone_unit() -> None:
+    body = '{"display":"recommended unit 1"}'
+
+    assert _scan_forbidden(body) == ["unit"]
 
 
 def test_dry_run_reports_plan_without_ssh_or_archive() -> None:
