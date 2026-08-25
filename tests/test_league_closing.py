@@ -1,7 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from worldcup.league_closing import LeagueClosingStore, select_league_closings
+from worldcup.league_closing import LeagueClosingStore, merge_league_closings, select_league_closings
 
 
 def _snapshot(snapshot_at: str, *, kickoff: str = "2026-08-24T18:00:00Z", odds: float = 1.9) -> dict:
@@ -60,3 +60,24 @@ def test_closing_store_is_atomic_and_idempotent():
         before = path.read_bytes()
         assert store.commit(payload) == "unchanged"
         assert path.read_bytes() == before
+
+
+def test_closing_merge_never_replaces_with_post_kickoff_snapshot():
+    """A post-kickoff snapshot must not rewrite the decision known at match start."""
+    existing = select_league_closings([_snapshot("2026-08-24T17:00:00Z")], "epl_2026_27")
+    post_kickoff = _snapshot("2026-08-24T18:01:00Z", odds=1.2)
+
+    merged = merge_league_closings(existing, [post_kickoff], "epl_2026_27")
+
+    assert merged == existing
+
+
+def test_closing_merge_advances_only_to_a_later_legal_snapshot():
+    """Ignoring a newer pre-kickoff snapshot would settle against stale market evidence."""
+    existing = select_league_closings([_snapshot("2026-08-24T16:00:00Z", odds=1.9)], "epl_2026_27")
+
+    merged = merge_league_closings(existing, [_snapshot("2026-08-24T17:00:00Z", odds=1.8)], "epl_2026_27")
+
+    closing = merged["closings"]["epl-event-1"]
+    assert closing["closing_snapshot_at"] == "2026-08-24T17:00:00+00:00"
+    assert closing["closing_match_decision"]["odds"] == 1.8

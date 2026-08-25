@@ -71,6 +71,67 @@ def select_league_closings(
     }
 
 
+def _closing_identity(row: dict[str, Any]) -> tuple[str, str, str]:
+    kickoff = _utc(row.get("kickoff_at_utc"))
+    home = str(row.get("home_canonical") or "").strip()
+    away = str(row.get("away_canonical") or "").strip()
+    if not home or not away:
+        raise ValueError("closing_identity_missing")
+    return kickoff.isoformat(), home, away
+
+
+def _valid_existing_closings(existing: dict[str, Any] | None, competition_id: str) -> dict[str, dict[str, Any]]:
+    if existing is None:
+        return {}
+    if existing.get("schema_version") != 1 or existing.get("competition_id") != competition_id:
+        raise ValueError("closing_competition_mismatch")
+    closings = existing.get("closings")
+    if not isinstance(closings, dict):
+        raise ValueError("closing_existing_invalid")
+    checked: dict[str, dict[str, Any]] = {}
+    for event_id, value in closings.items():
+        if not isinstance(event_id, str) or not event_id.strip() or not isinstance(value, dict):
+            raise ValueError("closing_existing_invalid")
+        row = dict(value)
+        if row.get("competition_id") != competition_id or row.get("source_event_id") != event_id:
+            raise ValueError("closing_existing_invalid")
+        kickoff = _utc(row.get("kickoff_at_utc"))
+        closing_at = _utc(row.get("closing_snapshot_at"))
+        if closing_at >= kickoff or not _valid_decision(row.get("closing_match_decision")):
+            raise ValueError("closing_existing_invalid")
+        _closing_identity(row)
+        checked[event_id] = row
+    return checked
+
+
+def merge_league_closings(
+    existing: dict[str, Any] | None,
+    snapshots: Iterable[dict[str, Any]],
+    competition_id: str,
+) -> dict[str, Any]:
+    """Advance each closing only with a newer legal pre-kickoff snapshot."""
+    merged = _valid_existing_closings(existing, competition_id)
+    selected = select_league_closings(snapshots, competition_id)
+    for event_id, candidate in selected["closings"].items():
+        previous = merged.get(event_id)
+        if previous is None:
+            merged[event_id] = candidate
+            continue
+        if _closing_identity(previous) != _closing_identity(candidate):
+            raise ValueError(f"closing_identity_conflict: {event_id}")
+        previous_at = _utc(previous.get("closing_snapshot_at"))
+        candidate_at = _utc(candidate.get("closing_snapshot_at"))
+        if candidate_at > previous_at:
+            merged[event_id] = candidate
+        elif candidate_at == previous_at and previous.get("closing_match_decision") != candidate.get("closing_match_decision"):
+            raise ValueError(f"closing_snapshot_conflict: {event_id}")
+    return {
+        "schema_version": 1,
+        "competition_id": competition_id,
+        "closings": {event_id: merged[event_id] for event_id in sorted(merged)},
+    }
+
+
 class LeagueClosingStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
