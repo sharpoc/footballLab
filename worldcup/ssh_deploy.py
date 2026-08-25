@@ -49,6 +49,7 @@ SENSITIVE_RE = re.compile(
     r"password|private[-_ ]?key|signature",
     re.I,
 )
+UNIT_TERM_RE = re.compile(r"(?<![a-z0-9_])unit(?![a-z0-9_])", re.I)
 
 
 @dataclass(frozen=True)
@@ -390,7 +391,15 @@ def _rollback_script(
 
 def _scan_forbidden(text: str) -> list[str]:
     lowered = text.lower()
-    return [term for term in FORBIDDEN_PUBLIC_TERMS if term.lower() in lowered]
+    hits: list[str] = []
+    for term in FORBIDDEN_PUBLIC_TERMS:
+        if term == "unit":
+            matched = UNIT_TERM_RE.search(text) is not None
+        else:
+            matched = term.lower() in lowered
+        if matched:
+            hits.append(term)
+    return hits
 
 
 def _smoke_public(base_url: str, fetcher: Fetcher, timeout: int) -> dict[str, object]:
