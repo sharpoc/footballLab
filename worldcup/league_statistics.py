@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any, Collection, Iterable, Sequence
 
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
 
@@ -11,6 +11,35 @@ COVERAGE_KEYS = (
     "decision_available_count", "missing_decision_count", "invalid_decision_count",
     "unresolved_count", "legacy_decision_count",
 )
+
+
+def crossed_evaluation_thresholds(
+    previous_decided: int,
+    current_decided: int,
+    sent: Collection[int],
+    thresholds: Sequence[int] = (20, 50, 100),
+) -> list[int]:
+    """Return crossed, unsent offline-evaluation milestones in stable order."""
+    if (
+        isinstance(previous_decided, bool)
+        or isinstance(current_decided, bool)
+        or not isinstance(previous_decided, int)
+        or not isinstance(current_decided, int)
+        or previous_decided < 0
+        or current_decided < 0
+    ):
+        raise ValueError("evaluation_decided_count_invalid")
+    if current_decided < previous_decided:
+        return []
+    checked: set[int] = set()
+    for threshold in thresholds:
+        if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold <= 0:
+            raise ValueError("evaluation_threshold_invalid")
+        checked.add(threshold)
+    return [
+        threshold for threshold in sorted(checked)
+        if previous_decided < threshold <= current_decided and threshold not in sent
+    ]
 
 
 def _metrics(tally: dict[str, int], min_sample: int) -> dict[str, Any]:

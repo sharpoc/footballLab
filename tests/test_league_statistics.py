@@ -1,4 +1,4 @@
-from worldcup.league_statistics import build_league_statistics
+from worldcup.league_statistics import build_league_statistics, crossed_evaluation_thresholds
 
 
 def _block(competition_id: str, hit: int, miss: int, *, scope: str = "observed_schema_v2_match_pick_only") -> dict:
@@ -23,3 +23,9 @@ def test_statistics_exclude_csl_and_legacy_from_six_league_aggregate():
     assert report["aggregate"]["decision_tally"] == {"hit": 3, "miss": 2, "push": 0, "no_pick": 0}
     assert report["aggregate"]["decision_sample"]["hit_rate"] == 0.6
     assert "csl_2026" not in report["competitions"]
+
+
+def test_thresholds_report_every_crossed_unsent_boundary_once():
+    """Dropping a crossed unsent boundary would suppress the required offline review signal."""
+    assert crossed_evaluation_thresholds(19, 101, {50}) == [20, 100]
+    assert crossed_evaluation_thresholds(101, 101, set()) == []
