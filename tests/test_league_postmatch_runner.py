@@ -12,6 +12,7 @@ from worldcup.league_postmatch_notifications import (
     LeaguePostmatchNotificationOutbox,
     build_threshold_events,
 )
+from worldcup.league_live_probe import evaluate_league_probe_bundle
 from worldcup.league_postmatch_runner import main, run_league_postmatch
 from worldcup.league_result_evidence import build_result_contract_evidence
 from worldcup.league_statistics import build_league_statistics
@@ -32,20 +33,6 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def _identity_fingerprint(competition_id: str) -> str:
-    registry = accepted_league_team_identity_registry()
-    aliases = registry._aliases[competition_id]
-    payload = {
-        "competition_id": competition_id,
-        "aliases": [
-            {"provider_name": provider_name, "canonical": aliases[provider_name]}
-            for provider_name in sorted(aliases)
-        ],
-    }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
 def _evidence(root: Path, competition_id: str) -> dict:
     sport_keys = {EPL: "soccer_epl", LALIGA: "soccer_spain_la_liga"}
     sample_path = Path("data/probe/leagues/results") / f"{competition_id}.json"
@@ -60,29 +47,45 @@ def _evidence(root: Path, competition_id: str) -> dict:
         score_scope="football_90min",
         source_reference=hashlib.sha256(sample_bytes).hexdigest(),
         provider="fotmob",
+        sample_path=sample_path.as_posix(),
     )
-    evidence["sample_path"] = sample_path.as_posix()
     return evidence
 
 
 def _acceptance(evidence_by_competition: dict[str, dict]) -> dict:
-    return {
-        "schema_version": 1,
-        "competitions": {
-            competition_id: {
+    return _producer_acceptance(evidence_by_competition)
+
+
+def _producer_acceptance(evidence_by_competition: dict[str, dict]) -> dict:
+    sport_keys = {EPL: "soccer_epl", LALIGA: "soccer_spain_la_liga"}
+    registry = accepted_league_team_identity_registry()
+    rows = {}
+    for competition_id, evidence in evidence_by_competition.items():
+        home, away, _home_canonical, _away_canonical = _teams(competition_id)
+        rows[competition_id] = evaluate_league_probe_bundle(
+            {
+                "schema_version": 1,
                 "competition_id": competition_id,
-                "state": "active",
-                "reason": None,
-                "fingerprints": {
-                    "sport_catalog": "sport",
-                    "odds_sample": "odds",
-                    "team_identity": _identity_fingerprint(competition_id),
-                    "result_contract": evidence["fingerprint"],
-                },
-            }
-            for competition_id, evidence in evidence_by_competition.items()
-        },
-    }
+                "sport_key": sport_keys[competition_id],
+                "odds": [{
+                    "id": f"{competition_id}-sample-event",
+                    "sport_key": sport_keys[competition_id],
+                    "home_team": home,
+                    "away_team": away,
+                    "bookmakers": [{
+                        "key": "sample-book",
+                        "markets": [{"key": "h2h", "outcomes": [
+                            {"name": home, "price": 2.0},
+                            {"name": "Draw", "price": 3.2},
+                            {"name": away, "price": 3.8},
+                        ]}],
+                    }],
+                }],
+            },
+            identity_registry=registry,
+            result_contract_evidence=evidence,
+        )
+    return {"schema_version": 1, "competitions": rows}
 
 
 def _teams(competition_id: str) -> tuple[str, str, str, str]:
@@ -254,8 +257,58 @@ def test_live_requires_acceptance_fingerprint_bound_fotmob_evidence():
         assert not (root / f"data/local/leagues/{EPL}/results.json").exists()
 
 
+def test_production_acceptance_evidence_contract_activates_runner_without_manual_hashes():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        sample_path = Path("data/probe/leagues/results/epl-finished.json")
+        sample_bytes = b"sanitized-fotmob-finished-sample"
+        absolute_sample = root / sample_path
+        absolute_sample.parent.mkdir(parents=True)
+        absolute_sample.write_bytes(sample_bytes)
+        evidence = build_result_contract_evidence(
+            competition_id=EPL,
+            sport_key="soccer_epl",
+            provider_schema="fotmob_league_results_v1",
+            score_scope="football_90min",
+            source_reference=hashlib.sha256(sample_bytes).hexdigest(),
+            provider="fotmob",
+            sample_path=sample_path.as_posix(),
+        )
+        acceptance = _producer_acceptance({EPL: evidence})
+        assert acceptance["competitions"][EPL]["state"] == "active"
+        assert acceptance["competitions"][EPL]["fingerprints"]["result_contract"] == evidence["fingerprint"]
+        partition = root / f"data/local/leagues/{EPL}"
+        _write_json(root / "data/local/leagues/acceptance.json", acceptance)
+        _write_json(partition / "result_contract_evidence.json", evidence)
+        _write_json(partition / "history/snapshot-1.json", _snapshot(EPL, "1001"))
+        events: list[str] = []
+        calendar_fetcher, detail_fetcher = _fetchers(events)
+
+        result = run_league_postmatch(
+            root,
+            live=True,
+            write=True,
+            now=NOW,
+            calendar_fetcher=calendar_fetcher,
+            detail_fetcher=detail_fetcher,
+        )
+
+        assert result["status"] == "settled"
+        assert events == [f"calendar:{EPL}", f"details:{EPL}"]
+
+
 def test_live_binds_acceptance_to_saved_sample_bytes_and_current_identity_registry():
-    mutations = ("tampered_sample", "missing_sample", "path_escape", "identity_mismatch")
+    mutations = (
+        "tampered_sample",
+        "missing_sample",
+        "path_escape",
+        "traversal",
+        "cache_path",
+        "symlinked_probe_directory",
+        "symlinked_component",
+        "symlinked_sample_file",
+        "identity_mismatch",
+    )
     for mutation in mutations:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -271,6 +324,30 @@ def test_live_binds_acceptance_to_saved_sample_bytes_and_current_identity_regist
                 outside.write_bytes(f"{EPL}:saved-sample".encode())
                 evidence["sample_path"] = outside.name
                 _write_json(evidence_path, evidence)
+            elif mutation == "traversal":
+                evidence["sample_path"] = "data/probe/../outside.json"
+                _write_json(evidence_path, evidence)
+            elif mutation == "cache_path":
+                cache_sample = root / "data/cache/leagues/results/epl.json"
+                cache_sample.parent.mkdir(parents=True)
+                cache_sample.write_bytes(f"{EPL}:saved-sample".encode())
+                evidence["sample_path"] = "data/cache/leagues/results/epl.json"
+                _write_json(evidence_path, evidence)
+            elif mutation == "symlinked_probe_directory":
+                probe = root / "data/probe"
+                real_probe = root / "data/probe-real"
+                probe.rename(real_probe)
+                probe.symlink_to(real_probe, target_is_directory=True)
+            elif mutation == "symlinked_component":
+                results = root / "data/probe/leagues/results"
+                real_results = root / "data/probe/leagues/results-real"
+                results.rename(real_results)
+                results.symlink_to(real_results, target_is_directory=True)
+            elif mutation == "symlinked_sample_file":
+                sample = root / evidence["sample_path"]
+                target = sample.with_name("accepted-bytes.json")
+                sample.rename(target)
+                sample.symlink_to(target.name)
             else:
                 acceptance_path = root / "data/local/leagues/acceptance.json"
                 acceptance = json.loads(acceptance_path.read_text())
@@ -460,7 +537,7 @@ def test_pending_notification_retries_and_exits_without_provider_call():
         assert result["safety"]["called_fotmob"] is False
 
 
-def test_notification_transition_is_durable_consumed_and_not_replayed_next_day():
+def test_notify_disabled_consumes_without_outbox_and_next_run_processes_provider():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         _setup(root)
@@ -479,31 +556,37 @@ def test_notification_transition_is_durable_consumed_and_not_replayed_next_day()
 
         assert first["status"] == "settled"
         assert first["safety"]["notified"] is False
-        outbox = json.loads(
-            (root / "data/local/leagues/postmatch_notification_state.json").read_text()
-        )
-        assert len(outbox["pending"]) == 1
+        assert not (root / "data/local/leagues/postmatch_notification_state.json").exists()
         state = json.loads((root / "data/local/leagues/postmatch_state.json").read_text())
         assert state["notification_transition_consumed"] is True
 
-        sent: list[str] = []
-        retry = run_league_postmatch(
+        history_path = root / f"data/local/leagues/{EPL}/history/snapshot-1.json"
+        history = json.loads(history_path.read_text())
+        second = dict(history["matches"][0])
+        second["source_event_id"] = "1002"
+        history["matches"].append(second)
+        _write_json(history_path, history)
+        second_provider_events: list[str] = []
+
+        second_run = run_league_postmatch(
             root,
             live=True,
             write=True,
-            notify=True,
             now=NOW,
-            calendar_fetcher=_forbidden,
-            detail_fetcher=_forbidden,
-            notifier=lambda _content, summary: sent.append(summary) or {"status": "sent"},
+            calendar_fetcher=lambda competition_id, _date: (
+                second_provider_events.append(f"calendar:{competition_id}")
+                or _calendar(competition_id, "1002")
+            ),
+            detail_fetcher=lambda competition_id, event_id: (
+                second_provider_events.append(f"details:{competition_id}")
+                or _details(competition_id, event_id)
+            ),
+            notifier=_forbidden,
         )
-        assert retry["status"] == "notification_retried"
-        assert retry["safety"] == {
-            "read_env": False,
-            "called_fotmob": False,
-            "wrote": True,
-            "notified": True,
-        }
+        assert second_run["status"] == "settled"
+        assert second_run["safety"]["called_fotmob"] is True
+        assert second_provider_events == [f"calendar:{EPL}", f"details:{EPL}"]
+        assert not (root / "data/local/leagues/postmatch_notification_state.json").exists()
 
         next_day = run_league_postmatch(
             root,
@@ -517,7 +600,6 @@ def test_notification_transition_is_durable_consumed_and_not_replayed_next_day()
         )
         assert next_day["notifications"] == []
         assert next_day["safety"]["notified"] is False
-        assert len(sent) == 1
 
 
 def test_crash_after_state_commit_before_intent_recovers_transition_before_provider():
@@ -570,6 +652,53 @@ def test_crash_after_state_commit_before_intent_recovers_transition_before_provi
         )
         daily = next(iter(outbox["sent"].values()))["event"]
         assert daily["payload"]["settlement_date"] == "2026-08-29"
+
+
+def test_legacy_v1_state_upgrades_as_consumed_without_replaying_historical_notification():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _setup(root)
+        events: list[str] = []
+        calendar_fetcher, detail_fetcher = _fetchers(events)
+        initial = run_league_postmatch(
+            root,
+            live=True,
+            write=True,
+            notify=True,
+            now=NOW,
+            calendar_fetcher=calendar_fetcher,
+            detail_fetcher=detail_fetcher,
+            notifier=lambda *_args: {"status": "sent"},
+        )
+        assert initial["status"] == "settled"
+        state_path = root / "data/local/leagues/postmatch_state.json"
+        state = json.loads(state_path.read_text())
+        legacy = {
+            key: value for key, value in state.items()
+            if key not in {"notification_date", "notification_transition_consumed"}
+        }
+        legacy["schema_version"] = 1
+        _write_json(state_path, legacy)
+
+        upgraded = run_league_postmatch(
+            root,
+            live=True,
+            write=True,
+            notify=True,
+            now=datetime(2026, 8, 30, 0, 0, tzinfo=timezone.utc),
+            calendar_fetcher=_forbidden,
+            detail_fetcher=_forbidden,
+            notifier=_forbidden,
+        )
+
+        assert upgraded["status"] == "stored"
+        assert upgraded["notifications"] == []
+        normalized = json.loads(state_path.read_text())
+        assert normalized["schema_version"] == 2
+        assert normalized["notification_date"] is None
+        assert normalized["notification_transition_consumed"] is True
+        assert normalized["settled_count"] == legacy["settled_count"] == 1
+        assert normalized["decided"] == legacy["decided"] == 1
 
 
 def test_failed_and_already_sent_notification_statuses_report_truthful_safety():

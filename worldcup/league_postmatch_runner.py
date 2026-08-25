@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import stat
 import tempfile
 from collections import defaultdict
 from datetime import date, datetime, timezone
@@ -26,10 +27,16 @@ from worldcup.league_postmatch_notifications import (
     build_threshold_events,
 )
 from worldcup.league_postmatch_planner import plan_league_postmatch
-from worldcup.league_result_evidence import verify_result_contract_evidence
+from worldcup.league_result_evidence import (
+    fotmob_sample_path_is_sanitized,
+    verify_result_contract_evidence,
+)
 from worldcup.league_result_store import LeagueResultStore, _read as _read_result_receipt
 from worldcup.league_statistics import build_league_statistics
-from worldcup.league_team_identity import accepted_league_team_identity_registry
+from worldcup.league_team_identity import (
+    accepted_league_team_identity_registry,
+    league_team_identity_registry_fingerprint,
+)
 
 
 CalendarFetcher = Callable[[str, str], Mapping[str, Any]]
@@ -74,45 +81,49 @@ def _fingerprint(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _identity_registry_fingerprint(registry: Any, competition_id: str) -> str:
-    aliases_by_competition = getattr(registry, "_aliases", None)
-    aliases = (
-        aliases_by_competition.get(competition_id)
-        if isinstance(aliases_by_competition, Mapping)
-        else None
-    )
-    if not isinstance(aliases, Mapping) or not aliases:
-        return ""
-    payload = {
-        "competition_id": competition_id,
-        "aliases": [
-            {"provider_name": str(provider_name), "canonical": str(aliases[provider_name])}
-            for provider_name in sorted(aliases)
-        ],
-    }
-    return _fingerprint(payload)
-
-
 def _saved_sample_matches(root: Path, evidence: Mapping[str, Any]) -> bool:
     configured = evidence.get("sample_path")
-    if not isinstance(configured, str) or not configured.strip():
+    if not fotmob_sample_path_is_sanitized(configured):
         return False
-    relative = Path(configured)
-    if relative.is_absolute() or relative.parts[:2] not in (("data", "probe"), ("data", "cache")):
-        return False
+    relative = Path(str(configured))
+    opened: list[int] = []
     try:
         root_resolved = root.resolve(strict=True)
-        allowed = (root / relative.parts[0] / relative.parts[1]).resolve(strict=True)
-        sample = (root / relative).resolve(strict=True)
-        if (
-            not allowed.is_relative_to(root_resolved)
-            or not sample.is_relative_to(allowed)
-            or not sample.is_file()
-        ):
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        current = os.open(root_resolved, directory_flags)
+        opened.append(current)
+        for component in relative.parts[:-1]:
+            metadata = os.stat(component, dir_fd=current, follow_symlinks=False)
+            if not stat.S_ISDIR(metadata.st_mode):
+                return False
+            current = os.open(component, directory_flags | nofollow, dir_fd=current)
+            opened.append(current)
+        filename = relative.parts[-1]
+        before = os.stat(filename, dir_fd=current, follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode):
             return False
-        digest = hashlib.sha256(sample.read_bytes()).hexdigest()
-    except OSError:
+        file_descriptor = os.open(
+            filename,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | nofollow,
+            dir_fd=current,
+        )
+        opened.append(file_descriptor)
+        after = os.fstat(file_descriptor)
+        if not stat.S_ISREG(after.st_mode) or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            return False
+        digest_builder = hashlib.sha256()
+        while chunk := os.read(file_descriptor, 1024 * 1024):
+            digest_builder.update(chunk)
+        digest = digest_builder.hexdigest()
+    except (OSError, ValueError):
         return False
+    finally:
+        for descriptor in reversed(opened):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
     return digest == evidence.get("source_reference")
 
 
@@ -215,17 +226,23 @@ def _load_runner_state(path: Path) -> dict[str, Any] | None:
             raise ValueError("league_postmatch_state_invalid")
         competitions[competition_id] = counts
     notification_date: str | None = None
-    transition_consumed = False
+    transition_consumed = schema_version == 1
     if schema_version == 2:
         notification_date = value.get("notification_date")
         transition_consumed = value.get("notification_transition_consumed")
-        if not isinstance(notification_date, str) or not isinstance(transition_consumed, bool):
+        if not isinstance(transition_consumed, bool):
             raise ValueError("league_postmatch_state_invalid")
-        try:
-            if date.fromisoformat(notification_date).isoformat() != notification_date:
-                raise ValueError
-        except ValueError:
-            raise ValueError("league_postmatch_state_invalid") from None
+        if notification_date is None:
+            if not transition_consumed:
+                raise ValueError("league_postmatch_state_invalid")
+        elif isinstance(notification_date, str):
+            try:
+                if date.fromisoformat(notification_date).isoformat() != notification_date:
+                    raise ValueError
+            except ValueError:
+                raise ValueError("league_postmatch_state_invalid") from None
+        else:
+            raise ValueError("league_postmatch_state_invalid")
     return {
         "schema_version": 2,
         "statistics_scope": FORMAL_SCOPE,
@@ -326,7 +343,9 @@ def _active_inputs(
         ):
             blocked[competition_id] = {"status": "blocked", "reason": "result_contract_evidence_invalid"}
             continue
-        if fingerprints.get("team_identity") != _identity_registry_fingerprint(registry, competition_id):
+        if fingerprints.get("team_identity") != league_team_identity_registry_fingerprint(
+            registry, competition_id
+        ):
             blocked[competition_id] = {"status": "blocked", "reason": "team_identity_evidence_invalid"}
             continue
         try:
@@ -619,11 +638,6 @@ def _notification_events(
     return events
 
 
-def _defer_notification(_content: str, *, summary: str) -> Mapping[str, Any]:
-    del summary
-    return {"status": "deferred"}
-
-
 def _persist_notification_transition(
     *,
     statistics: Mapping[str, Any],
@@ -633,11 +647,28 @@ def _persist_notification_transition(
     notify: bool,
     notifier: Notifier | None,
 ) -> dict[str, Any]:
-    sender = _outbox_notifier(notifier) if notify else _defer_notification
-    outbox = LeaguePostmatchNotificationOutbox(notification_path, sender)
     deliveries: list[dict[str, str]] = []
     wrote = False
     notified = False
+    if not notify:
+        try:
+            consumed = {**state, "notification_transition_consumed": True}
+            state_status = _write_json_atomic(state_path, consumed)
+        except Exception:
+            return {
+                "status": "error",
+                "reason": "notification_intent_commit_failed",
+                "notifications": [],
+                "wrote": False,
+                "notified": False,
+            }
+        return {
+            "status": "complete",
+            "notifications": [],
+            "wrote": state_status == "stored",
+            "notified": False,
+        }
+    outbox = LeaguePostmatchNotificationOutbox(notification_path, _outbox_notifier(notifier))
     try:
         events = _notification_events(statistics, state, outbox)
         for event in events:
@@ -1096,6 +1127,10 @@ def run_league_postmatch(
                 old_state,
                 notification_date=now_dt.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat(),
             )
+            transition_created = (
+                old_state is None
+                or old_state["aggregate_fingerprint"] != new_state["aggregate_fingerprint"]
+            )
         except Exception:
             return {
                 "status": "error",
@@ -1161,7 +1196,10 @@ def run_league_postmatch(
 
         has_errors = any(row.get("status") in {"error", "conflict"} for row in outcomes.values())
         has_partial = any(row.get("status") == "partial" for row in outcomes.values())
-        if newly_settled_total or new_state["newly_settled"]:
+        reported_newly_settled = (
+            new_state["newly_settled"] if transition_created else newly_settled_total
+        )
+        if reported_newly_settled:
             status = "partial" if has_errors or has_partial else "settled"
         elif has_errors:
             status = "error"
@@ -1181,7 +1219,7 @@ def run_league_postmatch(
             "statistics": {
                 "statistics_scope": FORMAL_SCOPE,
                 "aggregate_fingerprint": new_state["aggregate_fingerprint"],
-                "newly_settled": new_state["newly_settled"],
+                "newly_settled": reported_newly_settled,
                 "decided": new_state["decided"],
             },
             "notifications": notification_results,

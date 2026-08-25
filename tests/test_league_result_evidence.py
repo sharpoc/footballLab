@@ -101,3 +101,33 @@ def test_fotmob_evidence_requires_its_provider_schema_and_saved_sample_sha256():
         "epl_2026_27",
         provider_schema="fotmob_league_results_v1",
     ) is False
+
+
+def test_fotmob_production_evidence_fingerprint_binds_sanitized_probe_sample_path():
+    evidence = build_result_contract_evidence(
+        competition_id="epl_2026_27",
+        sport_key="soccer_epl",
+        provider_schema="fotmob_league_results_v1",
+        score_scope="football_90min",
+        source_reference=FOTMOB_SAMPLE_SHA256,
+        provider="fotmob",
+        sample_path="data/probe/leagues/results/epl-finished.json",
+    )
+    cache_path = build_result_contract_evidence(
+        competition_id="epl_2026_27",
+        sport_key="soccer_epl",
+        provider_schema="fotmob_league_results_v1",
+        score_scope="football_90min",
+        source_reference=FOTMOB_SAMPLE_SHA256,
+        provider="fotmob",
+        sample_path="data/cache/leagues/results/epl-finished.json",
+    )
+
+    assert evidence["verified"] is True
+    assert evidence["sample_path"] == "data/probe/leagues/results/epl-finished.json"
+    assert verify_result_contract_evidence(evidence, "epl_2026_27") is True
+    assert verify_result_contract_evidence(
+        {**evidence, "sample_path": "data/probe/leagues/results/other.json"},
+        "epl_2026_27",
+    ) is False
+    assert cache_path["verified"] is False

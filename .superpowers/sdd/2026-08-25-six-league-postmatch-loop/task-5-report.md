@@ -96,3 +96,39 @@ git diff --check
 ```
 
 All commands exited 0. A focused scan also found no The Odds API/quota access, env loader, `launchctl`, direct WxPusher command, credential field, or authorization/cookie path in the runner. This fix round performed no real probe, live/write run, notification, timer installation, push, PR, merge, or deployment.
+
+## Review fix round 2
+
+### RED evidence
+
+Production-level integration regressions were added before implementation. The prior code failed six tests:
+
+```text
+1435/1441 tests passed, 1 module skipped
+```
+
+The failures demonstrated the producer/runner identity mismatch, absent production sample-path argument and fingerprint binding, `notify=False` creating a blocking outbox pending record, schema-v1 state attempting an impossible historical notification recovery, and insufficient symlink/path enforcement.
+
+### Shared production contracts
+
+- `league_team_identity_registry_fingerprint(...)` is now the single producer/consumer helper. It hashes the complete normalized provider-name-to-canonical mapping for the requested competition, not merely the identities exercised by one odds sample. `evaluate_league_probe_bundle(...)` and the postmatch runner both call this helper. Changing an otherwise unused accepted alias changes the acceptance fingerprint, and the production producer-to-runner integration test uses no manually manufactured identity hash.
+- FotMob production evidence accepts `sample_path`, restricted lexically to a normalized relative `data/probe/...` path. When present it is part of the canonical result-contract evidence core and therefore part of `fingerprint`; changing the path invalidates the evidence. The acceptance producer requires this bound path before FotMob result evidence can activate a competition. Legacy pathless evidence remains usable only by pure/offline parser compatibility paths and cannot activate the production acceptance/runner chain.
+- The acceptance `result_contract` fingerprint is the deterministic reference to the evidence object that contains `sample_path` and the saved-byte SHA-256. The runner revalidates that exact evidence fingerprint, then independently hashes the actual file bytes and compares them with `source_reference` before any provider call.
+- Runner sample access is limited to the physical repository root's `data/probe` tree. It walks every component through directory file descriptors, checks each with `stat(..., follow_symlinks=False)`, opens with `O_NOFOLLOW` where available, requires a regular final file, compares pre-open and post-open device/inode identity, and hashes through the opened descriptor. Traversal, `data/cache`, outside/absolute paths, missing/tampered files, a symlinked `data/probe` directory, a symlinked intermediate directory, and a symlinked final file all fail closed without exposing contents.
+
+### Notification and upgrade behavior
+
+- `notify=False` now atomically marks the current transition consumed without constructing an outbox, enqueueing an event, or invoking a sender. A two-run regression proves the first settlement creates no notification state and the second wake can call the injected provider and settle a newly due event instead of being blocked by a synthetic pending notification.
+- `notify=True` retains the round-1 durable intent-first recovery and Task 4 at-least-once sender receipt window.
+- Schema-v1 runner state is normalized to schema v2 as an already-consumed historical transition with `notification_date=null`. No date is synthesized and no historical daily/threshold notification is rebuilt. Aggregate fingerprint, settled count, decided count, and per-competition monotonic baselines are preserved, and the normalized state is durably written during the normal reconciliation pass.
+- Status/statistics projection distinguishes a newly created aggregate transition from an already-consumed unchanged transition, preventing old `newly_settled` metadata from making an upgrade/no-due wake appear newly settled while preserving crash recovery reporting for a genuinely new state transition.
+
+### Final verification
+
+```text
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py
+1441/1441 tests passed, 1 module(s) skipped
+Skipped: test_fastapi_app.py (optional: fastapi)
+```
+
+Focused producer, evidence, and runner regressions passed `32/32`; `py_compile` and `git diff --check` also exited 0. No real FotMob probe/network call, WxPusher delivery, live operational run, timer action, push, PR, merge, or deployment was performed.

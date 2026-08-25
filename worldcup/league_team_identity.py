@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
@@ -197,6 +199,27 @@ class LeagueTeamIdentityRegistry:
             "home_canonical": home_result.canonical,
             "away_canonical": away_result.canonical,
         }
+
+
+def league_team_identity_registry_fingerprint(
+    registry: LeagueTeamIdentityRegistry,
+    competition_id: str,
+) -> str:
+    """Bind the complete normalized strict alias registry for one competition."""
+    if competition_id not in FORMAL_SINGLE_MATCH_IDS:
+        raise ValueError("league_team_competition_not_allowed")
+    aliases = registry._aliases.get(competition_id)
+    if not isinstance(aliases, dict) or not aliases:
+        raise ValueError("league_team_registry_missing")
+    payload = {
+        "competition_id": competition_id,
+        "aliases": [
+            {"provider_name": provider_name, "canonical": aliases[provider_name]}
+            for provider_name in sorted(aliases)
+        ],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def accepted_league_team_identity_registry() -> LeagueTeamIdentityRegistry:
