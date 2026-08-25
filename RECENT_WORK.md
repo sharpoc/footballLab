@@ -6,6 +6,14 @@
 
 较早记录压缩摘要（2026-07-10 至 2026-07-19）：完成 MatchPick v3、首选鲜度、中超俱乐部评级门槛、已开赛待赛果展示、延期状态、quota 槽位切换和世界杯赛后同步等阶段；当前槽位数以最新记录和 README 为准。保留的关键约束已同步到 README、AGENTS/CLAUDE 与 Git 历史。2026-07-19 首次赛后 live 因当时外部配置受阻，未产生业务写入。
 
+## 2026-08-25 六联赛赛后闭环离线实现
+
+- Task 1–6 已在本地实现严格 FotMob 90 分钟解析、路径/内容/registry 绑定的 acceptance、单调分区 results/closing store、纯 due planner、observed schema v2 累计结算、逐联赛/六联赛统计、可恢复通知 outbox、dry-run-first runner 和只生成 plist 的 LaunchAgent generator。缺 closing 显式记 `missing_closing` / `skipped_no_closing`，比分修订/finished 回退/身份冲突保留旧值并 fail closed。
+- 默认 `python3 -m worldcup.league_postmatch_runner --root <repo>` 只读 acceptance/evidence/history/result receipt，不读 runner/notification state，不读 `.env`、不联网、不写盘、不通知，不调用 The Odds API scores 或改动 quota。live/write 必须同时显式给出；不带 `--notify` 的新 transition 会被静默消费，不留待以后补发的摘要。已有 notification pending 则先于 provider 检查：带 `--notify` 时重试，不带时返回 `notification_pending` 并阻断 provider。WxPusher 接受成功到 sent receipt 持久化之间仍有 at-least-once 重复发送窗口。
+- 赛后 generator 的独立 label 为 `xin.celab.football.league-postmatch`，计划每天北京时间 10:30 / 16:30、`RunAtLoad=false`，与赛前 `xin.celab.football.league-pre-match` 的每 300 秒 confirmed-lineup observer 无关。当前未安装/加载赛后 plist，未验收真实 FotMob 赛后样例，未执行 live/write，未发送手机通知，未 push/merge/deploy。
+- 后续必须分开确认 Gate A 真实 FotMob probe、Gate B 首次静默 live/write 与立即幂等重跑、Gate C 赛后 LaunchAgent 安装（`RunAtLoad=false`、不 kickstart）、Gate D 首次真实 WxPusher。Gate A 无法证明 terminal 90 分钟语义时必须保持 blocked；20/50/100 仅是健康检查/离线候选/正式优化审查门，不自动调参或上线。本闭环只用于研究与离线评估，不构成投注建议，不输出下注金额或执行建议。
+- Task 7 新鲜验证：指定 runtime 两次完整回归均为 `1446/1446 tests passed, 1 optional fastapi module skipped`；六个赛后生产模块 `py_compile`、`git diff --check` 和变更 diff 敏感值扫描通过。真实文件系统 dry-run 前后 quota/leagues/results/state/notification manifest SHA-256 均为 `d4b7297def72fad76ec1cc62e9797c3ea6b7f9608e5fda5bb12c6c1ca2e933d4`，输出 `mode=dry_run` 且 `read_env/called_fotmob/wrote/notified=false`；观察/full-live plist 预览均未生成文件。
+
 ## 2026-08-25 六联赛确认首发功能部署
 
 - PR #7 已 squash merge 到远端 `main` commit `3c3db4101092f265804871f3650dbe2b8565890b`；合并前指定 runtime 完整回归 `1347/1347 tests passed, 1 optional fastapi module skipped`，CI `tests` 通过。

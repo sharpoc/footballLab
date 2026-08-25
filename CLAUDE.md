@@ -46,6 +46,10 @@
 - scheduler 默认 dry-run，只读取本地 snapshot / quota 并输出 JSON 决策；The Odds API 按免费额度使用，低额度时必须降频。
 - 意甲、巴甲、西甲、英超、德甲、法甲使用独立 `league_v1` 离线闭环；俱乐部评级 pending 时只用市场共识，占位 1500 不得影响方向。正式统计只接受 observed schema v2，不混入世界杯、中超、legacy 或 reconstructed。六联赛 batch 的 live/write 在真实赔率与 90 分钟 scores 样例验收前必须保持 `live_acceptance_not_enabled`。
 - 六联赛 live 只能由 acceptance report 中 sport catalog、odds sample、严格球队 identity、90 分钟 result contract 四类证据指纹共同激活；`state=active` 字符串本身无效。正式 live pipeline 必须传赛事级严格 identity registry，禁止回退 slug。真实 probe、active 写入、LaunchAgent 安装、推送和部署分别确认。
+- 六联赛赛后闭环当前只完成本地离线 / dry-run-first 实现；尚未验收真实 FotMob 赛果样例，未执行 `--live --write`，未安装 `xin.celab.football.league-postmatch`，未发送真实 WxPusher。真实 FotMob probe、首次静默 live/write、LaunchAgent 安装、首次真实通知是独立 Gates A–D，push/merge/deploy 也不在其中。
+- 赛后 acceptance 必须绑定同联赛 `result_contract_evidence.json`、规范化相对 `data/probe/...` 样例路径、实际样例字节 SHA-256 和当前完整严格球队 registry 指纹；样例目录/文件任一 symlink、路径逃逸、指纹不同或 due event identity 不同都必须在 provider 前 fail closed。
+- 赛后结果 store 必须保持单调：已接受比分不删除/不静默改写，修订、finished 回退或身份冲突隔离人工审计；缺 closing 只记 `missing_closing` / `skipped_no_closing`，不补造推荐。已持久化通知 pending 必须先于 provider 检查：带 `--notify` 时先重试，不带时返回 `notification_pending` 并阻断 provider；通知失败不回滚结算。WxPusher 接受成功但 sent receipt 持久化前崩溃存在 at-least-once 重复发送窗口，不得声称 exactly-once。
+- 六联赛赛后 timer 固定为北京时间 10:30 / 16:30、`RunAtLoad=false`；赛前 confirmed-lineup observer 是独立 `xin.celab.football.league-pre-match` 五分钟唤醒链路，不得把五分钟频率写成赛后调度。
 - The Odds API 使用 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY` / `THE_ODDS_API_KEY_TERTIARY` / `THE_ODDS_API_KEY_QUATERNARY` / `THE_ODDS_API_KEY_QUINARY` 五个显式槽位依次轮换；当前槽位剩余额度降到 30 或以下时，优先切换到仍未探测或剩余大于 30 的下一槽位并保留低额度应急余额。只有五个槽位都没有新鲜额度时才按低额度锚点降频，全部耗尽时暂停刷新。真实 token 只允许写入 ignored `.env`，不得进入代码、文档、日志或回复。
 - scheduled refresh 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会调用 refresh runner。
 - 正常额度时，世界杯与中超调度都必须把 `match_decision.valid_until - 20 分钟` 作为刷新候选，避免有效首选先过期再等下一个赛前锚点；quota 低于等于 30 时允许按既有低额度锚点降级。
