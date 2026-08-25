@@ -9,7 +9,7 @@ import json
 import os
 import tempfile
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
@@ -74,6 +74,48 @@ def _fingerprint(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _identity_registry_fingerprint(registry: Any, competition_id: str) -> str:
+    aliases_by_competition = getattr(registry, "_aliases", None)
+    aliases = (
+        aliases_by_competition.get(competition_id)
+        if isinstance(aliases_by_competition, Mapping)
+        else None
+    )
+    if not isinstance(aliases, Mapping) or not aliases:
+        return ""
+    payload = {
+        "competition_id": competition_id,
+        "aliases": [
+            {"provider_name": str(provider_name), "canonical": str(aliases[provider_name])}
+            for provider_name in sorted(aliases)
+        ],
+    }
+    return _fingerprint(payload)
+
+
+def _saved_sample_matches(root: Path, evidence: Mapping[str, Any]) -> bool:
+    configured = evidence.get("sample_path")
+    if not isinstance(configured, str) or not configured.strip():
+        return False
+    relative = Path(configured)
+    if relative.is_absolute() or relative.parts[:2] not in (("data", "probe"), ("data", "cache")):
+        return False
+    try:
+        root_resolved = root.resolve(strict=True)
+        allowed = (root / relative.parts[0] / relative.parts[1]).resolve(strict=True)
+        sample = (root / relative).resolve(strict=True)
+        if (
+            not allowed.is_relative_to(root_resolved)
+            or not sample.is_relative_to(allowed)
+            or not sample.is_file()
+        ):
+            return False
+        digest = hashlib.sha256(sample.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return digest == evidence.get("source_reference")
+
+
 def _read_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -128,10 +170,14 @@ def _load_runner_state(path: Path) -> dict[str, Any] | None:
         "newly_settled",
         "competitions",
     }
+    schema_version = value.get("schema_version") if isinstance(value, Mapping) else None
+    expected = required if schema_version == 1 else required | {
+        "notification_date", "notification_transition_consumed",
+    }
     if (
         not isinstance(value, Mapping)
-        or set(value) != required
-        or value.get("schema_version") != 1
+        or set(value) != expected
+        or schema_version not in {1, 2}
         or value.get("statistics_scope") != FORMAL_SCOPE
         or not isinstance(value.get("aggregate_fingerprint"), str)
         or len(value["aggregate_fingerprint"]) != 64
@@ -168,12 +214,26 @@ def _load_runner_state(path: Path) -> dict[str, Any] | None:
         if counts["settled_count"] < counts["previous_settled_count"] or counts["newly_settled"] != counts["settled_count"] - counts["previous_settled_count"]:
             raise ValueError("league_postmatch_state_invalid")
         competitions[competition_id] = counts
+    notification_date: str | None = None
+    transition_consumed = False
+    if schema_version == 2:
+        notification_date = value.get("notification_date")
+        transition_consumed = value.get("notification_transition_consumed")
+        if not isinstance(notification_date, str) or not isinstance(transition_consumed, bool):
+            raise ValueError("league_postmatch_state_invalid")
+        try:
+            if date.fromisoformat(notification_date).isoformat() != notification_date:
+                raise ValueError
+        except ValueError:
+            raise ValueError("league_postmatch_state_invalid") from None
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "statistics_scope": FORMAL_SCOPE,
         "aggregate_fingerprint": value["aggregate_fingerprint"],
         **checked_counts,
         "competitions": competitions,
+        "notification_date": notification_date,
+        "notification_transition_consumed": transition_consumed,
     }
 
 
@@ -246,6 +306,7 @@ def _active_inputs(
     snapshots: dict[str, list[dict[str, Any]]] = {}
     evidence: dict[str, dict[str, Any]] = {}
     blocked: dict[str, dict[str, str]] = {}
+    registry = accepted_league_team_identity_registry()
     for competition_id in sorted(set(rows).intersection(FORMAL_SINGLE_MATCH_IDS)):
         row = rows[competition_id]
         if not acceptance_row_is_active(row, competition_id):
@@ -261,8 +322,12 @@ def _active_inputs(
             or not verify_result_contract_evidence(value, competition_id, provider_schema="fotmob_league_results_v1")
             or not isinstance(fingerprints, Mapping)
             or fingerprints.get("result_contract") != value.get("fingerprint")
+            or not _saved_sample_matches(root, value)
         ):
             blocked[competition_id] = {"status": "blocked", "reason": "result_contract_evidence_invalid"}
+            continue
+        if fingerprints.get("team_identity") != _identity_registry_fingerprint(registry, competition_id):
+            blocked[competition_id] = {"status": "blocked", "reason": "team_identity_evidence_invalid"}
             continue
         try:
             competition_snapshots = _load_snapshots(root, competition_id)
@@ -359,10 +424,81 @@ def _settled_count(row: Mapping[str, Any]) -> int:
     return sum(int(tally.get(key) or 0) for key in ("hit", "miss", "push", "no_pick"))
 
 
-def _state_for_statistics(statistics: Mapping[str, Any], old: dict[str, Any] | None) -> dict[str, Any]:
+def _validate_statistics(
+    statistics: Mapping[str, Any],
+    previous: Mapping[str, Any] | None,
+    *,
+    expected_competitions: set[str],
+) -> None:
+    competitions = statistics.get("competitions")
+    aggregate = statistics.get("aggregate")
+    excluded = statistics.get("excluded_competitions")
+    if (
+        set(statistics) != {"statistics_scope", "competitions", "excluded_competitions", "aggregate"}
+        or statistics.get("statistics_scope") != FORMAL_SCOPE
+        or not isinstance(competitions, Mapping)
+        or set(competitions) != expected_competitions
+        or not isinstance(excluded, Mapping)
+        or excluded
+        or not isinstance(aggregate, Mapping)
+    ):
+        raise ValueError("league_postmatch_statistics_invalid")
+    rows = {**competitions, "_aggregate": aggregate}
+    for row in rows.values():
+        if not isinstance(row, Mapping):
+            raise ValueError("league_postmatch_statistics_invalid")
+        tally = row.get("decision_tally")
+        sample = row.get("decision_sample")
+        coverage = row.get("decision_coverage")
+        if not isinstance(tally, Mapping) or not isinstance(sample, Mapping) or not isinstance(coverage, Mapping):
+            raise ValueError("league_postmatch_statistics_invalid")
+        for key in ("hit", "miss", "push", "no_pick"):
+            count = tally.get(key)
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ValueError("league_postmatch_statistics_invalid")
+        for key in ("decided", "decision_count"):
+            count = sample.get(key)
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ValueError("league_postmatch_statistics_invalid")
+        finished = coverage.get("finished_result_count")
+        if isinstance(finished, bool) or not isinstance(finished, int) or finished < 0:
+            raise ValueError("league_postmatch_statistics_invalid")
+    if previous is None:
+        return
+    previous_competitions = previous.get("competitions")
+    previous_aggregate = previous.get("aggregate")
+    if (
+        previous.get("statistics_scope") != FORMAL_SCOPE
+        or not isinstance(previous_competitions, Mapping)
+        or not set(previous_competitions).issubset(competitions)
+        or not isinstance(previous_aggregate, Mapping)
+    ):
+        raise ValueError("league_postmatch_statistics_invalid")
+    comparisons = [
+        (previous_competitions[competition_id], competitions[competition_id])
+        for competition_id in previous_competitions
+    ] + [(previous_aggregate, aggregate)]
+    for old_row, new_row in comparisons:
+        if (
+            _settled_count(new_row) < _settled_count(old_row)
+            or int(new_row["decision_sample"]["decided"]) < int(old_row["decision_sample"]["decided"])
+            or int(new_row["decision_coverage"]["finished_result_count"])
+            < int(old_row["decision_coverage"]["finished_result_count"])
+        ):
+            raise ValueError("league_postmatch_statistics_regression")
+
+
+def _state_for_statistics(
+    statistics: Mapping[str, Any],
+    old: dict[str, Any] | None,
+    *,
+    notification_date: str,
+) -> dict[str, Any]:
     aggregate_fingerprint = _fingerprint(statistics)
     if old is not None and old["aggregate_fingerprint"] == aggregate_fingerprint:
         return old
+    if old is not None and not old["notification_transition_consumed"]:
+        raise ValueError("league_postmatch_notification_transition_unconsumed")
     aggregate = statistics["aggregate"]
     current_decided = int(aggregate["decision_sample"]["decided"])
     current_settled = _settled_count(aggregate)
@@ -371,6 +507,8 @@ def _state_for_statistics(statistics: Mapping[str, Any], old: dict[str, Any] | N
     if current_decided < previous_decided or current_settled < previous_settled:
         raise ValueError("league_postmatch_state_regression")
     old_competitions = old.get("competitions", {}) if old is not None else {}
+    if not set(old_competitions).issubset(statistics["competitions"]):
+        raise ValueError("league_postmatch_state_regression")
     competitions: dict[str, dict[str, int]] = {}
     for competition_id, row in statistics["competitions"].items():
         current = _settled_count(row)
@@ -383,7 +521,7 @@ def _state_for_statistics(statistics: Mapping[str, Any], old: dict[str, Any] | N
             "newly_settled": current - previous,
         }
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "statistics_scope": FORMAL_SCOPE,
         "aggregate_fingerprint": aggregate_fingerprint,
         "previous_decided": previous_decided,
@@ -392,6 +530,8 @@ def _state_for_statistics(statistics: Mapping[str, Any], old: dict[str, Any] | N
         "settled_count": current_settled,
         "newly_settled": current_settled - previous_settled,
         "competitions": competitions,
+        "notification_date": notification_date,
+        "notification_transition_consumed": False,
     }
 
 
@@ -411,10 +551,172 @@ def _notification_competitions(statistics: Mapping[str, Any], state: Mapping[str
     return projected
 
 
-def _result_subset(parsed: Mapping[str, Any], due_ids: set[str], competition_id: str) -> dict[str, Any]:
-    results = [dict(row) for row in parsed.get("results", []) if isinstance(row, Mapping) and row.get("source_event_id") in due_ids]
-    pending = [dict(row) for row in parsed.get("pending", []) if isinstance(row, Mapping) and row.get("source_event_id") in due_ids]
+def _result_subset(
+    parsed: Mapping[str, Any],
+    due_rows: list[dict[str, str]],
+    competition_id: str,
+) -> dict[str, Any]:
+    if parsed.get("competition_id") != competition_id:
+        raise ValueError("result_due_identity_mismatch")
+    due = {row["source_event_id"]: row for row in due_rows}
+    results: list[dict[str, Any]] = []
+    parsed_results = parsed.get("results")
+    if not isinstance(parsed_results, list):
+        raise ValueError("result_due_identity_mismatch")
+    for value in parsed_results:
+        if not isinstance(value, Mapping) or value.get("source_event_id") not in due:
+            raise ValueError("result_due_identity_mismatch")
+        row = dict(value)
+        expected = due[row["source_event_id"]]
+        try:
+            actual_identity = (
+                row.get("competition_id"),
+                _utc(row.get("kickoff_at_utc")).isoformat(),
+                str(row.get("home_canonical") or "").strip(),
+                str(row.get("away_canonical") or "").strip(),
+            )
+        except ValueError:
+            raise ValueError("result_due_identity_mismatch") from None
+        expected_identity = (
+            competition_id,
+            _utc(expected["kickoff_at_utc"]).isoformat(),
+            expected["home_canonical"],
+            expected["away_canonical"],
+        )
+        if actual_identity != expected_identity:
+            raise ValueError("result_due_identity_mismatch")
+        results.append(row)
+    pending = [
+        dict(row) for row in parsed.get("pending", [])
+        if isinstance(row, Mapping) and row.get("source_event_id") in due
+    ]
     return {"competition_id": competition_id, "results": results, "pending": pending, "source_events": []}
+
+
+def _notification_events(
+    statistics: Mapping[str, Any],
+    state: Mapping[str, Any],
+    outbox: LeaguePostmatchNotificationOutbox,
+) -> list[dict[str, Any]]:
+    settlement_date = state.get("notification_date")
+    if not isinstance(settlement_date, str):
+        raise ValueError("league_postmatch_state_invalid")
+    events: list[dict[str, Any]] = []
+    daily = build_daily_settlement_event(
+        settlement_date=settlement_date,
+        newly_settled=state["newly_settled"],
+        competitions=_notification_competitions(statistics, state),
+        aggregate_fingerprint=state["aggregate_fingerprint"],
+    )
+    if daily is not None:
+        events.append(daily)
+    events.extend(build_threshold_events(
+        previous_decided=state["previous_decided"],
+        current_decided=state["decided"],
+        sent_thresholds=outbox.sent_thresholds(),
+        aggregate_fingerprint=state["aggregate_fingerprint"],
+    ))
+    return events
+
+
+def _defer_notification(_content: str, *, summary: str) -> Mapping[str, Any]:
+    del summary
+    return {"status": "deferred"}
+
+
+def _persist_notification_transition(
+    *,
+    statistics: Mapping[str, Any],
+    state: dict[str, Any],
+    state_path: Path,
+    notification_path: Path,
+    notify: bool,
+    notifier: Notifier | None,
+) -> dict[str, Any]:
+    sender = _outbox_notifier(notifier) if notify else _defer_notification
+    outbox = LeaguePostmatchNotificationOutbox(notification_path, sender)
+    deliveries: list[dict[str, str]] = []
+    wrote = False
+    notified = False
+    try:
+        events = _notification_events(statistics, state, outbox)
+        for event in events:
+            delivery = outbox.deliver(event)
+            delivery_status = str(delivery.get("status") or "failed")
+            projected_status = "pending" if not notify and delivery_status == "failed" else delivery_status
+            deliveries.append({"event_type": event["event_type"], "status": projected_status})
+            wrote = wrote or delivery_status in {"sent", "failed"}
+            notified = notified or delivery_status == "sent"
+        consumed = {**state, "notification_transition_consumed": True}
+        state_status = _write_json_atomic(state_path, consumed)
+        wrote = wrote or state_status == "stored"
+    except Exception:
+        return {
+            "status": "error",
+            "reason": "notification_intent_commit_failed",
+            "notifications": deliveries,
+            "wrote": wrote,
+            "notified": notified,
+        }
+    pending = any(row["status"] in {"pending", "failed", "already_pending"} for row in deliveries)
+    return {
+        "status": "pending" if pending else "complete",
+        "notifications": deliveries,
+        "wrote": wrote,
+        "notified": notified,
+    }
+
+
+def _recover_notification_transition(
+    *,
+    root: Path,
+    state: dict[str, Any],
+    state_path: Path,
+    notification_path: Path,
+    notify: bool,
+    notifier: Notifier | None,
+) -> dict[str, Any]:
+    statistics_path = root / STATISTICS_RELATIVE_PATH
+    try:
+        statistics = _read_json(statistics_path)
+        if not isinstance(statistics, Mapping) or _fingerprint(statistics) != state["aggregate_fingerprint"]:
+            raise ValueError
+        _validate_statistics(
+            statistics,
+            None,
+            expected_competitions=set(state["competitions"]),
+        )
+        persisted = _persist_notification_transition(
+            statistics=statistics,
+            state=state,
+            state_path=state_path,
+            notification_path=notification_path,
+            notify=notify,
+            notifier=notifier,
+        )
+    except Exception:
+        return {
+            "status": "error",
+            "mode": "live",
+            "reason": "notification_transition_recovery_failed",
+            "notifications": [],
+            "safety": _safety(),
+        }
+    if persisted["status"] == "error":
+        return {
+            "status": "error",
+            "mode": "live",
+            "reason": persisted["reason"],
+            "notifications": persisted["notifications"],
+            "safety": _safety(wrote=persisted["wrote"], notified=persisted["notified"]),
+        }
+    return {
+        "status": "notification_pending" if persisted["status"] == "pending" else "notification_recovered",
+        "mode": "live",
+        "reason": "notify_not_enabled" if not notify and persisted["status"] == "pending" else None,
+        "notifications": persisted["notifications"],
+        "safety": _safety(wrote=persisted["wrote"], notified=persisted["notified"]),
+    }
 
 
 def run_league_postmatch(
@@ -441,15 +743,35 @@ def run_league_postmatch(
             }
         try:
             acceptance = _load_acceptance(root_path)
+        except ValueError:
+            return {
+                "status": "blocked",
+                "mode": "dry_run",
+                "reason": "local_inputs_invalid",
+                "errors": [{"scope": "acceptance", "reason": "acceptance_invalid"}],
+                "plan": _project_plan({"due": [], "next_due_at": None, "competitions": {}}),
+                "competitions": {},
+                "safety": _safety(),
+            }
+        try:
             fixtures, _snapshots, _evidence, blocked = _active_inputs(root_path, acceptance)
             receipts, invalid_receipts = _accepted_receipts(root_path, set(fixtures))
+            for competition_id, reason in invalid_receipts.items():
+                blocked[competition_id] = {"status": "blocked", "reason": reason}
             fixtures = {key: value for key, value in fixtures.items() if key not in invalid_receipts}
             plan = plan_league_postmatch(acceptance, fixtures, {"accepted_results": receipts}, now=now_dt)
         except ValueError:
-            plan = {"due": [], "next_due_at": None, "competitions": {}}
-            blocked = {}
+            return {
+                "status": "blocked",
+                "mode": "dry_run",
+                "reason": "local_inputs_invalid",
+                "errors": [{"scope": "local", "reason": "local_input_invalid"}],
+                "plan": _project_plan({"due": [], "next_due_at": None, "competitions": {}}),
+                "competitions": {},
+                "safety": _safety(),
+            }
         return {
-            "status": "dry_run",
+            "status": "blocked" if blocked and not fixtures else "dry_run",
             "mode": "dry_run",
             "plan": _project_plan(plan),
             "competitions": blocked,
@@ -500,17 +822,35 @@ def run_league_postmatch(
                 "status": "notification_retried" if retry["failed"] == 0 else "notification_pending",
                 "mode": "live",
                 "notification_retry": retry,
-                "safety": _safety(wrote=True, notified=True),
+                "safety": _safety(wrote=pending_count > 0, notified=retry["sent"] > 0),
             }
 
         try:
-            acceptance = _load_acceptance(root_path)
             old_state = _load_runner_state(state_path)
         except ValueError:
             return {
                 "status": "blocked",
                 "mode": "live",
                 "reason": "local_state_invalid",
+                "safety": _safety(),
+            }
+        if old_state is not None and not old_state["notification_transition_consumed"]:
+            return _recover_notification_transition(
+                root=root_path,
+                state=old_state,
+                state_path=state_path,
+                notification_path=notification_path,
+                notify=notify,
+                notifier=notifier,
+            )
+
+        try:
+            acceptance = _load_acceptance(root_path)
+        except ValueError:
+            return {
+                "status": "blocked",
+                "mode": "live",
+                "reason": "local_inputs_invalid",
                 "safety": _safety(),
             }
 
@@ -537,6 +877,9 @@ def run_league_postmatch(
         provider_touched: set[str] = set()
         provider_failed: set[str] = set()
         result_added: dict[str, int] = defaultdict(int)
+        provider_results: dict[str, int] = defaultdict(int)
+        provider_pending: dict[str, dict[str, str]] = defaultdict(dict)
+        provider_source_errors: dict[str, set[str]] = defaultdict(set)
 
         grouped: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
         for row in plan["due"]:
@@ -559,7 +902,7 @@ def run_league_postmatch(
                 provider_failed.add(competition_id)
                 continue
             details: dict[str, dict[str, Any]] = {}
-            details_failed = False
+            detail_failures: set[str] = set()
             for row in due_rows:
                 try:
                     value = detail_fn(competition_id, row["source_event_id"])
@@ -567,7 +910,7 @@ def run_league_postmatch(
                         raise TypeError
                     details[row["source_event_id"]] = dict(value)
                 except Exception:
-                    details_failed = True
+                    detail_failures.add(row["source_event_id"])
             try:
                 parsed = parse_fotmob_league_results(
                     dict(calendar_payload),
@@ -577,11 +920,28 @@ def run_league_postmatch(
                     identity_registry=registry,
                     captured_at=now_dt,
                 )
-                subset = _result_subset(parsed, {row["source_event_id"] for row in due_rows}, competition_id)
-            except Exception:
-                outcomes[competition_id] = {"status": "error", "reason": "result_parse_failed"}
+                subset = _result_subset(parsed, due_rows, competition_id)
+            except Exception as exc:
+                reason = (
+                    "result_due_identity_mismatch"
+                    if isinstance(exc, ValueError) and str(exc) == "result_due_identity_mismatch"
+                    else "result_parse_failed"
+                )
+                outcomes[competition_id] = {"status": "error", "reason": reason}
                 provider_failed.add(competition_id)
                 continue
+            provider_results[competition_id] += len(subset["results"])
+            for pending_row in subset["pending"]:
+                event_id = str(pending_row.get("source_event_id") or "")
+                if not event_id:
+                    continue
+                reason = "details_fetch_failed" if event_id in detail_failures else str(
+                    pending_row.get("reason") or "terminal_result_not_verified"
+                )
+                provider_pending[competition_id][event_id] = reason
+            for event_id in detail_failures:
+                provider_pending[competition_id][event_id] = "details_fetch_failed"
+                provider_source_errors[competition_id].add(event_id)
             try:
                 merge_result = LeagueResultStore(
                     root_path / "data/local/leagues" / competition_id / "results.json"
@@ -604,7 +964,7 @@ def run_league_postmatch(
             if not subset["results"]:
                 outcomes[competition_id] = {
                     "status": "pending",
-                    "reason": "details_fetch_failed" if details_failed else "terminal_result_not_verified",
+                    "reason": "details_fetch_failed" if detail_failures else "terminal_result_not_verified",
                 }
 
         newly_settled_total = 0
@@ -653,7 +1013,20 @@ def run_league_postmatch(
                 continue
             newly_settled = len(postmatch["matches"]) - previous_count
             newly_settled_total += newly_settled
-            if newly_settled:
+            pending_rows = [
+                {"source_event_id": event_id, "reason": provider_pending[competition_id][event_id]}
+                for event_id in sorted(provider_pending[competition_id])
+            ]
+            if pending_rows:
+                outcomes[competition_id] = {
+                    "status": "partial",
+                    "newly_settled": newly_settled,
+                    "result_count": provider_results[competition_id],
+                    "pending_count": len(pending_rows),
+                    "source_error_count": len(provider_source_errors[competition_id]),
+                    "pending": pending_rows,
+                }
+            elif newly_settled:
                 outcomes[competition_id] = {"status": "settled", "newly_settled": newly_settled}
             elif result_added[competition_id]:
                 outcomes[competition_id] = {
@@ -706,7 +1079,34 @@ def run_league_postmatch(
                 "safety": _safety(called_fotmob=called_fotmob, wrote=wrote_any),
             }
         try:
-            statistics_status = _write_json_atomic(root_path / STATISTICS_RELATIVE_PATH, statistics)
+            statistics_path = root_path / STATISTICS_RELATIVE_PATH
+            previous_statistics = _read_json(statistics_path) if statistics_path.exists() else None
+            if previous_statistics is not None and not isinstance(previous_statistics, Mapping):
+                raise ValueError("league_postmatch_statistics_invalid")
+            expected_competitions = {
+                str(block["_expected_partition_competition_id"]) for block in blocks
+            }
+            _validate_statistics(
+                statistics,
+                previous_statistics,
+                expected_competitions=expected_competitions,
+            )
+            new_state = _state_for_statistics(
+                statistics,
+                old_state,
+                notification_date=now_dt.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat(),
+            )
+        except Exception:
+            return {
+                "status": "error",
+                "mode": "live",
+                "reason": "statistics_validation_failed",
+                "competitions": outcomes,
+                "plan": _project_plan(plan),
+                "safety": _safety(called_fotmob=called_fotmob, wrote=wrote_any),
+            }
+        try:
+            statistics_status = _write_json_atomic(statistics_path, statistics)
             wrote_any = wrote_any or statistics_status == "stored"
         except Exception:
             return {
@@ -718,7 +1118,6 @@ def run_league_postmatch(
                 "safety": _safety(called_fotmob=called_fotmob, wrote=wrote_any),
             }
         try:
-            new_state = _state_for_statistics(statistics, old_state)
             state_status = _write_json_atomic(state_path, new_state)
             wrote_any = wrote_any or state_status == "stored"
         except Exception:
@@ -732,38 +1131,42 @@ def run_league_postmatch(
             }
 
         notification_results: list[dict[str, str]] = []
-        notification_attempted = False
-        if notify:
-            outbox = LeaguePostmatchNotificationOutbox(notification_path, _outbox_notifier(notifier))
-            events: list[dict[str, Any]] = []
-            daily = build_daily_settlement_event(
-                settlement_date=now_dt.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat(),
-                newly_settled=new_state["newly_settled"],
-                competitions=_notification_competitions(statistics, new_state),
-                aggregate_fingerprint=new_state["aggregate_fingerprint"],
+        notification_succeeded = False
+        if not new_state["notification_transition_consumed"]:
+            persisted = _persist_notification_transition(
+                statistics=statistics,
+                state=new_state,
+                state_path=state_path,
+                notification_path=notification_path,
+                notify=notify,
+                notifier=notifier,
             )
-            if daily is not None:
-                events.append(daily)
-            events.extend(build_threshold_events(
-                previous_decided=new_state["previous_decided"],
-                current_decided=new_state["decided"],
-                sent_thresholds=outbox.sent_thresholds(),
-                aggregate_fingerprint=new_state["aggregate_fingerprint"],
-            ))
-            for event in events:
-                notification_attempted = True
-                delivery = outbox.deliver(event)
-                notification_results.append({
-                    "event_type": event["event_type"],
-                    "status": str(delivery.get("status") or "failed"),
-                })
-            wrote_any = wrote_any or notification_attempted
+            notification_results = persisted["notifications"]
+            wrote_any = wrote_any or persisted["wrote"]
+            notification_succeeded = persisted["notified"]
+            if persisted["status"] == "error":
+                return {
+                    "status": "error",
+                    "mode": "live",
+                    "reason": persisted["reason"],
+                    "competitions": outcomes,
+                    "plan": _project_plan(plan),
+                    "notifications": notification_results,
+                    "safety": _safety(
+                        called_fotmob=called_fotmob,
+                        wrote=wrote_any,
+                        notified=notification_succeeded,
+                    ),
+                }
 
         has_errors = any(row.get("status") in {"error", "conflict"} for row in outcomes.values())
+        has_partial = any(row.get("status") == "partial" for row in outcomes.values())
         if newly_settled_total or new_state["newly_settled"]:
-            status = "partial" if has_errors else "settled"
+            status = "partial" if has_errors or has_partial else "settled"
         elif has_errors:
             status = "error"
+        elif has_partial:
+            status = "partial"
         elif result_added or derivative_changed:
             status = "stored"
         elif provider_touched:
@@ -785,7 +1188,7 @@ def run_league_postmatch(
             "safety": _safety(
                 called_fotmob=called_fotmob,
                 wrote=wrote_any,
-                notified=notification_attempted,
+                notified=notification_succeeded,
             ),
         }
     finally:

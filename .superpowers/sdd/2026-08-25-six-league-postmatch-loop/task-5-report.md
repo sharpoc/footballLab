@@ -58,3 +58,41 @@ The production runner scan found no The Odds API/quota/env loader, timer install
 - Live correctness still depends on Gate A proving that each accepted FotMob sample fingerprint came from a reviewed real saved sample and that its provider event identity matches the immutable pre-match snapshot/closing identity. The runner fails closed and does not invent an ID mapping or fallback.
 - Local notification delivery remains at-least-once across the unavoidable crash window after the external sender succeeds but before Task 4 persists its sent receipt; deterministic event fingerprints are retained for downstream idempotency.
 - The resulting statistics are research-only, do not constitute betting advice, and contain no stake, EV/Edge, or execution recommendation.
+
+## Review fix round 1
+
+### RED evidence
+
+Added focused regressions for all five Important and two Minor findings before implementation. The old runner produced nine failures:
+
+```text
+1428/1437 tests passed, 1 module skipped
+```
+
+The failures covered saved-sample/registry acceptance binding, malformed dry-run inputs, exact due identity joins, mixed successful/failed detail fetches, durable notification transition recovery and cross-day consumption, truthful notification safety flags, and pre-write statistics regression validation.
+
+### Corrections
+
+- Live acceptance now requires `result_contract_evidence.json.sample_path` to resolve to a regular file strictly below this run root's `data/probe/` or `data/cache/` boundary. The runner hashes the actual saved bytes without decoding or projecting them and requires that SHA-256 to equal the FotMob evidence `source_reference`. Missing files, tampered bytes, absolute/out-of-bound paths, and symlink escapes fail before provider access. The acceptance `result_contract` fingerprint still binds the verified evidence payload.
+- The current per-competition strict identity registry is deterministically projected as sorted provider-name/canonical pairs and hashed. The active acceptance row's `team_identity` fingerprint must equal that current registry fingerprint; a stale or substituted registry blocks the partition before provider access.
+- Every accepted Task 1 parser result is joined to one exact due identity across `source_event_id`, `competition_id`, normalized `kickoff_at_utc`, `home_canonical`, and `away_canonical`. Extra, malformed, wrong-team, or wrong-kickoff accepted rows fail closed with `result_due_identity_mismatch`; Task 2 receives nothing and cannot create a receipt.
+- Mixed detail outcomes retain successful accepted results while returning an explicit `partial` partition projection with `result_count`, `pending_count`, `source_error_count`, and sorted safe event ID/reason rows. A successful settlement can no longer hide another due event's detail failure or make the aggregate look fully settled.
+- Candidate aggregate statistics and runner state are both built and checked before `postmatch_statistics.json` is touched. Formal scope, exact partition membership, empty exclusions, per-league/aggregate settled counts, decided counts, and finished-result counts must remain monotonic. A regression or excluded partition returns `statistics_validation_failed` while preserving both prior statistics and state bytes.
+- Runner state schema v2 records the Beijing `notification_date` and `notification_transition_consumed`. A new aggregate is first committed as unconsumed; Task 4 then durably stores every daily/threshold intent (also when `--notify` is absent), after which a second atomic state commit consumes the transition. An unconsumed transition is recovered and exits before acceptance/provider work, so a later aggregate cannot overwrite it. A zero-due wake on a later Beijing day cannot rebuild the prior daily summary.
+- Pending Task 4 intents still retry before acceptance/state/provider reads. `safety.notified` is true only for a confirmed `sent` status, not for `failed`, `pending`, `already_sent`, or attempted delivery. `safety.wrote` reflects confirmed artifact/outbox/state writes rather than an attempt flag.
+- Dry-run now returns safe `blocked` metadata for malformed acceptance or history instead of silently projecting a normal empty plan; it remains network-, notification-, environment-, and write-free.
+
+Task 4 delivery remains intentionally at-least-once in the external receipt window: if the sender accepts a message and the process crashes before the outbox atomically records `sent`, the durable pending intent is retried and the external service may receive a duplicate. Event fingerprints make that window explicit and enable downstream deduplication, but the runner does not claim exactly-once delivery.
+
+### Final verification
+
+```text
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py
+1437/1437 tests passed, 1 module(s) skipped
+Skipped: test_fastapi_app.py (optional: fastapi)
+
+python3 -m py_compile worldcup/league_postmatch_runner.py tests/test_league_postmatch_runner.py
+git diff --check
+```
+
+All commands exited 0. A focused scan also found no The Odds API/quota access, env loader, `launchctl`, direct WxPusher command, credential field, or authorization/cookie path in the runner. This fix round performed no real probe, live/write run, notification, timer installation, push, PR, merge, or deployment.
