@@ -27,7 +27,7 @@ def _snapshot() -> dict:
     }
 
 
-def test_league_lifecycle_dry_run_is_zero_write_and_write_settles_partitioned_statistics():
+def test_league_lifecycle_refuses_uncommitted_raw_scores_without_postmatch_write():
     assert importlib.util.find_spec("worldcup.league_lifecycle") is not None, (
         "league lifecycle orchestrator is missing"
     )
@@ -57,23 +57,17 @@ def test_league_lifecycle_dry_run_is_zero_write_and_write_settles_partitioned_st
             root=root, competition_ids=["epl_2026_27"], write=False
         )
         assert dry_run["status"] == "dry_run"
-        assert dry_run["competitions"]["epl_2026_27"]["decision_tally"] == {
-            "hit": 1, "miss": 0, "push": 0, "no_pick": 0,
-        }
+        assert dry_run["competitions"]["epl_2026_27"] == {"status": "error", "reason": "ValueError"}
         assert not (root / "data/local/leagues/epl_2026_27/closing.json").exists()
 
         written = league_lifecycle.run_league_lifecycle(
             root=root, competition_ids=["epl_2026_27"], write=True
         )
-        assert written["status"] == "stored"
-        assert json.loads((root / "data/local/leagues/epl_2026_27/postmatch.json").read_text())["decision_tally"]["hit"] == 1
-        statistics = json.loads((root / "data/local/leagues/statistics.json").read_text())
-        assert statistics["competitions"]["epl_2026_27"]["decision_sample"]["hit_rate"] == 1.0
+        assert written["status"] == "blocked"
+        assert not (root / "data/local/leagues/epl_2026_27/postmatch.json").exists()
 
         scores.unlink()
         degraded = league_lifecycle.run_league_lifecycle(
             root=root, competition_ids=["epl_2026_27"], write=True
         )
         assert degraded["status"] == "blocked"
-        retained = json.loads((root / "data/local/leagues/statistics.json").read_text())
-        assert retained["competitions"]["epl_2026_27"]["decision_tally"]["hit"] == 1

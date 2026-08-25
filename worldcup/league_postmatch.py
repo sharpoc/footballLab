@@ -4,17 +4,44 @@ from typing import Any, Mapping
 
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
 from worldcup.decision_settlement import settle_match_decision, summarize_decision_records
+from worldcup.league_closing import _valid_existing_closings
+from worldcup.league_result_store import _receipt as _committed_receipt
+from worldcup.league_result_store import _row as _committed_row
 
 
 FORMAL_SCOPE = "observed_schema_v2_match_pick_only"
 
 
-def _observed_decision(value: Any) -> bool:
-    return (
-        isinstance(value, Mapping)
-        and value.get("schema_version") == 2
-        and value.get("label") in {"MATCH_PICK", "NO_CLEAN_MARKET"}
-    )
+def _validated_receipt(payload: Any, competition_id: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    if (
+        not isinstance(payload, Mapping)
+        or payload.get("schema_version") != 1
+        or payload.get("competition_id") != competition_id
+        or not isinstance(payload.get("results"), list)
+    ):
+        raise ValueError("postmatch_results_invalid")
+    rows: dict[str, dict[str, Any]] = {}
+    try:
+        for value in payload["results"]:
+            if not isinstance(value, Mapping):
+                raise ValueError
+            row = _committed_row(value, competition_id)
+            if row["source_event_id"] in rows:
+                raise ValueError
+            rows[row["source_event_id"]] = row
+    except (TypeError, ValueError):
+        raise ValueError("postmatch_results_invalid") from None
+    checked = _committed_receipt(competition_id, rows)
+    if payload.get("fingerprint") != checked["fingerprint"]:
+        raise ValueError("postmatch_results_invalid")
+    return checked, rows
+
+
+def _validated_closings(payload: Any, competition_id: str) -> dict[str, dict[str, Any]]:
+    try:
+        return _valid_existing_closings(payload, competition_id)
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError("postmatch_closings_invalid") from None
 
 
 def _identity(row: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -23,18 +50,36 @@ def _identity(row: Mapping[str, Any]) -> tuple[str, str, str]:
     ))
 
 
-def _record_matches(existing: Mapping[str, Any], incoming: Mapping[str, Any]) -> bool:
-    return (
-        _identity(existing) == _identity(incoming)
-        and existing.get("result") == incoming.get("result")
-        and existing.get("closing_match_decision") == incoming.get("closing_match_decision")
-    )
+def _scores(row: Mapping[str, Any]) -> dict[str, int]:
+    return {"home_score": row["home_score"], "away_score": row["away_score"]}
 
 
-def _payload(competition_id: str, records: Mapping[str, dict[str, Any]], missing: set[str]) -> dict[str, Any]:
+def _missing_entry(row: Mapping[str, Any], receipt_fingerprint: str) -> dict[str, Any]:
+    return {**dict(row), "accepted_result_receipt_fingerprint": receipt_fingerprint}
+
+
+def _record(closing: Mapping[str, Any], result: Mapping[str, Any], receipt_fingerprint: str, competition_id: str) -> dict[str, Any]:
+    score = _scores(result)
+    decision = closing["closing_match_decision"]
+    return {
+        **dict(closing),
+        "competition": {"id": competition_id},
+        "accepted_result": dict(result),
+        "accepted_result_receipt_fingerprint": receipt_fingerprint,
+        "result": score,
+        "closing_match_decision_result": settle_match_decision(decision, score),
+    }
+
+
+def _payload(
+    competition_id: str,
+    records: Mapping[str, dict[str, Any]],
+    missing: Mapping[str, dict[str, Any]],
+    receipts: Mapping[str, dict[str, Any]],
+) -> dict[str, Any]:
     ordered_records = [records[event_id] for event_id in sorted(records)]
-    missing_ids = sorted(missing.difference(records))
-    summary = summarize_decision_records(ordered_records, skipped_no_closing=len(missing_ids))
+    missing_rows = {event_id: dict(missing[event_id]) for event_id in sorted(set(missing).difference(records))}
+    summary = summarize_decision_records(ordered_records, skipped_no_closing=len(missing_rows))
     return {
         "schema_version": 2,
         "competition_id": competition_id,
@@ -43,8 +88,10 @@ def _payload(competition_id: str, records: Mapping[str, dict[str, Any]], missing
         "decision_tally": summary["decision_tally"],
         "decision_sample": summary["sample"],
         "decision_coverage": summary["coverage"],
-        "skipped_no_closing": len(missing_ids),
-        "missing_closing_event_ids": missing_ids,
+        "skipped_no_closing": len(missing_rows),
+        "missing_closing_event_ids": sorted(missing_rows),
+        "missing_closing_results": missing_rows,
+        "accepted_result_receipts": {fingerprint: dict(receipts[fingerprint]) for fingerprint in sorted(receipts)},
     }
 
 
@@ -55,73 +102,106 @@ def build_league_postmatch(
 ) -> dict[str, Any]:
     if competition_id not in FORMAL_SINGLE_MATCH_IDS:
         raise ValueError("postmatch_competition_not_allowed")
-    if closing_payload.get("competition_id") != competition_id or result_payload.get("competition_id") != competition_id:
-        raise ValueError("postmatch_competition_mismatch")
-    closings = closing_payload.get("closings") or {}
-    if not isinstance(closings, Mapping):
-        raise ValueError("postmatch_closings_invalid")
-    results = result_payload.get("results") or []
-    if not isinstance(results, list):
-        raise ValueError("postmatch_results_invalid")
+    closings = _validated_closings(closing_payload, competition_id)
+    receipt, results = _validated_receipt(result_payload, competition_id)
+    receipt_fingerprint = receipt["fingerprint"]
     records: dict[str, dict[str, Any]] = {}
-    missing_closing: set[str] = set()
-    for result in results:
-        if not isinstance(result, Mapping):
-            raise ValueError("postmatch_results_invalid")
-        if result.get("result_scope") != "football_90min":
-            continue
-        event_id = str(result.get("source_event_id") or "")
-        if not event_id:
-            raise ValueError("postmatch_event_id_missing")
-        if event_id in records or event_id in missing_closing:
-            raise ValueError(f"postmatch_duplicate_result: {event_id}")
+    missing: dict[str, dict[str, Any]] = {}
+    for event_id, result in results.items():
         closing = closings.get(event_id)
-        if not isinstance(closing, Mapping) or not _observed_decision(closing.get("closing_match_decision")):
-            missing_closing.add(event_id)
+        if closing is None:
+            missing[event_id] = _missing_entry(result, receipt_fingerprint)
             continue
-        identity_fields = ("competition_id", "source_event_id", "kickoff_at_utc", "home_canonical", "away_canonical")
-        if any(str(closing.get(key)) != str(result.get(key)) for key in identity_fields):
+        if closing["source_event_id"] != event_id or _identity(closing) != _identity(result):
             raise ValueError(f"postmatch_identity_mismatch: {event_id}")
-        score = {"home_score": result["home_score"], "away_score": result["away_score"]}
-        decision = closing.get("closing_match_decision")
-        records[event_id] = {
-            **closing,
-            "competition": {"id": competition_id},
-            "result": score,
-            "closing_match_decision_result": settle_match_decision(decision, score),
-        }
-    return _payload(competition_id, records, missing_closing)
+        records[event_id] = _record(closing, result, receipt_fingerprint, competition_id)
+    return _payload(competition_id, records, missing, {receipt_fingerprint: receipt})
 
 
-def _existing_records(existing: Mapping[str, Any], competition_id: str) -> tuple[dict[str, dict[str, Any]], set[str]]:
+def _receipt_row(
+    row: Any,
+    receipt_fingerprint: Any,
+    receipts: Mapping[str, dict[str, Any]],
+    competition_id: str,
+) -> dict[str, Any]:
+    if not isinstance(receipt_fingerprint, str) or receipt_fingerprint not in receipts:
+        raise ValueError("postmatch_existing_invalid")
+    try:
+        checked = _committed_row(row, competition_id)
+    except (TypeError, ValueError):
+        raise ValueError("postmatch_existing_invalid") from None
+    receipt_rows = {value["source_event_id"]: value for value in receipts[receipt_fingerprint]["results"]}
+    if receipt_rows.get(checked["source_event_id"]) != checked:
+        raise ValueError("postmatch_existing_invalid")
+    return checked
+
+
+def _existing_records(
+    existing: Mapping[str, Any], competition_id: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     if (
         existing.get("schema_version") != 2
         or existing.get("competition_id") != competition_id
         or existing.get("statistics_scope") != FORMAL_SCOPE
+        or not isinstance(existing.get("matches"), list)
     ):
         raise ValueError("postmatch_existing_invalid")
-    values = existing.get("matches")
-    if not isinstance(values, list):
+    receipt_values = existing.get("accepted_result_receipts")
+    if receipt_values is None and not existing["matches"] and not existing.get("missing_closing_event_ids"):
+        receipt_values = {}
+    if not isinstance(receipt_values, Mapping):
         raise ValueError("postmatch_existing_invalid")
+    receipts: dict[str, dict[str, Any]] = {}
+    for fingerprint, value in receipt_values.items():
+        receipt, _ = _validated_receipt(value, competition_id)
+        if not isinstance(fingerprint, str) or fingerprint != receipt["fingerprint"]:
+            raise ValueError("postmatch_existing_invalid")
+        receipts[fingerprint] = receipt
     records: dict[str, dict[str, Any]] = {}
-    for value in values:
+    for value in existing["matches"]:
         if not isinstance(value, Mapping):
             raise ValueError("postmatch_existing_invalid")
-        event_id = str(value.get("source_event_id") or "").strip()
-        if not event_id or event_id in records or not _observed_decision(value.get("closing_match_decision")):
+        event_id = value.get("source_event_id")
+        if not isinstance(event_id, str) or not event_id or event_id in records or value.get("competition_id") != competition_id:
+            raise ValueError("postmatch_existing_invalid")
+        if not isinstance(value.get("competition"), Mapping) or value["competition"].get("id") != competition_id:
+            raise ValueError("postmatch_existing_invalid")
+        closing = _validated_closings({
+            "schema_version": 1, "competition_id": competition_id, "closings": {event_id: dict(value)},
+        }, competition_id)[event_id]
+        result = _receipt_row(
+            value.get("accepted_result"), value.get("accepted_result_receipt_fingerprint"), receipts, competition_id,
+        )
+        if _identity(closing) != _identity(result) or value.get("result") != _scores(result):
+            raise ValueError("postmatch_existing_invalid")
+        expected = settle_match_decision(closing["closing_match_decision"], _scores(result))
+        if value.get("closing_match_decision_result") != expected:
             raise ValueError("postmatch_existing_invalid")
         records[event_id] = dict(value)
-    missing_values = existing.get("missing_closing_event_ids")
-    if missing_values is None and int(existing.get("skipped_no_closing") or 0) == 0:
-        missing_values = []
-    if not isinstance(missing_values, list):
+    missing_ids = existing.get("missing_closing_event_ids")
+    missing_values = existing.get("missing_closing_results")
+    if missing_ids is None and int(existing.get("skipped_no_closing") or 0) == 0:
+        missing_ids, missing_values = [], {}
+    if not isinstance(missing_ids, list) or not isinstance(missing_values, Mapping):
         raise ValueError("postmatch_existing_invalid")
-    missing = {str(event_id).strip() for event_id in missing_values}
-    if not all(missing) or len(missing) != len(missing_values) or missing.intersection(records):
+    if sorted(missing_ids) != sorted(missing_values) or len(set(missing_ids)) != len(missing_ids):
         raise ValueError("postmatch_existing_invalid")
+    missing: dict[str, dict[str, Any]] = {}
+    for event_id in missing_ids:
+        if not isinstance(event_id, str) or not event_id or event_id in records:
+            raise ValueError("postmatch_existing_invalid")
+        value = missing_values[event_id]
+        if not isinstance(value, Mapping) or value.get("source_event_id") != event_id:
+            raise ValueError("postmatch_existing_invalid")
+        _receipt_row(value, value.get("accepted_result_receipt_fingerprint"), receipts, competition_id)
+        missing[event_id] = dict(value)
     if int(existing.get("skipped_no_closing") or 0) != len(missing):
         raise ValueError("postmatch_existing_invalid")
-    return records, missing
+    return records, missing, receipts
+
+
+def _same_evidence(first: Mapping[str, Any], second: Mapping[str, Any]) -> bool:
+    return first.get("accepted_result") == second.get("accepted_result")
 
 
 def merge_league_postmatch(
@@ -130,23 +210,37 @@ def merge_league_postmatch(
     result_payload: dict[str, Any],
     competition_id: str,
 ) -> dict[str, Any]:
-    """Append immutable formal settlements without inventing a missing closing."""
+    """Append immutable verified formal settlements without inventing a missing closing."""
     if existing is None:
         records: dict[str, dict[str, Any]] = {}
-        missing: set[str] = set()
+        missing: dict[str, dict[str, Any]] = {}
+        receipts: dict[str, dict[str, Any]] = {}
     else:
-        records, missing = _existing_records(existing, competition_id)
+        records, missing, receipts = _existing_records(existing, competition_id)
     incoming = build_league_postmatch(closing_payload, result_payload, competition_id)
-    for record in incoming["matches"]:
-        event_id = record["source_event_id"]
+    incoming_records, incoming_missing, incoming_receipts = _existing_records(incoming, competition_id)
+    for fingerprint, receipt in incoming_receipts.items():
+        if fingerprint in receipts and receipts[fingerprint] != receipt:
+            raise ValueError("postmatch_existing_invalid")
+        receipts[fingerprint] = receipt
+    for event_id, record in incoming_records.items():
         prior = records.get(event_id)
+        prior_missing = missing.get(event_id)
         if prior is not None:
-            if not _record_matches(prior, record):
+            if prior != record:
                 raise ValueError(f"postmatch_result_conflict: {event_id}")
             continue
+        if prior_missing is not None and not _same_evidence(prior_missing, record):
+            raise ValueError(f"postmatch_result_conflict: {event_id}")
         records[event_id] = record
-        missing.discard(event_id)
-    for event_id in incoming["missing_closing_event_ids"]:
-        if event_id not in records:
-            missing.add(event_id)
-    return _payload(competition_id, records, missing)
+        missing.pop(event_id, None)
+    for event_id, row in incoming_missing.items():
+        if event_id in records:
+            if not _same_evidence(records[event_id], row):
+                raise ValueError(f"postmatch_result_conflict: {event_id}")
+            continue
+        prior = missing.get(event_id)
+        if prior is not None and prior != row:
+            raise ValueError(f"postmatch_result_conflict: {event_id}")
+        missing[event_id] = row
+    return _payload(competition_id, records, missing, receipts)
