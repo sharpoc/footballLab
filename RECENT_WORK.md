@@ -6,6 +6,15 @@
 
 较早记录压缩摘要（2026-07-10 至 2026-07-19）：完成 MatchPick v3、首选鲜度、中超俱乐部评级门槛、已开赛待赛果展示、延期状态、quota 槽位切换和世界杯赛后同步等阶段；当前槽位数以最新记录和 README 为准。保留的关键约束已同步到 README、AGENTS/CLAUDE 与 Git 历史。2026-07-19 首次赛后 live 因当时外部配置受阻，未产生业务写入。
 
+## 2026-08-25 六联赛确认首发功能部署
+
+- PR #7 已 squash merge 到远端 `main` commit `3c3db4101092f265804871f3650dbe2b8565890b`；合并前指定 runtime 完整回归 `1347/1347 tests passed, 1 optional fastapi module skipped`，CI `tests` 通过。
+- 经独立部署确认后，以 `origin/main` 精确提交创建 `/opt/worldcup/releases/3c3db4101092f265804871f3650dbe2b8565890b`，原子切换 `/opt/worldcup/current`；`worldcup.service` 与 Nginx 均为 `active`，ECS 本机 `/readyz` 预热成功，公网 `/healthz`、`/api/matches`、`/preview` 均返回 200，预览免责声明与公开字段安全检查通过。
+- 本次部署未读取/修改 `.env` 或密钥，未调用 The Odds API，未发布业务 snapshot，未安装或修改 LaunchAgent，未发送 WxPusher 通知；确认首发链路仍需后续独立完成定时器安装与真实 provider/通知门禁。
+- 本地旧 `main` 已完整备份为 `codex/local-main-before-sync-20260825`（`5d58051826ed6ca8dae4f7f21945fb528a313208`），随后精确对齐远端 squash commit。观察模式 LaunchAgent `xin.celab.football.league-pre-match` 已写入并 bootstrap，每 300 秒运行 `--live-lineups --write-lineups`；实际注册参数不含 `--live-refresh`、`--refresh-after-lineups`、`--publish` 或 `--notify`，`RunAtLoad=false`，未主动 kickstart。
+- 经后续独立确认，publisher readiness `4/4` 通过，正式 endpoint 由现有生产 LaunchAgent、README 和历史成功 ingest 记录交叉确认为 `https://football.celab.xin/api/ingest/snapshot`；tertiary quota 只读基线为 remaining 465。该 LaunchAgent 已升级并重新 bootstrap 为完整 live 参数：confirmed lineup 后才运行 quota guard、联赛赔率刷新、聚合发布与去重通知；德甲仍因 `identity_verified` 而非 `active` 被排除。`RunAtLoad=false`，未主动 kickstart，安装时未调用 FotMob/The Odds API、未发布或发送通知；观察模式 plist 备份保存在 `~/Library/Logs/worldcup/`，不参与登录自动加载。
+- 只读根因排查确认公网 `/api/matches` 仍只有 7 场 `csl_2026`：五联赛本地 87 场均为验收用 `offline_prediction`，正式 `data/cache/leagues/<competition>/snapshot.json` 尚未生成；首发 runner 仅在 `newly_confirmed` 后增量刷新，不承担首次生产发布。新增 `worldcup.league_bootstrap_publish` 首次 bootstrap CLI：默认零副作用 dry-run，真实执行须 `--live --write --force-initial`，绑定 acceptance fingerprint、全部 active 联赛未来 event IDs、严格 identity、逐响应 quota 和完整聚合 HMAC 发布；partial/receipt 缺口不发布，只有 ingest `stored/duplicate` 后写完成 state，发布失败留下的分区可安全重试。独立审查发现并修复 live 并发重复消耗/发布风险：非阻塞单实例锁覆盖 completion 检查、刷新、发布与 state commit，锁竞争在 env/provider 前阻断。真实本地 dry-run 选中英超/西甲/法甲/意甲/巴甲 5 个 active 联赛、63 场未来事件、预计 15 credits，德甲排除，quota 与联赛文件集合前后不变；TDD bootstrap `9/9`、完整回归 `1356/1356 tests passed, 1 optional fastapi module skipped`，`py_compile` 与 `git diff --check` 通过。实现阶段尚未调用真实 provider、写正式分区或发布。
+
 ## 2026-08-24 The Odds API 五 Key 轮换
 
 - 显式 Key 槽位从 primary / secondary / tertiary 扩展为 primary / secondary / tertiary / quaternary / quinary，保持现有顺序轮换和低额度策略：当前槽位剩余额度 <=30 时优先选下一个未探测或 >30 的槽位，全部无新鲜额度时才选仍有余额的最早槽位，全耗尽则暂停。

@@ -88,7 +88,7 @@
 - Live 激活设计：[六联赛单场分析 Live 激活设计](docs/superpowers/specs/2026-08-24-six-league-live-activation-design.md)。六联赛同时进入赛程发现，按最近开球动态排序并逐联赛独立验收/启用；已经开赛的比赛不得补造赛前首选。
 - 意甲、英超、西甲、法甲和巴甲已通过本地正式验收并标记 `active`；德甲因 2026/27 尚无完赛证据停留在 `identity_verified`，调度必须排除。
 - 内部仍按联赛隔离 snapshot/history/closing/postmatch，公开发布则每轮只生成一份 `league-aggregate-*` snapshot。本轮未刷新的 `active` 联赛会从已提交缓存补齐，避免公开页只剩最后一个联赛；跨联赛身份错配、空 ID 或重复比赛会 fail-closed。
-- `worldcup.league_lifecycle` 以联赛分区运行封盘、严格 90 分钟结算和独立统计；单联赛失败隔离，dry-run 只计算不写入。当前未安装六联赛 LaunchAgent，也未推送或部署该聚合发布链路。
+- `worldcup.league_lifecycle` 以联赛分区运行封盘、严格 90 分钟结算和独立统计；单联赛失败隔离，dry-run 只计算不写入。六联赛 LaunchAgent 的安装/加载与聚合发布仍是独立运维门禁。
 
 ### 六联赛 Confirmed Lineup 赛前编排（本地离线实现）
 
@@ -166,6 +166,27 @@ LaunchAgent generator 默认生成观察模式 JSON；label 固定为 `xin.celab
 ```bash
 /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.league_scheduled_publish --root /Users/eagod/ai-dev/足彩 --now 2026-08-24T12:00:00Z
 ```
+
+首次把所有 `active` 联赛写入正式分区并发布完整聚合 snapshot，必须使用独立 `worldcup.league_bootstrap_publish`。默认 dry-run 只读取 acceptance 与保存的 event identity，不读 `.env`、不联网、不写分区、不消耗 quota、不发布：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_bootstrap_publish \
+  --root /Users/eagod/ai-dev/足彩 \
+  --now 2026-08-25T02:00:00Z
+```
+
+真实首次 bootstrap 必须显式给齐 `--live --write --force-initial`，并使用非占位 HTTPS ingest endpoint；live 禁止 `--now` 覆盖系统时钟：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_bootstrap_publish \
+  --root /Users/eagod/ai-dev/足彩 \
+  --endpoint https://football.celab.xin/api/ingest/snapshot \
+  --live --write --force-initial
+```
+
+命令只选择四类证据指纹齐全且 `state=active` 的联赛；德甲在 `identity_verified` 阶段继续排除。它会把当前未开赛 probe event IDs 和 acceptance fingerprint 绑定到 fresh provider snapshot，复用严格球队 identity、五 Key quota 轮换、原子分区 store 与 HMAC 聚合发布；任何 active 联赛缺事件、fresh payload 缺少绑定事件、identity 不匹配、刷新 partial、分区 receipt 不完整或 ingest 未确认都会阻断公开发布。live 全事务由 `data/local/leagues/bootstrap_publish.lock` 非阻塞独占锁覆盖，锁竞争在读取 `.env` 或调用 provider 前阻断；拿锁后重新读取 acceptance/events/completion state。只有 ingest 返回 `stored/duplicate` 后才原子提交 `data/local/leagues/bootstrap_publish_state.json`；仅有分区但发布失败时允许安全重试，已存在与当前 acceptance 匹配的成功 state 时重复首次 bootstrap 默认阻断。
 
 真实 probe、active 本地写入和 scheduler 安装分别属于实施计划 Gate B/C/D；不得仅修改 competition 配置解除门禁。
 
