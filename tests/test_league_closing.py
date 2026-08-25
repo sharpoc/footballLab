@@ -81,3 +81,27 @@ def test_closing_merge_advances_only_to_a_later_legal_snapshot():
     closing = merged["closings"]["epl-event-1"]
     assert closing["closing_snapshot_at"] == "2026-08-24T17:00:00+00:00"
     assert closing["closing_match_decision"]["odds"] == 1.8
+
+
+def test_closing_merge_rejects_different_decisions_at_same_snapshot_time_in_any_order():
+    """Choosing the first equal-time candidate would make a closing depend on history file ordering."""
+    first = _snapshot("2026-08-24T17:00:00Z", odds=1.9)
+    conflicting = _snapshot("2026-08-24T17:00:00Z", odds=1.8)
+
+    for snapshots in ((first, conflicting), (conflicting, first)):
+        try:
+            merge_league_closings(None, snapshots, "epl_2026_27")
+        except ValueError as exc:
+            assert str(exc) == "closing_snapshot_conflict: epl-event-1"
+        else:
+            raise AssertionError("same-time conflicting decisions must fail closed")
+
+
+def test_closing_merge_keeps_identical_same_time_decision_idempotent():
+    """Equal-time snapshots with the same decision are duplicate history, not a conflict."""
+    snapshot = _snapshot("2026-08-24T17:00:00Z", odds=1.9)
+    initial = merge_league_closings(None, [snapshot], "epl_2026_27")
+
+    merged = merge_league_closings(initial, [_snapshot("2026-08-24T17:00:00Z", odds=1.9)], "epl_2026_27")
+
+    assert merged == initial

@@ -154,13 +154,13 @@ class LeagueResultStore:
         pending = payload.get("pending")
         if pending is not None and not isinstance(pending, list):
             raise ValueError("league_result_store_pending_invalid")
-        regressions = {
-            str(value.get("source_event_id"))
+        pending_conflicts = {
+            str(value.get("source_event_id")): str(value.get("reason"))
             for value in (pending or [])
             if isinstance(value, Mapping)
             and isinstance(value.get("source_event_id"), (str, int))
             and not isinstance(value.get("source_event_id"), bool)
-            and value.get("reason") == "result_not_finished"
+            and value.get("reason") in {"result_not_finished", "duplicate_source_event"}
         }
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -177,13 +177,19 @@ class LeagueResultStore:
                     conflicts[event_id] = "identity_changed"
                 elif (previous["home_score"], previous["away_score"]) != (row["home_score"], row["away_score"]):
                     conflicts[event_id] = "score_changed"
-            for event_id in regressions & set(committed):
-                conflicts[event_id] = "finished_regression"
+            for event_id, reason in pending_conflicts.items():
+                if reason == "duplicate_source_event":
+                    conflicts[event_id] = reason
+                elif event_id in committed:
+                    conflicts[event_id] = "finished_regression"
             if conflicts:
                 return {
                     "status": "conflict",
                     "added": 0,
-                    "unchanged": sum(event_id in committed for event_id in incoming),
+                    "unchanged": sum(
+                        event_id in committed and event_id not in conflicts
+                        for event_id in incoming
+                    ),
                     "conflicts": _safe_conflicts(conflicts),
                     "fingerprint": current["fingerprint"],
                 }

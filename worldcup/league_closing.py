@@ -48,22 +48,25 @@ def select_league_closings(
                 raise ValueError(f"closing_identity_conflict: {event_id}")
             if snapshot_at >= kickoff or not _valid_decision(match.get("match_decision")):
                 continue
+            candidate = {
+                "competition_id": competition_id,
+                "source_event_id": event_id,
+                "kickoff_at_utc": kickoff.isoformat(),
+                "home_team": match.get("home_team"),
+                "away_team": match.get("away_team"),
+                "home_canonical": home,
+                "away_canonical": away,
+                "closing_snapshot_at": snapshot_at.isoformat(),
+                "closing_match_decision": match["match_decision"],
+            }
             previous = selected.get(event_id)
             if previous is None or snapshot_at > previous[0]:
                 selected[event_id] = (
                     snapshot_at,
-                    {
-                        "competition_id": competition_id,
-                        "source_event_id": event_id,
-                        "kickoff_at_utc": kickoff.isoformat(),
-                        "home_team": match.get("home_team"),
-                        "away_team": match.get("away_team"),
-                        "home_canonical": home,
-                        "away_canonical": away,
-                        "closing_snapshot_at": snapshot_at.isoformat(),
-                        "closing_match_decision": match["match_decision"],
-                    },
+                    candidate,
                 )
+            elif snapshot_at == previous[0] and previous[1]["closing_match_decision"] != candidate["closing_match_decision"]:
+                raise ValueError(f"closing_snapshot_conflict: {event_id}")
     return {
         "schema_version": 1,
         "competition_id": competition_id,

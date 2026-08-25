@@ -68,6 +68,7 @@ def test_same_score_is_idempotent_and_changed_score_is_conflict():
         changed = store.merge(_results(_result(3, 1)))
 
         assert changed["status"] == "conflict"
+        assert (changed["added"], changed["unchanged"]) == (0, 0)
         assert changed["conflicts"] == [{"source_event_id": EVENT_ID, "reason": "score_changed"}]
         assert [(row["home_score"], row["away_score"]) for row in _read_rows(store.path)] == [(2, 1)]
 
@@ -102,6 +103,8 @@ def test_finished_regression_and_identity_change_are_conflicts_without_provider_
 
         assert regression["conflicts"] == [{"source_event_id": EVENT_ID, "reason": "finished_regression"}]
         assert identity["conflicts"] == [{"source_event_id": EVENT_ID, "reason": "identity_changed"}]
+        assert (regression["added"], regression["unchanged"]) == (0, 0)
+        assert (identity["added"], identity["unchanged"]) == (0, 0)
         assert all(set(conflict) == {"source_event_id", "reason"} for conflict in regression["conflicts"] + identity["conflicts"])
         assert _read_rows(store.path)[0]["away_canonical"] == "chelsea"
 
@@ -116,6 +119,26 @@ def test_duplicate_event_ids_fail_closed_without_partial_commit():
 
         assert result["status"] == "conflict"
         assert result["added"] == 0
+        assert result["conflicts"] == [{"source_event_id": EVENT_ID, "reason": "duplicate_source_event"}]
+        assert not store.path.exists()
+
+
+def test_parser_duplicate_pending_signal_is_an_explicit_safe_conflict():
+    """Ignoring the parser's one-row duplicate signal would let ambiguous provider evidence look unchanged."""
+    parser_output = {
+        "competition_id": COMPETITION,
+        "results": [],
+        "pending": [{"source_event_id": EVENT_ID, "reason": "duplicate_source_event"}],
+        "source_events": [{"source_event_id": EVENT_ID, "outcome": "pending", "reason": "duplicate_source_event"}],
+        "source_fingerprint": "safe-parser-contract-fingerprint",
+    }
+    with TemporaryDirectory() as tmp:
+        store = LeagueResultStore(Path(tmp) / COMPETITION / "results.json")
+
+        result = store.merge(parser_output)
+
+        assert result["status"] == "conflict"
+        assert (result["added"], result["unchanged"]) == (0, 0)
         assert result["conflicts"] == [{"source_event_id": EVENT_ID, "reason": "duplicate_source_event"}]
         assert not store.path.exists()
 
