@@ -161,7 +161,15 @@ LaunchAgent generator 默认生成观察模式 JSON；label 固定为 `xin.celab
 
 每 300 秒唤醒不等于每 300 秒请求：未来 90 分钟没有未开赛 active 比赛时 FotMob 请求为 0；T-90..T-45 最快 15 分钟一次，T-45..T-0 最快 5 分钟一次，同日 calendar 合并、details 仅限 due match ID。FotMob 是免费非正式源，没有 SLA；schema、confirmed 语义或身份无法证明时只保留旧首发和旧推荐，不用 predicted/unknown 猜测。
 
-本阶段没有安装或加载上述 timer。未来如已经确认安装后需回滚，只 bootout 新 label `xin.celab.football.league-pre-match`，不影响世界杯、中超或赛后 timer；LaunchAgent 安装/加载仍属 Task 8 独立确认门。
+上述六联赛赛前 timer `xin.celab.football.league-pre-match` 已经独立确认安装并加载；回滚时只 bootout 该 label，不影响世界杯、中超或赛后 timer。本文下述的六联赛赛后 timer 仍未实现或安装，实施、真实 probe、LaunchAgent 安装/加载和首次通知仍是后续独立确认门。
+
+### 六联赛赛后结算与信号评估（设计已确认）
+
+六联赛赛后闭环将使用免费 FotMob 公开 snapshot 作为候选赛果源，但只接受通过 competition/event/严格球队 identity、terminal `FINISHED`、开球时间和 90 分钟非负整数比分契约的赛果。它不使用 The Odds API scores 争抢赔率 quota，不从时间推断完赛，不接受加时/点球或不明比分字段。
+
+每场只与开赛前最后一份合法 observed schema v2 closing 结算；缺 closing 时显式记录 `missing_closing`，不事后补造推荐。逐联赛 results/postmatch/statistics 隔离，六联赛汇总只接受 `observed_schema_v2_match_pick_only`，不混入世界杯、中超、legacy 或 reconstructed。
+
+计划每天北京时间 10:30 和 16:30 唤醒，无 due 赛事时 FotMob 请求为 0。有新结算才发送 WxPusher 日摘要；六联赛正式 decided 累计达到 20 / 50 / 100 时各发一次阶段提醒。20 场只做链路健康检查，50 场才允许离线候选回测，100 场且留出集同时优于当前策略和市场基准时才能提出正式优化；调参与上线仍需独立确认。详细见 [六联赛赛后结算与信号评估闭环设计](docs/superpowers/specs/2026-08-25-six-league-postmatch-loop-design.md)。当前仅完成设计，尚未实现 runner、执行真实 probe 或安装赛后 LaunchAgent。
 
 零副作用调度外壳示例：
 
