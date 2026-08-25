@@ -208,6 +208,11 @@ def test_format_team_label_uses_csl_chinese_names():
     assert format_team_label("Shandong Luneng Taishan FC") == "山东泰山"
 
 
+def test_format_team_label_keeps_unknown_formal_league_names_in_original_language():
+    assert format_team_label("Brazil", "serie_a_brazil_2026") == "Brazil"
+    assert format_team_label("Arsenal", "laliga_2026_27") == "Arsenal"
+
+
 def test_project_signal_rows_expands_signals_without_money_fields():
     rows = project_signal_rows(_snapshot())
 

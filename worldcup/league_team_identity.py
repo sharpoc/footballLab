@@ -85,6 +85,59 @@ _ACCEPTED_TEAM_GROUPS: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
+_TEAM_DISPLAY_NAMES_ZH: dict[str, dict[str, str]] = {
+    "epl_2026_27": {
+        "arsenal": "阿森纳", "aston_villa": "阿斯顿维拉", "bournemouth": "伯恩茅斯",
+        "brentford": "布伦特福德", "brighton_and_hove_albion": "布莱顿",
+        "chelsea": "切尔西", "coventry_city": "考文垂", "crystal_palace": "水晶宫",
+        "everton": "埃弗顿", "fulham": "富勒姆", "hull_city": "赫尔城",
+        "ipswich_town": "伊普斯维奇", "leeds_united": "利兹联", "liverpool": "利物浦",
+        "manchester_city": "曼城", "manchester_united": "曼联", "newcastle_united": "纽卡斯尔联",
+        "nottingham_forest": "诺丁汉森林", "sunderland": "桑德兰", "tottenham_hotspur": "托特纳姆热刺",
+    },
+    "laliga_2026_27": {
+        "alaves": "阿拉维斯", "athletic_bilbao": "毕尔巴鄂竞技", "atletico_madrid": "马德里竞技",
+        "barcelona": "巴塞罗那", "ca_osasuna": "奥萨苏纳", "celta_vigo": "塞尔塔",
+        "deportivo_la_coruna": "拉科鲁尼亚", "elche": "埃尔切", "espanyol": "西班牙人",
+        "getafe": "赫塔费", "levante": "莱万特", "malaga": "马拉加",
+        "rayo_vallecano": "巴列卡诺", "real_betis": "皇家贝蒂斯", "real_madrid": "皇家马德里",
+        "racing_santander": "桑坦德竞技", "real_sociedad": "皇家社会", "sevilla": "塞维利亚",
+        "valencia": "瓦伦西亚", "villarreal": "比利亚雷亚尔",
+    },
+    "bundesliga_2026_27": {
+        "fc_koln": "科隆", "augsburg": "奥格斯堡", "bayer_leverkusen": "勒沃库森",
+        "bayern_munich": "拜仁慕尼黑", "borussia_dortmund": "多特蒙德",
+        "borussia_monchengladbach": "门兴格拉德巴赫", "eintracht_frankfurt": "法兰克福",
+        "elversberg": "埃尔弗斯堡", "schalke_04": "沙尔克04", "mainz_05": "美因茨05",
+        "hamburger_sv": "汉堡", "rb_leipzig": "RB莱比锡", "freiburg": "弗赖堡",
+        "paderborn": "帕德博恩", "hoffenheim": "霍芬海姆", "union_berlin": "柏林联合",
+        "stuttgart": "斯图加特", "werder_bremen": "云达不莱梅",
+    },
+    "ligue_1_2026_27": {
+        "as_monaco": "摩纳哥", "angers": "昂热", "auxerre": "欧塞尔", "brest": "布雷斯特",
+        "le_havre": "勒阿弗尔", "le_mans": "勒芒", "lille": "里尔", "lorient": "洛里昂",
+        "lyon": "里昂", "marseille": "马赛", "nice": "尼斯", "paris_fc": "巴黎FC",
+        "paris_saint_germain": "巴黎圣日耳曼", "rc_lens": "朗斯", "rennes": "雷恩",
+        "strasbourg": "斯特拉斯堡", "toulouse": "图卢兹", "troyes": "特鲁瓦",
+    },
+    "serie_a_brazil_2026": {
+        "atletico_mineiro": "米内罗竞技", "atletico_paranaense": "巴拉纳竞技",
+        "bahia": "巴伊亚", "botafogo": "博塔弗戈", "bragantino": "布拉干蒂诺",
+        "chapecoense": "沙佩科恩斯", "corinthians": "科林蒂安", "coritiba": "科里蒂巴",
+        "cruzeiro": "克鲁塞罗", "flamengo": "弗拉门戈", "fluminense": "弗鲁米嫩塞",
+        "gremio": "格雷米奥", "internacional": "巴西国际", "mirassol": "米拉索尔",
+        "palmeiras": "帕尔梅拉斯", "remo": "瑞模贝雷", "santos": "桑托斯",
+        "sao_paulo": "圣保罗", "vasco_da_gama": "瓦斯科达伽马", "vitoria": "维多利亚",
+    },
+    "serie_a_2026_27": {
+        "ac_milan": "AC米兰", "as_roma": "罗马", "atalanta": "亚特兰大", "bologna": "博洛尼亚",
+        "cagliari": "卡利亚里", "como": "科莫", "fiorentina": "佛罗伦萨", "frosinone": "弗罗西诺内",
+        "genoa": "热那亚", "inter_milan": "国际米兰", "juventus": "尤文图斯", "lazio": "拉齐奥",
+        "lecce": "莱切", "monza": "蒙扎", "napoli": "那不勒斯", "parma": "帕尔马",
+        "sassuolo": "萨索洛", "torino": "都灵", "udinese": "乌迪内斯", "venezia": "威尼斯",
+    },
+}
+
 
 @dataclass(frozen=True)
 class LeagueTeamIdentityResult:
@@ -148,3 +201,10 @@ class LeagueTeamIdentityRegistry:
 
 def accepted_league_team_identity_registry() -> LeagueTeamIdentityRegistry:
     return LeagueTeamIdentityRegistry(_ACCEPTED_TEAM_GROUPS)
+
+
+def league_team_display_name_zh(competition_id: str, provider_name: str) -> str | None:
+    identity = accepted_league_team_identity_registry().resolve(competition_id, provider_name)
+    if identity.canonical is None:
+        return None
+    return _TEAM_DISPLAY_NAMES_ZH.get(competition_id, {}).get(identity.canonical)

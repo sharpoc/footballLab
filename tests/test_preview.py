@@ -2,6 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from worldcup.preview import build_preview_html, write_preview
+from worldcup.query import project_match_rows
 
 
 def _snapshot() -> dict:
@@ -284,6 +285,39 @@ def test_preview_filters_have_accessible_stable_contract():
     assert 'data-workbench-visible-count data-count-label="历史比赛"' in html
     assert "syncWorkbenchVisibleCount(workbenchVisible)" in html
     assert "applyFilters" in html
+
+
+def test_preview_translates_verified_league_clubs_without_changing_public_api_names():
+    snapshot = _snapshot()
+    snapshot["matches"] = [
+        {
+            "kickoff_at_utc": "2099-08-30T14:00:00+00:00",
+            "competition": {"id": "epl_2026_27", "name": "英超"},
+            "home_team": "Arsenal",
+            "away_team": "Newcastle United",
+            "match_decision": {"schema_version": 2, "label": "NO_CLEAN_MARKET"},
+        }
+    ]
+    snapshot["finished"] = {"schema_version": 2, "matches": [], "skipped_no_closing": 0}
+
+    rows = project_match_rows(snapshot)
+    html = build_preview_html(snapshot)
+
+    assert rows[0]["home_team"] == "Arsenal"
+    assert rows[0]["away_team"] == "Newcastle United"
+    assert "阿森纳 对 纽卡斯尔联" in html
+    assert "Arsenal 对 Newcastle United" not in html
+
+
+def test_preview_drops_finished_only_world_cup_from_competition_filter():
+    snapshot = _snapshot()
+    snapshot["matches"] = [snapshot["matches"][1]]
+
+    html = build_preview_html(snapshot)
+
+    assert 'value="fifa_world_cup_2026"' not in html
+    assert 'value="csl_2026"' in html
+    assert 'value="epl_2026_27"' in html
 
 
 def test_preview_escapes_dynamic_values():
