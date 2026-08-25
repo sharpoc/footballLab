@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Collection, Iterable, Sequence
+from typing import Any, Collection, Iterable, Mapping, Sequence
 
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
 from worldcup.league_postmatch import _existing_records, _payload
@@ -100,6 +100,63 @@ def build_league_statistics(
         "statistics_scope": FORMAL_SCOPE,
         "competitions": competitions,
         "excluded_competitions": excluded,
+        "aggregate": {
+            "decision_tally": aggregate_tally,
+            "decision_sample": _metrics(aggregate_tally, min_sample),
+            "decision_coverage": aggregate_coverage,
+        },
+    }
+
+
+def build_league_statistics_from_components(
+    components: Mapping[str, Mapping[str, Any]], *, min_sample: int = 20
+) -> dict[str, Any]:
+    """Aggregate already validated per-league statistics without dropping stale partitions."""
+    competitions: dict[str, dict[str, Any]] = {}
+    for competition_id in sorted(components):
+        if competition_id not in FORMAL_SINGLE_MATCH_IDS:
+            raise ValueError("league_statistics_component_competition_invalid")
+        value = components[competition_id]
+        if not isinstance(value, Mapping):
+            raise ValueError("league_statistics_component_invalid")
+        tally_value = value.get("decision_tally")
+        coverage_value = value.get("decision_coverage")
+        if (
+            not isinstance(tally_value, Mapping)
+            or set(tally_value) != set(TALLY_KEYS)
+            or not isinstance(coverage_value, Mapping)
+            or set(coverage_value) != set(COVERAGE_KEYS)
+        ):
+            raise ValueError("league_statistics_component_invalid")
+        tally: dict[str, int] = {}
+        coverage: dict[str, int] = {}
+        for key in TALLY_KEYS:
+            count = tally_value[key]
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ValueError("league_statistics_component_invalid")
+            tally[key] = count
+        for key in COVERAGE_KEYS:
+            count = coverage_value[key]
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ValueError("league_statistics_component_invalid")
+            coverage[key] = count
+        competitions[competition_id] = {
+            "decision_tally": tally,
+            "decision_sample": _metrics(tally, min_sample),
+            "decision_coverage": coverage,
+        }
+    aggregate_tally = {
+        key: sum(row["decision_tally"][key] for row in competitions.values())
+        for key in TALLY_KEYS
+    }
+    aggregate_coverage = {
+        key: sum(row["decision_coverage"][key] for row in competitions.values())
+        for key in COVERAGE_KEYS
+    }
+    return {
+        "statistics_scope": FORMAL_SCOPE,
+        "competitions": competitions,
+        "excluded_competitions": {},
         "aggregate": {
             "decision_tally": aggregate_tally,
             "decision_sample": _metrics(aggregate_tally, min_sample),

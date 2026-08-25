@@ -139,17 +139,67 @@ class LeagueClosingStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
 
-    def commit(self, payload: dict[str, Any]) -> str:
+    def _store(self, payload: dict[str, Any], *, reject_deletion: bool) -> str:
         competition_id = str(payload.get("competition_id") or "")
-        if not competition_id or self.path.parent.name != competition_id:
+        if (
+            not competition_id
+            or self.path.name != "closing.json"
+            or self.path.parent.name != competition_id
+        ):
             raise ValueError("closing_store_partition_mismatch")
-        encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         with lock_path.open("a+b") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            if self.path.exists() and self.path.read_bytes() == encoded:
+            incoming_rows = _valid_existing_closings(payload, competition_id)
+            if self.path.exists():
+                try:
+                    current_payload = json.loads(self.path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    raise ValueError("closing_store_unreadable") from None
+                if not isinstance(current_payload, dict):
+                    raise ValueError("closing_store_invalid")
+                try:
+                    current_rows = _valid_existing_closings(current_payload, competition_id)
+                except (TypeError, ValueError):
+                    raise ValueError("closing_store_invalid") from None
+            else:
+                current_rows = {}
+            if reject_deletion and set(current_rows).difference(incoming_rows):
+                raise ValueError("closing_store_deletion")
+            merged = dict(current_rows)
+            for event_id, candidate in incoming_rows.items():
+                previous = current_rows.get(event_id)
+                if previous is None:
+                    merged[event_id] = candidate
+                    continue
+                if _closing_identity(previous) != _closing_identity(candidate):
+                    raise ValueError(f"closing_identity_conflict: {event_id}")
+                previous_at = _utc(previous.get("closing_snapshot_at"))
+                candidate_at = _utc(candidate.get("closing_snapshot_at"))
+                if candidate_at < previous_at:
+                    raise ValueError(f"closing_snapshot_regression: {event_id}")
+                if candidate_at == previous_at:
+                    if previous.get("closing_match_decision") != candidate.get("closing_match_decision"):
+                        raise ValueError(f"closing_snapshot_conflict: {event_id}")
+                    continue
+                merged[event_id] = candidate
+            updated = {
+                "schema_version": 1,
+                "competition_id": competition_id,
+                "closings": {event_id: merged[event_id] for event_id in sorted(merged)},
+            }
+            current = {
+                "schema_version": 1,
+                "competition_id": competition_id,
+                "closings": {event_id: current_rows[event_id] for event_id in sorted(current_rows)},
+            }
+            if updated == current:
                 return "unchanged"
+            encoded = (
+                json.dumps(updated, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                + "\n"
+            ).encode()
             fd, temp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
             try:
                 with os.fdopen(fd, "wb") as handle:
@@ -166,3 +216,11 @@ class LeagueClosingStore:
                 if os.path.exists(temp_name):
                     os.unlink(temp_name)
         return "stored"
+
+    def commit(self, payload: dict[str, Any]) -> str:
+        """Commit a complete monotonic state; omission of a current event is deletion."""
+        return self._store(payload, reject_deletion=True)
+
+    def merge(self, payload: dict[str, Any]) -> str:
+        """Merge candidate closings monotonically under the same lock used for the write."""
+        return self._store(payload, reject_deletion=False)

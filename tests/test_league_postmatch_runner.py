@@ -438,7 +438,7 @@ def test_live_commits_results_before_settlement_state_and_notification():
         import worldcup.league_postmatch_runner as runner
 
         original_result_merge = runner.LeagueResultStore.merge
-        original_closing_commit = runner.LeagueClosingStore.commit
+        original_closing_merge = runner.LeagueClosingStore.merge
         original_atomic_write = runner._write_json_atomic
         original_deliver = runner.LeaguePostmatchNotificationOutbox.deliver
 
@@ -446,9 +446,9 @@ def test_live_commits_results_before_settlement_state_and_notification():
             stage_order.append("results")
             return original_result_merge(store, payload)
 
-        def closing_commit(store, payload):
+        def closing_merge(store, payload):
             stage_order.append("closing")
-            return original_closing_commit(store, payload)
+            return original_closing_merge(store, payload)
 
         def atomic_write(path, payload):
             labels = {
@@ -470,7 +470,7 @@ def test_live_commits_results_before_settlement_state_and_notification():
 
         with (
             patch.object(runner.LeagueResultStore, "merge", result_merge),
-            patch.object(runner.LeagueClosingStore, "commit", closing_commit),
+            patch.object(runner.LeagueClosingStore, "merge", closing_merge),
             patch.object(runner, "_write_json_atomic", atomic_write),
             patch.object(runner.LeaguePostmatchNotificationOutbox, "deliver", deliver),
         ):
@@ -492,6 +492,8 @@ def test_live_commits_results_before_settlement_state_and_notification():
         ]
         receipt = json.loads((root / f"data/local/leagues/{EPL}/results.json").read_text())
         postmatch = json.loads((root / f"data/local/leagues/{EPL}/postmatch.json").read_text())
+        assert postmatch["artifact_scope"] == "fotmob_formal_postmatch"
+        assert postmatch["result_provider_schema"] == "fotmob_league_results_v1"
         assert postmatch["accepted_result_receipts"][receipt["fingerprint"]] == receipt
         assert result["safety"] == {
             "read_env": False,
@@ -981,8 +983,13 @@ def test_statistics_regression_is_validated_before_old_statistics_can_be_overwri
         old_statistics = statistics_path.read_bytes()
         old_state = (root / "data/local/leagues/postmatch_state.json").read_bytes()
         regressed = build_league_statistics([])
+        original_collect = runner._collect_statistics_components
 
-        with patch.object(runner, "build_league_statistics", return_value=regressed):
+        def collect_regressed(*args, **kwargs):
+            _statistics, manifest, issues = original_collect(*args, **kwargs)
+            return regressed, manifest, issues
+
+        with patch.object(runner, "_collect_statistics_components", collect_regressed):
             result = run_league_postmatch(
                 root,
                 live=True,
@@ -1036,7 +1043,7 @@ def test_result_and_closing_atomic_crashes_have_stage_specific_recovery():
         _setup(root)
         events = []
         calendar_fetcher, detail_fetcher = _fetchers(events)
-        with patch.object(runner.LeagueClosingStore, "commit", side_effect=OSError("disk")):
+        with patch.object(runner.LeagueClosingStore, "merge", side_effect=OSError("disk")):
             failed = run_league_postmatch(
                 root,
                 live=True,
@@ -1083,6 +1090,83 @@ def test_live_output_never_projects_raw_provider_or_notifier_values():
         assert "notifier-secret" not in projected
         assert "raw_response" not in projected
         assert "token" not in projected
+
+
+def test_malformed_partition_uses_last_known_good_while_healthy_league_advances():
+    malformed_values = (
+        "{not-json",
+        json.dumps({
+            "schema_version": 2,
+            "competition_id": EPL,
+            "statistics_scope": "observed_schema_v2_match_pick_only",
+            "matches": [],
+            "decision_tally": {"hit": 1, "miss": 0, "push": 0, "no_pick": 0},
+            "decision_sample": {"decided": 1},
+            "decision_coverage": {"finished_result_count": 1},
+        }),
+    )
+    expected_reasons = ("postmatch_partition_unreadable", "postmatch_partition_invalid")
+    for malformed, expected_reason in zip(malformed_values, expected_reasons):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _setup(root, (EPL,))
+            first_events: list[str] = []
+            first_calendar, first_details = _fetchers(first_events)
+            first = run_league_postmatch(
+                root,
+                live=True,
+                write=True,
+                notify=False,
+                now=NOW,
+                calendar_fetcher=first_calendar,
+                detail_fetcher=first_details,
+            )
+            assert first["status"] == "settled"
+            assert json.loads((root / "data/local/leagues/postmatch_statistics.json").read_text())[
+                "aggregate"
+            ]["decision_tally"]["hit"] == 1
+
+            _setup(root, (EPL, LALIGA))
+            (root / f"data/local/leagues/{EPL}/postmatch.json").write_text(
+                malformed, encoding="utf-8"
+            )
+            provider_events: list[str] = []
+            calendar_fetcher, detail_fetcher = _fetchers(provider_events)
+            notifications: list[str] = []
+
+            result = run_league_postmatch(
+                root,
+                live=True,
+                write=True,
+                notify=True,
+                now=NOW,
+                calendar_fetcher=calendar_fetcher,
+                detail_fetcher=detail_fetcher,
+                notifier=lambda content, _summary: notifications.append(content) or {"status": "sent"},
+            )
+
+            assert result["status"] == "settled"
+            assert result["competitions"][EPL] == {
+                "status": "stale",
+                "reason": expected_reason,
+                "using_last_known_good": True,
+            }
+            assert result["competitions"][LALIGA]["status"] == "settled"
+            assert provider_events == [f"calendar:{LALIGA}", f"details:{LALIGA}"]
+            statistics = json.loads((
+                root / "data/local/leagues/postmatch_statistics.json"
+            ).read_text())
+            assert statistics["aggregate"]["decision_tally"]["hit"] == 2
+            assert set(statistics["competitions"]) == {EPL, LALIGA}
+            state = json.loads((root / "data/local/leagues/postmatch_state.json").read_text())
+            assert state["decided"] == 2
+            assert len(notifications) == 1
+            components = json.loads((
+                root / "data/local/leagues/postmatch_components.json"
+            ).read_text())
+            assert components["components"][EPL]["status"] == "stale"
+            assert components["components"][EPL]["reason"] == expected_reason
+            assert components["components"][LALIGA]["status"] == "fresh"
 
 
 def test_daily_settlement_date_uses_beijing_calendar_day_and_positional_notifier_contract():

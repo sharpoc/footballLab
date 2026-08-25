@@ -90,7 +90,7 @@
 - 内部仍按联赛隔离 snapshot/history/closing/postmatch，公开发布则每轮只生成一份 `league-aggregate-*` snapshot。本轮未刷新的 `active` 联赛会从已提交缓存补齐，避免公开页只剩最后一个联赛；跨联赛身份错配、空 ID 或重复比赛会 fail-closed。
 - SQLite public view 的检索候选固定包含顶层 `competition.id=multi_league` 的已验收聚合 snapshot，不会为六个内部联赛 ID 分别重复扫描 SQLite JSON；这与 profile 为防止普通 scheduler 越权而继续标记 `dry_run_probe` 的运行门禁相互独立。检索候选不等于公开行，页面只投影 snapshot 中真实存在的 match，因此未 active/无比赛的德甲不会被伪造展示。
 - 单场分析页对六联赛使用 competition-scoped canonical 中文俱乐部展示名；英文 `home_team` / `away_team`、snapshot、API、身份匹配和结算契约不变，未登记球队安全回退英文。页面下拉列表只从当前公开比赛生成杯赛入口，不再因历史完赛记录保留已结束的世界杯；固定六联赛验收入口仍保留。
-- `worldcup.league_lifecycle` 以联赛分区运行封盘、严格 90 分钟结算和独立统计；单联赛失败隔离，dry-run 只计算不写入。六联赛 LaunchAgent 的安装/加载与聚合发布仍是独立运维门禁。
+- `worldcup.league_lifecycle` 仍是当前 scheduled publisher 已接线的 The Odds API scores 兼容边界：legacy parser 只接受精确 `theoddsapi_scores_v1` evidence，再显式转成 Task 2 committed receipt 后结算。它只写 `data/local/leagues/legacy_theoddsapi/` 下的 postmatch/statistics，不写 FotMob 正式 `postmatch_statistics.json` / state / outbox；聚合快照仍读取该已标记 origin 的兼容统计，直到 FotMob Gates A–D 单独验收后再评审退役。
 
 ### 六联赛 Confirmed Lineup 赛前编排（本地离线实现）
 
@@ -201,14 +201,15 @@ live 只在 `--live --write` 同时给出时可进入 provider/本地写入路�
 运行时只读/写以下 ignored 路径：
 
 - 验收与输入：`data/local/leagues/acceptance.json`、`data/local/leagues/<competition_id>/result_contract_evidence.json`、`data/probe/leagues/results/` 下 Gate A 审核样例、`data/local/leagues/<competition_id>/history/*.json`。
-- 分区产物：`data/local/leagues/<competition_id>/results.json`、`results.json.lock`、`closing.json`、`closing.json.lock`、`postmatch.json`。已接受 90 分钟赛果不会删除或静默改写；比分修订、finished 回退、身份冲突会保留旧值并隔离该分区。
-- 汇总与恢复：`data/local/leagues/postmatch_statistics.json`、`postmatch_state.json`、`postmatch_notification_state.json`、`postmatch_notification_state.json.lock`、`league_postmatch.lock`。
+- 分区产物：`data/local/leagues/<competition_id>/results.json`、`results.json.lock`、`closing.json`、`closing.json.lock`、`postmatch.json`。已接受 90 分钟赛果不会删除或静默改写；比分修订、finished 回退、身份冲突会保留旧值并隔离该分区。`closing.json` 是 legacy lifecycle 与 FotMob runner 唯一共享的派生文件；两个 caller 都通过同一 `flock` 内的校验 + 单调 merge + 原子写入，删除、身份变化、时间倒退或同时间不同 decision 均 fail closed，并发不同 event 不丢失。
+- FotMob 汇总与恢复：`data/local/leagues/postmatch_components.json`、`postmatch_statistics.json`、`postmatch_state.json`、`postmatch_notification_state.json`、`postmatch_notification_state.json.lock`、`league_postmatch.lock`。`postmatch_components.json` 保留逐联赛最后一份已验证统计与 component 指纹；某一 `postmatch.json` 不可读、结构无效或是 legacy shape 时，该分区显式标 `stale` / `blocked`，保留其 last-known-good 计数，健康联赛仍可更新 statistics/state/通知；不会把坏分区当空集合导致 aggregate 计数回退。
+- The Odds 兼容产物：`data/local/leagues/legacy_theoddsapi/<competition_id>/postmatch.json` 与 `data/local/leagues/legacy_theoddsapi/statistics.json`。升级时旧共享 `postmatch.json` 只有在能辨认为 legacy shape 时才原子归档为 `postmatch.pre_isolation.json`；已标记或结构符合 FotMob 正式 receipt-backed 产物不会被迁移。
 
 所有 JSON 原子替换可在同一 ignored 目录内短暂创建 `.<target>.*.tmp`，完成或失败后清理；不会写到上述根目录之外。
 
-closing 只能选择开赛前最后一份合法 observed schema v2 `MATCH_PICK`。赛果已可验但 closing 缺失时，保留 result evidence 并显式计入 `missing_closing` / `skipped_no_closing`，不用 current、开赛后 snapshot 或 reconstructed decision 补造推荐；以后出现合法 closing 时可幂等转为正式结算。正式汇总只接受 `observed_schema_v2_match_pick_only`，不混入世界杯、中超、legacy、reconstructed 或手工结果。
+closing 只能选择开赛前最后一份合法 observed schema v2 decision，合法 label 同时包括 `MATCH_PICK` 和 `NO_CLEAN_MARKET`。只有 `MATCH_PICK` 会按盘口结算并进入 `hit / miss / push`；`NO_CLEAN_MARKET` 只进入 `no_pick` 与 coverage，不进入命中率分母。赛果已可验但 closing 缺失时，保留 result evidence 并显式计入 `missing_closing` / `skipped_no_closing`，不用 current、开赛后 snapshot 或 reconstructed decision 补造推荐；以后出现合法 closing 时可幂等转为正式结算。正式汇总只接受 `observed_schema_v2_match_pick_only`，不混入世界杯、中超、legacy、reconstructed 或手工结果。
 
-提交顺序为 result evidence → closing → postmatch → aggregate statistics → runner state → notification intent。已提交 result receipt 可在重启后继续补齐派生产物，无需再请求 provider；未消费 state transition 可从精确 aggregate 重建通知 intent。已持久化 pending outbox 会先于 provider 检查：带 `--notify` 时先重试并结束本轮，不带 `--notify` 时返回 `notification_pending` 并阻断 provider，绝不静默丢弃 pending。只在 `newly_settled > 0` 时构建当日摘要，正式 decided 达到 20 / 50 / 100 时各构建一次里程碑；20 只做链路健康检查，50 只允许离线候选回测，100 也必须再通过留出集、当前 `match_pick_v3`、同样本市场基准和逐联赛失衡审查，不自动调参或上线。
+提交顺序为 result evidence → closing → postmatch → last-known-good component manifest → aggregate statistics → runner state → notification intent。已提交 result receipt 可在重启后继续补齐派生产物，无需再请求 provider；未消费 state transition 可从精确 aggregate 重建通知 intent。已持久化 pending outbox 会先于 provider 检查：带 `--notify` 时先重试并结束本轮，不带 `--notify` 时返回 `notification_pending` 并阻断 provider，绝不静默丢弃 pending。只在 `newly_settled > 0` 时构建当日摘要，正式 decided 达到 20 / 50 / 100 时各构建一次里程碑；20 只做链路健康检查，50 只允许离线候选回测，100 也必须再通过留出集、当前 `match_pick_v3`、同样本市场基准和逐联赛失衡审查，不自动调参或上线。
 
 通知是 at-least-once，不声称 exactly-once：若 WxPusher 已接受消息、但进程在 sent receipt 原子持久化前崩溃，重启后可能重复发送。确定性 event fingerprint 可供下游去重，但本地 runner 不隐藏这一 crash window；通知失败不回滚已接受赛果或结算。
 

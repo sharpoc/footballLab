@@ -8,10 +8,17 @@ from typing import Any, Iterable
 
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
 from worldcup.league_closing import LeagueClosingStore, select_league_closings
-from worldcup.league_postmatch import build_league_postmatch
-from worldcup.league_results import parse_verified_league_results
+from worldcup.league_postmatch import merge_league_postmatch
+from worldcup.league_results import (
+    THEODDSAPI_RESULT_SCHEMA,
+    adapt_theoddsapi_results_to_committed_receipt,
+)
 from worldcup.league_statistics import build_league_statistics
 from worldcup.league_team_identity import accepted_league_team_identity_registry
+
+
+LEGACY_ARTIFACT_SCOPE = "legacy_theoddsapi_scores_compatibility"
+LEGACY_ROOT_RELATIVE_PATH = Path("data/local/leagues/legacy_theoddsapi")
 
 
 def _read_json(path: Path) -> Any:
@@ -36,6 +43,73 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     finally:
         if os.path.exists(temp_name):
             os.unlink(temp_name)
+
+
+def _legacy_postmatch_path(root: Path, competition_id: str) -> Path:
+    return root / LEGACY_ROOT_RELATIVE_PATH / competition_id / "postmatch.json"
+
+
+def _shared_postmatch_path(root: Path, competition_id: str) -> Path:
+    return root / "data/local/leagues" / competition_id / "postmatch.json"
+
+
+def _is_fotmob_formal_postmatch(payload: Any) -> bool:
+    return (
+        isinstance(payload, dict)
+        and payload.get("artifact_scope") == "fotmob_formal_postmatch"
+        and payload.get("result_provider_schema") == "fotmob_league_results_v1"
+    )
+
+
+def _tag_legacy_postmatch(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **payload,
+        "artifact_scope": LEGACY_ARTIFACT_SCOPE,
+        "result_provider_schema": THEODDSAPI_RESULT_SCHEMA,
+    }
+
+
+def _legacy_statistics(blocks: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        **build_league_statistics(blocks),
+        "statistics_origin": LEGACY_ARTIFACT_SCOPE,
+    }
+
+
+def _archive_shared_legacy_postmatch(root: Path, competition_id: str) -> None:
+    source = _shared_postmatch_path(root, competition_id)
+    if not source.exists():
+        return
+    try:
+        payload = _read_json(source)
+    except (OSError, json.JSONDecodeError):
+        raise ValueError("legacy_postmatch_upgrade_unreadable") from None
+    if _is_fotmob_formal_postmatch(payload) or (
+        isinstance(payload, dict)
+        and isinstance(payload.get("accepted_result_receipts"), dict)
+        and isinstance(payload.get("missing_closing_results"), dict)
+        and isinstance(payload.get("missing_closing_event_ids"), list)
+    ):
+        return
+    archive = (
+        root
+        / LEGACY_ROOT_RELATIVE_PATH
+        / competition_id
+        / "postmatch.pre_isolation.json"
+    )
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    if archive.exists():
+        if archive.read_bytes() != source.read_bytes():
+            raise ValueError("legacy_postmatch_upgrade_conflict")
+        source.unlink()
+    else:
+        os.replace(source, archive)
+    for directory in {source.parent, archive.parent}:
+        directory_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
 
 def run_league_lifecycle(
@@ -80,13 +154,23 @@ def run_league_lifecycle(
                 }
                 continue
             closing = select_league_closings(snapshots, competition_id)
-            results = parse_verified_league_results(
+            evidence = _read_json(evidence_path)
+            adapted = adapt_theoddsapi_results_to_committed_receipt(
                 _read_json(scores_path),
                 competition_id,
-                result_contract_evidence=_read_json(evidence_path),
+                result_contract_evidence=evidence,
                 identity_registry=registry,
             )
-            postmatch = build_league_postmatch(closing, results, competition_id)
+            existing_path = _legacy_postmatch_path(root_path, competition_id)
+            existing = _read_json(existing_path) if existing_path.exists() else None
+            postmatch = _tag_legacy_postmatch(
+                merge_league_postmatch(
+                    existing,
+                    closing,
+                    adapted["receipt"],
+                    competition_id,
+                )
+            )
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             competitions[competition_id] = {"status": "error", "reason": type(exc).__name__}
             continue
@@ -95,15 +179,16 @@ def run_league_lifecycle(
         competitions[competition_id] = {
             "status": "ready",
             "closing_count": len(closing["closings"]),
-            "result_count": len(results["results"]),
-            "pending_result_count": len(results["pending"]),
+            "result_count": len(adapted["receipt"]["results"]),
+            "pending_result_count": len(adapted["pending"]),
+            "result_provider_schema": adapted["provider_schema"],
             "decision_tally": postmatch["decision_tally"],
             "decision_coverage": postmatch["decision_coverage"],
         }
     ready_blocks = {block["competition_id"]: block for block in postmatch_blocks}
     stored_blocks: dict[str, dict[str, Any]] = {}
     for competition_id in competition_ids:
-        postmatch_path = root_path / "data/local/leagues" / competition_id / "postmatch.json"
+        postmatch_path = _legacy_postmatch_path(root_path, competition_id)
         if postmatch_path.exists():
             try:
                 existing = _read_json(postmatch_path)
@@ -114,30 +199,18 @@ def run_league_lifecycle(
                     }
             except (OSError, json.JSONDecodeError):
                 pass
-    statistics = build_league_statistics(ready_blocks.values())
+    statistics = _legacy_statistics(ready_blocks.values())
     stored_count = 0
     if write:
         for competition_id, closing, postmatch in pending_writes:
             partition = root_path / "data/local/leagues" / competition_id
             closing_path = partition / "closing.json"
-            postmatch_path = partition / "postmatch.json"
-            old_closing = closing_path.read_bytes() if closing_path.exists() else None
-            old_postmatch = postmatch_path.read_bytes() if postmatch_path.exists() else None
+            postmatch_path = _legacy_postmatch_path(root_path, competition_id)
             try:
-                LeagueClosingStore(closing_path).commit(closing)
+                LeagueClosingStore(closing_path).merge(closing)
                 _write_json_atomic(postmatch_path, postmatch)
+                _archive_shared_legacy_postmatch(root_path, competition_id)
             except (OSError, ValueError) as exc:
-                for path, previous in ((closing_path, old_closing), (postmatch_path, old_postmatch)):
-                    if previous is None:
-                        path.unlink(missing_ok=True)
-                    else:
-                        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".rollback", dir=path.parent)
-                        try:
-                            with os.fdopen(fd, "wb") as stream:
-                                stream.write(previous); stream.flush(); os.fsync(stream.fileno())
-                            os.replace(temp_name, path)
-                        finally:
-                            if os.path.exists(temp_name): os.unlink(temp_name)
                 competitions[competition_id] = {"status": "error", "reason": type(exc).__name__}
             else:
                 competitions[competition_id]["status"] = "stored"
@@ -146,8 +219,8 @@ def run_league_lifecycle(
                     "_expected_partition_competition_id": competition_id,
                 }
                 stored_count += 1
-        statistics = build_league_statistics(stored_blocks.values())
+        statistics = _legacy_statistics(stored_blocks.values())
         if stored_blocks:
-            _write_json_atomic(root_path / "data/local/leagues/statistics.json", statistics)
+            _write_json_atomic(root_path / LEGACY_ROOT_RELATIVE_PATH / "statistics.json", statistics)
     status = "stored" if write and stored_count else "dry_run" if not write else "blocked"
     return {"status": status, "competitions": competitions, "statistics": statistics}

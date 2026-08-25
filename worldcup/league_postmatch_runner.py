@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 from worldcup.collectors.league_fotmob_results import parse_fotmob_league_results
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
 from worldcup.league_acceptance import LeagueAcceptanceStore, acceptance_row_is_active
-from worldcup.league_closing import LeagueClosingStore, merge_league_closings
+from worldcup.league_closing import LeagueClosingStore, select_league_closings
 from worldcup.league_postmatch import FORMAL_SCOPE, merge_league_postmatch
 from worldcup.league_postmatch_notifications import (
     LeaguePostmatchNotificationOutbox,
@@ -32,7 +32,10 @@ from worldcup.league_result_evidence import (
     verify_result_contract_evidence,
 )
 from worldcup.league_result_store import LeagueResultStore, _read as _read_result_receipt
-from worldcup.league_statistics import build_league_statistics
+from worldcup.league_statistics import (
+    build_league_statistics,
+    build_league_statistics_from_components,
+)
 from worldcup.league_team_identity import (
     accepted_league_team_identity_registry,
     league_team_identity_registry_fingerprint,
@@ -46,6 +49,7 @@ Notifier = Callable[[str, str], Mapping[str, Any]]
 LOCK_RELATIVE_PATH = Path("data/local/leagues/league_postmatch.lock")
 ACCEPTANCE_RELATIVE_PATH = Path("data/local/leagues/acceptance.json")
 STATISTICS_RELATIVE_PATH = Path("data/local/leagues/postmatch_statistics.json")
+COMPONENTS_RELATIVE_PATH = Path("data/local/leagues/postmatch_components.json")
 STATE_RELATIVE_PATH = Path("data/local/leagues/postmatch_state.json")
 NOTIFICATION_STATE_RELATIVE_PATH = Path("data/local/leagues/postmatch_notification_state.json")
 
@@ -426,16 +430,61 @@ def _load_postmatch(root: Path, competition_id: str) -> dict[str, Any] | None:
     value = _read_json(path)
     if not isinstance(value, dict):
         raise ValueError("postmatch_existing_invalid")
+    if (
+        value.get("artifact_scope") == "legacy_theoddsapi_scores_compatibility"
+        or value.get("result_provider_schema") == "theoddsapi_scores_v1"
+        or not isinstance(value.get("accepted_result_receipts"), Mapping)
+        or not isinstance(value.get("missing_closing_results"), Mapping)
+        or not isinstance(value.get("missing_closing_event_ids"), list)
+    ):
+        raise ValueError("postmatch_existing_invalid")
+    report = build_league_statistics([{
+        **value,
+        "_expected_partition_competition_id": competition_id,
+    }])
+    if (
+        set(report["competitions"]) != {competition_id}
+        or report["excluded_competitions"]
+    ):
+        raise ValueError("postmatch_existing_invalid")
     return value
 
 
-def _statistics_blocks(root: Path) -> list[dict[str, Any]]:
-    blocks: list[dict[str, Any]] = []
-    for competition_id in FORMAL_SINGLE_MATCH_IDS:
-        value = _load_postmatch(root, competition_id)
-        if value is not None:
-            blocks.append({**value, "_expected_partition_competition_id": competition_id})
-    return blocks
+def _validated_partition_component(
+    root: Path, competition_id: str
+) -> dict[str, Any]:
+    path = root / "data/local/leagues" / competition_id / "postmatch.json"
+    try:
+        block = _read_json(path)
+    except ValueError:
+        raise ValueError("postmatch_partition_unreadable") from None
+    if not isinstance(block, dict):
+        raise ValueError("postmatch_partition_invalid")
+    artifact_scope = block.get("artifact_scope")
+    provider_schema = block.get("result_provider_schema")
+    if (
+        artifact_scope not in {None, "fotmob_formal_postmatch"}
+        or provider_schema not in {None, "fotmob_league_results_v1"}
+        or not isinstance(block.get("accepted_result_receipts"), Mapping)
+        or not isinstance(block.get("missing_closing_results"), Mapping)
+        or not isinstance(block.get("missing_closing_event_ids"), list)
+    ):
+        raise ValueError("postmatch_partition_invalid")
+    report = build_league_statistics([{
+        **block,
+        "_expected_partition_competition_id": competition_id,
+    }])
+    if (
+        set(report["competitions"]) != {competition_id}
+        or report["excluded_competitions"]
+    ):
+        raise ValueError("postmatch_partition_invalid")
+    return {
+        "status": "fresh",
+        "reason": None,
+        "postmatch_fingerprint": _fingerprint(block),
+        "statistics": report["competitions"][competition_id],
+    }
 
 
 def _settled_count(row: Mapping[str, Any]) -> int:
@@ -505,6 +554,163 @@ def _validate_statistics(
             < int(old_row["decision_coverage"]["finished_result_count"])
         ):
             raise ValueError("league_postmatch_statistics_regression")
+
+
+def _statistics_component(
+    competition_id: str, value: Mapping[str, Any]
+) -> dict[str, Any]:
+    report = build_league_statistics_from_components({competition_id: value})
+    return report["competitions"][competition_id]
+
+
+def _previous_statistics_components(
+    previous_statistics: Mapping[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    if previous_statistics is None:
+        return {}
+    competitions = previous_statistics.get("competitions")
+    if not isinstance(competitions, Mapping):
+        raise ValueError("league_postmatch_statistics_invalid")
+    expected = {str(competition_id) for competition_id in competitions}
+    _validate_statistics(
+        previous_statistics,
+        None,
+        expected_competitions=expected,
+    )
+    return {
+        competition_id: {
+            "status": "stale",
+            "reason": "component_manifest_upgrade",
+            "postmatch_fingerprint": None,
+            "statistics": _statistics_component(competition_id, row),
+        }
+        for competition_id, row in competitions.items()
+    }
+
+
+def _load_statistics_components(
+    path: Path,
+    previous_statistics: Mapping[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    fallback = _previous_statistics_components(previous_statistics)
+    if not path.exists():
+        return fallback
+    try:
+        payload = _read_json(path)
+    except ValueError:
+        return fallback
+    if (
+        not isinstance(payload, Mapping)
+        or payload.get("schema_version") != 1
+        or payload.get("statistics_scope") != FORMAL_SCOPE
+        or not isinstance(payload.get("components"), Mapping)
+    ):
+        return fallback
+    checked = dict(fallback)
+    for raw_competition_id, raw_entry in payload["components"].items():
+        competition_id = str(raw_competition_id)
+        if competition_id not in FORMAL_SINGLE_MATCH_IDS or not isinstance(raw_entry, Mapping):
+            continue
+        status = raw_entry.get("status")
+        reason = raw_entry.get("reason")
+        fingerprint = raw_entry.get("postmatch_fingerprint")
+        if (
+            status not in {"fresh", "stale"}
+            or (status == "fresh" and reason is not None)
+            or (status == "stale" and (not isinstance(reason, str) or not reason))
+            or (
+                fingerprint is not None
+                and (
+                    not isinstance(fingerprint, str)
+                    or len(fingerprint) != 64
+                    or any(character not in "0123456789abcdef" for character in fingerprint)
+                )
+            )
+            or not isinstance(raw_entry.get("statistics"), Mapping)
+        ):
+            continue
+        try:
+            statistics = _statistics_component(
+                competition_id,
+                raw_entry["statistics"],
+            )
+        except ValueError:
+            continue
+        checked[competition_id] = {
+            "status": status,
+            "reason": reason,
+            "postmatch_fingerprint": fingerprint,
+            "statistics": statistics,
+        }
+    return checked
+
+
+def _collect_statistics_components(
+    root: Path,
+    previous_statistics: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, dict[str, Any]]]:
+    component_path = root / COMPONENTS_RELATIVE_PATH
+    previous_components = _load_statistics_components(
+        component_path,
+        previous_statistics,
+    )
+    competition_ids = set(previous_components)
+    competition_ids.update(
+        competition_id
+        for competition_id in FORMAL_SINGLE_MATCH_IDS
+        if (root / "data/local/leagues" / competition_id / "postmatch.json").exists()
+    )
+    components: dict[str, dict[str, Any]] = {}
+    issues: dict[str, dict[str, Any]] = {}
+    for competition_id in sorted(competition_ids):
+        path = root / "data/local/leagues" / competition_id / "postmatch.json"
+        if path.exists():
+            try:
+                components[competition_id] = _validated_partition_component(
+                    root,
+                    competition_id,
+                )
+                continue
+            except ValueError as exc:
+                reason = str(exc)
+                if reason not in {
+                    "postmatch_partition_unreadable",
+                    "postmatch_partition_invalid",
+                }:
+                    reason = "postmatch_partition_invalid"
+        else:
+            reason = "postmatch_partition_missing"
+        previous = previous_components.get(competition_id)
+        if previous is None:
+            issues[competition_id] = {
+                "status": "blocked",
+                "reason": reason,
+                "using_last_known_good": False,
+            }
+            continue
+        components[competition_id] = {
+            **previous,
+            "status": "stale",
+            "reason": reason,
+        }
+        issues[competition_id] = {
+            "status": "stale",
+            "reason": reason,
+            "using_last_known_good": True,
+        }
+    statistics = build_league_statistics_from_components({
+        competition_id: entry["statistics"]
+        for competition_id, entry in components.items()
+    })
+    manifest = {
+        "schema_version": 1,
+        "statistics_scope": FORMAL_SCOPE,
+        "components": {
+            competition_id: components[competition_id]
+            for competition_id in sorted(components)
+        },
+    }
+    return statistics, manifest, issues
 
 
 def _state_for_statistics(
@@ -1013,13 +1219,12 @@ def run_league_postmatch(
                     outcomes.setdefault(competition_id, {"status": "pending"})
                     continue
                 closing_path = root_path / "data/local/leagues" / competition_id / "closing.json"
-                existing_closing = _read_json(closing_path) if closing_path.exists() else None
-                closing = merge_league_closings(existing_closing, snapshots[competition_id], competition_id)
+                closing = select_league_closings(snapshots[competition_id], competition_id)
             except Exception:
                 outcomes[competition_id] = {"status": "error", "reason": "closing_build_failed"}
                 continue
             try:
-                closing_status = LeagueClosingStore(closing_path).commit(closing)
+                closing_status = LeagueClosingStore(closing_path).merge(closing)
                 wrote_any = wrote_any or closing_status == "stored"
             except Exception:
                 outcomes[competition_id] = {"status": "error", "reason": "closing_commit_failed"}
@@ -1029,6 +1234,11 @@ def run_league_postmatch(
                 existing_postmatch = _load_postmatch(root_path, competition_id)
                 previous_count = len(existing_postmatch.get("matches") or []) if existing_postmatch is not None else 0
                 postmatch = merge_league_postmatch(existing_postmatch, committed_closing, receipt, competition_id)
+                postmatch = {
+                    **postmatch,
+                    "artifact_scope": "fotmob_formal_postmatch",
+                    "result_provider_schema": "fotmob_league_results_v1",
+                }
             except Exception:
                 outcomes[competition_id] = {"status": "error", "reason": "postmatch_build_failed"}
                 continue
@@ -1069,17 +1279,25 @@ def run_league_postmatch(
                 outcomes.setdefault(competition_id, {"status": "unchanged"})
 
         try:
-            blocks = _statistics_blocks(root_path)
+            statistics_path = root_path / STATISTICS_RELATIVE_PATH
+            previous_statistics = _read_json(statistics_path) if statistics_path.exists() else None
+            if previous_statistics is not None and not isinstance(previous_statistics, Mapping):
+                raise ValueError("league_postmatch_statistics_invalid")
+            statistics, component_manifest, partition_issues = _collect_statistics_components(
+                root_path,
+                previous_statistics,
+            )
         except ValueError:
             return {
                 "status": "error",
                 "mode": "live",
-                "reason": "postmatch_store_invalid",
+                "reason": "statistics_build_failed",
                 "competitions": outcomes,
                 "plan": _project_plan(plan),
                 "safety": _safety(called_fotmob=called_fotmob, wrote=wrote_any),
             }
-        if not blocks:
+        outcomes.update(partition_issues)
+        if not statistics["competitions"] and previous_statistics is None:
             has_errors = any(row.get("status") in {"error", "conflict"} for row in outcomes.values())
             status = "error" if has_errors else "pending" if provider_touched else "no_due"
             result = {
@@ -1099,28 +1317,10 @@ def run_league_postmatch(
                     result["reason"] = reasons.pop()
             return result
         try:
-            statistics = build_league_statistics(blocks)
-        except Exception:
-            return {
-                "status": "error",
-                "mode": "live",
-                "reason": "statistics_build_failed",
-                "competitions": outcomes,
-                "plan": _project_plan(plan),
-                "safety": _safety(called_fotmob=called_fotmob, wrote=wrote_any),
-            }
-        try:
-            statistics_path = root_path / STATISTICS_RELATIVE_PATH
-            previous_statistics = _read_json(statistics_path) if statistics_path.exists() else None
-            if previous_statistics is not None and not isinstance(previous_statistics, Mapping):
-                raise ValueError("league_postmatch_statistics_invalid")
-            expected_competitions = {
-                str(block["_expected_partition_competition_id"]) for block in blocks
-            }
             _validate_statistics(
                 statistics,
                 previous_statistics,
-                expected_competitions=expected_competitions,
+                expected_competitions=set(statistics["competitions"]),
             )
             new_state = _state_for_statistics(
                 statistics,
@@ -1136,6 +1336,21 @@ def run_league_postmatch(
                 "status": "error",
                 "mode": "live",
                 "reason": "statistics_validation_failed",
+                "competitions": outcomes,
+                "plan": _project_plan(plan),
+                "safety": _safety(called_fotmob=called_fotmob, wrote=wrote_any),
+            }
+        try:
+            components_status = _write_json_atomic(
+                root_path / COMPONENTS_RELATIVE_PATH,
+                component_manifest,
+            )
+            wrote_any = wrote_any or components_status == "stored"
+        except Exception:
+            return {
+                "status": "error",
+                "mode": "live",
+                "reason": "components_commit_failed",
                 "competitions": outcomes,
                 "plan": _project_plan(plan),
                 "safety": _safety(called_fotmob=called_fotmob, wrote=wrote_any),

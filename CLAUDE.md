@@ -49,6 +49,10 @@
 - 六联赛赛后闭环当前只完成本地离线 / dry-run-first 实现；尚未验收真实 FotMob 赛果样例，未执行 `--live --write`，未安装 `xin.celab.football.league-postmatch`，未发送真实 WxPusher。真实 FotMob probe、首次静默 live/write、LaunchAgent 安装、首次真实通知是独立 Gates A–D，push/merge/deploy 也不在其中。
 - 赛后 acceptance 必须绑定同联赛 `result_contract_evidence.json`、规范化相对 `data/probe/...` 样例路径、实际样例字节 SHA-256 和当前完整严格球队 registry 指纹；样例目录/文件任一 symlink、路径逃逸、指纹不同或 due event identity 不同都必须在 provider 前 fail closed。
 - 赛后结果 store 必须保持单调：已接受比分不删除/不静默改写，修订、finished 回退或身份冲突隔离人工审计；缺 closing 只记 `missing_closing` / `skipped_no_closing`，不补造推荐。已持久化通知 pending 必须先于 provider 检查：带 `--notify` 时先重试，不带时返回 `notification_pending` 并阻断 provider；通知失败不回滚结算。WxPusher 接受成功但 sent receipt 持久化前崩溃存在 at-least-once 重复发送窗口，不得声称 exactly-once。
+- 赛后 closing schema v2 同时接受 `MATCH_PICK` 和 `NO_CLEAN_MARKET`；只有 `MATCH_PICK` 进入 `hit/miss/push`，`NO_CLEAN_MARKET` 只进入 `no_pick` 和 coverage，不进入命中率分母。
+- 当前 scheduled publisher 仍保留 The Odds API scores legacy lifecycle；parser 必须绑定精确 `theoddsapi_scores_v1` 并转 Task 2 committed receipt。legacy postmatch/statistics 固定写入 `data/local/leagues/legacy_theoddsapi/`，不得进入 FotMob `postmatch_statistics.json` / state / notification；FotMob Gates A–D 完成前不得静默退役该兼容链路。
+- legacy 与 FotMob runner 共享的 `closing.json` 必须在同一 `flock` 内完成读取、验证、单调 merge 和原子写入；删除、身份变化、时间倒退、同时间 decision 冲突必须拒绝，并发不同 event 不得 lost update。
+- FotMob 正式汇总使用 `postmatch_components.json` 保留逐联赛 last-known-good 验证统计。单个 `postmatch.json` 不可读、结构无效或为 legacy shape 时，该分区必须显式 `stale` / `blocked`、保留旧计数，健康分区仍可推进 statistics/state/通知；不得将坏分区当空集合导致 aggregate 回退。
 - 六联赛赛后 timer 固定为北京时间 10:30 / 16:30、`RunAtLoad=false`；赛前 confirmed-lineup observer 是独立 `xin.celab.football.league-pre-match` 五分钟唤醒链路，不得把五分钟频率写成赛后调度。
 - The Odds API 使用 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY` / `THE_ODDS_API_KEY_TERTIARY` / `THE_ODDS_API_KEY_QUATERNARY` / `THE_ODDS_API_KEY_QUINARY` 五个显式槽位依次轮换；当前槽位剩余额度降到 30 或以下时，优先切换到仍未探测或剩余大于 30 的下一槽位并保留低额度应急余额。只有五个槽位都没有新鲜额度时才按低额度锚点降频，全部耗尽时暂停刷新。真实 token 只允许写入 ignored `.env`，不得进入代码、文档、日志或回复。
 - scheduled refresh 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会调用 refresh runner。
