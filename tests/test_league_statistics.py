@@ -64,3 +64,20 @@ def test_statistics_recompute_from_valid_records_and_exclude_tampered_partition(
     assert report["aggregate"]["decision_tally"] == {"hit": 1, "miss": 0, "push": 0, "no_pick": 0}
     assert report["aggregate"]["decision_coverage"]["finished_result_count"] == 1
     assert report["excluded_competitions"] == {"serie_a_2026_27": "postmatch_invalid"}
+
+
+def test_statistics_never_readds_a_competition_after_the_second_duplicate_block():
+    """A third duplicate must not undo the second block's fail-closed exclusion."""
+    blocks = [
+        _block("epl_2026_27", "epl-1"),
+        _block("epl_2026_27", "epl-2"),
+        _block("epl_2026_27", "epl-3"),
+    ]
+
+    forward = build_league_statistics(blocks)
+    reverse = build_league_statistics(list(reversed(blocks)))
+
+    for report in (forward, reverse):
+        assert report["competitions"] == {}
+        assert report["excluded_competitions"] == {"epl_2026_27": "postmatch_duplicate"}
+        assert report["aggregate"]["decision_tally"] == {"hit": 0, "miss": 0, "push": 0, "no_pick": 0}

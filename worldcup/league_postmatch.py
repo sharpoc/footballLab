@@ -260,7 +260,7 @@ def merge_league_postmatch(
                 raise ValueError(f"postmatch_result_conflict: {event_id}")
             continue
         prior = missing.get(event_id)
-        if prior is not None and prior != row:
+        if prior is not None and not _same_evidence(prior, row):
             raise ValueError(f"postmatch_result_conflict: {event_id}")
         missing[event_id] = row
     return _payload(competition_id, records, missing, receipts)

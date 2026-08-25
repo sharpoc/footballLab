@@ -112,3 +112,26 @@ def test_lifecycle_statistics_recomputes_stored_postmatch_instead_of_trusting_to
         statistics = json.loads((root / "data/local/leagues/statistics.json").read_text())
         assert result["status"] == "blocked"
         assert statistics["aggregate"]["decision_tally"] == {"hit": 1, "miss": 0, "push": 0, "no_pick": 0}
+
+
+def test_lifecycle_binds_stored_postmatch_to_its_outer_partition():
+    """A valid Serie A block under the EPL directory must not be reclassified during aggregation."""
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        core = {"schema_version": 1, "competition_id": "serie_a_2026_27", "results": []}
+        encoded = json.dumps(core, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        receipt = {**core, "fingerprint": __import__("hashlib").sha256(encoded.encode("utf-8")).hexdigest()}
+        closing = {"schema_version": 1, "competition_id": "serie_a_2026_27", "closings": {}}
+        stored = build_league_postmatch(closing, receipt, "serie_a_2026_27")
+        path = root / "data/local/leagues/epl_2026_27/postmatch.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(stored), encoding="utf-8")
+
+        result = __import__("worldcup.league_lifecycle", fromlist=["run_league_lifecycle"]).run_league_lifecycle(
+            root=root, competition_ids=["epl_2026_27"], write=True,
+        )
+
+        statistics = json.loads((root / "data/local/leagues/statistics.json").read_text())
+        assert result["status"] == "blocked"
+        assert statistics["competitions"] == {}
+        assert statistics["excluded_competitions"] == {"epl_2026_27": "postmatch_partition_mismatch"}

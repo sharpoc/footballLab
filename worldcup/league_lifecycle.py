@@ -108,7 +108,10 @@ def run_league_lifecycle(
             try:
                 existing = _read_json(postmatch_path)
                 if isinstance(existing, dict):
-                    stored_blocks[competition_id] = existing
+                    stored_blocks[competition_id] = {
+                        **existing,
+                        "_expected_partition_competition_id": competition_id,
+                    }
             except (OSError, json.JSONDecodeError):
                 pass
     statistics = build_league_statistics(ready_blocks.values())
@@ -138,7 +141,10 @@ def run_league_lifecycle(
                 competitions[competition_id] = {"status": "error", "reason": type(exc).__name__}
             else:
                 competitions[competition_id]["status"] = "stored"
-                stored_blocks[competition_id] = postmatch
+                stored_blocks[competition_id] = {
+                    **postmatch,
+                    "_expected_partition_competition_id": competition_id,
+                }
                 stored_count += 1
         statistics = build_league_statistics(stored_blocks.values())
         if stored_blocks:

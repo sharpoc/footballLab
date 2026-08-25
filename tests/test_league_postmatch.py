@@ -173,3 +173,24 @@ def test_missing_closing_transitions_once_when_same_result_later_has_legal_closi
     assert settled["missing_closing_event_ids"] == []
     assert settled["decision_tally"] == {"hit": 1, "miss": 0, "push": 0, "no_pick": 0}
     assert rerun == settled
+
+
+def test_missing_closing_receipt_growth_keeps_unchanged_event_and_rejects_revision():
+    """A cumulative receipt hash change alone is not a result revision for an unresolved event."""
+    empty = {"schema_version": 1, "competition_id": "epl_2026_27", "closings": {}}
+    first = merge_league_postmatch(None, empty, _result("epl-1"), "epl_2026_27")
+    e1 = _result("epl-1")["results"][0]
+    e2 = _result("epl-2")["results"][0]
+    cumulative = _receipt("epl_2026_27", [e1, e2])
+
+    grown = merge_league_postmatch(first, empty, cumulative, "epl_2026_27")
+
+    assert grown["missing_closing_event_ids"] == ["epl-1", "epl-2"]
+    revised_e1 = _result("epl-1", home_score=3)["results"][0]
+    revised = _receipt("epl_2026_27", [revised_e1, e2])
+    try:
+        merge_league_postmatch(grown, empty, revised, "epl_2026_27")
+    except ValueError as exc:
+        assert str(exc) == "postmatch_result_conflict: epl-1"
+    else:
+        raise AssertionError("a changed missing-closing score must fail closed")

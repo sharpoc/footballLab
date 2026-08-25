@@ -60,21 +60,32 @@ def build_league_statistics(
 ) -> dict[str, Any]:
     competitions: dict[str, dict[str, Any]] = {}
     excluded: dict[str, str] = {}
+    seen: set[str] = set()
+    duplicates: set[str] = set()
     for block in blocks:
         if not isinstance(block, dict):
             continue
         competition_id = str(block.get("competition_id") or "")
         if competition_id not in FORMAL_SINGLE_MATCH_IDS or block.get("statistics_scope") != FORMAL_SCOPE:
             continue
+        expected_partition = block.get("_expected_partition_competition_id")
+        if expected_partition is not None and expected_partition != competition_id:
+            if isinstance(expected_partition, str) and expected_partition in FORMAL_SINGLE_MATCH_IDS:
+                excluded[expected_partition] = "postmatch_partition_mismatch"
+            continue
+        if competition_id in duplicates:
+            continue
+        if competition_id in seen:
+            competitions.pop(competition_id, None)
+            excluded[competition_id] = "postmatch_duplicate"
+            duplicates.add(competition_id)
+            continue
+        seen.add(competition_id)
         try:
             records, missing, receipts = _existing_records(block, competition_id)
             checked = _payload(competition_id, records, missing, receipts)
         except ValueError:
             excluded[competition_id] = "postmatch_invalid"
-            continue
-        if competition_id in competitions:
-            competitions.pop(competition_id)
-            excluded[competition_id] = "postmatch_duplicate"
             continue
         tally = {key: checked["decision_tally"][key] for key in TALLY_KEYS}
         coverage = {key: checked["decision_coverage"][key] for key in COVERAGE_KEYS}
