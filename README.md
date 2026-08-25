@@ -88,6 +88,7 @@
 - Live 激活设计：[六联赛单场分析 Live 激活设计](docs/superpowers/specs/2026-08-24-six-league-live-activation-design.md)。六联赛同时进入赛程发现，按最近开球动态排序并逐联赛独立验收/启用；已经开赛的比赛不得补造赛前首选。
 - 意甲、英超、西甲、法甲和巴甲已通过本地正式验收并标记 `active`；德甲因 2026/27 尚无完赛证据停留在 `identity_verified`，调度必须排除。
 - 内部仍按联赛隔离 snapshot/history/closing/postmatch，公开发布则每轮只生成一份 `league-aggregate-*` snapshot。本轮未刷新的 `active` 联赛会从已提交缓存补齐，避免公开页只剩最后一个联赛；跨联赛身份错配、空 ID 或重复比赛会 fail-closed。
+- SQLite public view 的检索候选固定包含 `FORMAL_SINGLE_MATCH_IDS` 六联赛，即使 profile 为防止普通 scheduler 越权而继续标记 `dry_run_probe`，也能发现顶层 `competition.id=multi_league` 的已验收聚合 snapshot；检索候选不等于公开行，页面只投影 snapshot 中真实存在的 match，因此未 active/无比赛的德甲不会被伪造展示。
 - `worldcup.league_lifecycle` 以联赛分区运行封盘、严格 90 分钟结算和独立统计；单联赛失败隔离，dry-run 只计算不写入。六联赛 LaunchAgent 的安装/加载与聚合发布仍是独立运维门禁。
 
 ### 六联赛 Confirmed Lineup 赛前编排（本地离线实现）

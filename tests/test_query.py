@@ -330,6 +330,74 @@ def test_load_latest_snapshot_view_merges_latest_snapshot_per_competition():
         assert project_match_rows(snapshot)[1]["competition_id"] == "csl_2026"
 
 
+def test_load_latest_snapshot_view_discovers_multi_league_aggregate_behind_dry_run_profiles():
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "worldcup.db"
+        store = SQLiteSnapshotStore(db_path)
+        csl = _competition_snapshot(
+            "csl_2026", "中超 2026", "Shanghai Port", "Beijing Guoan", "csl-live",
+        )
+        store.put_snapshot(
+            idempotency_key="csl-live:csl-live-snapshot",
+            payload={
+                "run_id": "csl-live", "snapshot_id": "csl-live-snapshot",
+                "snapshot_at": "2026-08-25T01:00:00+00:00", "snapshot": csl,
+            },
+            stored_at="2026-08-25T01:01:00+00:00",
+        )
+        league_matches = []
+        for competition_id, label, home, away in (
+            ("epl_2026_27", "英超", "Arsenal", "Chelsea"),
+            ("laliga_2026_27", "西甲", "Barcelona", "Real Madrid"),
+        ):
+            row = _competition_snapshot(
+                competition_id, label, home, away, f"{competition_id}-live",
+            )["matches"][0]
+            row["match_decision"] = {
+                "schema_version": 2, "policy_version": "match_pick_v3",
+                "label": "MATCH_PICK", "market": "1x2", "selection": "home",
+            }
+            league_matches.append(row)
+        aggregate = {
+            "schema_version": 1,
+            "snapshot_id": "league-aggregate-test",
+            "snapshot_at": "2026-08-25T02:00:00+00:00",
+            "run": {"run_id": "league-aggregate-test"},
+            "competition": {"id": "multi_league", "name": "联赛聚合"},
+            "components": [
+                {"competition_id": "epl_2026_27", "snapshot_id": "epl-live"},
+                {"competition_id": "laliga_2026_27", "snapshot_id": "laliga-live"},
+            ],
+            "matches": league_matches,
+            "league_acceptance": {
+                "schema_version": 1,
+                "competitions": {
+                    "epl_2026_27": {"competition_id": "epl_2026_27", "state": "active"},
+                    "laliga_2026_27": {"competition_id": "laliga_2026_27", "state": "active"},
+                    "bundesliga_2026_27": {
+                        "competition_id": "bundesliga_2026_27", "state": "identity_verified",
+                    },
+                },
+            },
+        }
+        store.put_snapshot(
+            idempotency_key="league-aggregate-test:league-aggregate-test",
+            payload={
+                "run_id": "league-aggregate-test", "snapshot_id": "league-aggregate-test",
+                "snapshot_at": "2026-08-25T02:00:00+00:00", "snapshot": aggregate,
+            },
+            stored_at="2026-08-25T02:01:00+00:00",
+        )
+
+        snapshot = load_latest_snapshot_view(db_path)
+        rows = project_match_rows(snapshot)
+
+    assert {row["competition_id"] for row in rows} == {
+        "csl_2026", "epl_2026_27", "laliga_2026_27",
+    }
+    assert "bundesliga_2026_27" not in {row["competition_id"] for row in rows}
+
+
 def test_load_latest_snapshot_view_keeps_competition_after_many_newer_snapshots():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "worldcup.db"
