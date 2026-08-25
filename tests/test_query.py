@@ -333,7 +333,15 @@ def test_load_latest_snapshot_view_merges_latest_snapshot_per_competition():
 def test_load_latest_snapshot_view_discovers_multi_league_aggregate_behind_dry_run_profiles():
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "worldcup.db"
-        store = SQLiteSnapshotStore(db_path)
+        traced_statements = []
+
+        class TracingSQLiteSnapshotStore(SQLiteSnapshotStore):
+            def _connect(self):
+                connection = super()._connect()
+                connection.set_trace_callback(traced_statements.append)
+                return connection
+
+        store = TracingSQLiteSnapshotStore(db_path)
         csl = _competition_snapshot(
             "csl_2026", "中超 2026", "Shanghai Port", "Beijing Guoan", "csl-live",
         )
@@ -389,13 +397,19 @@ def test_load_latest_snapshot_view_discovers_multi_league_aggregate_behind_dry_r
             stored_at="2026-08-25T02:01:00+00:00",
         )
 
-        snapshot = load_latest_snapshot_view(db_path)
+        traced_statements.clear()
+        snapshot = load_latest_snapshot_view(db_path, store=store)
         rows = project_match_rows(snapshot)
 
     assert {row["competition_id"] for row in rows} == {
         "csl_2026", "epl_2026_27", "laliga_2026_27",
     }
     assert "bundesliga_2026_27" not in {row["competition_id"] for row in rows}
+    competition_lookup_count = sum(
+        "WHERE snapshot_json LIKE" in statement
+        for statement in traced_statements
+    )
+    assert competition_lookup_count == 3, competition_lookup_count
 
 
 def test_load_latest_snapshot_view_keeps_competition_after_many_newer_snapshots():
