@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Collection, Iterable, Sequence
 
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
+from worldcup.league_postmatch import _existing_records, _payload
 
 FORMAL_SCOPE = "observed_schema_v2_match_pick_only"
 TALLY_KEYS = ("hit", "miss", "push", "no_pick")
@@ -58,12 +59,25 @@ def build_league_statistics(
     blocks: Iterable[dict[str, Any]], *, min_sample: int = 20
 ) -> dict[str, Any]:
     competitions: dict[str, dict[str, Any]] = {}
+    excluded: dict[str, str] = {}
     for block in blocks:
+        if not isinstance(block, dict):
+            continue
         competition_id = str(block.get("competition_id") or "")
         if competition_id not in FORMAL_SINGLE_MATCH_IDS or block.get("statistics_scope") != FORMAL_SCOPE:
             continue
-        tally = {key: int((block.get("decision_tally") or {}).get(key, 0)) for key in TALLY_KEYS}
-        coverage = {key: int((block.get("decision_coverage") or {}).get(key, 0)) for key in COVERAGE_KEYS}
+        try:
+            records, missing, receipts = _existing_records(block, competition_id)
+            checked = _payload(competition_id, records, missing, receipts)
+        except ValueError:
+            excluded[competition_id] = "postmatch_invalid"
+            continue
+        if competition_id in competitions:
+            competitions.pop(competition_id)
+            excluded[competition_id] = "postmatch_duplicate"
+            continue
+        tally = {key: checked["decision_tally"][key] for key in TALLY_KEYS}
+        coverage = {key: checked["decision_coverage"][key] for key in COVERAGE_KEYS}
         competitions[competition_id] = {
             "decision_tally": tally,
             "decision_sample": _metrics(tally, min_sample),
@@ -74,6 +88,7 @@ def build_league_statistics(
     return {
         "statistics_scope": FORMAL_SCOPE,
         "competitions": competitions,
+        "excluded_competitions": excluded,
         "aggregate": {
             "decision_tally": aggregate_tally,
             "decision_sample": _metrics(aggregate_tally, min_sample),

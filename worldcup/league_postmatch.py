@@ -200,8 +200,28 @@ def _existing_records(
     return records, missing, receipts
 
 
+def _canonical_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
+    candidate = value.get("accepted_result")
+    row = dict(candidate) if isinstance(candidate, Mapping) else dict(value)
+    row.pop("accepted_result_receipt_fingerprint", None)
+    return row
+
+
 def _same_evidence(first: Mapping[str, Any], second: Mapping[str, Any]) -> bool:
-    return first.get("accepted_result") == second.get("accepted_result")
+    return _canonical_evidence(first) == _canonical_evidence(second)
+
+
+def _same_record(first: Mapping[str, Any], second: Mapping[str, Any]) -> bool:
+    return (
+        _same_evidence(first, second)
+        and first.get("competition_id") == second.get("competition_id")
+        and first.get("source_event_id") == second.get("source_event_id")
+        and _identity(first) == _identity(second)
+        and first.get("closing_snapshot_at") == second.get("closing_snapshot_at")
+        and first.get("closing_match_decision") == second.get("closing_match_decision")
+        and first.get("result") == second.get("result")
+        and first.get("closing_match_decision_result") == second.get("closing_match_decision_result")
+    )
 
 
 def merge_league_postmatch(
@@ -227,7 +247,7 @@ def merge_league_postmatch(
         prior = records.get(event_id)
         prior_missing = missing.get(event_id)
         if prior is not None:
-            if prior != record:
+            if not _same_record(prior, record):
                 raise ValueError(f"postmatch_result_conflict: {event_id}")
             continue
         if prior_missing is not None and not _same_evidence(prior_missing, record):

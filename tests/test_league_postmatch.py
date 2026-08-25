@@ -145,3 +145,31 @@ def test_existing_postmatch_embedded_partition_and_settlement_are_revalidated():
             assert str(exc) == "postmatch_existing_invalid"
         else:
             raise AssertionError("tampered existing record must fail closed")
+
+
+def test_cumulative_receipt_growth_does_not_conflict_with_unchanged_event_evidence():
+    """Appending e2 changes the receipt hash but must not rewrite the already-settled e1 evidence."""
+    first = merge_league_postmatch(None, _closing("epl-1"), _result("epl-1"), "epl_2026_27")
+    e1 = _result("epl-1")["results"][0]
+    e2 = _result("epl-2")["results"][0]
+    cumulative = _receipt("epl_2026_27", [e1, e2])
+    closings = _closing("epl-1")
+    closings["closings"].update(_closing("epl-2")["closings"])
+
+    merged = merge_league_postmatch(first, closings, cumulative, "epl_2026_27")
+
+    assert [row["source_event_id"] for row in merged["matches"]] == ["epl-1", "epl-2"]
+    assert merged["decision_tally"] == {"hit": 2, "miss": 0, "push": 0, "no_pick": 0}
+
+
+def test_missing_closing_transitions_once_when_same_result_later_has_legal_closing():
+    """A legal late-discovered closing must settle its original accepted receipt exactly once."""
+    empty = {"schema_version": 1, "competition_id": "epl_2026_27", "closings": {}}
+    missing = merge_league_postmatch(None, empty, _result("epl-1"), "epl_2026_27")
+
+    settled = merge_league_postmatch(missing, _closing("epl-1"), _result("epl-1"), "epl_2026_27")
+    rerun = merge_league_postmatch(settled, _closing("epl-1"), _result("epl-1"), "epl_2026_27")
+
+    assert settled["missing_closing_event_ids"] == []
+    assert settled["decision_tally"] == {"hit": 1, "miss": 0, "push": 0, "no_pick": 0}
+    assert rerun == settled

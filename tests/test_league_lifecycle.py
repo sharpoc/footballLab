@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from worldcup.league_result_evidence import build_result_contract_evidence
+from worldcup.league_postmatch import build_league_postmatch
 
 
 def _snapshot() -> dict:
@@ -71,3 +72,43 @@ def test_league_lifecycle_refuses_uncommitted_raw_scores_without_postmatch_write
             root=root, competition_ids=["epl_2026_27"], write=True
         )
         assert degraded["status"] == "blocked"
+
+
+def test_lifecycle_statistics_recomputes_stored_postmatch_instead_of_trusting_totals():
+    """A retained block with stale totals must be recomputed from verified event evidence."""
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        closing = {
+            "schema_version": 1, "competition_id": "epl_2026_27", "closings": {"epl-1": {
+                "competition_id": "epl_2026_27", "source_event_id": "epl-1",
+                "kickoff_at_utc": "2026-08-24T18:00:00+00:00",
+                "home_team": "Home FC", "away_team": "Away FC",
+                "home_canonical": "home_fc", "away_canonical": "away_fc",
+                "closing_snapshot_at": "2026-08-24T17:59:00+00:00",
+                "closing_match_decision": {"schema_version": 2, "label": "MATCH_PICK", "market": "1X2", "selection": "home"},
+            }},
+        }
+        row = {
+            "competition_id": "epl_2026_27", "source_event_id": "epl-1",
+            "kickoff_at_utc": "2026-08-24T18:00:00+00:00",
+            "home_team": "Home FC", "away_team": "Away FC",
+            "home_canonical": "home_fc", "away_canonical": "away_fc",
+            "home_score": 2, "away_score": 0, "captured_at": "2026-08-24T20:00:00+00:00",
+            "result_scope": "football_90min", "source_fingerprint": "a" * 64,
+        }
+        core = {"schema_version": 1, "competition_id": "epl_2026_27", "results": [row]}
+        encoded = json.dumps(core, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        receipt = {**core, "fingerprint": __import__("hashlib").sha256(encoded.encode("utf-8")).hexdigest()}
+        stored = build_league_postmatch(closing, receipt, "epl_2026_27")
+        stored["decision_tally"]["hit"] = 999
+        path = root / "data/local/leagues/epl_2026_27/postmatch.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(stored), encoding="utf-8")
+
+        result = __import__("worldcup.league_lifecycle", fromlist=["run_league_lifecycle"]).run_league_lifecycle(
+            root=root, competition_ids=["epl_2026_27"], write=True,
+        )
+
+        statistics = json.loads((root / "data/local/leagues/statistics.json").read_text())
+        assert result["status"] == "blocked"
+        assert statistics["aggregate"]["decision_tally"] == {"hit": 1, "miss": 0, "push": 0, "no_pick": 0}
