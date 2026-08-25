@@ -53,6 +53,27 @@ def test_full_live_plist_has_exact_schedule_and_is_not_run_at_load():
     assert plist["StandardErrorPath"] == f"{LOG_DIR}/league-postmatch.err.log"
 
 
+def test_schedule_mutation_does_not_leak_between_generated_plists():
+    """Sharing the schedule list between calls must fail this isolation regression."""
+    first = build_league_postmatch_launch_agent(
+        python=PYTHON,
+        workdir=ROOT,
+        log_dir=LOG_DIR,
+    )
+    first["StartCalendarInterval"][0]["Hour"] = 0
+
+    second = build_league_postmatch_launch_agent(
+        python=PYTHON,
+        workdir=ROOT,
+        log_dir=LOG_DIR,
+    )
+
+    assert second["StartCalendarInterval"] == [
+        {"Hour": 10, "Minute": 30},
+        {"Hour": 16, "Minute": 30},
+    ]
+
+
 def test_observation_plist_keeps_no_due_wakes_read_only_and_contains_no_sensitive_config():
     """Adding live side effects or config values to the observation timer must fail."""
     plist = build_league_postmatch_launch_agent(

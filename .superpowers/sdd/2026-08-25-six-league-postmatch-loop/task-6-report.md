@@ -68,3 +68,34 @@ All listed verification commands exited 0.
   notification. Those remain independent operational gates.
 - The generator does not add endpoint, secret, environment, quota, provider
   fallback, model, deployment, or public API behavior.
+
+## Review fix round 1
+
+### RED evidence
+
+Added a cross-call isolation regression that mutates the first returned
+`StartCalendarInterval` and then builds a second plist. Before the fix it
+failed with an assertion because the module-level mutable schedule list leaked
+the changed hour into the later artifact.
+
+### Correction
+
+The schedule template is now an immutable tuple of time pairs. Each invocation
+of `build_league_postmatch_launch_agent` constructs a new list of new plist
+dictionaries, so caller mutation cannot affect any later generated artifact.
+
+### Verification
+
+```text
+isolation regression passed
+5/5 focused tests passed
+
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py
+1446/1446 tests passed, 1 module(s) skipped
+Skipped modules:
+  test_fastapi_app.py (optional: fastapi)
+```
+
+`py_compile` and `git diff --check` also exited 0. This review fix did not
+install or load a timer, invoke the runner, run live processing, notify,
+push, create a PR, merge, or deploy.

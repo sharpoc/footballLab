@@ -16,10 +16,7 @@ DEFAULT_LOG_DIR = Path.home() / "Library" / "Logs" / "worldcup"
 DEFAULT_LAUNCH_AGENT_PATH = (
     Path.home() / "Library" / "LaunchAgents" / f"{DEFAULT_LABEL}.plist"
 )
-SCHEDULE = [
-    {"Hour": 10, "Minute": 30},
-    {"Hour": 16, "Minute": 30},
-]
+SCHEDULE = ((10, 30), (16, 30))
 
 
 def _absolute_path(value: str | Path) -> Path:
@@ -52,7 +49,9 @@ def build_league_postmatch_launch_agent(
         "WorkingDirectory": str(root),
         "StandardOutPath": str(logs / "league-postmatch.out.log"),
         "StandardErrorPath": str(logs / "league-postmatch.err.log"),
-        "StartCalendarInterval": SCHEDULE,
+        "StartCalendarInterval": [
+            {"Hour": hour, "Minute": minute} for hour, minute in SCHEDULE
+        ],
         "RunAtLoad": False,
     }
 
