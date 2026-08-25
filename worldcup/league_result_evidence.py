@@ -7,7 +7,7 @@ from typing import Any, Mapping
 from worldcup.competitions import get_competition
 
 
-_SCHEMA = "theoddsapi_scores_v1"
+_SCHEMAS = frozenset({"theoddsapi_scores_v1", "fotmob_league_results_v1"})
 _SCOPE = "football_90min"
 
 
@@ -34,7 +34,7 @@ def build_result_contract_evidence(
     }
     verified = (
         profile.theoddsapi_sport_key == core["sport_key"]
-        and core["provider_schema"] == _SCHEMA
+        and core["provider_schema"] in _SCHEMAS
         and core["score_scope"] == _SCOPE
         and bool(core["source_reference"].strip())
     )
@@ -59,7 +59,7 @@ def verify_result_contract_evidence(evidence: Mapping[str, Any] | None, competit
         evidence.get("verified") is True
         and core["competition_id"] == competition_id
         and core["sport_key"] == profile.theoddsapi_sport_key
-        and core["provider_schema"] == _SCHEMA
+        and core["provider_schema"] in _SCHEMAS
         and core["score_scope"] == _SCOPE
         and bool(core["source_reference"].strip())
         and str(evidence.get("fingerprint") or "") == _fingerprint(core)
