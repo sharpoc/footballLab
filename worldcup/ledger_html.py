@@ -2074,10 +2074,9 @@ def _decision_competition_options(
     snapshot: dict[str, Any],
     live_rows: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
-    finished_rows = (project_finished_rows(snapshot).get("matches") or [])
     seen: set[str] = set()
     options: list[dict[str, str]] = []
-    for row in [*live_rows, *finished_rows]:
+    for row in live_rows:
         competition_id = str(row.get("competition_id") or "").strip()
         if not competition_id or competition_id in seen:
             continue
@@ -2140,8 +2139,9 @@ def _decision_live_rows(
         date_iso, date_label, kickoff_time = _decision_date_parts(projected.get("kickoff_at_utc"))
         home_source = str(projected.get("home_team") or "")
         away_source = str(projected.get("away_team") or "")
-        home = format_team_label(home_source)
-        away = format_team_label(away_source)
+        competition_id = str(projected.get("competition_id") or "")
+        home = format_team_label(home_source, competition_id)
+        away = format_team_label(away_source, competition_id)
         decision = projected.get("match_decision")
         view = _decision_display(decision, projected.get("fixture_status"))
         stage_group = " · ".join(
@@ -2488,6 +2488,7 @@ def _decision_history_rows(snapshot: dict[str, Any]) -> tuple[list[dict[str, Any
         date_iso, date_label, kickoff_time = _decision_date_parts(match.get("kickoff_at_utc"))
         home_source = str(match.get("home_team") or "")
         away_source = str(match.get("away_team") or "")
+        competition_id = str(match.get("competition_id") or "")
         decision = match.get("closing_match_decision")
         outcome = match.get("decision_outcome") or {}
         view = _decision_display(decision)
@@ -2498,8 +2499,8 @@ def _decision_history_rows(snapshot: dict[str, Any]) -> tuple[list[dict[str, Any
             decision_text = view["market"] if view["state"] == "pick" else view["title"]
             if isinstance(decision, dict) and decision.get("policy_version") == "legacy_match_decision_v1":
                 decision_text = f"{decision_text}（旧算法记录）"
-        home = format_team_label(home_source)
-        away = format_team_label(away_source)
+        home = format_team_label(home_source, competition_id)
+        away = format_team_label(away_source, competition_id)
         stage_group = " · ".join(
             str(part) for part in (match.get("stage"), match.get("group")) if part
         )

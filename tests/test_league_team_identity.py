@@ -124,3 +124,30 @@ def test_accepted_registry_covers_verified_provider_teams_for_the_other_five_lea
             for provider_name in teams
         } == teams
     assert registry.resolve("bundesliga_2026_27", "Arsenal").canonical is None
+
+
+def test_accepted_league_teams_have_competition_scoped_chinese_display_names():
+    assert hasattr(league_team_identity, "league_team_display_name_zh")
+    display_name = league_team_identity.league_team_display_name_zh
+    expected = {
+        ("epl_2026_27", "Arsenal"): "阿森纳",
+        ("laliga_2026_27", "Real Madrid"): "皇家马德里",
+        ("bundesliga_2026_27", "Bayern Munich"): "拜仁慕尼黑",
+        ("ligue_1_2026_27", "Paris Saint Germain"): "巴黎圣日耳曼",
+        ("serie_a_2026_27", "Inter Milan"): "国际米兰",
+        ("serie_a_brazil_2026", "Flamengo"): "弗拉门戈",
+    }
+    assert {
+        key: display_name(*key)
+        for key in expected
+    } == expected
+
+    for competition_id, groups in league_team_identity._ACCEPTED_TEAM_GROUPS.items():
+        for aliases in groups.values():
+            for provider_name in aliases:
+                translated = display_name(competition_id, provider_name)
+                assert translated
+                assert translated != provider_name
+
+    assert display_name("epl_2026_27", "Unknown United") is None
+    assert display_name("laliga_2026_27", "Arsenal") is None

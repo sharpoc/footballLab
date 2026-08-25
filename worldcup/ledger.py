@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from worldcup.engine.handicap import ev_handicap
+from worldcup.league_team_identity import league_team_display_name_zh
 from worldcup.query import summarize_finished_block
 
 EM_DASH = "\u2014"
@@ -303,9 +304,13 @@ def format_match_decision_summary(decision: dict[str, Any] | None) -> dict[str, 
     }
 
 
-def format_team_label(team: str | None) -> str:
+def format_team_label(team: str | None, competition_id: str | None = None) -> str:
     if not team:
         return ""
+    if competition_id:
+        league_label = league_team_display_name_zh(competition_id, str(team))
+        if league_label:
+            return league_label
     return TEAM_LABELS_ZH.get(str(team), str(team))
 
 
