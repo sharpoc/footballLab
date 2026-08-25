@@ -5,7 +5,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from worldcup.competitions import formal_single_match_competitions, list_competitions
+from worldcup.competitions import (
+    FORMAL_SINGLE_MATCH_IDS,
+    formal_single_match_competitions,
+    list_competitions,
+)
 from worldcup.decision_settlement import settle_match_decision, summarize_decision_records
 from worldcup.store import SQLiteSnapshotStore
 from worldcup.store_contract import SnapshotStore
@@ -103,6 +107,9 @@ def _active_competition_ids() -> list[str]:
         for competition in list_competitions()
         if competition.fixture_policy != "dry_run_probe"
     ]
+    for competition_id in sorted(FORMAL_SINGLE_MATCH_IDS):
+        if competition_id not in ids:
+            ids.append(competition_id)
     return ids or [DEFAULT_COMPETITION_ID]
 
 
