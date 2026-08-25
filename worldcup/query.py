@@ -18,6 +18,13 @@ SNAPSHOT_VIEW_SCAN_LIMIT = 50
 
 SINGLE_MATCH_STATUS_LABELS = {
     "active": "有正式单场数据",
+    "probing": "正在验收数据源",
+    "odds_sample_verified": "赔率样例已验收",
+    "identity_verified": "球队身份已验收",
+    "result_contract_verified": "赛果口径已验收",
+    "blocked": "数据验收未通过",
+    "degraded": "数据源降级",
+    "quota_blocked": "赔率额度不足",
     "no_valid_odds": "暂无合法赔率",
     "stale": "数据过期",
     "result_pending": "赛果待确认",
@@ -38,9 +45,21 @@ def project_single_match_competitions(snapshot: dict[str, Any]) -> list[dict[str
         if competition_id:
             present.add(competition_id)
 
+    acceptance = snapshot.get("league_acceptance")
+    acceptance_rows = acceptance.get("competitions") if isinstance(acceptance, dict) else {}
+    if not isinstance(acceptance_rows, dict):
+        acceptance_rows = {}
     projected: list[dict[str, str]] = []
     for profile in formal_single_match_competitions():
-        status = "active" if profile.id in present else profile.runtime_status
+        evidence_row = acceptance_rows.get(profile.id)
+        evidence_state = (
+            str(evidence_row.get("state") or "")
+            if isinstance(evidence_row, dict) and evidence_row.get("competition_id") == profile.id
+            else ""
+        )
+        status = "active" if profile.id in present else (
+            evidence_state if evidence_state in SINGLE_MATCH_STATUS_LABELS else profile.runtime_status
+        )
         projected.append(
             {
                 "competition_id": profile.id,

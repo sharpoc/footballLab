@@ -1,0 +1,6 @@
+{
+  "leagues": [
+    {"id": 47, "matches": [{"id": 1001, "home": {"name": "Arsenal"}, "away": {"name": "Chelsea"}, "status": {"utcTime": "2026-08-24T13:00:00Z"}}]},
+    {"id": 47, "matches": [{"id": 1001, "home": {"name": "Arsenal"}, "away": {"name": "Chelsea"}, "status": {"utcTime": "2026-08-24T13:00:00Z"}}]}
+  ]
+}

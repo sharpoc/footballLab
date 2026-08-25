@@ -45,6 +45,7 @@
 - 世界杯赛后公开同步必须使用独立 `postmatch_publish` 产物和 state/outbox，不得覆盖 `analysis_snapshot.json` 或影响 odds scheduler/quota；live 必须显式传入非占位 endpoint 并持有单实例文件锁，公开结算严格只接受 openfootball `score.ft` 的 90 分钟非负整数比分，忽略 `score.et`、`score.p` 和 legacy `score1/score2`。源回退/重复、比分修订、finished 回退/冲突或比分不一致必须阻断发布；单场 closing 缺失不得补造首选，也不得拖住其他已有 closing 的完赛场，必须在 `decision_coverage.missing_closing_count`、`skipped_no_closing` 和 `run.postmatch.partial_publish` 中透明记录。pending 必须绑定 endpoint，只有 ingest 返回 `stored` / `duplicate` 才算成功，之后先落 state、再清 pending。
 - scheduler 默认 dry-run，只读取本地 snapshot / quota 并输出 JSON 决策；The Odds API 按免费额度使用，低额度时必须降频。
 - 意甲、巴甲、西甲、英超、德甲、法甲使用独立 `league_v1` 离线闭环；俱乐部评级 pending 时只用市场共识，占位 1500 不得影响方向。正式统计只接受 observed schema v2，不混入世界杯、中超、legacy 或 reconstructed。六联赛 batch 的 live/write 在真实赔率与 90 分钟 scores 样例验收前必须保持 `live_acceptance_not_enabled`。
+- 六联赛 live 只能由 acceptance report 中 sport catalog、odds sample、严格球队 identity、90 分钟 result contract 四类证据指纹共同激活；`state=active` 字符串本身无效。正式 live pipeline 必须传赛事级严格 identity registry，禁止回退 slug。真实 probe、active 写入、LaunchAgent 安装、推送和部署分别确认。
 - The Odds API 使用 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY` / `THE_ODDS_API_KEY_TERTIARY` / `THE_ODDS_API_KEY_QUATERNARY` / `THE_ODDS_API_KEY_QUINARY` 五个显式槽位依次轮换；当前槽位剩余额度降到 30 或以下时，优先切换到仍未探测或剩余大于 30 的下一槽位并保留低额度应急余额。只有五个槽位都没有新鲜额度时才按低额度锚点降频，全部耗尽时暂停刷新。真实 token 只允许写入 ignored `.env`，不得进入代码、文档、日志或回复。
 - scheduled refresh 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会调用 refresh runner。
 - 正常额度时，世界杯与中超调度都必须把 `match_decision.valid_until - 20 分钟` 作为刷新候选，避免有效首选先过期再等下一个赛前锚点；quota 低于等于 30 时允许按既有低额度锚点降级。

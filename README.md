@@ -78,14 +78,96 @@
 - sidecar 使用独立 `daily_odds_state.json` 提交 `sport_key|anchor` 幂等键：只有 snapshot writer 成功后才提交，进程重启可复用已提交键；provider response 不完整、h2h 缺失、event identity/重复 ID/改期、赔率过期、quota unknown/不足或日预算不足时 fail-closed，部分失败只保留失败 key 重跑。默认 dry-run/disabled，不注册旧 scheduler 或 LaunchAgent，也不改变旧 `analysis_snapshot.json`、`project_daily_picks(snapshot)`、旧 `/api/daily-picks` 和 `/daily-picks`。
 - sidecar 只读入口为 `/api/daily-picks-sidecar` 与 `/daily-picks-sidecar`，页面刷新只读取已生成快照，不联网；旧单场菜单和 API 保持原契约。sidecar 的组合只来自同一全局 Top4，过滤同 event/同球队冲突，显示独立性近似组合分数，不显示资金或执行建议。
 
-### 六联赛单场分析完整闭环（离线骨架已实现，live 未启用）
+### 六联赛单场分析完整闭环（本地生产编排已实现）
 
 - 意甲、巴甲、西甲、英超、德甲和法甲将采用“通用联赛闭环 + 六个 competition profile”接入现有 `/preview` 单场分析，而不是只添加赛事名称，也不把每日精选 sidecar 冒充正式单场 snapshot。
 - 目标链路为：分赛事赔率刷新 → MatchPick v3 唯一首选 → 开球前最后合法 snapshot 封盘 → 严格 90 分钟赛果结算 → 分联赛 `decision_tally` / `decision_sample` / `decision_coverage` 与六联赛同口径汇总。
 - 首版俱乐部评级保持 `club_rating_pending`，使用赔率去水后的市场共识并附加内部风险扣分；占位 1500 不得影响首选方向。世界杯、中超、legacy decision 和 reconstructed closing 不得混入六联赛正式胜率。
 - 离线实现阶段只使用保存样例和依赖注入，默认 dry-run，不读取 `.env`、不联网、不消耗 quota、不生成正式 closing 或统计。真实赔率/比分样例、90 分钟比分口径、生产调度、发布和部署均须后续单独确认。
 - 设计文档：[六联赛单场分析完整闭环设计](docs/superpowers/specs/2026-08-24-six-league-single-match-integration-design.md)。
-- 当前已实现正式 profile、市场共识 snapshot、固定页面入口、严格 closing、90 分钟结果验证门、结算、独立统计和零写入 batch dry-run；`--live` / `--write` 仍返回 `live_acceptance_not_enabled`。尚未采集六联赛真实 scores 样例，不能声称生产赛果闭环已启用。
+- Live 激活设计：[六联赛单场分析 Live 激活设计](docs/superpowers/specs/2026-08-24-six-league-live-activation-design.md)。六联赛同时进入赛程发现，按最近开球动态排序并逐联赛独立验收/启用；已经开赛的比赛不得补造赛前首选。
+- 意甲、英超、西甲、法甲和巴甲已通过本地正式验收并标记 `active`；德甲因 2026/27 尚无完赛证据停留在 `identity_verified`，调度必须排除。
+- 内部仍按联赛隔离 snapshot/history/closing/postmatch，公开发布则每轮只生成一份 `league-aggregate-*` snapshot。本轮未刷新的 `active` 联赛会从已提交缓存补齐，避免公开页只剩最后一个联赛；跨联赛身份错配、空 ID 或重复比赛会 fail-closed。
+- `worldcup.league_lifecycle` 以联赛分区运行封盘、严格 90 分钟结算和独立统计；单联赛失败隔离，dry-run 只计算不写入。当前未安装六联赛 LaunchAgent，也未推送或部署该聚合发布链路。
+
+### 六联赛 Confirmed Lineup 赛前编排（本地离线实现）
+
+`worldcup.league_pre_match_runner` 是六联赛独立赛前入口，不修改世界杯 `worldcup.pre_match_runner` 或 `xin.celab.football.pre-match`。默认命令只做本地 dry-run，不创建单实例锁，不读 `.env`，不联网、写盘、消耗 The Odds API quota、发布或通知：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_pre_match_runner \
+  --root /Users/eagod/ai-dev/足彩
+```
+
+观察模式只请求并原子保存 FotMob confirmed 11+11，不刷新赔率、不发布、不通知：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_pre_match_runner \
+  --root /Users/eagod/ai-dev/足彩 \
+  --live-lineups --write-lineups
+```
+
+全链路命令必须显式给齐分层开关；`--refresh-guard` 是真实赔率刷新的强制前提，`--publish` 前会在单实例锁内校验非占位 HTTPS endpoint 和 HMAC secret。以下只是运维命令契约；真实 FotMob、quota、publish 和 WxPusher 仍须 Task 8 分别确认：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_pre_match_runner \
+  --root /Users/eagod/ai-dev/足彩 \
+  --endpoint https://football.celab.xin/api/ingest/snapshot \
+  --live-lineups --write-lineups \
+  --refresh-after-lineups --live-refresh --refresh-guard --publish --notify
+```
+
+runner 对 live 路径使用 `data/local/leagues/league_pre_match.lock` 的非阻塞真实文件锁，锁竞争时不调用 Task 4 / Task 5 或任何外部 live 依赖。live CLI 不接受用户 `--now` 覆盖安全时钟；Task 4 / Task 5 / Task 7 使用同轮单调 UTC observed clock，在 calendar/details/odds 响应后、fresh event context 读取后和 commit/publish 前重新取时，响应或取证完成时已开球就 fail closed。dry-run 仍可显式传入 `--now` 做可重放本地计算。
+
+锁内业务顺序是：只优先收敛 Task 5 state 已处于 `refresh_started` / `committed` / `published` 的 recovery/publish-only receipt；未 claim 的纯 Task 4 pending 延后到 Task 4 polling 完成，与同轮新 receipt 按 competition 合并后只调用一次 Task 5，避免同 sport key 二次 provider fetch。每次 provider、publish 和成功通知前都重新读取逐场 context；已开球、terminal/inactive 或缺严格 context 的 receipt 按单条 `blocked` / `retryable` 隔离。共享 odds 响应跨过最早 kickoff 时，会把过期 event 从合法 attempt membership 和 provider payload 中剔除、隔离其 state，并让仍合法 event 使用同一次 provider 响应收敛；snapshot builder 若重新引入过期 event 则 fail closed。quota degraded 通知送达也不会在 Task 4 receipt 获得 durable ACK 前清掉其 staging context。所有 Task 5 / Task 4 业务已推进后，才独立重试 Task 6 pending 并投递新通知。Task 6 outbox 损坏或通知失败不会阻断 Task 5 publish pending 或 Task 4 polling；两个队列不互相充当持久证据。已绑定 receipt 本身保留 exact pre/post decision，但只有当前逐场 context 仍可证明 active、非 terminal 且未开赛时才重建成功通知；缺失或失效 context 会保留 intent 并 fail closed 为不发。
+
+Task 4 receipt 只会在 Task 5 持久 `published` 成功后 ACK。Task 7 为每个 receipt 保存发布前/后 decision、component snapshot ID 和 aggregate snapshot ID；同轮多次发布不再统一重读最后一份 current，重启恢复时可按 Task 5 receipt 重读精确 history snapshot。Task 5 顶层 status 对 receipt durable 结果保持权威：只有 `published`、`already_acked` 和契约可达的 `partial` 才能绑定 durable ACK 并生成成功通知；`blocked` / `refresh_failed` / 非法 error，以及夹带全 durable 或旧 persisted ACK 的伪 `publish_failed`，均不得翻转为成功或清理 receipt。每一个携带 `publish.status=published` 且 ingest 返回 `stored/duplicate` 的结果，包括普通 `published`、合法 `partial` 和 ACK state commit 失败特例，都必须在绑定、通知或清理 Task 7 receipt 前证明 aggregate components 精确等于当前正式 acceptance active 集合，且每个 component snapshot ID 与声明联赛都与 committed partition cache 一致。这允许本轮未刷新的合法 active cached component，但缺少 active、夹带 non-active 或 cache 证据错配都 fail closed。
+
+Task 5 的真实可达例外是 ingest 已返回 `stored/duplicate`、但随后 ACK state commit 失败：此时顶层仍为 `publish_failed`，publication 证据只说明外部 ingest 已发生，对应 receipt 必须继续留在 `retryable=ack_state_commit_failed`；Task 7 接受该失败形状以继续本轮 Task 4 polling 和后续 ACK retry，但不绑定、不通知、不清 receipt，也不把 publication 成功冒充 durable ACK。这个 reason 只能出现在该专用 `publish_failed + published/stored|duplicate` 形状的 retryable 组，其 token 必须精确等于 Task 5 state 中与本轮 component snapshot 匹配的 current receipts：通常 phase 为 `committed`；若原子 replace 已成功但随后 commit 抛错，phase 可为 `published`，但 component、aggregate 与 publish status 必须全部精确匹配本轮 publication。本轮 current receipt 所属联赛只需是完整 aggregate components 的子集；`partial`、`published`、`already_acked`、`blocked`、其他 status、失败/缺失 publication、blocked 组 reason 或错误 current membership 均在绑定、通知和清理前 fail closed。`partial` 仅允许已持久 durable 与其余 blocked/retryable 混合，或当轮成功 publication 后的部分状态；ACK 仍必须精确覆盖 submitted membership 且三组唯一互斥。通知失败不回滚 snapshot，只有 Task 6 返回与事件指纹一致的 `sent` / `already_sent`，或能从真实 outbox 证明 canonical pending 已持久，才能清理普通 Task 7 receipt context。
+
+T-20 缺首发通知只遍历当前严格 `active` acceptance、Task 4 lineup state 形状完整且 fixture status 明确为 `SCHEDULED` 的未开赛赛事；空/未知 status、损坏 JSON、非 mapping events 及 `POSTPONED` / `CANCELLED` / `FINISHED` 等状态均 fail closed 为不发。Task 4 现会对每个实际 due event 产出唯一、脱敏的 `source_events` outcome：calendar/parser/date 级故障映射到确切受影响 requests，details 失败只标记严格 identity join 对应的单场；只有 event-scoped confirmed lineup 被 parser 严格接受时才标记 `succeeded`。predicted/unknown/incomplete、schema mismatch、identity mismatch 等安全拒绝统一标记 `rejected`，既不伪装 source success，也不触发 recovery。Task 7 把该字段作为必需契约，校验唯一 event membership、`request_count` 和 `source_failure_count` 一致性，无逐场证据就 fail closed，不从 competition/global 聚合计数反推单场失败或恢复。Episode 使用严格状态不变式，并持久关联单调 `generation` 与 exact failure/recovery notification fingerprint：未达持续失败门槛就恢复时静默关闭；达门槛后先持久 `failure_pending`，并从 episode 内冻结的队名/开球/指纹跨重启重建，只有 failure 已 `sent/already_sent` 才允许 recovery 投递。Exact `succeeded` 会持久 `recovery_pending`，但 Task 6 canonical pending 只证明未丢失，不能证明用户已收到，也不会关闭 episode；只有 recovery 真正 `sent/already_sent` 才关闭。Task 7 在重试 Task 6 前先提交本轮 event-scoped evidence，并按当前 generation/fingerprint/state 复验 pending；其间新 `failed` 会 supersede recovery、保持同一 active episode 且不重复 failure，并在 Task 6 自身文件锁下精确取消旧 recovery pending，避免形成 `failure1 -> failure2 -> recovery1`。真正已送达 recovery 后再失败才显式 rollover 为新 generation。同一 active event 即使 current kickoff 变化也继续使用 episode 内稳定业务身份，不会绕过 Task 6 去重发第二条 failure。
+
+运行时安全产物均位于 ignored 路径：
+
+- confirmed lineup 分区：`data/cache/leagues/lineups/<competition_id>.json`
+- Task 4 轮询/交付：`data/local/leagues/lineup_state.json` 和 `lineup_refresh_pending.json`
+- Task 5 刷新/publish 阶段：`data/local/leagues/post_lineup_refresh_state.json`
+- Task 6 通知 outbox/sent receipt：`data/local/leagues/lineup_notification_state.json`
+- Task 7 脱敏通知上下文/source episode：`data/local/leagues/league_pre_match_state.json`
+- 单实例锁：`data/local/leagues/league_pre_match.lock`
+
+LaunchAgent generator 默认生成观察模式 JSON；label 固定为 `xin.celab.football.league-pre-match`，`StartInterval=300`，`RunAtLoad=false`，日志为 `~/Library/Logs/worldcup/league-pre-match.{out,err}.log`。不传 `--out` 不写 plist，传入也只生成草案，永不调用 `launchctl`：
+
+```bash
+# 默认观察模式 JSON 预览
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_pre_match_launch_agent \
+  --python /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  --workdir /Users/eagod/ai-dev/足彩
+
+# 全链路 plist 草案；包含 quota guard，仍不安装/加载
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_pre_match_launch_agent \
+  --python /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  --workdir /Users/eagod/ai-dev/足彩 \
+  --full-live --endpoint https://football.celab.xin/api/ingest/snapshot \
+  --out /Users/eagod/ai-dev/足彩/data/cache/xin.celab.football.league-pre-match.plist
+```
+
+每 300 秒唤醒不等于每 300 秒请求：未来 90 分钟没有未开赛 active 比赛时 FotMob 请求为 0；T-90..T-45 最快 15 分钟一次，T-45..T-0 最快 5 分钟一次，同日 calendar 合并、details 仅限 due match ID。FotMob 是免费非正式源，没有 SLA；schema、confirmed 语义或身份无法证明时只保留旧首发和旧推荐，不用 predicted/unknown 猜测。
+
+本阶段没有安装或加载上述 timer。未来如已经确认安装后需回滚，只 bootout 新 label `xin.celab.football.league-pre-match`，不影响世界杯、中超或赛后 timer；LaunchAgent 安装/加载仍属 Task 8 独立确认门。
+
+零副作用调度外壳示例：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.league_scheduled_publish --root /Users/eagod/ai-dev/足彩 --now 2026-08-24T12:00:00Z
+```
+
+真实 probe、active 本地写入和 scheduler 安装分别属于实施计划 Gate B/C/D；不得仅修改 competition 配置解除门禁。
 
 ## 目录结构
 
@@ -129,6 +211,8 @@ worldcup/
   lineup_source_probe.py        # FIFA/FotMob 首发源可用性只读探测（默认 dry-run，不进模型）
   pre_match_runner.py           # 首发轮询 → 新 confirmed lineup → post-lineup refresh guard → 首发后 odds refresh 编排（默认 dry-run）
   pre_match_launch_agent.py     # 赛前首发轮询 LaunchAgent plist 生成器（不加载 launchd）
+  league_pre_match_runner.py    # 六联赛 confirmed lineup → quota guard → aggregate publish → outbox 单实例编排
+  league_pre_match_launch_agent.py # 六联赛独立 LaunchAgent plist 生成器（不调用 launchctl）
   odds_trend.py                 # 从 history 归档提取每场赔率走势点
   finished_record.py            # closing match_decision × 赛果定格，维护本地增量完赛 store
   postmatch_publish.py          # 严格 90 分钟赛果 → 独立完整 snapshot → HMAC 发布（默认 dry-run）

@@ -20,16 +20,21 @@ DEFAULT_DAYS_FROM = 2
 ESTIMATED_LAST = 2
 
 
-def build_worldcup_scores_url(api_key: str, days_from: int = DEFAULT_DAYS_FROM) -> str:
+def build_scores_url(sport_key: str, api_key: str, days_from: int = DEFAULT_DAYS_FROM) -> str:
     params = {
         "daysFrom": days_from,
         "apiKey": api_key,
     }
-    return f"{BASE_URL}/sports/{WORLD_CUP_SPORT_KEY}/scores/?{urlencode(params)}"
+    return f"{BASE_URL}/sports/{sport_key}/scores/?{urlencode(params)}"
 
 
-def fetch_worldcup_scores(
+def build_worldcup_scores_url(api_key: str, days_from: int = DEFAULT_DAYS_FROM) -> str:
+    return build_scores_url(WORLD_CUP_SPORT_KEY, api_key, days_from)
+
+
+def fetch_scores_for_sport(
     api_key: str,
+    sport_key: str,
     transport: Callable[[str], Any] | None = None,
     cache_path: str | Path | None = None,
     quota_path: str | Path | None = None,
@@ -38,7 +43,7 @@ def fetch_worldcup_scores(
     days_from: int = DEFAULT_DAYS_FROM,
     max_attempts: int = 2,
 ) -> SourceFetchResult:
-    url = build_worldcup_scores_url(api_key=api_key, days_from=days_from)
+    url = build_scores_url(sport_key=sport_key, api_key=api_key, days_from=days_from)
     status, json_body, headers = fetch_json_from_url(
         url,
         transport=transport,
@@ -74,4 +79,27 @@ def fetch_worldcup_scores(
         headers=headers,
         cache_path=written_cache_path,
         quota_entry=quota_entry,
+    )
+
+
+def fetch_worldcup_scores(
+    api_key: str,
+    transport: Callable[[str], Any] | None = None,
+    cache_path: str | Path | None = None,
+    quota_path: str | Path | None = None,
+    observed_at: str | None = None,
+    quota_provider: str = LEGACY_PROVIDER,
+    days_from: int = DEFAULT_DAYS_FROM,
+    max_attempts: int = 2,
+) -> SourceFetchResult:
+    return fetch_scores_for_sport(
+        api_key=api_key,
+        sport_key=WORLD_CUP_SPORT_KEY,
+        transport=transport,
+        cache_path=cache_path,
+        quota_path=quota_path,
+        observed_at=observed_at,
+        quota_provider=quota_provider,
+        days_from=days_from,
+        max_attempts=max_attempts,
     )

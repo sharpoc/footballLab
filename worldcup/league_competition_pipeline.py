@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from worldcup.collectors.league_odds import parse_league_odds_events
@@ -9,6 +10,7 @@ from worldcup.config import load_config
 from worldcup.local_runner import _analysis_to_dict
 from worldcup.match_decision import decide_match, prepare_match_input_for_pick
 from worldcup.pipeline import MatchAnalysisInput, analyze_match_input
+from worldcup.league_team_identity import LeagueTeamIdentityRegistry
 
 
 def _formal_profile(competition_id: str) -> CompetitionConfig:
@@ -27,15 +29,34 @@ def build_league_competition_snapshot(
     competition_id: str,
     observed_at: str,
     cfg: dict[str, Any] | None = None,
+    identity_registry: LeagueTeamIdentityRegistry | None = None,
 ) -> dict[str, Any]:
     profile = _formal_profile(competition_id)
     analysis_cfg = cfg or load_config()
     parsed = parse_league_odds_events(raw_odds, competition_id)
     matches: list[dict[str, Any]] = []
+    unmatched = [] if identity_registry is not None else list(parsed.unmatched_clubs)
 
     for fixture, event in zip(parsed.fixtures, parsed.odds_events):
         if event.sport_key != profile.theoddsapi_sport_key:
             raise ValueError(f"sport_key_mismatch: {event.source_event_id}")
+        if identity_registry is not None:
+            identity = identity_registry.resolve_fixture(
+                competition_id,
+                fixture.home_team_name,
+                fixture.away_team_name,
+            )
+            if identity["status"] != "verified":
+                if identity["home_canonical"] is None:
+                    unmatched.append(fixture.home_team_name)
+                if identity["away_canonical"] is None:
+                    unmatched.append(fixture.away_team_name)
+                continue
+            fixture = replace(
+                fixture,
+                home_canonical=str(identity["home_canonical"]),
+                away_canonical=str(identity["away_canonical"]),
+            )
         match_input = MatchAnalysisInput(
             fixture=fixture,
             odds_event=event,
@@ -72,7 +93,7 @@ def build_league_competition_snapshot(
         "data_quality": {
             "fixture_source": parsed.fixture_source,
             "warnings": ["club_rating_pending", "market_consensus_fallback"],
-            "club_alias_unmatched": parsed.unmatched_clubs,
+            "club_alias_unmatched": sorted(set(unmatched)),
             "club_rating": {
                 "mode": "pending",
                 "activation": "market_consensus_only",

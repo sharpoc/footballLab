@@ -37,6 +37,24 @@ def test_single_match_competitions_include_fixed_six_without_fake_rows():
     assert project_match_rows(snapshot) == []
 
 
+def test_single_match_competitions_project_evidence_bound_runtime_status_without_fake_rows():
+    projection = project_single_match_competitions({
+        "matches": [],
+        "league_acceptance": {
+            "schema_version": 1,
+            "competitions": {
+                "epl_2026_27": {"competition_id": "epl_2026_27", "state": "probing"},
+                "laliga_2026_27": {"competition_id": "laliga_2026_27", "state": "active"},
+            },
+        },
+    })
+    by_id = {row["competition_id"]: row for row in projection}
+
+    assert by_id["epl_2026_27"]["status"] == "probing"
+    assert by_id["laliga_2026_27"]["status"] == "active"
+    assert by_id["serie_a_2026_27"]["status"] == "disabled_until_live_acceptance"
+
+
 def test_league_statistics_projection_exposes_only_safe_scope():
     snapshot = {"league_statistics": {
         "statistics_scope": "observed_schema_v2_match_pick_only",

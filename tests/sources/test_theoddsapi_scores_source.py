@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from worldcup.sources.theoddsapi_scores import fetch_worldcup_scores
+from worldcup.sources.theoddsapi_scores import build_scores_url, fetch_scores_for_sport, fetch_worldcup_scores
 from worldcup.sources.theoddsapi import SourceFetchError
 
 
@@ -93,3 +93,23 @@ def test_fetch_scores_reuses_safe_source_error_contract_without_writing_cache():
 
         assert not (root / "theoddsapi_scores.json").exists()
         assert not (root / "quota.json").exists()
+
+
+def test_generic_scores_source_uses_exact_sport_key_and_injected_transport():
+    body = json.dumps([{"id": "epl-1", "completed": True}]).encode()
+    captured = {}
+
+    def transport(url):
+        captured["url"] = url
+        return FakeResponse(body)
+
+    result = fetch_scores_for_sport(
+        api_key="fake-key",
+        sport_key="soccer_epl",
+        transport=transport,
+    )
+
+    assert result.status == 200
+    assert result.json_body[0]["id"] == "epl-1"
+    assert "/sports/soccer_epl/scores/" in captured["url"]
+    assert "/sports/soccer_epl/scores/" in build_scores_url("soccer_epl", "fake-key")
