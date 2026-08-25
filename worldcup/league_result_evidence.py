@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from worldcup.competitions import get_competition
@@ -14,6 +14,28 @@ _FOTMOB_SCHEMA = "fotmob_league_results_v1"
 _SCHEMAS = frozenset({_THEODDSAPI_SCHEMA, _FOTMOB_SCHEMA})
 _SCOPE = "football_90min"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def fotmob_result_contract_evidence_path(
+    root: str | Path, competition_id: str
+) -> Path:
+    return (
+        Path(root)
+        / "data/local/leagues"
+        / competition_id
+        / "providers/fotmob/result_contract_evidence.json"
+    )
+
+
+def legacy_theoddsapi_result_contract_evidence_path(
+    root: str | Path, competition_id: str
+) -> Path:
+    return (
+        Path(root)
+        / "data/local/leagues/legacy_theoddsapi"
+        / competition_id
+        / "result_contract_evidence.json"
+    )
 
 
 def _fingerprint(payload: Mapping[str, Any]) -> str:

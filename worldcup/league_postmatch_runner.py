@@ -28,6 +28,7 @@ from worldcup.league_postmatch_notifications import (
 )
 from worldcup.league_postmatch_planner import plan_league_postmatch
 from worldcup.league_result_evidence import (
+    fotmob_result_contract_evidence_path,
     fotmob_sample_path_is_sanitized,
     verify_result_contract_evidence,
 )
@@ -52,6 +53,9 @@ STATISTICS_RELATIVE_PATH = Path("data/local/leagues/postmatch_statistics.json")
 COMPONENTS_RELATIVE_PATH = Path("data/local/leagues/postmatch_components.json")
 STATE_RELATIVE_PATH = Path("data/local/leagues/postmatch_state.json")
 NOTIFICATION_STATE_RELATIVE_PATH = Path("data/local/leagues/postmatch_notification_state.json")
+COMPONENT_SCHEMA_VERSION = 1
+FORMAL_POSTMATCH_ARTIFACT_SCOPE = "fotmob_formal_postmatch"
+FOTMOB_RESULT_PROVIDER_SCHEMA = "fotmob_league_results_v1"
 
 
 def _safety(*, called_fotmob: bool = False, wrote: bool = False, notified: bool = False) -> dict[str, bool]:
@@ -332,7 +336,7 @@ def _active_inputs(
         row = rows[competition_id]
         if not acceptance_row_is_active(row, competition_id):
             continue
-        evidence_path = root / "data/local/leagues" / competition_id / "result_contract_evidence.json"
+        evidence_path = fotmob_result_contract_evidence_path(root, competition_id)
         try:
             value = _read_json(evidence_path) if evidence_path.exists() else None
         except ValueError:
@@ -463,8 +467,8 @@ def _validated_partition_component(
     artifact_scope = block.get("artifact_scope")
     provider_schema = block.get("result_provider_schema")
     if (
-        artifact_scope not in {None, "fotmob_formal_postmatch"}
-        or provider_schema not in {None, "fotmob_league_results_v1"}
+        artifact_scope not in {None, FORMAL_POSTMATCH_ARTIFACT_SCOPE}
+        or provider_schema not in {None, FOTMOB_RESULT_PROVIDER_SCHEMA}
         or not isinstance(block.get("accepted_result_receipts"), Mapping)
         or not isinstance(block.get("missing_closing_results"), Mapping)
         or not isinstance(block.get("missing_closing_event_ids"), list)
@@ -479,12 +483,24 @@ def _validated_partition_component(
         or report["excluded_competitions"]
     ):
         raise ValueError("postmatch_partition_invalid")
-    return {
-        "status": "fresh",
-        "reason": None,
-        "postmatch_fingerprint": _fingerprint(block),
-        "statistics": report["competitions"][competition_id],
-    }
+    settled_event_ids = sorted(
+        str(row["source_event_id"])
+        for row in block["matches"]
+    )
+    result_event_ids = sorted(set(settled_event_ids).union(
+        str(event_id) for event_id in block["missing_closing_event_ids"]
+    ))
+    return _component_entry(
+        competition_id,
+        status="fresh",
+        reason=None,
+        postmatch_fingerprint=_fingerprint(block),
+        statistics=report["competitions"][competition_id],
+        membership={
+            "settled_event_ids": settled_event_ids,
+            "result_event_ids": result_event_ids,
+        },
+    )
 
 
 def _settled_count(row: Mapping[str, Any]) -> int:
@@ -563,6 +579,89 @@ def _statistics_component(
     return report["competitions"][competition_id]
 
 
+def _component_entry(
+    competition_id: str,
+    *,
+    status: str,
+    reason: str | None,
+    postmatch_fingerprint: str | None,
+    statistics: Mapping[str, Any],
+    membership: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "component_schema_version": COMPONENT_SCHEMA_VERSION,
+        "competition_id": competition_id,
+        "postmatch_schema_version": 2,
+        "artifact_scope": FORMAL_POSTMATCH_ARTIFACT_SCOPE,
+        "result_provider_schema": FOTMOB_RESULT_PROVIDER_SCHEMA,
+        "status": status,
+        "reason": reason,
+        "postmatch_fingerprint": postmatch_fingerprint,
+        "statistics": _statistics_component(competition_id, statistics),
+        "membership": dict(membership) if membership is not None else None,
+    }
+
+
+def _validated_component_membership(value: Any) -> dict[str, list[str]] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) != {
+        "settled_event_ids",
+        "result_event_ids",
+    }:
+        raise ValueError("league_postmatch_component_membership_invalid")
+    checked: dict[str, list[str]] = {}
+    for key in ("settled_event_ids", "result_event_ids"):
+        event_ids = value.get(key)
+        if (
+            not isinstance(event_ids, list)
+            or any(not isinstance(event_id, str) or not event_id for event_id in event_ids)
+            or event_ids != sorted(set(event_ids))
+        ):
+            raise ValueError("league_postmatch_component_membership_invalid")
+        checked[key] = list(event_ids)
+    if not set(checked["settled_event_ids"]).issubset(checked["result_event_ids"]):
+        raise ValueError("league_postmatch_component_membership_invalid")
+    return checked
+
+
+def _component_regressed(
+    previous: Mapping[str, Any], candidate: Mapping[str, Any]
+) -> bool:
+    old_statistics = previous["statistics"]
+    new_statistics = candidate["statistics"]
+    for key in ("hit", "miss", "push", "no_pick"):
+        if int(new_statistics["decision_tally"][key]) < int(
+            old_statistics["decision_tally"][key]
+        ):
+            return True
+    for key in ("decided", "actionable", "decision_count"):
+        if int(new_statistics["decision_sample"][key]) < int(
+            old_statistics["decision_sample"][key]
+        ):
+            return True
+    for key in (
+        "finished_result_count",
+        "closing_available_count",
+        "decision_available_count",
+        "invalid_decision_count",
+        "legacy_decision_count",
+    ):
+        if int(new_statistics["decision_coverage"][key]) < int(
+            old_statistics["decision_coverage"][key]
+        ):
+            return True
+    old_membership = previous.get("membership")
+    new_membership = candidate.get("membership")
+    if isinstance(old_membership, Mapping):
+        if not isinstance(new_membership, Mapping):
+            return True
+        for key in ("settled_event_ids", "result_event_ids"):
+            if not set(old_membership[key]).issubset(new_membership[key]):
+                return True
+    return False
+
+
 def _previous_statistics_components(
     previous_statistics: Mapping[str, Any] | None,
 ) -> dict[str, dict[str, Any]]:
@@ -578,12 +677,14 @@ def _previous_statistics_components(
         expected_competitions=expected,
     )
     return {
-        competition_id: {
-            "status": "stale",
-            "reason": "component_manifest_upgrade",
-            "postmatch_fingerprint": None,
-            "statistics": _statistics_component(competition_id, row),
-        }
+        competition_id: _component_entry(
+            competition_id,
+            status="stale",
+            reason="component_manifest_upgrade",
+            postmatch_fingerprint=None,
+            statistics=row,
+            membership=None,
+        )
         for competition_id, row in competitions.items()
     }
 
@@ -614,9 +715,19 @@ def _load_statistics_components(
         status = raw_entry.get("status")
         reason = raw_entry.get("reason")
         fingerprint = raw_entry.get("postmatch_fingerprint")
+        contract_fields = {
+            "component_schema_version",
+            "competition_id",
+            "postmatch_schema_version",
+            "artifact_scope",
+            "result_provider_schema",
+            "membership",
+        }
+        has_component_contract = any(key in raw_entry for key in contract_fields)
         if (
             status not in {"fresh", "stale"}
             or (status == "fresh" and reason is not None)
+            or (status == "fresh" and fingerprint is None)
             or (status == "stale" and (not isinstance(reason, str) or not reason))
             or (
                 fingerprint is not None
@@ -629,19 +740,34 @@ def _load_statistics_components(
             or not isinstance(raw_entry.get("statistics"), Mapping)
         ):
             continue
+        if has_component_contract and (
+            raw_entry.get("component_schema_version") != COMPONENT_SCHEMA_VERSION
+            or raw_entry.get("competition_id") != competition_id
+            or raw_entry.get("postmatch_schema_version") != 2
+            or raw_entry.get("artifact_scope") != FORMAL_POSTMATCH_ARTIFACT_SCOPE
+            or raw_entry.get("result_provider_schema") != FOTMOB_RESULT_PROVIDER_SCHEMA
+        ):
+            continue
         try:
             statistics = _statistics_component(
                 competition_id,
                 raw_entry["statistics"],
             )
+            membership = _validated_component_membership(
+                raw_entry.get("membership") if has_component_contract else None
+            )
+            if has_component_contract and status == "fresh" and membership is None:
+                raise ValueError("league_postmatch_component_membership_invalid")
         except ValueError:
             continue
-        checked[competition_id] = {
-            "status": status,
-            "reason": reason,
-            "postmatch_fingerprint": fingerprint,
-            "statistics": statistics,
-        }
+        checked[competition_id] = _component_entry(
+            competition_id,
+            status=status,
+            reason=reason,
+            postmatch_fingerprint=fingerprint,
+            statistics=statistics,
+            membership=membership,
+        )
     return checked
 
 
@@ -664,13 +790,17 @@ def _collect_statistics_components(
     issues: dict[str, dict[str, Any]] = {}
     for competition_id in sorted(competition_ids):
         path = root / "data/local/leagues" / competition_id / "postmatch.json"
+        previous = previous_components.get(competition_id)
         if path.exists():
             try:
-                components[competition_id] = _validated_partition_component(
+                candidate = _validated_partition_component(
                     root,
                     competition_id,
                 )
-                continue
+                if previous is None or not _component_regressed(previous, candidate):
+                    components[competition_id] = candidate
+                    continue
+                reason = "postmatch_partition_regression"
             except ValueError as exc:
                 reason = str(exc)
                 if reason not in {
@@ -680,7 +810,6 @@ def _collect_statistics_components(
                     reason = "postmatch_partition_invalid"
         else:
             reason = "postmatch_partition_missing"
-        previous = previous_components.get(competition_id)
         if previous is None:
             issues[competition_id] = {
                 "status": "blocked",
@@ -688,11 +817,14 @@ def _collect_statistics_components(
                 "using_last_known_good": False,
             }
             continue
-        components[competition_id] = {
-            **previous,
-            "status": "stale",
-            "reason": reason,
-        }
+        components[competition_id] = _component_entry(
+            competition_id,
+            status="stale",
+            reason=reason,
+            postmatch_fingerprint=previous.get("postmatch_fingerprint"),
+            statistics=previous["statistics"],
+            membership=previous.get("membership"),
+        )
         issues[competition_id] = {
             "status": "stale",
             "reason": reason,
@@ -1236,8 +1368,8 @@ def run_league_postmatch(
                 postmatch = merge_league_postmatch(existing_postmatch, committed_closing, receipt, competition_id)
                 postmatch = {
                     **postmatch,
-                    "artifact_scope": "fotmob_formal_postmatch",
-                    "result_provider_schema": "fotmob_league_results_v1",
+                    "artifact_scope": FORMAL_POSTMATCH_ARTIFACT_SCOPE,
+                    "result_provider_schema": FOTMOB_RESULT_PROVIDER_SCHEMA,
                 }
             except Exception:
                 outcomes[competition_id] = {"status": "error", "reason": "postmatch_build_failed"}

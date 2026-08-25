@@ -90,7 +90,7 @@
 - 内部仍按联赛隔离 snapshot/history/closing/postmatch，公开发布则每轮只生成一份 `league-aggregate-*` snapshot。本轮未刷新的 `active` 联赛会从已提交缓存补齐，避免公开页只剩最后一个联赛；跨联赛身份错配、空 ID 或重复比赛会 fail-closed。
 - SQLite public view 的检索候选固定包含顶层 `competition.id=multi_league` 的已验收聚合 snapshot，不会为六个内部联赛 ID 分别重复扫描 SQLite JSON；这与 profile 为防止普通 scheduler 越权而继续标记 `dry_run_probe` 的运行门禁相互独立。检索候选不等于公开行，页面只投影 snapshot 中真实存在的 match，因此未 active/无比赛的德甲不会被伪造展示。
 - 单场分析页对六联赛使用 competition-scoped canonical 中文俱乐部展示名；英文 `home_team` / `away_team`、snapshot、API、身份匹配和结算契约不变，未登记球队安全回退英文。页面下拉列表只从当前公开比赛生成杯赛入口，不再因历史完赛记录保留已结束的世界杯；固定六联赛验收入口仍保留。
-- `worldcup.league_lifecycle` 仍是当前 scheduled publisher 已接线的 The Odds API scores 兼容边界：legacy parser 只接受精确 `theoddsapi_scores_v1` evidence，再显式转成 Task 2 committed receipt 后结算。它只写 `data/local/leagues/legacy_theoddsapi/` 下的 postmatch/statistics，不写 FotMob 正式 `postmatch_statistics.json` / state / outbox；聚合快照仍读取该已标记 origin 的兼容统计，直到 FotMob Gates A–D 单独验收后再评审退役。
+- `worldcup.league_lifecycle` 仍是当前 scheduled publisher 已接线的 The Odds API scores 兼容边界：legacy parser 只读 `data/local/leagues/legacy_theoddsapi/<competition_id>/result_contract_evidence.json` 中精确 `theoddsapi_scores_v1` evidence，再显式转成 Task 2 committed receipt 后结算。它只写 `data/local/leagues/legacy_theoddsapi/` 下的 evidence/postmatch/statistics，不读写 FotMob provider evidence、正式 `postmatch_statistics.json` / state / outbox；聚合快照仍读取该已标记 origin 的兼容统计，直到 FotMob Gates A–D 单独验收后再评审退役。
 
 ### 六联赛 Confirmed Lineup 赛前编排（本地离线实现）
 
@@ -167,7 +167,7 @@ LaunchAgent generator 默认生成观察模式 JSON；label 固定为 `xin.celab
 
 `worldcup.league_postmatch_runner` 已实现 FotMob 严格赛果解析、单调分区 result store、开赛前最后合法 observed schema v2 closing、累计结算与逐联赛/六联赛统计、可恢复通知 outbox 和 LaunchAgent plist 生成器。当前仅证明了保存 fixture 与注入式 fake provider 下的离线契约；**尚未接受任何真实 FotMob 赛后样例，未执行 live/write，未安装赛后 timer，未发送手机通知，也未 push/merge/deploy 本实现**。
 
-默认命令只读 `acceptance.json`、每个 active 联赛的 `result_contract_evidence.json`、history 和 `results.json` receipt，不读/不改动 runner state 或 notification state；不创建锁，不读 `.env`，不请求 FotMob，不写盘，不通知，不调用 The Odds API scores 或改动 quota ledger。`--now` 只用于 dry-run 重放，live CLI 会拒绝它：
+默认命令只读 `acceptance.json`、每个 active 联赛的 `providers/fotmob/result_contract_evidence.json`、history 和 `results.json` receipt，不读 legacy 或旧通用 evidence，不读/不改动 runner state 或 notification state；不创建锁，不读 `.env`，不请求 FotMob，不写盘，不通知，不调用 The Odds API scores 或改动 quota ledger。`--now` 只用于 dry-run 重放，live CLI 会拒绝它：
 
 ```bash
 /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
@@ -196,14 +196,14 @@ live 只在 `--live --write` 同时给出时可进入 provider/本地写入路�
   --live --write --notify
 ```
 
-赛后 acceptance 是路径与内容双重绑定契约：`data/local/leagues/acceptance.json` 中的 `state=active` 字符串本身无效；其 `result_contract` 指纹必须精确匹配同联赛 `result_contract_evidence.json`，evidence 必须绑定规范化的相对 `data/probe/...` `sample_path`，实际保存字节的 SHA-256 必须匹配 `source_reference`，且样例路径的任何目录/文件均不能是 symlink。同时 acceptance `team_identity` 指纹必须匹配该联赛当前完整严格 registry；运行时还会对 `competition_id + source_event_id + kickoff_at_utc + home/away canonical` 做精确 due join。缺任一证据都在 provider 请求前 fail closed，不回退 slug 或推测 ID。
+赛后 acceptance 是 provider 路径与内容双重绑定契约：`data/local/leagues/acceptance.json` 中的 `state=active` 字符串本身无效；其 `result_contract` 指纹必须精确匹配同联赛 `providers/fotmob/result_contract_evidence.json`，evidence 必须绑定规范化的相对 `data/probe/...` `sample_path`，实际保存字节的 SHA-256 必须匹配 `source_reference`，且样例路径的任何目录/文件均不能是 symlink。同时 acceptance `team_identity` 指纹必须匹配该联赛当前完整严格 registry；运行时还会对 `competition_id + source_event_id + kickoff_at_utc + home/away canonical` 做精确 due join。缺任一证据都在 provider 请求前 fail closed，不回退 legacy/旧通用 evidence、slug 或推测 ID。
 
 运行时只读/写以下 ignored 路径：
 
-- 验收与输入：`data/local/leagues/acceptance.json`、`data/local/leagues/<competition_id>/result_contract_evidence.json`、`data/probe/leagues/results/` 下 Gate A 审核样例、`data/local/leagues/<competition_id>/history/*.json`。
+- 验收与输入：`data/local/leagues/acceptance.json`、`data/local/leagues/<competition_id>/providers/fotmob/result_contract_evidence.json`、`data/probe/leagues/results/` 下 Gate A 审核样例、`data/local/leagues/<competition_id>/history/*.json`。
 - 分区产物：`data/local/leagues/<competition_id>/results.json`、`results.json.lock`、`closing.json`、`closing.json.lock`、`postmatch.json`。已接受 90 分钟赛果不会删除或静默改写；比分修订、finished 回退、身份冲突会保留旧值并隔离该分区。`closing.json` 是 legacy lifecycle 与 FotMob runner 唯一共享的派生文件；两个 caller 都通过同一 `flock` 内的校验 + 单调 merge + 原子写入，删除、身份变化、时间倒退或同时间不同 decision 均 fail closed，并发不同 event 不丢失。
-- FotMob 汇总与恢复：`data/local/leagues/postmatch_components.json`、`postmatch_statistics.json`、`postmatch_state.json`、`postmatch_notification_state.json`、`postmatch_notification_state.json.lock`、`league_postmatch.lock`。`postmatch_components.json` 保留逐联赛最后一份已验证统计与 component 指纹；某一 `postmatch.json` 不可读、结构无效或是 legacy shape 时，该分区显式标 `stale` / `blocked`，保留其 last-known-good 计数，健康联赛仍可更新 statistics/state/通知；不会把坏分区当空集合导致 aggregate 计数回退。
-- The Odds 兼容产物：`data/local/leagues/legacy_theoddsapi/<competition_id>/postmatch.json` 与 `data/local/leagues/legacy_theoddsapi/statistics.json`。升级时旧共享 `postmatch.json` 只有在能辨认为 legacy shape 时才原子归档为 `postmatch.pre_isolation.json`；已标记或结构符合 FotMob 正式 receipt-backed 产物不会被迁移。
+- FotMob 汇总与恢复：`data/local/leagues/postmatch_components.json`、`postmatch_statistics.json`、`postmatch_state.json`、`postmatch_notification_state.json`、`postmatch_notification_state.json.lock`、`league_postmatch.lock`。`postmatch_components.json` 保留逐联赛最后一份已验证统计、component/provider/schema 身份、指纹和 settled/result event membership。每份结构合法的 fresh 分区也必须先与 LKG 比较；单项 tally/sample/核心 coverage 或 event membership 回退时标 `postmatch_partition_regression` 并保留 LKG。某一 `postmatch.json` 不可读、结构无效或是 legacy shape 时同样显式标 `stale` / `blocked`；健康联赛仍可更新 statistics/state/通知，不会把坏分区当空集合或用不兼容 LKG 污染 aggregate。
+- The Odds 兼容产物：`data/local/leagues/legacy_theoddsapi/<competition_id>/result_contract_evidence.json`、其 `.lock`、`postmatch.json` 与 `data/local/leagues/legacy_theoddsapi/statistics.json`。若隔离 evidence 尚不存在，旧 `data/local/leagues/<competition_id>/result_contract_evidence.json` 只有在字节内容精确验证为 `theoddsapi_scores_v1` 后，才会在 write 轮次原样原子复制到 legacy 路径；dry-run 不复制，已有隔离 evidence 不覆盖，FotMob provider evidence 不读写。旧共享 `postmatch.json` 只有在能辨认为 legacy shape 时才原子归档为 `postmatch.pre_isolation.json`；已标记或结构符合 FotMob 正式 receipt-backed 产物不会被迁移。
 
 所有 JSON 原子替换可在同一 ignored 目录内短暂创建 `.<target>.*.tmp`，完成或失败后清理；不会写到上述根目录之外。
 

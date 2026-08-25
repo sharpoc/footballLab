@@ -1,3 +1,4 @@
+import hashlib
 import json
 import importlib
 import importlib.util
@@ -86,6 +87,8 @@ def test_real_scheduler_lifecycle_composition_preserves_legacy_public_statistics
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         _write_lifecycle_inputs(root)
+        shared_evidence = root / "data/local/leagues/epl_2026_27/result_contract_evidence.json"
+        shared_evidence_bytes = shared_evidence.read_bytes()
         acceptance = root / "data/local/leagues/acceptance.json"
         acceptance.write_text(json.dumps({
             "schema_version": 1,
@@ -134,6 +137,123 @@ def test_real_scheduler_lifecycle_composition_preserves_legacy_public_statistics
             "epl-event-1", "fotmob-owned-event",
         }
         assert not (root / "data/local/leagues/postmatch_statistics.json").exists()
+        assert (
+            root
+            / "data/local/leagues/legacy_theoddsapi/epl_2026_27/"
+            "result_contract_evidence.json"
+        ).read_bytes() == shared_evidence_bytes
+
+
+def test_scheduler_keeps_legacy_evidence_isolated_after_fotmob_gate_a_evidence_arrives():
+    """Gate A evidence must not replace the exact The Odds contract used by the wired lifecycle."""
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_lifecycle_inputs(root)
+        acceptance = root / "data/local/leagues/acceptance.json"
+        acceptance.write_text(json.dumps({
+            "schema_version": 1,
+            "competitions": {"epl_2026_27": {
+                "competition_id": "epl_2026_27", "state": "active", "reason": None,
+                "fingerprints": {
+                    "sport_catalog": "sport", "odds_sample": "odds",
+                    "team_identity": "teams", "result_contract": "results",
+                },
+            }},
+        }), encoding="utf-8")
+        snapshot_path = root / "data/cache/leagues/epl_2026_27/snapshot.json"
+        snapshot_path.write_text(json.dumps(_snapshot()), encoding="utf-8")
+        scheduler_kwargs = {
+            "root": root,
+            "now": "2026-08-25T12:00:00Z",
+            "live": True,
+            "write": True,
+            "env_loader": lambda: {"INGEST_HMAC_SECRET": "x" * 32},
+            "publish_fn": lambda payload: (_ for _ in ()).throw(
+                AssertionError("not-due scheduler must not publish")
+            ),
+        }
+
+        before_gate_a = run_local_league_scheduler(**scheduler_kwargs)
+        legacy_evidence = root / (
+            "data/local/leagues/legacy_theoddsapi/epl_2026_27/"
+            "result_contract_evidence.json"
+        )
+        legacy_bytes = legacy_evidence.read_bytes()
+
+        sample_path = Path("data/probe/leagues/results/epl-gate-a.json")
+        sample_bytes = b"fotmob-gate-a-result-contract"
+        (root / sample_path).parent.mkdir(parents=True)
+        (root / sample_path).write_bytes(sample_bytes)
+        fotmob_evidence = build_result_contract_evidence(
+            competition_id="epl_2026_27",
+            sport_key="soccer_epl",
+            provider_schema="fotmob_league_results_v1",
+            score_scope="football_90min",
+            source_reference=hashlib.sha256(sample_bytes).hexdigest(),
+            provider="fotmob",
+            sample_path=sample_path.as_posix(),
+        )
+        formal_evidence = root / (
+            "data/local/leagues/epl_2026_27/providers/fotmob/"
+            "result_contract_evidence.json"
+        )
+        formal_evidence.parent.mkdir(parents=True)
+        formal_bytes = json.dumps(fotmob_evidence).encode()
+        formal_evidence.write_bytes(formal_bytes)
+        # Simulate the old generic path being repurposed by an earlier Gate-A workflow.
+        (root / "data/local/leagues/epl_2026_27/result_contract_evidence.json").write_bytes(
+            formal_bytes
+        )
+
+        after_gate_a = run_local_league_scheduler(**scheduler_kwargs)
+
+        assert before_gate_a["lifecycle"]["status"] == "stored"
+        assert after_gate_a["lifecycle"]["status"] == "stored"
+        assert after_gate_a["lifecycle"]["competitions"]["epl_2026_27"][
+            "result_count"
+        ] == 1
+        assert legacy_evidence.read_bytes() == legacy_bytes
+        assert formal_evidence.read_bytes() == formal_bytes
+
+
+def test_lifecycle_explicitly_blocks_missing_or_mismatched_legacy_evidence():
+    for mutation, expected_reason in (
+        ("missing", "legacy_result_contract_evidence_missing"),
+        ("fotmob", "legacy_result_contract_evidence_invalid"),
+    ):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_lifecycle_inputs(root)
+            shared = root / "data/local/leagues/epl_2026_27/result_contract_evidence.json"
+            if mutation == "missing":
+                shared.unlink()
+            else:
+                shared.write_text(json.dumps(build_result_contract_evidence(
+                    competition_id="epl_2026_27",
+                    sport_key="soccer_epl",
+                    provider_schema="fotmob_league_results_v1",
+                    score_scope="football_90min",
+                    source_reference="a" * 64,
+                    provider="fotmob",
+                    sample_path="data/probe/leagues/results/epl.json",
+                )), encoding="utf-8")
+
+            result = importlib.import_module("worldcup.league_lifecycle").run_league_lifecycle(
+                root=root,
+                competition_ids=["epl_2026_27"],
+                write=True,
+            )
+
+            assert result["status"] == "blocked"
+            assert result["competitions"]["epl_2026_27"] == {
+                "status": "blocked",
+                "reason": expected_reason,
+            }
+            assert not (
+                root
+                / "data/local/leagues/legacy_theoddsapi/epl_2026_27/"
+                "result_contract_evidence.json"
+            ).exists()
 
 
 def test_existing_shared_legacy_postmatch_is_archived_during_isolation_upgrade():

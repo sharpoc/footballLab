@@ -12,7 +12,9 @@ from worldcup.league_postmatch_notifications import (
     LeaguePostmatchNotificationOutbox,
     build_threshold_events,
 )
+from worldcup.league_closing import select_league_closings
 from worldcup.league_live_probe import evaluate_league_probe_bundle
+from worldcup.league_postmatch import build_league_postmatch
 from worldcup.league_postmatch_runner import main, run_league_postmatch
 from worldcup.league_result_evidence import build_result_contract_evidence
 from worldcup.league_statistics import build_league_statistics
@@ -31,6 +33,15 @@ def _forbidden(*_args: object, **_kwargs: object) -> dict:
 def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def _fotmob_evidence_path(root: Path, competition_id: str) -> Path:
+    return (
+        root
+        / "data/local/leagues"
+        / competition_id
+        / "providers/fotmob/result_contract_evidence.json"
+    )
 
 
 def _evidence(root: Path, competition_id: str) -> dict:
@@ -123,7 +134,10 @@ def _setup(root: Path, competitions: tuple[str, ...] = (EPL,)) -> None:
     _write_json(root / "data/local/leagues/acceptance.json", _acceptance(evidence_by_competition))
     for index, competition_id in enumerate(competitions, start=1):
         partition = root / "data/local/leagues" / competition_id
-        _write_json(partition / "result_contract_evidence.json", evidence_by_competition[competition_id])
+        _write_json(
+            _fotmob_evidence_path(root, competition_id),
+            evidence_by_competition[competition_id],
+        )
         _write_json(partition / "history/snapshot-1.json", _snapshot(competition_id, str(1000 + index)))
 
 
@@ -235,7 +249,7 @@ def test_live_requires_acceptance_fingerprint_bound_fotmob_evidence():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         _setup(root)
-        evidence_path = root / f"data/local/leagues/{EPL}/result_contract_evidence.json"
+        evidence_path = _fotmob_evidence_path(root, EPL)
         evidence = json.loads(evidence_path.read_text())
         evidence["source_reference"] = "0" * 64
         _write_json(evidence_path, evidence)
@@ -255,6 +269,44 @@ def test_live_requires_acceptance_fingerprint_bound_fotmob_evidence():
         }
         assert result["safety"]["called_fotmob"] is False
         assert not (root / f"data/local/leagues/{EPL}/results.json").exists()
+
+
+def test_fotmob_runner_ignores_generic_and_legacy_provider_evidence_paths():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        evidence = _evidence(root, EPL)
+        _write_json(root / "data/local/leagues/acceptance.json", _acceptance({EPL: evidence}))
+        _write_json(
+            root / f"data/local/leagues/{EPL}/history/snapshot-1.json",
+            _snapshot(EPL, "1001"),
+        )
+        _write_json(
+            root / f"data/local/leagues/{EPL}/result_contract_evidence.json",
+            evidence,
+        )
+        _write_json(
+            root
+            / f"data/local/leagues/legacy_theoddsapi/{EPL}/result_contract_evidence.json",
+            evidence,
+        )
+        provider_events: list[str] = []
+        calendar_fetcher, detail_fetcher = _fetchers(provider_events)
+
+        result = run_league_postmatch(
+            root,
+            live=True,
+            write=True,
+            now=NOW,
+            calendar_fetcher=calendar_fetcher,
+            detail_fetcher=detail_fetcher,
+        )
+
+        assert result["competitions"][EPL] == {
+            "status": "blocked",
+            "reason": "result_contract_evidence_invalid",
+        }
+        assert provider_events == []
+        assert result["safety"]["called_fotmob"] is False
 
 
 def test_production_acceptance_evidence_contract_activates_runner_without_manual_hashes():
@@ -279,7 +331,7 @@ def test_production_acceptance_evidence_contract_activates_runner_without_manual
         assert acceptance["competitions"][EPL]["fingerprints"]["result_contract"] == evidence["fingerprint"]
         partition = root / f"data/local/leagues/{EPL}"
         _write_json(root / "data/local/leagues/acceptance.json", acceptance)
-        _write_json(partition / "result_contract_evidence.json", evidence)
+        _write_json(_fotmob_evidence_path(root, EPL), evidence)
         _write_json(partition / "history/snapshot-1.json", _snapshot(EPL, "1001"))
         events: list[str] = []
         calendar_fetcher, detail_fetcher = _fetchers(events)
@@ -313,7 +365,7 @@ def test_live_binds_acceptance_to_saved_sample_bytes_and_current_identity_regist
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             _setup(root)
-            evidence_path = root / f"data/local/leagues/{EPL}/result_contract_evidence.json"
+            evidence_path = _fotmob_evidence_path(root, EPL)
             evidence = json.loads(evidence_path.read_text())
             if mutation == "tampered_sample":
                 (root / evidence["sample_path"]).write_bytes(b"tampered-provider-bytes")
@@ -1167,6 +1219,196 @@ def test_malformed_partition_uses_last_known_good_while_healthy_league_advances(
             assert components["components"][EPL]["status"] == "stale"
             assert components["components"][EPL]["reason"] == expected_reason
             assert components["components"][LALIGA]["status"] == "fresh"
+
+
+def _empty_formal_postmatch(competition_id: str) -> dict:
+    return {
+        "schema_version": 2,
+        "competition_id": competition_id,
+        "statistics_scope": "observed_schema_v2_match_pick_only",
+        "matches": [],
+        "decision_tally": {"hit": 0, "miss": 0, "push": 0, "no_pick": 0},
+        "decision_sample": {
+            "min_sample": 20,
+            "decided": 0,
+            "actionable": 0,
+            "decision_count": 0,
+            "sample_too_small": True,
+            "hit_rate": None,
+            "pick_rate": None,
+        },
+        "decision_coverage": {
+            "finished_result_count": 0,
+            "closing_available_count": 0,
+            "missing_closing_count": 0,
+            "decision_available_count": 0,
+            "missing_decision_count": 0,
+            "invalid_decision_count": 0,
+            "unresolved_count": 0,
+            "legacy_decision_count": 0,
+        },
+        "skipped_no_closing": 0,
+        "missing_closing_event_ids": [],
+        "missing_closing_results": {},
+        "accepted_result_receipts": {},
+        "artifact_scope": "fotmob_formal_postmatch",
+        "result_provider_schema": "fotmob_league_results_v1",
+    }
+
+
+def _replacement_formal_postmatch(competition_id: str, event_id: str) -> dict:
+    closing = select_league_closings(
+        [_snapshot(competition_id, event_id)],
+        competition_id,
+    )
+    home, away, home_canonical, away_canonical = _teams(competition_id)
+    row = {
+        "competition_id": competition_id,
+        "source_event_id": event_id,
+        "kickoff_at_utc": "2026-08-28T19:00:00+00:00",
+        "home_team": home,
+        "away_team": away,
+        "home_canonical": home_canonical,
+        "away_canonical": away_canonical,
+        "home_score": 2,
+        "away_score": 1,
+        "captured_at": NOW.isoformat(),
+        "result_scope": "football_90min",
+        "source_fingerprint": "b" * 64,
+    }
+    core = {"schema_version": 1, "competition_id": competition_id, "results": [row]}
+    receipt = {
+        **core,
+        "fingerprint": hashlib.sha256(json.dumps(
+            core,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()).hexdigest(),
+    }
+    return {
+        **build_league_postmatch(closing, receipt, competition_id),
+        "artifact_scope": "fotmob_formal_postmatch",
+        "result_provider_schema": "fotmob_league_results_v1",
+    }
+
+
+def test_valid_empty_partition_uses_lkg_while_healthy_league_advances():
+    for incompatible_lkg in (None, "identity", "schema", "membership"):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _setup(root, (EPL,))
+            first_calendar, first_details = _fetchers([])
+            assert run_league_postmatch(
+                root,
+                live=True,
+                write=True,
+                now=NOW,
+                calendar_fetcher=first_calendar,
+                detail_fetcher=first_details,
+            )["status"] == "settled"
+
+            manifest_path = root / "data/local/leagues/postmatch_components.json"
+            manifest = json.loads(manifest_path.read_text())
+            if incompatible_lkg == "identity":
+                manifest["components"][EPL]["competition_id"] = LALIGA
+            elif incompatible_lkg == "schema":
+                manifest["components"][EPL]["component_schema_version"] = 999
+            elif incompatible_lkg == "membership":
+                manifest["components"][EPL]["membership"] = None
+            _write_json(manifest_path, manifest)
+            original_fingerprint = manifest["components"][EPL]["postmatch_fingerprint"]
+
+            _setup(root, (LALIGA,))
+            _write_json(
+                root / f"data/local/leagues/{LALIGA}/history/snapshot-1.json",
+                _snapshot(LALIGA, "1002"),
+            )
+            _write_json(
+                root / f"data/local/leagues/{EPL}/postmatch.json",
+                _empty_formal_postmatch(EPL),
+            )
+            provider_events: list[str] = []
+            calendar_fetcher, detail_fetcher = _fetchers(provider_events)
+            notifications: list[str] = []
+
+            result = run_league_postmatch(
+                root,
+                live=True,
+                write=True,
+                notify=True,
+                now=NOW,
+                calendar_fetcher=calendar_fetcher,
+                detail_fetcher=detail_fetcher,
+                notifier=lambda content, _summary: notifications.append(content) or {"status": "sent"},
+            )
+
+            assert result["status"] == "settled"
+            assert result["competitions"][EPL] == {
+                "status": "stale",
+                "reason": "postmatch_partition_regression",
+                "using_last_known_good": True,
+            }
+            assert result["competitions"][LALIGA]["status"] == "settled"
+            assert provider_events == [f"calendar:{LALIGA}", f"details:{LALIGA}"]
+            assert len(notifications) == 1
+            statistics = json.loads((
+                root / "data/local/leagues/postmatch_statistics.json"
+            ).read_text())
+            assert statistics["aggregate"]["decision_tally"]["hit"] == 2
+            manifest = json.loads(manifest_path.read_text())
+            epl_component = manifest["components"][EPL]
+            assert epl_component["status"] == "stale"
+            if incompatible_lkg is None:
+                assert epl_component["postmatch_fingerprint"] == original_fingerprint
+                assert epl_component["membership"]["settled_event_ids"] == ["1001"]
+            else:
+                assert epl_component["postmatch_fingerprint"] is None
+                assert epl_component["membership"] is None
+            assert epl_component["competition_id"] == EPL
+            assert epl_component["component_schema_version"] == 1
+
+
+def test_replacement_membership_cannot_overwrite_lkg_component():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _setup(root, (EPL,))
+        first_calendar, first_details = _fetchers([])
+        assert run_league_postmatch(
+            root,
+            live=True,
+            write=True,
+            now=NOW,
+            calendar_fetcher=first_calendar,
+            detail_fetcher=first_details,
+        )["status"] == "settled"
+        manifest_path = root / "data/local/leagues/postmatch_components.json"
+        original = json.loads(manifest_path.read_text())["components"][EPL]
+
+        _setup(root, (LALIGA,))
+        _write_json(
+            root / f"data/local/leagues/{LALIGA}/history/snapshot-1.json",
+            _snapshot(LALIGA, "1002"),
+        )
+        _write_json(
+            root / f"data/local/leagues/{EPL}/postmatch.json",
+            _replacement_formal_postmatch(EPL, "replacement-event"),
+        )
+        calendar_fetcher, detail_fetcher = _fetchers([])
+
+        result = run_league_postmatch(
+            root,
+            live=True,
+            write=True,
+            now=NOW,
+            calendar_fetcher=calendar_fetcher,
+            detail_fetcher=detail_fetcher,
+        )
+
+        assert result["competitions"][EPL]["reason"] == "postmatch_partition_regression"
+        stored = json.loads(manifest_path.read_text())["components"][EPL]
+        assert stored["postmatch_fingerprint"] == original["postmatch_fingerprint"]
+        assert stored["membership"] == original["membership"]
 
 
 def test_daily_settlement_date_uses_beijing_calendar_day_and_positional_notifier_contract():
