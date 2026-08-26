@@ -100,7 +100,7 @@ def _bundle(competition_id: str, *, include_pending: bool = False) -> dict:
         "schema_version": 1,
         "provider": "fotmob",
         "competition_id": competition_id,
-        "calendar_date": "2026-08-24",
+        "calendar_date": "20260824",
         "observed_league_id": league_id,
         "calendar": {"leagues": [{"id": int(league_id), "matches": matches}]},
         "details": {event_id: _detail(league_id, event_id, home, away)},
@@ -272,6 +272,55 @@ def test_saved_bundle_evaluator_blocks_every_structural_failure_with_exact_reaso
         invalid_path = _evaluate(root, "data/probe/../private.json", "epl_2026_27")
         assert invalid_path["status"] == "blocked"
         assert invalid_path["reason"] == "sample_path_invalid"
+
+
+def test_saved_bundle_evaluator_accepts_exact_ascii_yyyymmdd_real_dates():
+    """Provider-native ordinary and leap dates must pass the saved-wrapper contract."""
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for name, calendar_date in (
+            ("ordinary", "20260824"),
+            ("leap-day", "20240229"),
+        ):
+            bundle = _bundle("epl_2026_27")
+            bundle["calendar_date"] = calendar_date
+            relative = f"data/probe/leagues/results/epl/{name}.json"
+            _write_bundle(root, relative, bundle)
+
+            result = _evaluate(root, relative, "epl_2026_27")
+
+            assert result["status"] == "verified"
+            assert result["reason"] is None
+
+
+def test_saved_bundle_evaluator_rejects_non_native_or_impossible_calendar_dates():
+    """Only eight ASCII digits forming a real Gregorian date are valid."""
+    invalid_dates = (
+        ("iso", "2026-08-24"),
+        ("seven-digits", "2026082"),
+        ("nine-digits", "202608240"),
+        ("unicode-digits", "２０２６０８２４"),
+        ("ascii-nondigit", "20260A24"),
+        ("boolean", True),
+        ("integer", 20260824),
+        ("none", None),
+        ("non-leap-day", "20260229"),
+        ("impossible-day", "20260230"),
+        ("zero-month", "20260024"),
+        ("month-thirteen", "20261324"),
+    )
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for name, calendar_date in invalid_dates:
+            bundle = _bundle("epl_2026_27")
+            bundle["calendar_date"] = calendar_date
+            relative = f"data/probe/leagues/results/epl/{name}.json"
+            _write_bundle(root, relative, bundle)
+
+            result = _evaluate(root, relative, "epl_2026_27")
+
+            assert result["status"] == "blocked"
+            assert result["reason"] == "bundle_schema_invalid"
 
 
 def test_aggregate_rejects_empty_or_duplicate_entries_and_has_all_three_statuses():

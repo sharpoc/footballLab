@@ -113,11 +113,20 @@ def _bundle_structure_reason(
     ):
         return "bundle_schema_invalid"
     calendar_date = bundle.get("calendar_date")
+    if (
+        type(calendar_date) is not str
+        or len(calendar_date) != 8
+        or not calendar_date.isascii()
+        or not calendar_date.isdigit()
+    ):
+        return "bundle_schema_invalid"
     try:
-        parsed_date = date.fromisoformat(calendar_date) if isinstance(calendar_date, str) else None
+        date(
+            int(calendar_date[0:4]),
+            int(calendar_date[4:6]),
+            int(calendar_date[6:8]),
+        )
     except ValueError:
-        parsed_date = None
-    if parsed_date is None or parsed_date.isoformat() != calendar_date:
         return "bundle_schema_invalid"
     calendar = bundle.get("calendar")
     if (
