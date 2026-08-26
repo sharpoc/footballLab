@@ -19,6 +19,7 @@ from worldcup.league_postmatch import build_league_postmatch
 from worldcup.league_postmatch_runner import _saved_sample_matches, main, run_league_postmatch
 from worldcup.competitions import get_competition
 from worldcup.league_result_evidence import build_result_contract_evidence
+from worldcup.league_result_store import LeagueResultStore
 from worldcup.league_statistics import build_league_statistics
 from worldcup.league_team_identity import accepted_league_team_identity_registry
 
@@ -108,7 +109,12 @@ def _teams(competition_id: str) -> tuple[str, str, str, str]:
     return "Barcelona", "Real Madrid", "barcelona", "real_madrid"
 
 
-def _snapshot(competition_id: str, event_id: str) -> dict:
+def _snapshot(
+    competition_id: str,
+    event_id: str,
+    *,
+    kickoff_at_utc: str = "2026-08-28T19:00:00+00:00",
+) -> dict:
     home, away, home_canonical, away_canonical = _teams(competition_id)
     return {
         "snapshot_id": f"{competition_id}-snapshot-1",
@@ -116,7 +122,7 @@ def _snapshot(competition_id: str, event_id: str) -> dict:
         "competition": {"id": competition_id},
         "matches": [{
             "source_event_id": event_id,
-            "kickoff_at_utc": "2026-08-28T19:00:00+00:00",
+            "kickoff_at_utc": kickoff_at_utc,
             "home_team": home,
             "away_team": away,
             "home_canonical": home_canonical,
@@ -144,9 +150,14 @@ def _setup(root: Path, competitions: tuple[str, ...] = (EPL,)) -> None:
         _write_json(partition / "history/snapshot-1.json", _snapshot(competition_id, str(1000 + index)))
 
 
-def _status(*, finished: bool, score: str = "2 - 1") -> dict:
+def _status(
+    *,
+    finished: bool,
+    score: str = "2 - 1",
+    kickoff_at_utc: str = "2026-08-28T19:00:00Z",
+) -> dict:
     return {
-        "utcTime": "2026-08-28T19:00:00Z",
+        "utcTime": kickoff_at_utc,
         "started": finished,
         "cancelled": False,
         "finished": finished,
@@ -163,7 +174,14 @@ def _status(*, finished: bool, score: str = "2 - 1") -> dict:
     }
 
 
-def _calendar(competition_id: str, event_id: str, *, finished: bool = True, score: str = "2 - 1") -> dict:
+def _calendar(
+    competition_id: str,
+    event_id: str,
+    *,
+    finished: bool = True,
+    score: str = "2 - 1",
+    kickoff_at_utc: str = "2026-08-28T19:00:00Z",
+) -> dict:
     home, away, _home_canonical, _away_canonical = _teams(competition_id)
     league_ids = {EPL: 47, LALIGA: 87, BRAZIL: 268}
     return {"leagues": [{
@@ -173,12 +191,23 @@ def _calendar(competition_id: str, event_id: str, *, finished: bool = True, scor
             "id": int(event_id),
             "home": {"name": home},
             "away": {"name": away},
-            "status": _status(finished=finished, score=score),
+            "status": _status(
+                finished=finished,
+                score=score,
+                kickoff_at_utc=kickoff_at_utc,
+            ),
         }],
     }], "token": "provider-secret-must-not-escape"}
 
 
-def _details(competition_id: str, event_id: str, *, finished: bool = True, score: str = "2 - 1") -> dict:
+def _details(
+    competition_id: str,
+    event_id: str,
+    *,
+    finished: bool = True,
+    score: str = "2 - 1",
+    kickoff_at_utc: str = "2026-08-28T19:00:00Z",
+) -> dict:
     home, away, _home_canonical, _away_canonical = _teams(competition_id)
     league_ids = {EPL: 47, LALIGA: 87, BRAZIL: 268}
     return {
@@ -186,13 +215,58 @@ def _details(competition_id: str, event_id: str, *, finished: bool = True, score
             "matchId": int(event_id),
             "leagueId": league_ids[competition_id],
             "matchTimeUTC": "Fri, Aug 28, 2026, 19:00 UTC",
-            "matchTimeUTCDate": "2026-08-28T19:00:00Z",
+            "matchTimeUTCDate": kickoff_at_utc,
             "homeTeam": {"name": home},
             "awayTeam": {"name": away},
         },
-        "header": {"status": _status(finished=finished, score=score)},
+        "header": {"status": _status(
+            finished=finished,
+            score=score,
+            kickoff_at_utc=kickoff_at_utc,
+        )},
         "raw_response": "provider-secret-must-not-escape",
     }
+
+
+def _add_history_event(
+    root: Path,
+    competition_id: str,
+    event_id: str,
+    kickoff_at_utc: str,
+) -> None:
+    history_path = root / f"data/local/leagues/{competition_id}/history/snapshot-1.json"
+    history = json.loads(history_path.read_text())
+    history["snapshot_at"] = "2026-08-25T18:59:00+00:00"
+    row = json.loads(json.dumps(history["matches"][0]))
+    row["source_event_id"] = event_id
+    row["kickoff_at_utc"] = kickoff_at_utc
+    history["matches"].append(row)
+    _write_json(history_path, history)
+
+
+def _commit_epl_result(root: Path, event_id: str = "1001") -> None:
+    home, away, home_canonical, away_canonical = _teams(EPL)
+    merged = LeagueResultStore(
+        root / f"data/local/leagues/{EPL}/results.json"
+    ).merge({
+        "competition_id": EPL,
+        "results": [{
+            "competition_id": EPL,
+            "source_event_id": event_id,
+            "kickoff_at_utc": "2026-08-28T19:00:00+00:00",
+            "home_team": home,
+            "away_team": away,
+            "home_canonical": home_canonical,
+            "away_canonical": away_canonical,
+            "home_score": 2,
+            "away_score": 1,
+            "captured_at": "2026-08-28T20:00:00+00:00",
+            "result_scope": "football_90min",
+            "source_fingerprint": "a" * 64,
+        }],
+        "pending": [],
+    })
+    assert merged["status"] == "stored"
 
 
 def _fetchers(events: list[str], *, failures: set[str] | None = None):
@@ -1186,6 +1260,230 @@ def test_detail_failure_remains_explicit_when_another_due_event_settles():
         receipt = json.loads((root / f"data/local/leagues/{EPL}/results.json").read_text())
         assert [row["source_event_id"] for row in receipt["results"]] == ["1001"]
         assert "provider secret" not in json.dumps(result)
+
+
+def test_two_date_transport_failure_commits_healthy_stage_and_recovers_without_refetch():
+    """A later date transport failure cannot strand an earlier committed result."""
+    import worldcup.league_postmatch_runner as runner
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _setup(root)
+        _add_history_event(root, EPL, "1002", "2026-08-27T19:00:00+00:00")
+        original_atomic_write = runner._write_json_atomic
+
+        def calendar_fetcher(_competition_id: str, calendar_date: str) -> dict:
+            if calendar_date == "20260827":
+                return _calendar(
+                    EPL,
+                    "1002",
+                    kickoff_at_utc="2026-08-27T19:00:00Z",
+                )
+            raise RuntimeError("ordinary transport detail must not escape")
+
+        def fail_first_postmatch(path: Path, payload: dict):
+            if path.name == "postmatch.json":
+                raise OSError("force derivative recovery")
+            return original_atomic_write(path, payload)
+
+        with patch.object(runner, "_write_json_atomic", fail_first_postmatch):
+            run_league_postmatch(
+                root,
+                live=True,
+                write=True,
+                now=NOW,
+                calendar_fetcher=calendar_fetcher,
+                detail_fetcher=lambda _competition_id, event_id: _details(
+                    EPL,
+                    event_id,
+                    kickoff_at_utc="2026-08-27T19:00:00Z",
+                ),
+            )
+
+        receipt = json.loads((root / f"data/local/leagues/{EPL}/results.json").read_text())
+        assert [row["source_event_id"] for row in receipt["results"]] == ["1002"]
+        assert not (root / f"data/local/leagues/{EPL}/postmatch.json").exists()
+
+        second_cycle_calls: list[str] = []
+
+        def still_failing_calendar(_competition_id: str, calendar_date: str) -> dict:
+            second_cycle_calls.append(f"calendar:{calendar_date}")
+            raise RuntimeError("ordinary transport detail must not escape")
+
+        recovered = run_league_postmatch(
+            root,
+            live=True,
+            write=True,
+            now=NOW,
+            calendar_fetcher=still_failing_calendar,
+            detail_fetcher=_forbidden,
+        )
+
+        assert second_cycle_calls == ["calendar:20260828"]
+        assert recovered["status"] == "partial"
+        assert recovered["competitions"][EPL] == {
+            "status": "partial",
+            "newly_settled": 1,
+            "result_count": 0,
+            "pending_count": 1,
+            "source_error_count": 1,
+            "pending": [{"source_event_id": "1001", "reason": "calendar_fetch_failed"}],
+        }
+        postmatch = json.loads(
+            (root / f"data/local/leagues/{EPL}/postmatch.json").read_text()
+        )
+        assert [row["source_event_id"] for row in postmatch["matches"]] == ["1002"]
+
+
+def test_two_date_contract_drift_discards_new_stage_but_derives_old_receipt_and_other_league():
+    """A typed drift is atomic for new receipts, not a veto on committed recovery."""
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _setup(root, (EPL, LALIGA))
+        _commit_epl_result(root)
+        receipt_path = root / f"data/local/leagues/{EPL}/results.json"
+        receipt_before = receipt_path.read_bytes()
+        _add_history_event(root, EPL, "1003", "2026-08-26T19:00:00+00:00")
+        _add_history_event(root, EPL, "1004", "2026-08-27T19:00:00+00:00")
+        drift = getattr(fotmob_source, "FotMobProviderContractDrift", RuntimeError)
+        provider_calls: list[str] = []
+
+        def calendar_fetcher(competition_id: str, calendar_date: str) -> dict:
+            provider_calls.append(f"calendar:{competition_id}:{calendar_date}")
+            if competition_id == EPL and calendar_date == "20260826":
+                return _calendar(
+                    EPL,
+                    "1003",
+                    kickoff_at_utc="2026-08-26T19:00:00Z",
+                )
+            if competition_id == EPL and calendar_date == "20260827":
+                raise drift("fotmob_provider_contract_drift_404")
+            if competition_id == LALIGA and calendar_date == "20260828":
+                return _calendar(LALIGA, "1002")
+            raise AssertionError("unexpected calendar request")
+
+        def detail_fetcher(competition_id: str, event_id: str) -> dict:
+            provider_calls.append(f"details:{competition_id}:{event_id}")
+            if competition_id == EPL:
+                return _details(
+                    EPL,
+                    event_id,
+                    kickoff_at_utc="2026-08-26T19:00:00Z",
+                )
+            return _details(LALIGA, event_id)
+
+        result = run_league_postmatch(
+            root,
+            live=True,
+            write=True,
+            now=NOW,
+            calendar_fetcher=calendar_fetcher,
+            detail_fetcher=detail_fetcher,
+        )
+
+        assert result["status"] == "partial"
+        assert result["competitions"][EPL] == {
+            "status": "error",
+            "reason": "provider_contract_drift",
+        }
+        assert result["competitions"][LALIGA]["status"] == "settled"
+        assert receipt_path.read_bytes() == receipt_before
+        epl_postmatch = json.loads(
+            (root / f"data/local/leagues/{EPL}/postmatch.json").read_text()
+        )
+        assert [row["source_event_id"] for row in epl_postmatch["matches"]] == ["1001"]
+        laliga_receipt = json.loads(
+            (root / f"data/local/leagues/{LALIGA}/results.json").read_text()
+        )
+        assert [row["source_event_id"] for row in laliga_receipt["results"]] == ["1002"]
+        assert f"details:{EPL}:1001" not in provider_calls
+
+
+def test_response_capture_clock_advances_after_each_date_group_payloads():
+    """Each date receipt must carry its own post-response local capture observation."""
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _setup(root)
+        _add_history_event(root, EPL, "1002", "2026-08-27T19:00:00+00:00")
+        first_capture = datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc)
+        second_capture = datetime(2026, 8, 29, 0, 2, tzinfo=timezone.utc)
+        capture_times = iter((first_capture, second_capture))
+        events: list[str] = []
+
+        def calendar_fetcher(_competition_id: str, calendar_date: str) -> dict:
+            events.append(f"calendar:{calendar_date}")
+            event_id = "1002" if calendar_date == "20260827" else "1001"
+            kickoff = (
+                "2026-08-27T19:00:00Z"
+                if calendar_date == "20260827"
+                else "2026-08-28T19:00:00Z"
+            )
+            return _calendar(EPL, event_id, kickoff_at_utc=kickoff)
+
+        def detail_fetcher(_competition_id: str, event_id: str) -> dict:
+            events.append(f"details:{event_id}")
+            kickoff = (
+                "2026-08-27T19:00:00Z"
+                if event_id == "1002"
+                else "2026-08-28T19:00:00Z"
+            )
+            return _details(EPL, event_id, kickoff_at_utc=kickoff)
+
+        def observed_clock() -> datetime:
+            captured_at = next(capture_times)
+            events.append(f"clock:{captured_at.isoformat()}")
+            return captured_at
+
+        result = run_league_postmatch(
+            root,
+            live=True,
+            write=True,
+            now=NOW,
+            calendar_fetcher=calendar_fetcher,
+            detail_fetcher=detail_fetcher,
+            observed_clock=observed_clock,
+        )
+
+        assert result["status"] == "settled"
+        assert events == [
+            "calendar:20260827",
+            "details:1002",
+            f"clock:{first_capture.isoformat()}",
+            "calendar:20260828",
+            "details:1001",
+            f"clock:{second_capture.isoformat()}",
+        ]
+        receipt = json.loads((root / f"data/local/leagues/{EPL}/results.json").read_text())
+        assert {
+            row["source_event_id"]: row["captured_at"] for row in receipt["results"]
+        } == {
+            "1001": second_capture.isoformat(),
+            "1002": first_capture.isoformat(),
+        }
+
+
+def test_naive_response_capture_clock_fails_closed_without_receipt():
+    """A timezone-naive local capture time cannot fingerprint a formal receipt."""
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _setup(root)
+
+        result = run_league_postmatch(
+            root,
+            live=True,
+            write=True,
+            now=NOW,
+            calendar_fetcher=lambda _competition_id, _date: _calendar(EPL, "1001"),
+            detail_fetcher=lambda _competition_id, event_id: _details(EPL, event_id),
+            observed_clock=lambda: datetime(2026, 8, 29, 0, 1),
+        )
+
+        assert result["status"] == "error"
+        assert result["competitions"][EPL] == {
+            "status": "error",
+            "reason": "observed_clock_invalid",
+        }
+        assert not (root / f"data/local/leagues/{EPL}/results.json").exists()
 
 
 def test_derivative_atomic_crashes_recover_from_committed_receipt_without_provider_refetch():

@@ -36,6 +36,7 @@ from worldcup.league_statistics import (
     build_league_statistics,
     build_league_statistics_from_components,
 )
+from worldcup.observed_clock import MonotonicUtcClock
 from worldcup.league_team_identity import (
     accepted_league_team_identity_registry,
     league_team_identity_registry_fingerprint,
@@ -1063,6 +1064,7 @@ def run_league_postmatch(
     calendar_fetcher: CalendarFetcher | None = None,
     detail_fetcher: DetailFetcher | None = None,
     notifier: Notifier | None = None,
+    observed_clock: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     """Run a local six-league postmatch cycle; only exact live+write may mutate state."""
     root_path = Path(root)
@@ -1209,92 +1211,134 @@ def run_league_postmatch(
         called_fotmob = False
         wrote_any = False
         provider_touched: set[str] = set()
-        provider_failed: set[str] = set()
+        provider_outcome_locked: set[str] = set()
         result_added: dict[str, int] = defaultdict(int)
         provider_results: dict[str, int] = defaultdict(int)
         provider_pending: dict[str, dict[str, str]] = defaultdict(dict)
         provider_source_errors: dict[str, set[str]] = defaultdict(set)
 
-        grouped: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+        grouped: dict[str, dict[str, list[dict[str, str]]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
         for row in plan["due"]:
             kickoff = _utc(row["kickoff_at_utc"])
-            grouped[(row["competition_id"], kickoff.strftime("%Y%m%d"))].append(row)
+            grouped[row["competition_id"]][kickoff.strftime("%Y%m%d")].append(row)
         calendar_fn = calendar_fetcher or _default_calendar_fetcher
         detail_fn = detail_fetcher or _default_detail_fetcher
         registry = accepted_league_team_identity_registry()
-        for (competition_id, date), due_rows in sorted(grouped.items()):
-            if competition_id in provider_failed:
-                continue
+        response_clock = MonotonicUtcClock(observed_clock)
+        for competition_id in sorted(grouped):
             provider_touched.add(competition_id)
-            called_fotmob = True
-            try:
-                calendar_payload = calendar_fn(competition_id, date)
-                if not isinstance(calendar_payload, Mapping):
-                    raise TypeError
-            except FotMobProviderContractDrift:
-                outcomes[competition_id] = {"status": "error", "reason": "provider_contract_drift"}
-                provider_failed.add(competition_id)
-                continue
-            except Exception:
-                outcomes[competition_id] = {"status": "error", "reason": "calendar_fetch_failed"}
-                provider_failed.add(competition_id)
-                continue
-            details: dict[str, dict[str, Any]] = {}
-            detail_failures: set[str] = set()
-            provider_contract_drift = False
-            for row in due_rows:
+            staged_results: list[dict[str, Any]] = []
+            staged_pending: list[dict[str, Any]] = []
+            parsed_any_group = False
+            competition_drifted = False
+            for calendar_date in sorted(grouped[competition_id]):
+                due_rows = grouped[competition_id][calendar_date]
+                called_fotmob = True
                 try:
-                    value = detail_fn(competition_id, row["source_event_id"])
-                    if not isinstance(value, Mapping):
+                    calendar_payload = calendar_fn(competition_id, calendar_date)
+                    if not isinstance(calendar_payload, Mapping):
                         raise TypeError
-                    details[row["source_event_id"]] = dict(value)
                 except FotMobProviderContractDrift:
                     outcomes[competition_id] = {"status": "error", "reason": "provider_contract_drift"}
-                    provider_failed.add(competition_id)
-                    provider_contract_drift = True
+                    provider_outcome_locked.add(competition_id)
+                    competition_drifted = True
                     break
                 except Exception:
-                    detail_failures.add(row["source_event_id"])
-            if provider_contract_drift:
-                continue
-            try:
-                parsed = parse_fotmob_league_results(
-                    dict(calendar_payload),
-                    details,
-                    competition_id,
-                    result_contract_evidence=evidence[competition_id],
-                    identity_registry=registry,
-                    captured_at=now_dt,
-                )
-                subset = _result_subset(parsed, due_rows, competition_id)
-            except Exception as exc:
-                reason = (
-                    "result_due_identity_mismatch"
-                    if isinstance(exc, ValueError) and str(exc) == "result_due_identity_mismatch"
-                    else "result_parse_failed"
-                )
-                outcomes[competition_id] = {"status": "error", "reason": reason}
-                provider_failed.add(competition_id)
-                continue
-            provider_results[competition_id] += len(subset["results"])
-            for pending_row in subset["pending"]:
-                event_id = str(pending_row.get("source_event_id") or "")
-                if not event_id:
+                    outcomes[competition_id] = {"status": "error", "reason": "calendar_fetch_failed"}
+                    for row in due_rows:
+                        event_id = row["source_event_id"]
+                        provider_pending[competition_id][event_id] = "calendar_fetch_failed"
+                        provider_source_errors[competition_id].add(event_id)
                     continue
-                reason = "details_fetch_failed" if event_id in detail_failures else str(
-                    pending_row.get("reason") or "terminal_result_not_verified"
-                )
-                provider_pending[competition_id][event_id] = reason
-            for event_id in detail_failures:
-                provider_pending[competition_id][event_id] = "details_fetch_failed"
-                provider_source_errors[competition_id].add(event_id)
+                details: dict[str, dict[str, Any]] = {}
+                detail_failures: set[str] = set()
+                for row in due_rows:
+                    try:
+                        value = detail_fn(competition_id, row["source_event_id"])
+                        if not isinstance(value, Mapping):
+                            raise TypeError
+                        details[row["source_event_id"]] = dict(value)
+                    except FotMobProviderContractDrift:
+                        outcomes[competition_id] = {
+                            "status": "error",
+                            "reason": "provider_contract_drift",
+                        }
+                        provider_outcome_locked.add(competition_id)
+                        competition_drifted = True
+                        break
+                    except Exception:
+                        detail_failures.add(row["source_event_id"])
+                if competition_drifted:
+                    break
+                try:
+                    captured_at = response_clock.now()
+                except ValueError:
+                    outcomes[competition_id] = {
+                        "status": "error",
+                        "reason": "observed_clock_invalid",
+                    }
+                    for row in due_rows:
+                        provider_pending[competition_id][row["source_event_id"]] = (
+                            "observed_clock_invalid"
+                        )
+                    continue
+                try:
+                    parsed = parse_fotmob_league_results(
+                        dict(calendar_payload),
+                        details,
+                        competition_id,
+                        result_contract_evidence=evidence[competition_id],
+                        identity_registry=registry,
+                        captured_at=captured_at,
+                    )
+                    subset = _result_subset(parsed, due_rows, competition_id)
+                except Exception as exc:
+                    reason = (
+                        "result_due_identity_mismatch"
+                        if isinstance(exc, ValueError) and str(exc) == "result_due_identity_mismatch"
+                        else "result_parse_failed"
+                    )
+                    outcomes[competition_id] = {"status": "error", "reason": reason}
+                    provider_outcome_locked.add(competition_id)
+                    break
+                parsed_any_group = True
+                staged_results.extend(subset["results"])
+                staged_pending.extend(subset["pending"])
+                provider_results[competition_id] += len(subset["results"])
+                for pending_row in subset["pending"]:
+                    event_id = str(pending_row.get("source_event_id") or "")
+                    if not event_id:
+                        continue
+                    reason = "details_fetch_failed" if event_id in detail_failures else str(
+                        pending_row.get("reason") or "terminal_result_not_verified"
+                    )
+                    provider_pending[competition_id][event_id] = reason
+                for event_id in detail_failures:
+                    provider_pending[competition_id][event_id] = "details_fetch_failed"
+                    provider_source_errors[competition_id].add(event_id)
+
+            if competition_drifted:
+                provider_results.pop(competition_id, None)
+                provider_pending.pop(competition_id, None)
+                provider_source_errors.pop(competition_id, None)
+                continue
+            if not parsed_any_group:
+                continue
+            staged_subset = {
+                "competition_id": competition_id,
+                "results": staged_results,
+                "pending": staged_pending,
+                "source_events": [],
+            }
             try:
                 merge_result = LeagueResultStore(
                     root_path / "data/local/leagues" / competition_id / "results.json"
-                ).merge(subset)
+                ).merge(staged_subset)
             except Exception:
                 outcomes[competition_id] = {"status": "error", "reason": "result_commit_failed"}
-                provider_failed.add(competition_id)
+                provider_outcome_locked.add(competition_id)
                 continue
             if merge_result["status"] == "conflict":
                 outcomes[competition_id] = {
@@ -1302,22 +1346,27 @@ def run_league_postmatch(
                     "reason": "result_evidence_conflict",
                     "conflict_count": len(merge_result["conflicts"]),
                 }
-                provider_failed.add(competition_id)
+                provider_outcome_locked.add(competition_id)
                 continue
             if merge_result["status"] == "stored":
                 wrote_any = True
             result_added[competition_id] += int(merge_result["added"])
-            if not subset["results"]:
-                outcomes[competition_id] = {
+            if not staged_results:
+                outcomes.setdefault(competition_id, {
                     "status": "pending",
-                    "reason": "details_fetch_failed" if detail_failures else "terminal_result_not_verified",
-                }
+                    "reason": (
+                        "details_fetch_failed"
+                        if any(
+                            reason == "details_fetch_failed"
+                            for reason in provider_pending[competition_id].values()
+                        )
+                        else "terminal_result_not_verified"
+                    ),
+                })
 
         newly_settled_total = 0
         derivative_changed = False
         for competition_id in sorted(fixtures):
-            if competition_id in provider_failed:
-                continue
             result_path = root_path / "data/local/leagues" / competition_id / "results.json"
             if not result_path.exists():
                 outcomes.setdefault(competition_id, {"status": "pending" if competition_id in provider_touched else "no_due"})
@@ -1367,7 +1416,7 @@ def run_league_postmatch(
                 {"source_event_id": event_id, "reason": provider_pending[competition_id][event_id]}
                 for event_id in sorted(provider_pending[competition_id])
             ]
-            if pending_rows:
+            if pending_rows and competition_id not in provider_outcome_locked:
                 outcomes[competition_id] = {
                     "status": "partial",
                     "newly_settled": newly_settled,
@@ -1376,6 +1425,8 @@ def run_league_postmatch(
                     "source_error_count": len(provider_source_errors[competition_id]),
                     "pending": pending_rows,
                 }
+            elif competition_id in provider_outcome_locked:
+                pass
             elif newly_settled:
                 outcomes[competition_id] = {"status": "settled", "newly_settled": newly_settled}
             elif result_added[competition_id]:

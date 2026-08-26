@@ -165,7 +165,7 @@ LaunchAgent generator 默认生成观察模式 JSON；label 固定为 `xin.celab
 
 ### 六联赛赛后结算与信号评估（本地离线 / dry-run 实现已完成）
 
-`worldcup.league_postmatch_runner` 已实现 FotMob 严格赛果解析、单调分区 result store、开赛前最后合法 observed schema v2 closing、累计结算与逐联赛/六联赛统计、可恢复通知 outbox 和 LaunchAgent plist 生成器。当前仅证明了保存 fixture 与注入式 fake provider 下的离线契约；**尚未接受任何真实 FotMob 赛后样例，未执行 live/write，未安装赛后 timer，未发送手机通知，也未 push/merge/deploy 本实现**。
+`worldcup.league_postmatch_runner` 已实现 FotMob 严格赛果解析、单调分区 result store、开赛前最后合法 observed schema v2 closing、累计结算与逐联赛/六联赛统计、可恢复通知 outbox 和 LaunchAgent plist 生成器。除保存 fixture 与注入式 fake provider 外，四份保存的真实 FotMob 赛后样例已 offline parser-verified；**但这四份样例尚未写入正式 provider evidence/acceptance，operational Gate A 仍为 partial，且未执行 live/write，未安装赛后 timer，未发送手机通知，也未 push/merge/deploy 本实现**。
 
 FotMob 赛果合同固定使用 calendar `/api/data/matches?date=YYYYMMDD` 与 detail `/api/data/matchDetails?matchId=<event_id>`；Brasileirão 的 provider league ID 为 `268`，旧 `1122` 必须拒绝。HTTP 404 单独分类为 `provider_contract_drift`，并在受影响分区写入 result receipt 前阻断；普通 5xx/timeout 仍是 transport failure，健康联赛分区可继续。detail 开球只接受 timezone-aware ISO `general.matchTimeUTCDate`，不把展示字段 `matchTimeUTC` 当作机器时间；calendar/detail event、league、严格球队 identity、开球（容差最多 5 分钟）、FT 与比分必须一致。90 分钟终场还要求 detail `header.status` 同时证明 `reason.short=FT`、`firstExtraHalfStarted=""`、`secondExtraHalfStarted=""`、`whoLostOnPenalties=null`、`whoLostOnAggregated` 为 `null` 或空字符串；缺字段、畸形类型、加时/点球/聚合或不一致一律 fail closed。
 
@@ -228,6 +228,8 @@ live 只在 `--live --write` 同时给出时可进入 provider/本地写入路�
 所有 JSON 原子替换可在同一 ignored 目录内短暂创建 `.<target>.*.tmp`，完成或失败后清理；不会写到上述根目录之外。
 
 closing 只能选择开赛前最后一份合法 observed schema v2 decision，合法 label 同时包括 `MATCH_PICK` 和 `NO_CLEAN_MARKET`。只有 `MATCH_PICK` 会按盘口结算并进入 `hit / miss / push`；`NO_CLEAN_MARKET` 只进入 `no_pick` 与 coverage，不进入命中率分母。赛果已可验但 closing 缺失时，保留 result evidence 并显式计入 `missing_closing` / `skipped_no_closing`，不用 current、开赛后 snapshot 或 reconstructed decision 补造推荐；以后出现合法 closing 时可幂等转为正式结算。正式汇总只接受 `observed_schema_v2_match_pick_only`，不混入世界杯、中超、legacy、reconstructed 或手工结果。
+
+同一 competition 即使有多个 due UTC 日期，本轮新赛果也会先在内存中按日期完整 staging，再只调用一次 result-store merge。任一日期的 calendar/detail 抛 typed `provider_contract_drift` 时丢弃该 competition 本轮全部新 staging，但已 committed receipt 仍继续派生 closing/postmatch/statistics；普通 calendar/detail transport failure 只把对应 event 标为 partial，不丢弃同联赛健康 staging。计划时间与响应捕获时间分离：每个日期的 calendar/details payload 全部实际捕获后，再从 timezone-aware UTC `observed_clock` 采样一次 `captured_at`；naive 或无效时钟不产生该日期 receipt。
 
 提交顺序为 result evidence → closing → postmatch → last-known-good component manifest → aggregate statistics → runner state → notification intent。已提交 result receipt 可在重启后继续补齐派生产物，无需再请求 provider；未消费 state transition 可从精确 aggregate 重建通知 intent。已持久化 pending outbox 会先于 provider 检查：带 `--notify` 时先重试并结束本轮，不带 `--notify` 时返回 `notification_pending` 并阻断 provider，绝不静默丢弃 pending。只在 `newly_settled > 0` 时构建当日摘要，正式 decided 达到 20 / 50 / 100 时各构建一次里程碑；20 只做链路健康检查，50 只允许离线候选回测，100 也必须再通过留出集、当前 `match_pick_v3`、同样本市场基准和逐联赛失衡审查，不自动调参或上线。
 
