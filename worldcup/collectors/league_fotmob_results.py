@@ -118,13 +118,30 @@ def _pending_all(calendar_payload: Mapping[str, Any], competition_id: str, reaso
     return _payload(competition_id, [], pending)
 
 
+def _has_terminal_ft(status: Mapping[str, Any]) -> bool:
+    return status.get("finished") is True and _mapping(status.get("reason")).get("short") == "FT"
+
+
+def _empty_or_null_scalar(value: Any) -> bool:
+    return value is None or value == ""
+
+
+def _has_detail_90min_proof(status: Mapping[str, Any]) -> bool:
+    halfs = status.get("halfs")
+    if not isinstance(halfs, Mapping):
+        return False
+    return (
+        _has_terminal_ft(status)
+        and "firstExtraHalfStarted" in halfs and halfs.get("firstExtraHalfStarted") == ""
+        and "secondExtraHalfStarted" in halfs and halfs.get("secondExtraHalfStarted") == ""
+        and "whoLostOnPenalties" in status and status.get("whoLostOnPenalties") is None
+        and "whoLostOnAggregated" in status
+        and _empty_or_null_scalar(status.get("whoLostOnAggregated"))
+    )
+
+
 def _finished_90min(status: Mapping[str, Any]) -> tuple[int, int] | None:
-    reason = _mapping(status.get("reason"))
-    if (
-        status.get("finished") is not True
-        or reason.get("short") != "FT"
-        or reason.get("extraTime") is not False
-    ):
+    if not _has_terminal_ft(status):
         return None
     score = status.get("scoreStr")
     if not isinstance(score, str):
@@ -135,21 +152,12 @@ def _finished_90min(status: Mapping[str, Any]) -> tuple[int, int] | None:
     return int(matched.group(1)), int(matched.group(2))
 
 
-def _has_verified_90min_semantics(status: Mapping[str, Any]) -> bool:
-    reason = _mapping(status.get("reason"))
-    return (
-        status.get("finished") is True
-        and reason.get("short") == "FT"
-        and reason.get("extraTime") is False
-    )
-
-
 def _pending_reason_for_status(calendar: Mapping[str, Any], details: Mapping[str, Any]) -> str | None:
     calendar_status = _mapping(calendar.get("status"))
     details_status = _mapping(_mapping(details.get("header")).get("status"))
     if calendar_status.get("finished") is not True or details_status.get("finished") is not True:
         return "result_not_finished"
-    if not _has_verified_90min_semantics(calendar_status) or not _has_verified_90min_semantics(details_status):
+    if not _has_terminal_ft(calendar_status) or not _has_detail_90min_proof(details_status):
         return "result_90min_score_unverified"
     if _finished_90min(calendar_status) is None or _finished_90min(details_status) is None:
         return "invalid_90min_score"
@@ -241,7 +249,7 @@ def _parse_verified_rows(
                 error="fotmob_result_kickoff_invalid",
             )
             detail_kickoff = _utc(
-                general.get("matchTimeUTC"), error="fotmob_result_kickoff_invalid"
+                general.get("matchTimeUTCDate"), error="fotmob_result_kickoff_invalid"
             )
         except ValueError:
             pending.append(_pending_row(source_event_id, "kickoff_invalid"))

@@ -3,18 +3,21 @@
     "matchId": 1001,
     "leagueId": 47,
     "leagueName": "Premier League",
-    "matchTimeUTC": "2026-08-28T19:00:00Z",
+    "matchTimeUTC": "Mon, Aug 24, 2026, 19:00 UTC",
+    "matchTimeUTCDate": "2026-08-24T19:00:00.000Z",
     "homeTeam": {"id": 9825, "name": "Arsenal"},
     "awayTeam": {"id": 8455, "name": "Chelsea"}
   },
   "header": {
     "status": {
-      "utcTime": "2026-08-28T19:00:00Z",
       "started": true,
       "cancelled": false,
       "finished": true,
-      "scoreStr": "2 - 1",
-      "reason": {"short": "FT", "long": "Full-Time", "extraTime": false}
+      "scoreStr": "2 - 3",
+      "reason": {"short": "FT", "long": "Full-Time"},
+      "halfs": {"firstExtraHalfStarted": "", "secondExtraHalfStarted": ""},
+      "whoLostOnPenalties": null,
+      "whoLostOnAggregated": ""
     }
   }
 }

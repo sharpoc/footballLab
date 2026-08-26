@@ -215,7 +215,7 @@ def _details_rejection_reason(
     ):
         return "home_away_mismatch", {}, {}
     try:
-        details_kickoff = _utc(general.get("matchTimeUTC"))
+        details_kickoff = _utc(general.get("matchTimeUTCDate"))
     except (TypeError, ValueError):
         return "invalid_kickoff", {}, {}
     if abs(details_kickoff - local["kickoff"]) > _KICKOFF_TOLERANCE:

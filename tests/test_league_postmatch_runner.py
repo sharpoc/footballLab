@@ -149,7 +149,15 @@ def _status(*, finished: bool, score: str = "2 - 1") -> dict:
         "cancelled": False,
         "finished": finished,
         "scoreStr": score,
-        "reason": {"short": "FT" if finished else "NS", "long": "Full-Time", "extraTime": False},
+        "reason": {"short": "FT" if finished else "NS", "long": "Full-Time"},
+        **({
+            "halfs": {
+                "firstExtraHalfStarted": "",
+                "secondExtraHalfStarted": "",
+            },
+            "whoLostOnPenalties": None,
+            "whoLostOnAggregated": "",
+        } if finished else {}),
     }
 
 
@@ -175,7 +183,8 @@ def _details(competition_id: str, event_id: str, *, finished: bool = True, score
         "general": {
             "matchId": int(event_id),
             "leagueId": league_ids[competition_id],
-            "matchTimeUTC": "2026-08-28T19:00:00Z",
+            "matchTimeUTC": "Fri, Aug 28, 2026, 19:00 UTC",
+            "matchTimeUTCDate": "2026-08-28T19:00:00Z",
             "homeTeam": {"name": home},
             "awayTeam": {"name": away},
         },
@@ -941,6 +950,41 @@ def test_terminal_status_crossing_and_duplicate_provider_evidence_fail_closed():
         assert not (root / f"data/local/leagues/{EPL}/postmatch.json").exists()
 
 
+def test_missing_detail_90min_proof_remains_pending_without_receipt():
+    """A nominal FT without every real-shape proof field cannot settle the due event."""
+    for field, nested in (
+        ("firstExtraHalfStarted", True),
+        ("secondExtraHalfStarted", True),
+        ("whoLostOnPenalties", False),
+        ("whoLostOnAggregated", False),
+    ):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _setup(root)
+
+            def detail_fetcher(_competition: str, event_id: str) -> dict:
+                payload = _details(EPL, event_id)
+                status = payload["header"]["status"]
+                if nested:
+                    del status["halfs"][field]
+                else:
+                    del status[field]
+                return payload
+
+            result = run_league_postmatch(
+                root,
+                live=True,
+                write=True,
+                now=NOW,
+                calendar_fetcher=lambda _competition, _date: _calendar(EPL, "1001"),
+                detail_fetcher=detail_fetcher,
+            )
+
+            assert result["status"] == "pending"
+            assert result["competitions"][EPL]["status"] == "pending"
+            assert not (root / f"data/local/leagues/{EPL}/results.json").exists()
+
+
 def test_parser_result_must_match_exact_immutable_due_team_and_kickoff_identity():
     for mismatch in ("wrong_team", "wrong_kickoff"):
         with TemporaryDirectory() as tmp:
@@ -960,7 +1004,7 @@ def test_parser_result_must_match_exact_immutable_due_team_and_kickoff_identity(
                 if mismatch == "wrong_team":
                     payload["general"]["awayTeam"]["name"] = "Liverpool"
                 else:
-                    payload["general"]["matchTimeUTC"] = "2026-08-28T19:06:00Z"
+                    payload["general"]["matchTimeUTCDate"] = "2026-08-28T19:06:00Z"
                 return payload
 
             result = run_league_postmatch(

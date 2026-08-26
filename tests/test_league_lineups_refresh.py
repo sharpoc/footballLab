@@ -71,7 +71,8 @@ def _details(match_id, kickoff, home, away, player_offset=0):
         "general": {
             "matchId": match_id,
             "leagueId": PROVIDER_COMPETITION,
-            "matchTimeUTC": kickoff,
+            "matchTimeUTC": "localized display time must be ignored",
+            "matchTimeUTCDate": kickoff,
             "homeTeam": {"name": home},
             "awayTeam": {"name": away},
         },
@@ -326,6 +327,62 @@ def test_fotmob_parser_rejections_are_rejected_not_source_success():
                 "event_id": f"event-{case_name}",
                 "outcome": "rejected",
             }]
+
+
+def test_invalid_detail_iso_kickoff_is_isolated_without_blocking_other_matches():
+    """One missing or malformed ISO kickoff must not discard a healthy confirmation."""
+    first_kickoff = "2026-08-24T13:00:00+00:00"
+    second_kickoff = "2026-08-24T13:15:00+00:00"
+    fixtures = [
+        _fixture("epl-invalid", first_kickoff, "Arsenal", "Chelsea"),
+        _fixture("epl-healthy", second_kickoff, "Liverpool", "Everton"),
+    ]
+    calendar = _calendar(
+        _calendar_match("1001", first_kickoff, "Arsenal", "Chelsea"),
+        _calendar_match("1002", second_kickoff, "Liverpool", "Everton"),
+    )
+
+    for value in ("delete", "not-a-time", "2026-08-24T13:00:00"):
+        invalid = _details("1001", first_kickoff, "Arsenal", "Chelsea")
+        if value == "delete":
+            del invalid["general"]["matchTimeUTCDate"]
+        else:
+            invalid["general"]["matchTimeUTCDate"] = value
+        healthy = _details("1002", second_kickoff, "Liverpool", "Everton", 100)
+
+        with TemporaryDirectory() as tmp:
+            result = run_league_lineups_refresh(
+                root=tmp,
+                now=NOW,
+                live=True,
+                write=True,
+                acceptance_report=_active_report(),
+                fixtures_by_competition={COMPETITION: fixtures},
+                state=_empty_state(),
+                provider_competition_ids={COMPETITION: PROVIDER_COMPETITION},
+                identity_registry=accepted_league_team_identity_registry(),
+                calendar_fetcher=lambda **_kwargs: calendar,
+                details_fetcher=lambda *, match_id, **_kwargs: (
+                    invalid if str(match_id) == "1001" else healthy
+                ),
+            )
+
+            assert [
+                row["event_id"] for row in result["newly_confirmed"][COMPETITION]
+            ] == ["epl-healthy"]
+            assert result["rejection_reasons"][COMPETITION]["invalid_kickoff"] == 1
+            assert result["source_events"] == [
+                {
+                    "competition_id": COMPETITION,
+                    "event_id": "epl-healthy",
+                    "outcome": "succeeded",
+                },
+                {
+                    "competition_id": COMPETITION,
+                    "event_id": "epl-invalid",
+                    "outcome": "rejected",
+                },
+            ]
 
 
 def test_live_details_response_at_kickoff_cannot_commit_confirmed_lineup():

@@ -43,7 +43,6 @@ def _status(status: str, *, home_score: object = 2, away_score: object = 1) -> d
     reason = {
         "short": "FT" if finished else {"scheduled": "NS", "live": "1H", "postponed": "PP"}[status],
         "long": "Full-Time" if finished else status.title(),
-        "extraTime": False,
     }
     return {
         "utcTime": KICKOFF,
@@ -88,12 +87,27 @@ def _details(
         "general": {
             "matchId": event_id,
             "leagueId": league_id,
-            "matchTimeUTC": kickoff,
+            "matchTimeUTC": "Fri, Aug 28, 2026, 19:00 UTC",
+            "matchTimeUTCDate": kickoff,
             "homeTeam": {"name": home},
             "awayTeam": {"name": away},
         },
-        "header": {"status": _status(status, home_score=home_score, away_score=away_score)},
+        "header": {"status": {
+            **_status(status, home_score=home_score, away_score=away_score),
+            **({
+                "halfs": {
+                    "firstExtraHalfStarted": "",
+                    "secondExtraHalfStarted": "",
+                },
+                "whoLostOnPenalties": None,
+                "whoLostOnAggregated": "",
+            } if status == "finished" else {}),
+        }},
     }
+
+
+def _details_with_real_proof() -> dict[str, object]:
+    return _details()
 
 
 def _parse(calendar: dict[str, object], details: dict[str, dict[str, object]], **overrides: object) -> dict[str, object]:
@@ -113,10 +127,10 @@ def test_finished_integer_score_with_strict_identity_is_accepted():
     result = parsed["results"][0]
     assert set(parsed) == {"competition_id", "results", "pending", "source_events", "source_fingerprint"}
     assert result["result_scope"] == "football_90min"
-    assert (result["home_score"], result["away_score"]) == (2, 1)
+    assert (result["home_score"], result["away_score"]) == (2, 3)
     assert result["home_canonical"] == "arsenal"
     assert result["away_canonical"] == "chelsea"
-    assert result["kickoff_at_utc"] == "2026-08-28T19:00:00+00:00"
+    assert result["kickoff_at_utc"] == "2026-08-24T19:00:00+00:00"
     assert result["captured_at"] == "2026-08-29T00:00:00+00:00"
     assert len(result["source_fingerprint"]) == 64
     assert parsed["pending"] == []
@@ -198,26 +212,124 @@ def test_missing_details_and_invalid_scores_are_never_accepted():
         assert parsed["pending"] == [{"source_event_id": "1001", "reason": "invalid_90min_score"}]
 
 
-def test_swapped_unknown_and_kickoff_mismatched_details_fail_closed():
-    """Loose aliases, orientation, or times could bind the wrong provider event."""
+def test_swapped_and_unknown_details_fail_closed():
+    """Loose aliases or orientation could bind the wrong provider event."""
     cases = (
         _details(home="Chelsea", away="Arsenal"),
         _details(home="Unknown United"),
-        _details(kickoff="2026-08-28T19:06:00Z"),
     )
     for details in cases:
         parsed = _parse(_calendar(status="finished"), {"1001": details})
         assert parsed["results"] == []
 
 
+def test_detail_event_id_must_match_calendar_event_id():
+    """A detail response for another event must never settle the calendar event."""
+    parsed = _parse(_calendar(status="finished"), {"1001": _details(event_id=1002)})
+
+    assert parsed["results"] == []
+    assert parsed["pending"] == [{"source_event_id": "1001", "reason": "details_event_mismatch"}]
+
+
+def test_detail_iso_kickoff_is_required_and_display_value_is_ignored():
+    """Localized display time is not a machine-readable identity field."""
+    display_is_irrelevant = _details()
+    display_is_irrelevant["general"]["matchTimeUTC"] = {"untrusted": "display"}
+    accepted = _parse(_calendar(status="finished"), {"1001": display_is_irrelevant})
+    assert len(accepted["results"]) == 1
+
+    invalid_values = ("delete", None, 123, "not-a-time", "2026-08-28T19:00:00")
+    for value in invalid_values:
+        details = _details()
+        if value == "delete":
+            del details["general"]["matchTimeUTCDate"]
+        else:
+            details["general"]["matchTimeUTCDate"] = value
+        parsed = _parse(_calendar(status="finished"), {"1001": details})
+        assert parsed["results"] == []
+        assert parsed["pending"] == [{"source_event_id": "1001", "reason": "kickoff_invalid"}]
+
+
+def test_detail_iso_kickoff_tolerance_is_inclusive_at_exactly_five_minutes():
+    """The documented five-minute identity tolerance must not expand by one second."""
+    boundary = _details(kickoff="2026-08-28T19:05:00Z")
+    beyond = _details(kickoff="2026-08-28T19:05:01Z")
+
+    accepted = _parse(_calendar(status="finished"), {"1001": boundary})
+    rejected = _parse(_calendar(status="finished"), {"1001": beyond})
+
+    assert len(accepted["results"]) == 1
+    assert rejected["results"] == []
+    assert rejected["pending"] == [{"source_event_id": "1001", "reason": "kickoff_mismatch"}]
+
+
+def test_extra_half_proof_is_present_empty_and_type_safe():
+    for field in ("firstExtraHalfStarted", "secondExtraHalfStarted"):
+        for mutation in ("delete", "2026-08-28T21:05:00Z", [], {}):
+            details = deepcopy(_details_with_real_proof())
+            halfs = details["header"]["status"]["halfs"]
+            if mutation == "delete":
+                del halfs[field]
+            else:
+                halfs[field] = mutation
+            parsed = _parse(_calendar(status="finished"), {"1001": details})
+            assert parsed["results"] == []
+            assert parsed["pending"][0]["reason"] == "result_90min_score_unverified"
+
+
+def test_penalty_loser_proof_is_present_null_and_type_safe():
+    for mutation in ("delete", "", "Chelsea", [], {}):
+        details = deepcopy(_details_with_real_proof())
+        status = details["header"]["status"]
+        if mutation == "delete":
+            del status["whoLostOnPenalties"]
+        else:
+            status["whoLostOnPenalties"] = mutation
+        parsed = _parse(_calendar(status="finished"), {"1001": details})
+        assert parsed["results"] == []
+        assert parsed["pending"][0]["reason"] == "result_90min_score_unverified"
+
+
+def test_aggregate_loser_proof_is_present_empty_or_null_and_type_safe():
+    for valid in ("", None):
+        details = deepcopy(_details_with_real_proof())
+        details["header"]["status"]["whoLostOnAggregated"] = valid
+        parsed = _parse(_calendar(status="finished"), {"1001": details})
+        assert len(parsed["results"]) == 1
+
+    for mutation in ("delete", "Chelsea", [], {}):
+        details = deepcopy(_details_with_real_proof())
+        status = details["header"]["status"]
+        if mutation == "delete":
+            del status["whoLostOnAggregated"]
+        else:
+            status["whoLostOnAggregated"] = mutation
+        parsed = _parse(_calendar(status="finished"), {"1001": details})
+        assert parsed["results"] == []
+        assert parsed["pending"][0]["reason"] == "result_90min_score_unverified"
+
+
+def test_extra_half_container_must_be_a_mapping():
+    for halfs in ("delete", None, "", [], True):
+        details = deepcopy(_details_with_real_proof())
+        status = details["header"]["status"]
+        if halfs == "delete":
+            del status["halfs"]
+        else:
+            status["halfs"] = halfs
+        parsed = _parse(_calendar(status="finished"), {"1001": details})
+        assert parsed["results"] == []
+        assert parsed["pending"][0]["reason"] == "result_90min_score_unverified"
+
+
 def test_extra_time_or_penalty_only_fields_cannot_supply_a_90_minute_score():
     """Using AET, shootout, or alternate score fields would corrupt the formal 90-minute tally."""
     extra_time = _details()
-    extra_time["header"]["status"]["reason"] = {"short": "AET", "long": "After extra time", "extraTime": True}
+    extra_time["header"]["status"]["reason"] = {"short": "AET", "long": "After extra time"}
     penalty_only = _details()
     del penalty_only["header"]["status"]["scoreStr"]
     penalty_only["header"]["teams"] = [{"score": 5}, {"score": 4}]
-    penalty_only["header"]["status"]["reason"] = {"short": "PEN", "long": "Penalties", "extraTime": False}
+    penalty_only["header"]["status"]["reason"] = {"short": "PEN", "long": "Penalties"}
 
     for details in (extra_time, penalty_only):
         parsed = _parse(_calendar(status="finished"), {"1001": details})
@@ -229,7 +341,7 @@ def test_calendar_and_detail_90_minute_terminal_score_must_agree():
     """Trusting only detail semantics or score can settle a disagreement between two FotMob response shapes."""
     calendar_aet = _calendar(status="finished")
     calendar_aet["leagues"][0]["matches"][0]["status"]["reason"] = {
-        "short": "AET", "long": "After extra time", "extraTime": True,
+        "short": "AET", "long": "After extra time",
     }
     detail_score_mismatch = _details(home_score=3, away_score=1)
 

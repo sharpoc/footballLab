@@ -8,12 +8,12 @@
       "home": {"id": 9825, "name": "Arsenal"},
       "away": {"id": 8455, "name": "Chelsea"},
       "status": {
-        "utcTime": "2026-08-28T19:00:00Z",
+        "utcTime": "2026-08-24T19:00:00.000Z",
         "started": true,
         "cancelled": false,
         "finished": true,
-        "scoreStr": "2 - 1",
-        "reason": {"short": "FT", "long": "Full-Time", "extraTime": false}
+        "scoreStr": "2 - 3",
+        "reason": {"short": "FT", "long": "Full-Time"}
       }
     }]
   }]
