@@ -1,3 +1,10 @@
+import hashlib
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+import worldcup.league_result_evidence as evidence_module
 from worldcup.league_result_evidence import build_result_contract_evidence, verify_result_contract_evidence
 
 
@@ -131,3 +138,98 @@ def test_fotmob_production_evidence_fingerprint_binds_sanitized_probe_sample_pat
         "epl_2026_27",
     ) is False
     assert cache_path["verified"] is False
+
+
+def _sample(root: Path, content: bytes = b"saved-fotmob-result-sample") -> tuple[str, Path]:
+    relative = "data/probe/leagues/results/epl/sample.json"
+    path = root / relative
+    path.parent.mkdir(parents=True)
+    path.write_bytes(content)
+    return relative, path
+
+
+def _assert_safe_reader_error(root: Path, sample_path: str, private: str = "") -> None:
+    try:
+        evidence_module.read_fotmob_sample_bytes(root, sample_path)
+    except ValueError as exc:
+        assert str(exc) == "fotmob_sample_read_invalid"
+        assert str(root) not in str(exc)
+        assert private not in str(exc)
+    else:
+        raise AssertionError("unsafe or unreadable sample must fail closed")
+
+
+def test_shared_fotmob_sample_reader_returns_exact_bytes_and_lowercase_sha_from_fd_read():
+    """A preliminary Path.read_bytes or a separately computed digest would break the single-read binding."""
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        relative, _path = _sample(root)
+        expected = b"saved-fotmob-result-sample"
+
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("unsafe preliminary read")):
+            content, digest = evidence_module.read_fotmob_sample_bytes(root, relative)
+
+        assert content == expected
+        assert digest == hashlib.sha256(expected).hexdigest()
+
+
+def test_shared_fotmob_sample_reader_rejects_path_escape_missing_and_every_symlink_layer():
+    """Following any attacker-controlled component could bind evidence to bytes outside data/probe."""
+    mutations = (
+        "outside",
+        "traversal",
+        "missing",
+        "symlinked_probe",
+        "symlinked_intermediate",
+        "symlinked_final",
+    )
+    for mutation in mutations:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            relative, sample = _sample(root)
+            requested = relative
+            if mutation == "outside":
+                outside = root / "private-provider-sample.json"
+                outside.write_bytes(b"private-provider-bytes")
+                requested = str(outside)
+            elif mutation == "traversal":
+                requested = "data/probe/leagues/results/../../../../private-provider-sample.json"
+            elif mutation == "missing":
+                sample.unlink()
+            elif mutation == "symlinked_probe":
+                probe = root / "data/probe"
+                real_probe = root / "data/probe-real"
+                probe.rename(real_probe)
+                probe.symlink_to(real_probe, target_is_directory=True)
+            elif mutation == "symlinked_intermediate":
+                results = root / "data/probe/leagues/results"
+                real_results = root / "data/probe/leagues/results-real"
+                results.rename(real_results)
+                results.symlink_to(real_results, target_is_directory=True)
+            elif mutation == "symlinked_final":
+                target = sample.with_name("private-target.json")
+                sample.rename(target)
+                sample.symlink_to(target.name)
+
+            _assert_safe_reader_error(root, requested, "private-provider-bytes")
+
+
+def test_shared_fotmob_sample_reader_rejects_inode_replacement_between_lstat_and_open():
+    """Opening a replacement inode after validating the original inode must never return attacker bytes."""
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        relative, sample = _sample(root, b"accepted-original-bytes")
+        replacement = sample.with_name("replacement.json")
+        replacement.write_bytes(b"private-replacement-bytes")
+        real_open = os.open
+        swapped = False
+
+        def replacing_open(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal swapped
+            if path == sample.name and dir_fd is not None and not swapped:
+                swapped = True
+                os.replace(replacement, sample)
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        with patch.object(evidence_module.os, "open", side_effect=replacing_open):
+            _assert_safe_reader_error(root, relative, "private-replacement-bytes")

@@ -283,6 +283,48 @@ def test_live_requires_acceptance_fingerprint_bound_fotmob_evidence():
         assert not (root / f"data/local/leagues/{EPL}/results.json").exists()
 
 
+def test_live_rejects_wrong_and_malformed_expected_sample_sha_before_provider():
+    """A valid-looking evidence fingerprint must not bypass the actual saved-byte digest comparison."""
+    for source_reference in ("0" * 64, "not-a-sha256"):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _setup(root)
+            evidence = build_result_contract_evidence(
+                competition_id=EPL,
+                sport_key="soccer_epl",
+                provider_schema="fotmob_league_results_v1",
+                score_scope="football_90min",
+                source_reference=source_reference,
+                provider="fotmob",
+                sample_path=f"data/probe/leagues/results/{EPL}.json",
+            )
+            if source_reference == "not-a-sha256":
+                evidence["verified"] = True
+            _write_json(_fotmob_evidence_path(root, EPL), evidence)
+            acceptance = json.loads(
+                (root / "data/local/leagues/acceptance.json").read_text(encoding="utf-8")
+            )
+            acceptance["competitions"][EPL]["fingerprints"]["result_contract"] = evidence[
+                "fingerprint"
+            ]
+            _write_json(root / "data/local/leagues/acceptance.json", acceptance)
+
+            result = run_league_postmatch(
+                root,
+                live=True,
+                write=True,
+                now=NOW,
+                calendar_fetcher=_forbidden,
+                detail_fetcher=_forbidden,
+            )
+
+            assert result["competitions"][EPL] == {
+                "status": "blocked",
+                "reason": "result_contract_evidence_invalid",
+            }
+            assert result["safety"]["called_fotmob"] is False
+
+
 def test_fotmob_runner_ignores_generic_and_legacy_provider_evidence_paths():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)

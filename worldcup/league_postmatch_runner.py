@@ -7,7 +7,6 @@ import fcntl
 import hashlib
 import json
 import os
-import stat
 import tempfile
 from collections import defaultdict
 from datetime import date, datetime, timezone
@@ -29,7 +28,7 @@ from worldcup.league_postmatch_notifications import (
 from worldcup.league_postmatch_planner import plan_league_postmatch
 from worldcup.league_result_evidence import (
     fotmob_result_contract_evidence_path,
-    fotmob_sample_path_is_sanitized,
+    read_fotmob_sample_bytes,
     verify_result_contract_evidence,
 )
 from worldcup.league_result_store import LeagueResultStore, _read as _read_result_receipt
@@ -91,48 +90,13 @@ def _fingerprint(value: Mapping[str, Any]) -> str:
 
 
 def _saved_sample_matches(root: Path, evidence: Mapping[str, Any]) -> bool:
-    configured = evidence.get("sample_path")
-    if not fotmob_sample_path_is_sanitized(configured):
-        return False
-    relative = Path(str(configured))
-    opened: list[int] = []
     try:
-        root_resolved = root.resolve(strict=True)
-        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
-        nofollow = getattr(os, "O_NOFOLLOW", 0)
-        current = os.open(root_resolved, directory_flags)
-        opened.append(current)
-        for component in relative.parts[:-1]:
-            metadata = os.stat(component, dir_fd=current, follow_symlinks=False)
-            if not stat.S_ISDIR(metadata.st_mode):
-                return False
-            current = os.open(component, directory_flags | nofollow, dir_fd=current)
-            opened.append(current)
-        filename = relative.parts[-1]
-        before = os.stat(filename, dir_fd=current, follow_symlinks=False)
-        if not stat.S_ISREG(before.st_mode):
-            return False
-        file_descriptor = os.open(
-            filename,
-            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | nofollow,
-            dir_fd=current,
+        _content, digest = read_fotmob_sample_bytes(
+            root,
+            evidence.get("sample_path"),
         )
-        opened.append(file_descriptor)
-        after = os.fstat(file_descriptor)
-        if not stat.S_ISREG(after.st_mode) or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
-            return False
-        digest_builder = hashlib.sha256()
-        while chunk := os.read(file_descriptor, 1024 * 1024):
-            digest_builder.update(chunk)
-        digest = digest_builder.hexdigest()
-    except (OSError, ValueError):
+    except (TypeError, ValueError):
         return False
-    finally:
-        for descriptor in reversed(opened):
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
     return digest == evidence.get("source_reference")
 
 
