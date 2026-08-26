@@ -129,7 +129,11 @@ def build_aggregate_league_snapshot(
         raise ValueError("league_aggregate_empty")
     digest_payload = json.dumps(components, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(digest_payload.encode("utf-8")).hexdigest()[:20]
-    statistics_path = root_path / "data/local/leagues/statistics.json"
+    statistics_path = (
+        root_path / "data/local/leagues/legacy_theoddsapi/statistics.json"
+    )
+    if not statistics_path.exists():
+        statistics_path = root_path / "data/local/leagues/statistics.json"
     statistics = _read_json(statistics_path) if statistics_path.exists() else None
     result: dict[str, Any] = {
         "schema_version": 1,

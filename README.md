@@ -13,7 +13,7 @@
 
 - Git 仓库已初始化。
 - Plan 1 引擎核心已完成第一版。
-- 当前离线回归通过；标准测试入口仍会因本机未安装可选 `fastapi` 依赖在对应适配层测试处中断，排除该可选文件后的结果见 `RECENT_WORK.md`。
+- 当前完整离线回归为 `1446/1446 tests passed`；标准测试入口会显式跳过本机未安装可选 `fastapi` 时的单个适配层模块，不把它误报为全量失败。
 - Plan 0 核心数据源探测已完成第一轮：openfootball 赛程、eloratings Elo、The Odds API 赔率可用；API-Football Free plan 不能访问 2026 season。
 - Plan 2 当前产品链路已切到 MatchPick v3：本地/联赛 runner 只生成每场唯一 `match_decision`，不再生成或序列化 S/A/B/C；公开 API、静态导出、预览页、变化通知、完赛战绩和日报也只使用“本场首选 / 无法计算”。采集、概率模型、quota、调度、首发、HMAC ingest、SQLite/PostgreSQL 适配和多赛事合并能力继续保留。
 - Plan 3A FastAPI 本地适配层已实现并完成测试。
@@ -90,7 +90,7 @@
 - 内部仍按联赛隔离 snapshot/history/closing/postmatch，公开发布则每轮只生成一份 `league-aggregate-*` snapshot。本轮未刷新的 `active` 联赛会从已提交缓存补齐，避免公开页只剩最后一个联赛；跨联赛身份错配、空 ID 或重复比赛会 fail-closed。
 - SQLite public view 的检索候选固定包含顶层 `competition.id=multi_league` 的已验收聚合 snapshot，不会为六个内部联赛 ID 分别重复扫描 SQLite JSON；这与 profile 为防止普通 scheduler 越权而继续标记 `dry_run_probe` 的运行门禁相互独立。检索候选不等于公开行，页面只投影 snapshot 中真实存在的 match，因此未 active/无比赛的德甲不会被伪造展示。
 - 单场分析页对六联赛使用 competition-scoped canonical 中文俱乐部展示名；英文 `home_team` / `away_team`、snapshot、API、身份匹配和结算契约不变，未登记球队安全回退英文。页面下拉列表只从当前公开比赛生成杯赛入口，不再因历史完赛记录保留已结束的世界杯；固定六联赛验收入口仍保留。
-- `worldcup.league_lifecycle` 以联赛分区运行封盘、严格 90 分钟结算和独立统计；单联赛失败隔离，dry-run 只计算不写入。六联赛 LaunchAgent 的安装/加载与聚合发布仍是独立运维门禁。
+- `worldcup.league_lifecycle` 仍是当前 scheduled publisher 已接线的 The Odds API scores 兼容边界：legacy parser 只读 `data/local/leagues/legacy_theoddsapi/<competition_id>/result_contract_evidence.json` 中精确 `theoddsapi_scores_v1` evidence，再显式转成 Task 2 committed receipt 后结算。它只写 `data/local/leagues/legacy_theoddsapi/` 下的 evidence/postmatch/statistics，不读写 FotMob provider evidence、正式 `postmatch_statistics.json` / state / outbox；聚合快照仍读取该已标记 origin 的兼容统计，直到 FotMob Gates A–D 单独验收后再评审退役。
 
 ### 六联赛 Confirmed Lineup 赛前编排（本地离线实现）
 
@@ -161,7 +161,112 @@ LaunchAgent generator 默认生成观察模式 JSON；label 固定为 `xin.celab
 
 每 300 秒唤醒不等于每 300 秒请求：未来 90 分钟没有未开赛 active 比赛时 FotMob 请求为 0；T-90..T-45 最快 15 分钟一次，T-45..T-0 最快 5 分钟一次，同日 calendar 合并、details 仅限 due match ID。FotMob 是免费非正式源，没有 SLA；schema、confirmed 语义或身份无法证明时只保留旧首发和旧推荐，不用 predicted/unknown 猜测。
 
-本阶段没有安装或加载上述 timer。未来如已经确认安装后需回滚，只 bootout 新 label `xin.celab.football.league-pre-match`，不影响世界杯、中超或赛后 timer；LaunchAgent 安装/加载仍属 Task 8 独立确认门。
+上述六联赛赛前 timer `xin.celab.football.league-pre-match` 已经独立确认安装并加载；回滚时只 bootout 该 label，不影响世界杯、中超或赛后 timer。本文下述的六联赛赛后 timer 已有只生成 plist 的离线实现，但仍未安装/加载；真实 probe、live/write、LaunchAgent 安装/加载和首次通知仍是后续独立确认门。
+
+### 六联赛赛后结算与信号评估（本地离线 / dry-run 实现已完成）
+
+`worldcup.league_postmatch_runner` 已实现 FotMob 严格赛果解析、单调分区 result store、开赛前最后合法 observed schema v2 closing、累计结算与逐联赛/六联赛统计、可恢复通知 outbox 和 LaunchAgent plist 生成器。除保存 fixture 与注入式 fake provider 外，四份保存的真实 FotMob 赛后样例已 offline parser-verified；**但这四份样例尚未写入正式 provider evidence/acceptance，operational Gate A 仍为 partial，且未执行 live/write，未安装赛后 timer，未发送手机通知，也未 push/merge/deploy 本实现**。
+
+FotMob 赛果合同固定使用 calendar `/api/data/matches?date=YYYYMMDD` 与 detail `/api/data/matchDetails?matchId=<event_id>`；Brasileirão 的 provider league ID 为 `268`，旧 `1122` 必须拒绝。HTTP 404 单独分类为 `provider_contract_drift`，并在受影响分区写入 result receipt 前阻断；普通 5xx/timeout 仍是 transport failure，健康联赛分区可继续。detail 开球只接受 timezone-aware ISO `general.matchTimeUTCDate`，不把展示字段 `matchTimeUTC` 当作机器时间；calendar/detail event、league、严格球队 identity、开球（容差最多 5 分钟）、FT 与比分必须一致。90 分钟终场还要求 detail `header.status` 同时证明 `reason.short=FT`、`firstExtraHalfStarted=""`、`secondExtraHalfStarted=""`、`whoLostOnPenalties=null`、`whoLostOnAggregated` 为 `null` 或空字符串；缺字段、畸形类型、加时/点球/聚合或不一致一律 fail closed。
+
+保存样例只能通过完全离线 evaluator 审核；它从同一 hardened file descriptor 读取并计算 SHA-256，输出 ignored aggregate audit，不联网、不写 provider evidence/acceptance，也不激活 Gate A：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_fotmob_result_probe \
+  --root /Users/eagod/ai-dev/足彩 \
+  --entry serie_a_2026_27=data/probe/leagues/results/serie_a_2026_27/20260824-5749642.json \
+  --entry laliga_2026_27=data/probe/leagues/results/laliga_2026_27/20260825-5868020.json \
+  --entry epl_2026_27=data/probe/leagues/results/epl_2026_27/20260824-5795372.json \
+  --entry ligue_1_2026_27=data/probe/leagues/results/ligue_1_2026_27/20260823-5802901.json \
+  --entry serie_a_brazil_2026=data/probe/leagues/results/serie_a_brazil_2026/20260824-calendar.json \
+  --entry bundesliga_2026_27=data/probe/leagues/results/bundesliga_2026_27/20260828-calendar.json \
+  --captured-at 2026-08-26T00:00:00+00:00 \
+  --out data/probe/leagues/results/gate_a_offline_recheck_2026-08-26.json
+```
+
+2026-08-26 首次用上述 exact bundle 复核时，发现 evaluator 错把 wrapper `calendar_date` 限定为 ISO `YYYY-MM-DD`，与 FotMob calendar 请求和保存器使用的 provider-native `YYYYMMDD` 不一致；该离线 evaluator defect 随后修复为只接受组成真实 Gregorian 日期的 8 位 ASCII `YYYYMMDD`，不改任何保存样例。修复后同路径重跑得到 `status=partial`、`verified_count=4`、`blocked_count=2`：意甲、西甲、英超、法甲分别接受唯一 event `5749642`、`5868020`、`5795372`、`5802901`；Brazil 仍只有 calendar、报 `sample_detail_missing`，Bundesliga 当前 calendar 仍缺本赛季 FT、报 `no_current_season_finished_match`。aggregate audit SHA-256 为 `91602330757587553da7bc64bd88c3cb79043e2d2511e9bb0ad1496eb2796cce`。这只证明四份已保存样例通过离线 parser，并不等于 operational Gate A 完成或激活；不得写正式 evidence/aggregate acceptance，也不能进入 Gate B。Brazil detail 与 Bundesliga 本赛季 FT 仍须另行确认真实 re-probe。
+
+默认命令只读 `acceptance.json`、每个 active 联赛的 `providers/fotmob/result_contract_evidence.json`、history 和 `results.json` receipt，不读 legacy 或旧通用 evidence，不读/不改动 runner state 或 notification state；不创建锁，不读 `.env`，不请求 FotMob，不写盘，不通知，不调用 The Odds API scores 或改动 quota ledger。`--now` 只用于 dry-run 重放，live CLI 会拒绝它：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_postmatch_runner \
+  --root /Users/eagod/ai-dev/足彩
+
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_postmatch_runner \
+  --root /Users/eagod/ai-dev/足彩 \
+  --now 2026-08-25T08:00:00Z
+```
+
+live 只在 `--live --write` 同时给出时可进入 provider/本地写入路径；下列命令是运维契约，不表示已获得 Gate A/B/D 授权。不传 `--notify` 时会完成已确认的结算写入并把本次通知 transition 标记为已消费，不会把该轮摘要排队等待以后补发：
+
+```bash
+# Gate B 候选：一次静默 live/write，必须先独立确认
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_postmatch_runner \
+  --root /Users/eagod/ai-dev/足彩 \
+  --live --write
+
+# Gate D 候选：启用真实通知，必须再次独立确认
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_postmatch_runner \
+  --root /Users/eagod/ai-dev/足彩 \
+  --live --write --notify
+```
+
+赛后 acceptance 是 provider 路径与内容双重绑定契约：`data/local/leagues/acceptance.json` 中的 `state=active` 字符串本身无效；其 `result_contract` 指纹必须精确匹配同联赛 `providers/fotmob/result_contract_evidence.json`，evidence 必须绑定规范化的相对 `data/probe/...` `sample_path`，实际保存字节的 SHA-256 必须匹配 `source_reference`，且样例路径的任何目录/文件均不能是 symlink。同时 acceptance `team_identity` 指纹必须匹配该联赛当前完整严格 registry；运行时还会对 `competition_id + source_event_id + kickoff_at_utc + home/away canonical` 做精确 due join。缺任一证据都在 provider 请求前 fail closed，不回退 legacy/旧通用 evidence、slug 或推测 ID。
+
+运行时只读/写以下 ignored 路径：
+
+- 验收与输入：`data/local/leagues/acceptance.json`、`data/local/leagues/<competition_id>/providers/fotmob/result_contract_evidence.json`、`data/probe/leagues/results/` 下 Gate A 审核样例、`data/local/leagues/<competition_id>/history/*.json`。
+- 分区产物：`data/local/leagues/<competition_id>/results.json`、`results.json.lock`、`closing.json`、`closing.json.lock`、`postmatch.json`。已接受 90 分钟赛果不会删除或静默改写；比分修订、finished 回退、身份冲突会保留旧值并隔离该分区。`closing.json` 是 legacy lifecycle 与 FotMob runner 唯一共享的派生文件；两个 caller 都通过同一 `flock` 内的校验 + 单调 merge + 原子写入，删除、身份变化、时间倒退或同时间不同 decision 均 fail closed，并发不同 event 不丢失。
+- FotMob 汇总与恢复：`data/local/leagues/postmatch_components.json`、`postmatch_statistics.json`、`postmatch_state.json`、`postmatch_notification_state.json`、`postmatch_notification_state.json.lock`、`league_postmatch.lock`。`postmatch_components.json` 保留逐联赛最后一份已验证统计、component/provider/schema 身份、指纹和 settled/result event membership。每份结构合法的 fresh 分区也必须先与 LKG 比较；单项 tally/sample/核心 coverage 或 event membership 回退时标 `postmatch_partition_regression` 并保留 LKG。某一 `postmatch.json` 不可读、结构无效或是 legacy shape 时同样显式标 `stale` / `blocked`；健康联赛仍可更新 statistics/state/通知，不会把坏分区当空集合或用不兼容 LKG 污染 aggregate。
+- The Odds 兼容产物：`data/local/leagues/legacy_theoddsapi/<competition_id>/result_contract_evidence.json`、其 `.lock`、`postmatch.json` 与 `data/local/leagues/legacy_theoddsapi/statistics.json`。若隔离 evidence 尚不存在，旧 `data/local/leagues/<competition_id>/result_contract_evidence.json` 只有在字节内容精确验证为 `theoddsapi_scores_v1` 后，才会在 write 轮次原样原子复制到 legacy 路径；dry-run 不复制，已有隔离 evidence 不覆盖，FotMob provider evidence 不读写。旧共享 `postmatch.json` 只有在能辨认为 legacy shape 时才原子归档为 `postmatch.pre_isolation.json`；已标记或结构符合 FotMob 正式 receipt-backed 产物不会被迁移。
+
+所有 JSON 原子替换可在同一 ignored 目录内短暂创建 `.<target>.*.tmp`，完成或失败后清理；不会写到上述根目录之外。
+
+closing 只能选择开赛前最后一份合法 observed schema v2 decision，合法 label 同时包括 `MATCH_PICK` 和 `NO_CLEAN_MARKET`。只有 `MATCH_PICK` 会按盘口结算并进入 `hit / miss / push`；`NO_CLEAN_MARKET` 只进入 `no_pick` 与 coverage，不进入命中率分母。赛果已可验但 closing 缺失时，保留 result evidence 并显式计入 `missing_closing` / `skipped_no_closing`，不用 current、开赛后 snapshot 或 reconstructed decision 补造推荐；以后出现合法 closing 时可幂等转为正式结算。正式汇总只接受 `observed_schema_v2_match_pick_only`，不混入世界杯、中超、legacy、reconstructed 或手工结果。
+
+同一 competition 即使有多个 due UTC 日期，本轮新赛果也会先在内存中按日期完整 staging，再只调用一次 result-store merge。任一日期的 calendar/detail 抛 typed `provider_contract_drift` 时丢弃该 competition 本轮全部新 staging，但已 committed receipt 仍继续派生 closing/postmatch/statistics；普通 calendar/detail transport failure 只把对应 event 标为 partial，不丢弃同联赛健康 staging。计划时间与响应捕获时间分离：每个日期的 calendar/details payload 全部实际捕获后，再从 timezone-aware UTC `observed_clock` 采样一次 `captured_at`；naive 或无效时钟不产生该日期 receipt。
+
+提交顺序为 result evidence → closing → postmatch → last-known-good component manifest → aggregate statistics → runner state → notification intent。已提交 result receipt 可在重启后继续补齐派生产物，无需再请求 provider；未消费 state transition 可从精确 aggregate 重建通知 intent。已持久化 pending outbox 会先于 provider 检查：带 `--notify` 时先重试并结束本轮，不带 `--notify` 时返回 `notification_pending` 并阻断 provider，绝不静默丢弃 pending。只在 `newly_settled > 0` 时构建当日摘要，正式 decided 达到 20 / 50 / 100 时各构建一次里程碑；20 只做链路健康检查，50 只允许离线候选回测，100 也必须再通过留出集、当前 `match_pick_v3`、同样本市场基准和逐联赛失衡审查，不自动调参或上线。
+
+通知是 at-least-once，不声称 exactly-once：若 WxPusher 已接受消息、但进程在 sent receipt 原子持久化前崩溃，重启后可能重复发送。确定性 event fingerprint 可供下游去重，但本地 runner 不隐藏这一 crash window；通知失败不回滚已接受赛果或结算。
+
+LaunchAgent generator 默认只在 stdout 打印观察模式 JSON，不写 plist、不调用 `launchctl`。label 固定为 `xin.celab.football.league-postmatch`，每天北京时间 10:30 / 16:30 唤醒，`RunAtLoad=false`，日志为 `~/Library/Logs/worldcup/league-postmatch.out.log` 和 `league-postmatch.err.log`。这与赛前 confirmed-lineup observer `xin.celab.football.league-pre-match` 的每 300 秒唤醒是两条独立链路：
+
+```bash
+# 只输出观察模式 JSON
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_postmatch_launch_agent \
+  --python /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  --workdir /Users/eagod/ai-dev/足彩
+
+# 只生成 full-live plist 草案到 ignored cache；不安装、不加载
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_postmatch_launch_agent \
+  --python /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  --workdir /Users/eagod/ai-dev/足彩 \
+  --full-live \
+  --out /Users/eagod/ai-dev/足彩/data/cache/xin.celab.football.league-postmatch.plist
+```
+
+本地实现完成不会自动跨过以下运维门，每门都需在执行前报告精确目标/请求数/路径/回滚并独立确认：
+
+1. **Gate A — 真实 FotMob probe**：按联赛报告 competition/event、请求数、ignored 样例路径、schema/内容指纹及 The Odds API quota 零变化证据。任一联赛无法证明 terminal 90 分钟语义就继续 blocked，不放宽 parser。
+2. **Gate B — 首次 live/write + 通知禁用验证**：先列出 active 集合、due event、closing coverage、会写的 state 与回滚方式；经确认执行一次 `--live --write`（不带 `--notify`），随后立即重复，证明幂等且不重复结算。
+3. **Gate C — LaunchAgent 安装**：先展示精确 plist、label、10:30/16:30 schedule、绝对路径、flags、日志和 bootout 命令；只有确认后才可 bootstrap，`RunAtLoad=false`，安装时不 kickstart。Gate D 前应安装不含 `--full-live` 的观察版；full-live plist 会展开为 `--live --write --notify`，不得借 Gate C 越过 Gate D。
+4. **Gate D — 首次真实通知**：只使用真实新结算 event，或另行批准且不写入正式统计的安全测试 event；经确认后才通过全局 WxPusher 发送，只汇报脱敏状态。
+
+禁用/回滚时，先停止手工 live 调用；若未来已加载 timer，只 bootout 独立 label，不影响赛前五分钟 observer、世界杯、中超或 odds timer：
+
+```bash
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/xin.celab.football.league-postmatch.plist"
+```
+
+回滚不删除 `results.json`、closing/postmatch/statistics/state 或 outbox，也不回写已接受比分；若证据契约有问题，应保持 timer/live 禁用并人工审计。push、PR、merge 和 deploy 仍各自需独立确认。本链路仅用于研究和离线评估，不构成投注建议，不输出下注金额、EV/Edge 或执行建议。详细见 [六联赛赛后结算与信号评估闭环设计](docs/superpowers/specs/2026-08-25-six-league-postmatch-loop-design.md)。
 
 零副作用调度外壳示例：
 
@@ -236,6 +341,11 @@ worldcup/
   pre_match_launch_agent.py     # 赛前首发轮询 LaunchAgent plist 生成器（不加载 launchd）
   league_pre_match_runner.py    # 六联赛 confirmed lineup → quota guard → aggregate publish → outbox 单实例编排
   league_pre_match_launch_agent.py # 六联赛独立 LaunchAgent plist 生成器（不调用 launchctl）
+  league_result_store.py        # 六联赛 90 分钟赛果单调分区 store 与冲突隔离
+  league_postmatch_planner.py   # 只读 due-event 计划；开赛时间不代表完赛
+  league_postmatch_notifications.py # 研究摘要/20·50·100 里程碑与可恢复 outbox
+  league_postmatch_runner.py    # 六联赛赛后 dry-run-first 单实例编排
+  league_postmatch_launch_agent.py # 10:30/16:30 赛后 plist 生成器（不调用 launchctl）
   odds_trend.py                 # 从 history 归档提取每场赔率走势点
   finished_record.py            # closing match_decision × 赛果定格，维护本地增量完赛 store
   postmatch_publish.py          # 严格 90 分钟赛果 → 独立完整 snapshot → HMAC 发布（默认 dry-run）
@@ -287,6 +397,7 @@ worldcup/
     eloratings.py               # eloratings TSV 解析
     team_aliases.py             # 队名规范化与别名
     club_aliases.py             # 俱乐部联赛队名规范化与别名
+    league_fotmob_results.py    # 保存 FotMob calendar/details 的严格 90 分钟赛果解析
     csl_results.py              # 中超历史赛果本地样例解析、双源校验与 replay candidate 输出
   engine/
     odds.py                     # 赔率去水、聚合

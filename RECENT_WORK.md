@@ -2,9 +2,29 @@
 
 本文件只记录近期可操作进展，避免变成永久流水账。默认保留最近 20 条。
 
-历史归档：[docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md](docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md)（164 条）
+历史归档：[docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md](docs/history/RECENT_WORK_ARCHIVE_2026-07-20.md)（169 条）
 
 较早记录压缩摘要（2026-07-10 至 2026-07-19）：完成 MatchPick v3、首选鲜度、中超俱乐部评级门槛、已开赛待赛果展示、延期状态、quota 槽位切换和世界杯赛后同步等阶段；当前槽位数以最新记录和 README 为准。保留的关键约束已同步到 README、AGENTS/CLAUDE 与 Git 历史。2026-07-19 首次赛后 live 因当时外部配置受阻，未产生业务写入。
+
+## 2026-08-26 FotMob 赛果合同修复与离线 Gate A 复核
+
+- 修复后的本地合同使用 `/api/data/matches` / `/api/data/matchDetails`、Brasileirão provider ID `268`、detail `general.matchTimeUTCDate`、calendar/detail FT+比分一致与无加时/点球/aggregate 的复合 90 分钟证明；404 单独投影为 `provider_contract_drift`。Task 4 新增从同一 hardened fd 读取、hash 并评估保存 bundle 的完全离线 CLI，不写正式 evidence/acceptance 或激活 Gate。Final review fix 又将同一 competition 的所有 due UTC 日期改为内存 staging 后一次 merge：typed drift 丢弃本轮全部新 receipt，ordinary calendar/detail failure 保留健康 staging 并显式 partial，任何当前 provider failure 都不再阻断旧 committed receipt 派生结算。`observed_clock` 在每个日期的 calendar/details 响应完整捕获后单独采样 `captured_at`，naive 时间 fail closed。
+- 使用 first Gate A 六个 exact 保存路径与 timezone-aware `2026-08-26T00:00:00+00:00` 复核，首次发现 evaluator 错把 provider-native wrapper `calendar_date=YYYYMMDD` 限定为 ISO；修复为严格 8 位 ASCII 真实日期后，不改样例并原子重跑同一路径，最终为 `status=partial`、`4 verified / 2 blocked`。意甲/西甲/英超/法甲各接受唯一 event；Brazil 为 `sample_detail_missing`，Bundesliga 为 `no_current_season_finished_match`。ignored audit SHA-256 为 `91602330757587553da7bc64bd88c3cb79043e2d2511e9bb0ad1496eb2796cce`。这不是 operational Gate A 完成或激活；两项真实 re-probe 与任何 evidence/acceptance 写入仍须另行确认。
+- README 与项目 AGENTS/CLAUDE 已同步 routes、ID、kickoff、复合证明、404、offline evaluator 和剩余 blockers；按获准 retention 将最旧 5 条完整迁移到既有 archive，当前 recent 恰好 20 条、archive 169 条。
+- Final fix 严格 TDD 新增 4 项回归：当前实现先为 `0/4` RED（ordinary failure 持续搁置旧 receipt、typed drift 留下部分新 receipt、缺 `observed_clock` 接口），最小修复后为 `4/4` GREEN；整个 runner 模块 `38/38`，指定 runtime 完整回归 `1502/1502 tests passed, 1 optional fastapi module skipped`，相关 production/test 模块 `py_compile`、`git diff --check` 和 tracked diff 敏感值扫描通过。默认 runner dry-run 返回 `status=dry_run`，前后 `data/local` + `data/cache` manifest SHA-256 均为空集摘要 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`，且 `read_env/called_fotmob/wrote/notified=false`。本轮未联网、未改真实 acceptance/evidence、未激活 Gate、未消耗 quota、未通知或操作 timer，也未 push/merge/deploy。
+
+## 2026-08-25 六联赛赛后闭环离线实现
+
+- Task 1–6 已在本地实现严格 FotMob 90 分钟解析、路径/内容/registry 绑定的 acceptance、单调分区 results/closing store、纯 due planner、observed schema v2 累计结算、逐联赛/六联赛统计、可恢复通知 outbox、dry-run-first runner 和只生成 plist 的 LaunchAgent generator。缺 closing 显式记 `missing_closing` / `skipped_no_closing`，比分修订/finished 回退/身份冲突保留旧值并 fail closed。
+- 默认 `python3 -m worldcup.league_postmatch_runner --root <repo>` 只读 acceptance/evidence/history/result receipt，不读 runner/notification state，不读 `.env`、不联网、不写盘、不通知，不调用 The Odds API scores 或改动 quota。live/write 必须同时显式给出；不带 `--notify` 的新 transition 会被静默消费，不留待以后补发的摘要。已有 notification pending 则先于 provider 检查：带 `--notify` 时重试，不带时返回 `notification_pending` 并阻断 provider。WxPusher 接受成功到 sent receipt 持久化之间仍有 at-least-once 重复发送窗口。
+- 赛后 generator 的独立 label 为 `xin.celab.football.league-postmatch`，计划每天北京时间 10:30 / 16:30、`RunAtLoad=false`，与赛前 `xin.celab.football.league-pre-match` 的每 300 秒 confirmed-lineup observer 无关。当前未安装/加载赛后 plist，未验收真实 FotMob 赛后样例，未执行 live/write，未发送手机通知，未 push/merge/deploy。
+- 后续必须分开确认 Gate A 真实 FotMob probe、Gate B 首次静默 live/write 与立即幂等重跑、Gate C 赛后 LaunchAgent 安装（`RunAtLoad=false`、不 kickstart）、Gate D 首次真实 WxPusher。Gate A 无法证明 terminal 90 分钟语义时必须保持 blocked；20/50/100 仅是健康检查/离线候选/正式优化审查门，不自动调参或上线。本闭环只用于研究与离线评估，不构成投注建议，不输出下注金额或执行建议。
+- Task 7 新鲜验证：指定 runtime 两次完整回归均为 `1446/1446 tests passed, 1 optional fastapi module skipped`；六个赛后生产模块 `py_compile`、`git diff --check` 和变更 diff 敏感值扫描通过。真实文件系统 dry-run 前后 quota/leagues/results/state/notification manifest SHA-256 均为 `d4b7297def72fad76ec1cc62e9797c3ea6b7f9608e5fda5bb12c6c1ca2e933d4`，输出 `mode=dry_run` 且 `read_env/called_fotmob/wrote/notified=false`；观察/full-live plist 预览均未生成文件。
+- 最终分支审查的 4 个 Important 和 1 个 Minor 已按 TDD 修复：The Odds parser 精确绑定 `theoddsapi_scores_v1`，legacy lifecycle 通过 Task 2 committed receipt 适配器继续供当前 scheduled publisher 使用；legacy postmatch/statistics 已隔离到 `data/local/leagues/legacy_theoddsapi/`，不读写 FotMob 正式 aggregate/state/notification。共享 `closing.json` 改为同一 `flock` 内读取、校验、单调 merge 和原子写入，拒绝删除、身份变化、时间倒退和同时间 decision 冲突。
+- FotMob 正式汇总新增 `postmatch_components.json` 持久化逐联赛 last-known-good 验证统计；单个分区不可读、结构无效或为 legacy shape 时显式标 `stale/blocked`并保留旧计数，健康联赛仍可推进 statistics/state/通知。README 已更正 closing schema v2 口径：`MATCH_PICK` 进入 `hit/miss/push`，`NO_CLEAN_MARKET` 只进入 `no_pick`/coverage。本轮未宣称 FotMob live 已激活。
+- 最终新鲜验证：跨模块聚焦回归 `77/77`，指定 runtime 完整回归 `1453/1453 tests passed, 1 optional fastapi module skipped`，相关模块/测试 `py_compile`、`git diff --check` 与变更 diff 敏感值扫描通过。默认 dry-run 前后 manifest SHA-256 均为 `48bd7359a6bfbc2489f703ca41c69c165fc5baccc82d4618b73e760c7e634e99`，输出 `mode=dry_run` 且 `read_env/called_fotmob/wrote/notified=false`。未联网、未执行 live/write/notify，未安装调度器，未 push/PR/merge/deploy；Gates A–D 仍需分别确认。
+- 最终审查 round 2 已将 provider evidence 物理隔离：FotMob 正式 runner 只读 `data/local/leagues/<competition_id>/providers/fotmob/result_contract_evidence.json`，legacy lifecycle 只读 `data/local/leagues/legacy_theoddsapi/<competition_id>/result_contract_evidence.json`。旧通用 evidence 仅在精确验证为 `theoddsapi_scores_v1` 后于 write 轮次按原字节、持锁原子复制到 legacy 路径；dry-run 不写，已有 legacy/FotMob evidence 不覆盖。缺失或 schema 错配会显式 `legacy_result_contract_evidence_missing/invalid`，不再以冻结统计假装 `ready/stored`。
+- LKG 选择已从“仅结构验证”改为“结构 + 逐分区单调验证”：component 持久化 competition/provider/postmatch schema、tally/sample/coverage 和 settled/result membership。合法空分区、tally/coverage 回退或 event membership 替换均标 `postmatch_partition_regression`并保留 LKG，健康联赛仍可结算、推进 aggregate/state 并通知；身份/schema/membership 不兼容的 LKG entry 不会覆盖验证过的 previous statistics。新鲜聚焦回归 `82/82`、完整回归 `1458/1458 tests passed, 1 optional fastapi module skipped`，`py_compile`、`git diff --check`、敏感值扫描与默认 dry-run manifest 验证通过；manifest 前后均为 `48bd7359a6bfbc2489f703ca41c69c165fc5baccc82d4618b73e760c7e634e99`。未联网或执行真实 live/write/notify/timer/push/PR/merge/deploy，Gates A–D 仍未激活。
 
 ## 2026-08-25 六联赛确认首发功能部署
 
@@ -23,6 +43,9 @@
 - smoke 误报修复已通过 PR #11 squash merge 到 `main` commit `384c90c3d5842c9fb706a739bc7e2234aadac27b`，CI 通过，并已成功部署为 `/opt/worldcup/releases/384c90c3d5842c9fb706a739bc7e2234aadac27b`。ECS `/readyz` 成功，service/Nginx 均为 `active`，公网 `/healthz`、`/api/matches`、`/preview` 均返回 200，smoke 禁词命中为 0 且免责声明存在。独立公网验收共 80 场：中超 7、英超 20、西甲 14、法甲 9、意甲 20、巴甲 10；德甲仍因无已验收真实比赛而不伪造公开行。部署未读取/修改 secret，未调用 provider、未消耗 quota、未发布新 snapshot、未修改 LaunchAgent 或 DB schema。
 - 经独立确认已在 `codex/chinese-club-labels` 按 TDD 实现单场分析中文俱乐部展示与下拉清理：六联赛 116 支已验收 canonical 全部配置 competition-scoped 中文名，公网当前 98 个去重俱乐部身份只读覆盖为 `98/98`；页面显示中文但 `/api/matches` 仍保留英文队名，未知队回退英文。下拉列表不再从 finished-only 记录生成世界杯入口，但世界杯历史数据/API 兼容不删除，固定六联赛入口保留。三组验收回归 RED→GREEN，identity `5/5`、preview `23/23`、完整回归 `1362/1362 tests passed, 1 optional fastapi module skipped`，`py_compile` 与 `git diff --check` 通过；未调用 provider、未消耗 quota、未写生产 DB或部署。
 - 合并前独立审查发现六联赛 scoped 查询未命中时会误落入国家队全局中文表；已用 `Brazil` 在巴甲 scope、`Arsenal` 在西甲 scope 的真实格式化反例复现，并改为正式六联赛 scoped miss 直接保留原文；世界杯、中超与无 scope 的既有翻译不变。
+- 中文俱乐部展示与下拉清理已通过 PR #12 squash merge 到 `main` commit `d82bd98e4f31cd968ffdc5656972c63b058e41d2`，CI 与合并前完整回归 `1363/1363` 通过。经独立部署确认，已创建并原子切换 `/opt/worldcup/releases/d82bd98e4f31cd968ffdc5656972c63b058e41d2`，`worldcup.service` 与 Nginx 均为 `active`，readyz 及公网 `/healthz`、`/api/matches`、`/preview` 均返回 200。功能验收确认 80 场 API 仍保留英文 canonical，页面已显示六联赛中文队名，finished-only 世界杯下拉入口不存在。部署未读取/修改 secret，未调用 provider、未消耗 quota、未发布新 snapshot、未修改 LaunchAgent 或 DB schema。
+- 已确认六联赛赛后结算与信号评估闭环设计：推荐免费 FotMob 公开 snapshot + 严格 90 分钟契约门禁，不使用 The Odds API scores 争抢赔率 quota；逐联赛 closing/results/postmatch/statistics 隔离，只结算赛前最后一份 observed schema v2 closing，每日 10:30/16:30 计划唤醒，有新结算才发日摘要，20/50/100 decided 样本分别触发健康检查/离线候选/正式优化审查提醒。当前仅写设计，未联网 probe、未实现 runner、未安装调度器或发送通知。
+- 已基于上述设计编写六联赛赛后闭环实施计划：拆分 FotMob 赛果契约、单调结果/closing store、纯 due planner 与累计结算、可恢复通知 outbox、dry-run-first live runner、LaunchAgent generator 和文档/完整验证 7 个 TDD 任务；真实 FotMob probe、首次 live/write、定时器安装和首次真实通知保留为 4 个独立运维门。计划阶段未实现代码、未联网、未写运行 state、未安装定时器或发送通知。
 
 ## 2026-08-24 The Odds API 五 Key 轮换
 
@@ -210,55 +233,3 @@
 - 新增 `tests/test_secrets_check.py`（18 个测试）：兼容性、check 各布尔组合、退出码、引号/重复键、缺失/不可读文件、输出不含 secret。
 - 全量：856 passed, 0 failed, 1 skipped (fastapi)。
 - 未改变业务启动链路、未联网、未读真实 .env、未 commit/push/deploy。
-
-## 2026-07-20 测试 runner 容错修复
-
-- `tests/run_tests.py` 旧实现中单个模块加载失败（如缺依赖）会中断全部后续模块执行。
-- 修复：模块加载用 `try/except`，`ModuleNotFoundError` 匹配显式 allowlist `_OPTIONAL_DEPS = {"test_fastapi_app.py": {"fastapi"}}` → SKIP；其余任何加载异常 → FAIL 并继续。
-- 最终摘要明确给出 passed/failed/skipped 计数和详情；只有真 FAIL 时退出非零。
-- 新增 `tests/test_runner_resilience.py`（12 个测试）：正常模块 PASS、断言 FAIL、SyntaxError 排在正常模块前仍继续（排序假阳性已修正）、缺失非可选依赖 FAIL、允许的可选依赖 SKIP、allowlist 文件名匹配但依赖名不符 FAIL、缺少内部模块 FAIL、普通 ImportError FAIL 后继续、顶层 RuntimeError FAIL 后继续、摘要计数精确、多模块继续执行、退出码语义。
-- 全量运行：838 passed, 0 failed, 1 skipped (test_fastapi_app.py: fastapi)。
-- 未安装依赖、未联网、未 commit/push/deploy。
-
-## 2026-07-20 Ingest 401 统一：对外不泄露签名验证阶段
-
-- `http_app.py` rejection 路径：当 reason 在 `_AUTH_REJECTION_REASONS`（`signature_format_invalid`/`signature_mismatch`）时，对外统一返回 `"authentication_failed"` 而非原始内部 reason。
-- 内部 `ingest_server.py` / `ingest_app.py` 验证结果继续保留原有详细 reason 不变。
-- 新增 `tests/test_ingest_auth_unify.py`（6 个测试）：两种签名失败产生相同 error code、body 不含内部阶段名/路径/tracebacks、未来时间戳 ±300s 窗口语义锁定。
-- 更新 `tests/test_http_app.py:1035` 断言从 `"signature_mismatch"` → `"authentication_failed"`。
-- 全量测试 826 passed, 0 failed, 1 skipped (fastapi)。
-- 未改变内部验证逻辑、未联网、未消耗 quota、未 commit/push/deploy。
-
-- `worldcup/collectors/csl_result_sources.py:parse_sevenm_fixture_result_rows` 原实现只靠 `_SCORE_RE` 过滤 `Scores_Arr`，未检查 `Stat_Arr` 值；若 7M 返回进行中临时比分可能误接受。
-- 加固：在 score 正则前先检查 `Stat_Arr[index]`，经 `int()` 规范化后严格等于 `_FINISHED_STAT = 4` 才继续；其他值（13/17/未知/空/无法转 int）全部 fail-closed 跳过。
-- 数组长度一致性检查、downstream 双源 compare/verified gate、`parse_sevenm_fixture_rows` 逻辑均未改动。
-- 新增 `tests/collectors/test_sevenm_stat_filter.py`（12 个测试）：Stat=4 接受、Stat=4 无比分拒绝、Stat=17/13/0/1/99/空字符串+有效比分全部拒绝、多行对齐验证、2026 probe 120 行回归。
-- 全量测试 820 passed, 0 failed, 1 skipped (fastapi)。
-- 本地 960+ 条样本中 Stat=4 与有效比分 100% 对应，加固对现有合法完场输出零影响。
-- 未改变下游契约、未联网、未消耗 quota、未 commit/push/deploy。
-
-## 2026-07-20 亚盘结算 _settlement_unit 去重
-
-- `decision_settlement.py:55` 和 `match_decision.py:342` 存在完全相同的 `_settlement_unit` 实现。
-- 将 `decision_settlement.py` 中的函数改为公共 `settlement_unit()`（权威实现），保留 `_settlement_unit = settlement_unit` 别名兼容内部调用点。
-- `match_decision.py` 删除重复定义，改为 `from worldcup.decision_settlement import settlement_unit as _settlement_unit`。
-- 新增 `tests/test_settlement_unit.py`（7 个参数化测试）：30 组精确矩阵覆盖整数/半球/四分之一盘、5 组非法 line ValueError、identity 断言（两模块引用同一函数对象）。
-- 全量测试 808 passed, 0 failed, 1 skipped (fastapi 可选)。
-- 未改变业务语义、盘口方向、浮点容差、返回类型或异常行为；未联网、未消耗 quota、未 commit/push/deploy。
-
-## 2026-07-20 SQLite WAL + HTTP 503 结构化错误
-
-- store.py：新增 `_connect()` 辅助方法统一设置 `busy_timeout=5000ms`；`initialize()` 增加 `PRAGMA journal_mode = WAL`，`_initialized` 标志避免重复执行；所有方法的 `sqlite3.connect` 替换为 `self._connect()`。
-- http_app.py：将 `/healthz` 之外的全部路由提取为 `_handle_store_routes()`，外层 `handle_request` 用 `try/except sqlite3.OperationalError` 捕获并返回 `503 {"error":{"code":"service_unavailable"}}`，不泄露路径、SQL 或内部堆栈。
-- 新增测试 `tests/test_store_wal.py`（9 个：WAL 持久化、busy_timeout=5000、503 返回、信息不泄漏、正常 200 回归、healthz 不受影响）。
-- 全量测试 801 passed, 0 failed, 1 skipped (fastapi 可选依赖)。
-- 未改变业务语义、未联网、未消耗 quota、未 commit/push/deploy。
-
-## 2026-07-20 quota.py 原子写+排他锁 & elo_world.tsv 原子替换
-
-- 只读审查发现 `worldcup/quota.py` 的 `save_quota_ledger` 使用 `Path.write_text` 直接覆盖，无锁无原子保护；`worldcup/refresh_runner.py` 的 `elo_world_cache.write_text` 同样非原子。
-- quota.py 修改：`save_quota_ledger` 改为 `tempfile.mkstemp` + `os.write` + `os.fsync` + `os.replace`；`update_quota_from_headers` 整体 load→modify→save 包裹在独立 `.lock` 文件的 `fcntl.flock(LOCK_EX)` 内，锁粒度覆盖完整事务。
-- refresh_runner.py 修改：新增 `_write_text_atomic` 辅助函数（同目录 tmp + `os.replace`），异常或中断时自动清理临时文件，原文件保持完整。
-- 新增测试 `tests/test_quota_atomic.py`（8 个，含跨进程 subprocess 并发验证）和 `tests/test_refresh_runner_atomic.py`（5 个，含 `os.replace` 失败时旧文件完整性验证）。
-- 全量测试 792 passed, 0 failed, 1 skipped (fastapi 可选依赖)。
-- 未改变业务语义、未联网、未消耗 quota、未 commit/push/deploy。

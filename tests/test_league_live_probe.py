@@ -113,3 +113,72 @@ def test_probe_bundle_offline_evaluation_derives_active_only_from_complete_evide
     result = evaluate_league_probe_bundle(bundle, identity_registry=registry, result_contract_evidence=result_evidence)
     assert result["state"] == "active"
     assert set(result["fingerprints"]) == {"sport_catalog", "odds_sample", "team_identity", "result_contract"}
+
+
+def test_fotmob_acceptance_binds_complete_registry_and_requires_bound_probe_path():
+    def registry(extra_alias: str) -> LeagueTeamIdentityRegistry:
+        return LeagueTeamIdentityRegistry({
+            "epl_2026_27": {
+                "arsenal": ("Arsenal",),
+                "chelsea": ("Chelsea",),
+                "liverpool": (extra_alias,),
+            },
+        })
+
+    bundle = {
+        "schema_version": 1,
+        "competition_id": "epl_2026_27",
+        "sport_key": "soccer_epl",
+        "odds": [{
+            "id": "epl-1",
+            "sport_key": "soccer_epl",
+            "home_team": "Arsenal",
+            "away_team": "Chelsea",
+            "bookmakers": [{
+                "key": "book-1",
+                "markets": [{"key": "h2h", "outcomes": [
+                    {"name": "Arsenal", "price": 2.0},
+                    {"name": "Draw", "price": 3.4},
+                    {"name": "Chelsea", "price": 3.8},
+                ]}],
+            }],
+        }],
+    }
+    bound = build_result_contract_evidence(
+        competition_id="epl_2026_27",
+        sport_key="soccer_epl",
+        provider_schema="fotmob_league_results_v1",
+        score_scope="football_90min",
+        source_reference="a" * 64,
+        provider="fotmob",
+        sample_path="data/probe/leagues/results/epl-finished.json",
+    )
+    unbound = build_result_contract_evidence(
+        competition_id="epl_2026_27",
+        sport_key="soccer_epl",
+        provider_schema="fotmob_league_results_v1",
+        score_scope="football_90min",
+        source_reference="a" * 64,
+        provider="fotmob",
+    )
+
+    first = evaluate_league_probe_bundle(
+        bundle,
+        identity_registry=registry("Liverpool"),
+        result_contract_evidence=bound,
+    )
+    changed_registry = evaluate_league_probe_bundle(
+        bundle,
+        identity_registry=registry("Liverpool FC"),
+        result_contract_evidence=bound,
+    )
+    missing_path = evaluate_league_probe_bundle(
+        bundle,
+        identity_registry=registry("Liverpool"),
+        result_contract_evidence=unbound,
+    )
+
+    assert first["state"] == "active"
+    assert changed_registry["state"] == "active"
+    assert first["fingerprints"]["team_identity"] != changed_registry["fingerprints"]["team_identity"]
+    assert missing_path["state"] == "identity_verified"
