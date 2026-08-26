@@ -113,11 +113,11 @@ def _date_values(observed: datetime, lookahead_hours: int) -> list[str]:
 
 
 def build_fotmob_matches_url(date: str) -> str:
-    return f"{FOTMOB_BASE_URL}/matches?{urlencode({'date': date})}"
+    return f"{FOTMOB_BASE_URL}/data/matches?{urlencode({'date': date})}"
 
 
 def build_fotmob_match_details_url(match_id: str | int) -> str:
-    return f"{FOTMOB_BASE_URL}/matchDetails?{urlencode({'matchId': str(match_id)})}"
+    return f"{FOTMOB_BASE_URL}/data/matchDetails?{urlencode({'matchId': str(match_id)})}"
 
 
 def _calendar_match_ids(match: dict[str, Any]) -> tuple[str, str, str, str] | None:

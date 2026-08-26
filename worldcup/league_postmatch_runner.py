@@ -41,6 +41,7 @@ from worldcup.league_team_identity import (
     accepted_league_team_identity_registry,
     league_team_identity_registry_fingerprint,
 )
+from worldcup.sources.league_fotmob_lineups import FotMobProviderContractDrift
 
 
 CalendarFetcher = Callable[[str, str], Mapping[str, Any]]
@@ -1266,20 +1267,32 @@ def run_league_postmatch(
                 calendar_payload = calendar_fn(competition_id, date)
                 if not isinstance(calendar_payload, Mapping):
                     raise TypeError
+            except FotMobProviderContractDrift:
+                outcomes[competition_id] = {"status": "error", "reason": "provider_contract_drift"}
+                provider_failed.add(competition_id)
+                continue
             except Exception:
                 outcomes[competition_id] = {"status": "error", "reason": "calendar_fetch_failed"}
                 provider_failed.add(competition_id)
                 continue
             details: dict[str, dict[str, Any]] = {}
             detail_failures: set[str] = set()
+            provider_contract_drift = False
             for row in due_rows:
                 try:
                     value = detail_fn(competition_id, row["source_event_id"])
                     if not isinstance(value, Mapping):
                         raise TypeError
                     details[row["source_event_id"]] = dict(value)
+                except FotMobProviderContractDrift:
+                    outcomes[competition_id] = {"status": "error", "reason": "provider_contract_drift"}
+                    provider_failed.add(competition_id)
+                    provider_contract_drift = True
+                    break
                 except Exception:
                     detail_failures.add(row["source_event_id"])
+            if provider_contract_drift:
+                continue
             try:
                 parsed = parse_fotmob_league_results(
                     dict(calendar_payload),

@@ -8,6 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import worldcup.sources.league_fotmob_lineups as fotmob_source
 from worldcup.league_postmatch_notifications import (
     LeaguePostmatchNotificationOutbox,
     build_threshold_events,
@@ -835,6 +836,64 @@ def test_provider_failure_is_isolated_by_formal_competition_partition():
         assert (root / f"data/local/leagues/{EPL}/postmatch.json").exists()
         assert not (root / f"data/local/leagues/{LALIGA}/results.json").exists()
         assert "provider-token" not in json.dumps(result)
+
+
+def test_calendar_404_blocks_only_affected_competition_as_provider_contract_drift():
+    """A calendar route 404 must not be mistaken for a retryable calendar transport failure."""
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _setup(root, (EPL, LALIGA))
+        drift = getattr(fotmob_source, "FotMobProviderContractDrift", RuntimeError)
+
+        def calendar_fetcher(competition_id: str, _date: str) -> dict:
+            if competition_id == LALIGA:
+                raise drift("fotmob_provider_contract_drift_404")
+            return _calendar(competition_id, "1001")
+
+        result = run_league_postmatch(
+            root,
+            live=True,
+            write=True,
+            now=NOW,
+            calendar_fetcher=calendar_fetcher,
+            detail_fetcher=lambda competition_id, event_id: _details(competition_id, event_id),
+        )
+
+        assert result["status"] == "partial"
+        assert result["competitions"][EPL]["status"] == "settled"
+        assert result["competitions"][LALIGA] == {"status": "error", "reason": "provider_contract_drift"}
+        assert (root / f"data/local/leagues/{EPL}/results.json").exists()
+        assert not (root / f"data/local/leagues/{LALIGA}/results.json").exists()
+
+
+def test_details_404_blocks_only_affected_competition_as_provider_contract_drift():
+    """A detail route 404 must block its partition before any partial receipt is written."""
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _setup(root, (EPL, LALIGA))
+        drift = getattr(fotmob_source, "FotMobProviderContractDrift", RuntimeError)
+
+        def detail_fetcher(competition_id: str, event_id: str) -> dict:
+            if competition_id == LALIGA:
+                raise drift("fotmob_provider_contract_drift_404")
+            return _details(competition_id, event_id)
+
+        result = run_league_postmatch(
+            root,
+            live=True,
+            write=True,
+            now=NOW,
+            calendar_fetcher=lambda competition_id, _date: _calendar(
+                competition_id, "1001" if competition_id == EPL else "1002"
+            ),
+            detail_fetcher=detail_fetcher,
+        )
+
+        assert result["status"] == "partial"
+        assert result["competitions"][EPL]["status"] == "settled"
+        assert result["competitions"][LALIGA] == {"status": "error", "reason": "provider_contract_drift"}
+        assert (root / f"data/local/leagues/{EPL}/results.json").exists()
+        assert not (root / f"data/local/leagues/{LALIGA}/results.json").exists()
 
 
 def test_terminal_status_crossing_and_duplicate_provider_evidence_fail_closed():
