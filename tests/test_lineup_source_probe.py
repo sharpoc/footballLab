@@ -2,7 +2,11 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from worldcup.lineup_source_probe import run_lineup_source_probe
+from worldcup.lineup_source_probe import (
+    build_fotmob_match_details_url,
+    build_fotmob_matches_url,
+    run_lineup_source_probe,
+)
 
 
 def _name(value):
@@ -122,9 +126,9 @@ def test_lineup_source_probe_records_fifa_confirmed_and_fotmob_predicted():
             return FakeResponse(calendar)
         if "api.fifa.com/api/v3/live/football" in url:
             return FakeResponse(_fifa_confirmed_live())
-        if "www.fotmob.com/api/matches" in url:
+        if "www.fotmob.com/api/data/matches" in url:
             return FakeResponse(_fotmob_matches())
-        if "www.fotmob.com/api/matchDetails" in url:
+        if "www.fotmob.com/api/data/matchDetails" in url:
             return FakeResponse(_fotmob_predicted_details())
         raise AssertionError(f"unexpected url: {url}")
 
@@ -173,9 +177,9 @@ def test_lineup_source_probe_appends_history_and_writes_report():
             return FakeResponse(calendar)
         if "api.fifa.com/api/v3/live/football" in url:
             return FakeResponse(_fifa_confirmed_live())
-        if "www.fotmob.com/api/matches" in url:
+        if "www.fotmob.com/api/data/matches" in url:
             return FakeResponse(_fotmob_matches())
-        if "www.fotmob.com/api/matchDetails" in url:
+        if "www.fotmob.com/api/data/matchDetails" in url:
             return FakeResponse(_fotmob_predicted_details())
         raise AssertionError(f"unexpected url: {url}")
 
@@ -213,3 +217,9 @@ def test_lineup_source_probe_appends_history_and_writes_report():
         assert "predicted: 1" in markdown
         assert "Czechia vs South Africa" in markdown
         assert "T-75.0 分钟" in markdown
+
+
+def test_fotmob_probe_builders_use_current_data_routes():
+    """Pre-match source probing must not retain the obsolete provider route family."""
+    assert build_fotmob_matches_url("20260825") == "https://www.fotmob.com/api/data/matches?date=20260825"
+    assert build_fotmob_match_details_url("5868020") == "https://www.fotmob.com/api/data/matchDetails?matchId=5868020"

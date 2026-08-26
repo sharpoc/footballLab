@@ -48,22 +48,25 @@ def select_league_closings(
                 raise ValueError(f"closing_identity_conflict: {event_id}")
             if snapshot_at >= kickoff or not _valid_decision(match.get("match_decision")):
                 continue
+            candidate = {
+                "competition_id": competition_id,
+                "source_event_id": event_id,
+                "kickoff_at_utc": kickoff.isoformat(),
+                "home_team": match.get("home_team"),
+                "away_team": match.get("away_team"),
+                "home_canonical": home,
+                "away_canonical": away,
+                "closing_snapshot_at": snapshot_at.isoformat(),
+                "closing_match_decision": match["match_decision"],
+            }
             previous = selected.get(event_id)
             if previous is None or snapshot_at > previous[0]:
                 selected[event_id] = (
                     snapshot_at,
-                    {
-                        "competition_id": competition_id,
-                        "source_event_id": event_id,
-                        "kickoff_at_utc": kickoff.isoformat(),
-                        "home_team": match.get("home_team"),
-                        "away_team": match.get("away_team"),
-                        "home_canonical": home,
-                        "away_canonical": away,
-                        "closing_snapshot_at": snapshot_at.isoformat(),
-                        "closing_match_decision": match["match_decision"],
-                    },
+                    candidate,
                 )
+            elif snapshot_at == previous[0] and previous[1]["closing_match_decision"] != candidate["closing_match_decision"]:
+                raise ValueError(f"closing_snapshot_conflict: {event_id}")
     return {
         "schema_version": 1,
         "competition_id": competition_id,
@@ -71,21 +74,132 @@ def select_league_closings(
     }
 
 
+def _closing_identity(row: dict[str, Any]) -> tuple[str, str, str]:
+    kickoff = _utc(row.get("kickoff_at_utc"))
+    home = str(row.get("home_canonical") or "").strip()
+    away = str(row.get("away_canonical") or "").strip()
+    if not home or not away:
+        raise ValueError("closing_identity_missing")
+    return kickoff.isoformat(), home, away
+
+
+def _valid_existing_closings(existing: dict[str, Any] | None, competition_id: str) -> dict[str, dict[str, Any]]:
+    if existing is None:
+        return {}
+    if existing.get("schema_version") != 1 or existing.get("competition_id") != competition_id:
+        raise ValueError("closing_competition_mismatch")
+    closings = existing.get("closings")
+    if not isinstance(closings, dict):
+        raise ValueError("closing_existing_invalid")
+    checked: dict[str, dict[str, Any]] = {}
+    for event_id, value in closings.items():
+        if not isinstance(event_id, str) or not event_id.strip() or not isinstance(value, dict):
+            raise ValueError("closing_existing_invalid")
+        row = dict(value)
+        if row.get("competition_id") != competition_id or row.get("source_event_id") != event_id:
+            raise ValueError("closing_existing_invalid")
+        kickoff = _utc(row.get("kickoff_at_utc"))
+        closing_at = _utc(row.get("closing_snapshot_at"))
+        if closing_at >= kickoff or not _valid_decision(row.get("closing_match_decision")):
+            raise ValueError("closing_existing_invalid")
+        _closing_identity(row)
+        checked[event_id] = row
+    return checked
+
+
+def merge_league_closings(
+    existing: dict[str, Any] | None,
+    snapshots: Iterable[dict[str, Any]],
+    competition_id: str,
+) -> dict[str, Any]:
+    """Advance each closing only with a newer legal pre-kickoff snapshot."""
+    merged = _valid_existing_closings(existing, competition_id)
+    selected = select_league_closings(snapshots, competition_id)
+    for event_id, candidate in selected["closings"].items():
+        previous = merged.get(event_id)
+        if previous is None:
+            merged[event_id] = candidate
+            continue
+        if _closing_identity(previous) != _closing_identity(candidate):
+            raise ValueError(f"closing_identity_conflict: {event_id}")
+        previous_at = _utc(previous.get("closing_snapshot_at"))
+        candidate_at = _utc(candidate.get("closing_snapshot_at"))
+        if candidate_at > previous_at:
+            merged[event_id] = candidate
+        elif candidate_at == previous_at and previous.get("closing_match_decision") != candidate.get("closing_match_decision"):
+            raise ValueError(f"closing_snapshot_conflict: {event_id}")
+    return {
+        "schema_version": 1,
+        "competition_id": competition_id,
+        "closings": {event_id: merged[event_id] for event_id in sorted(merged)},
+    }
+
+
 class LeagueClosingStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
 
-    def commit(self, payload: dict[str, Any]) -> str:
+    def _store(self, payload: dict[str, Any], *, reject_deletion: bool) -> str:
         competition_id = str(payload.get("competition_id") or "")
-        if not competition_id or self.path.parent.name != competition_id:
+        if (
+            not competition_id
+            or self.path.name != "closing.json"
+            or self.path.parent.name != competition_id
+        ):
             raise ValueError("closing_store_partition_mismatch")
-        encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         with lock_path.open("a+b") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            if self.path.exists() and self.path.read_bytes() == encoded:
+            incoming_rows = _valid_existing_closings(payload, competition_id)
+            if self.path.exists():
+                try:
+                    current_payload = json.loads(self.path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    raise ValueError("closing_store_unreadable") from None
+                if not isinstance(current_payload, dict):
+                    raise ValueError("closing_store_invalid")
+                try:
+                    current_rows = _valid_existing_closings(current_payload, competition_id)
+                except (TypeError, ValueError):
+                    raise ValueError("closing_store_invalid") from None
+            else:
+                current_rows = {}
+            if reject_deletion and set(current_rows).difference(incoming_rows):
+                raise ValueError("closing_store_deletion")
+            merged = dict(current_rows)
+            for event_id, candidate in incoming_rows.items():
+                previous = current_rows.get(event_id)
+                if previous is None:
+                    merged[event_id] = candidate
+                    continue
+                if _closing_identity(previous) != _closing_identity(candidate):
+                    raise ValueError(f"closing_identity_conflict: {event_id}")
+                previous_at = _utc(previous.get("closing_snapshot_at"))
+                candidate_at = _utc(candidate.get("closing_snapshot_at"))
+                if candidate_at < previous_at:
+                    raise ValueError(f"closing_snapshot_regression: {event_id}")
+                if candidate_at == previous_at:
+                    if previous.get("closing_match_decision") != candidate.get("closing_match_decision"):
+                        raise ValueError(f"closing_snapshot_conflict: {event_id}")
+                    continue
+                merged[event_id] = candidate
+            updated = {
+                "schema_version": 1,
+                "competition_id": competition_id,
+                "closings": {event_id: merged[event_id] for event_id in sorted(merged)},
+            }
+            current = {
+                "schema_version": 1,
+                "competition_id": competition_id,
+                "closings": {event_id: current_rows[event_id] for event_id in sorted(current_rows)},
+            }
+            if updated == current:
                 return "unchanged"
+            encoded = (
+                json.dumps(updated, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                + "\n"
+            ).encode()
             fd, temp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
             try:
                 with os.fdopen(fd, "wb") as handle:
@@ -102,3 +216,11 @@ class LeagueClosingStore:
                 if os.path.exists(temp_name):
                     os.unlink(temp_name)
         return "stored"
+
+    def commit(self, payload: dict[str, Any]) -> str:
+        """Commit a complete monotonic state; omission of a current event is deletion."""
+        return self._store(payload, reject_deletion=True)
+
+    def merge(self, payload: dict[str, Any]) -> str:
+        """Merge candidate closings monotonically under the same lock used for the write."""
+        return self._store(payload, reject_deletion=False)

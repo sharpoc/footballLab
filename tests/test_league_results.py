@@ -1,4 +1,7 @@
-from worldcup.league_results import parse_verified_league_results
+from worldcup.league_results import (
+    adapt_theoddsapi_results_to_committed_receipt,
+    parse_verified_league_results,
+)
 from worldcup.league_result_evidence import build_result_contract_evidence
 from worldcup.league_team_identity import LeagueTeamIdentityRegistry
 
@@ -65,3 +68,56 @@ def test_verified_result_without_strict_identity_registry_stays_pending():
         "source_event_id": "epl-event-1",
         "reason": "strict_team_identity_unavailable",
     }]
+
+
+def test_fotmob_evidence_cannot_authorize_theoddsapi_scores_parser():
+    """A verified score contract for another provider must not cross-authorize this parser."""
+    evidence = build_result_contract_evidence(
+        competition_id="epl_2026_27",
+        sport_key="soccer_epl",
+        provider_schema="fotmob_league_results_v1",
+        score_scope="football_90min",
+        source_reference="a" * 64,
+        provider="fotmob",
+    )
+
+    parsed = parse_verified_league_results(
+        [_score_event()],
+        "epl_2026_27",
+        result_contract_evidence=evidence,
+        identity_registry=LeagueTeamIdentityRegistry({
+            "epl_2026_27": {"home": ("Home FC",), "away": ("Away FC",)},
+        }),
+    )
+
+    assert parsed["results"] == []
+    assert parsed["pending"] == [{
+        "source_event_id": "epl-event-1",
+        "reason": "result_90min_semantics_unverified",
+    }]
+
+
+def test_theoddsapi_adapter_builds_a_task2_committed_receipt():
+    """The wired legacy lifecycle must cross the Task 2 receipt boundary explicitly."""
+    evidence = build_result_contract_evidence(
+        competition_id="epl_2026_27",
+        sport_key="soccer_epl",
+        provider_schema="theoddsapi_scores_v1",
+        score_scope="football_90min",
+        source_reference="saved-sample-sha256",
+    )
+    adapted = adapt_theoddsapi_results_to_committed_receipt(
+        [_score_event()],
+        "epl_2026_27",
+        result_contract_evidence=evidence,
+        identity_registry=LeagueTeamIdentityRegistry({
+            "epl_2026_27": {"home": ("Home FC",), "away": ("Away FC",)},
+        }),
+    )
+
+    assert adapted["provider_schema"] == "theoddsapi_scores_v1"
+    assert adapted["pending"] == []
+    assert adapted["receipt"]["schema_version"] == 1
+    assert adapted["receipt"]["competition_id"] == "epl_2026_27"
+    assert len(adapted["receipt"]["fingerprint"]) == 64
+    assert len(adapted["receipt"]["results"][0]["source_fingerprint"]) == 64

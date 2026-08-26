@@ -10,8 +10,14 @@ from typing import Any, Callable, Mapping
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
 from worldcup.competitions import get_competition
 from worldcup.league_acceptance import evaluate_league_acceptance
-from worldcup.league_result_evidence import verify_result_contract_evidence
-from worldcup.league_team_identity import LeagueTeamIdentityRegistry
+from worldcup.league_result_evidence import (
+    fotmob_sample_path_is_sanitized,
+    verify_result_contract_evidence,
+)
+from worldcup.league_team_identity import (
+    LeagueTeamIdentityRegistry,
+    league_team_identity_registry_fingerprint,
+)
 
 
 _SENSITIVE_KEYS = {"apikey", "api_key", "authorization", "cookie", "set-cookie", "url", "headers"}
@@ -106,13 +112,29 @@ def evaluate_league_probe_bundle(
                     complete_h2h = True
         odds_ok = odds_ok and complete_h2h
     result_ok = verify_result_contract_evidence(result_contract_evidence, competition_id)
+    if (
+        isinstance(result_contract_evidence, Mapping)
+        and result_contract_evidence.get("provider_schema") == "fotmob_league_results_v1"
+    ):
+        result_ok = result_ok and fotmob_sample_path_is_sanitized(
+            result_contract_evidence.get("sample_path")
+        )
+    identity_ok = not unmatched and len(identities) == len(odds) and bool(odds)
+    try:
+        identity_fingerprint = (
+            league_team_identity_registry_fingerprint(identity_registry, competition_id)
+            if identity_ok else ""
+        )
+    except ValueError:
+        identity_ok = False
+        identity_fingerprint = ""
     evidence = {
         "competition_id": competition_id,
         "sport_catalog": {"verified": sport_ok, "fingerprint": _fingerprint([competition_id, sport_key]) if sport_ok else ""},
         "odds_sample": {"verified": odds_ok, "fingerprint": _fingerprint(odds) if odds_ok else ""},
         "team_identity": {
-            "verified": not unmatched and len(identities) == len(odds) and bool(odds),
-            "fingerprint": _fingerprint(identities) if not unmatched and identities else "",
+            "verified": identity_ok,
+            "fingerprint": identity_fingerprint,
             "unmatched_count": len(set(unmatched)),
         },
         "result_contract": {

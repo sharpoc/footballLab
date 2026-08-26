@@ -139,13 +139,37 @@ def test_kickoff_tolerance_is_inclusive_at_five_minutes_and_rejects_later():
     boundary = _load("calendar_confirmed.json")
     boundary["leagues"][0]["matches"][0]["status"]["utcTime"] = "2026-08-24T13:05:00Z"
     boundary_details = _load("details_confirmed.json")
-    boundary_details["general"]["matchTimeUTC"] = "2026-08-24T13:05:00Z"
+    boundary_details["general"]["matchTimeUTC"] = {"ignored": "display value"}
+    boundary_details["general"]["matchTimeUTCDate"] = "2026-08-24T13:05:00Z"
     accepted = _parse(calendar_payload=boundary, details_by_match_id={"1001": boundary_details})
     rejected = _parse(calendar="calendar_kickoff_mismatch.json")
 
     assert len(accepted["accepted"]) == 1
     assert rejected["accepted"] == []
     assert rejected["rejected"][0]["reason"] == "kickoff_mismatch"
+
+
+def test_detail_iso_kickoff_is_required_and_display_value_is_ignored():
+    """Only FotMob's ISO field can prove detail-to-local kickoff identity."""
+    display_is_irrelevant = _load("details_confirmed.json")
+    display_is_irrelevant["general"]["matchTimeUTC"] = None
+    accepted = _parse(details_by_match_id={"1001": display_is_irrelevant})
+    assert len(accepted["accepted"]) == 1
+
+    for value in ("delete", None, "not-a-time", "2026-08-24T13:00:00"):
+        details = _load("details_confirmed.json")
+        if value == "delete":
+            del details["general"]["matchTimeUTCDate"]
+        else:
+            details["general"]["matchTimeUTCDate"] = value
+        parsed = _parse(details_by_match_id={"1001": details})
+        assert parsed["accepted"] == []
+        assert parsed["rejected"] == [{
+            "provider": "fotmob",
+            "competition_id": COMPETITION,
+            "source_match_id": "1001",
+            "reason": "invalid_kickoff",
+        }]
 
 
 def test_first_capture_at_or_after_kickoff_is_rejected():

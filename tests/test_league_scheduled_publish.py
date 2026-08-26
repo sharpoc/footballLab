@@ -313,8 +313,7 @@ def test_local_scheduler_plan_reads_active_evidence_and_excludes_identity_only_l
         assert result["scheduler"]["plan"]["estimated_credits"] == 1
         assert result["lifecycle"]["competitions"]["epl_2026_27"] == {
             "status": "blocked",
-            "reason": "lifecycle_inputs_missing",
-            "missing": ["history", "scores", "result_contract_evidence"],
+            "reason": "legacy_result_contract_evidence_missing",
         }
         assert "bundesliga_2026_27" not in result["lifecycle"]["competitions"]
 

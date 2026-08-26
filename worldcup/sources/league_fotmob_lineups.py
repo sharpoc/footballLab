@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Callable
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -20,6 +21,10 @@ _FORBIDDEN_METADATA_KEYS = {
 }
 
 
+class FotMobProviderContractDrift(RuntimeError):
+    pass
+
+
 def _query_scalar(value: Any, *, error: str) -> str:
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         raise TypeError(error)
@@ -31,12 +36,12 @@ def _query_scalar(value: Any, *, error: str) -> str:
 
 def build_fotmob_calendar_url(date: str) -> str:
     date_value = _query_scalar(date, error="fotmob_calendar_date_invalid")
-    return f"{_BASE_URL}/matches?{urlencode({'date': date_value})}"
+    return f"{_BASE_URL}/data/matches?{urlencode({'date': date_value})}"
 
 
 def build_fotmob_details_url(match_id: str | int) -> str:
     match_id_value = _query_scalar(match_id, error="fotmob_match_id_invalid")
-    return f"{_BASE_URL}/matchDetails?{urlencode({'matchId': match_id_value})}"
+    return f"{_BASE_URL}/data/matchDetails?{urlencode({'matchId': match_id_value})}"
 
 
 def _default_transport(url: str) -> Any:
@@ -65,6 +70,10 @@ def _contains_forbidden_metadata(value: Any) -> bool:
 def _decoded_json(url: str, transport: Callable[[str], Any] | None) -> dict[str, Any]:
     try:
         response = (transport or _default_transport)(url)
+    except HTTPError as exc:
+        if exc.code == 404:
+            raise FotMobProviderContractDrift("fotmob_provider_contract_drift_404") from None
+        raise RuntimeError("fotmob_transport_failed") from None
     except Exception:
         raise RuntimeError("fotmob_transport_failed") from None
     if isinstance(response, (dict, list)) or not callable(getattr(response, "read", None)):

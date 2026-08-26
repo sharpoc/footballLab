@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Any
 
 from worldcup.competitions import get_competition
 from worldcup.league_result_evidence import verify_result_contract_evidence
+from worldcup.league_result_store import _receipt as _committed_receipt
+from worldcup.league_result_store import _row as _committed_row
 from worldcup.league_team_identity import LeagueTeamIdentityRegistry
+
+
+THEODDSAPI_RESULT_SCHEMA = "theoddsapi_scores_v1"
 
 
 def _utc(value: Any) -> str:
@@ -33,7 +40,11 @@ def parse_verified_league_results(
         seen.add(event_id)
         if event.get("sport_key") != profile.theoddsapi_sport_key or event.get("completed") is not True:
             continue
-        if not verify_result_contract_evidence(result_contract_evidence, competition_id):
+        if not verify_result_contract_evidence(
+            result_contract_evidence,
+            competition_id,
+            provider_schema=THEODDSAPI_RESULT_SCHEMA,
+        ):
             pending.append({"source_event_id": event_id, "reason": "result_90min_semantics_unverified"})
             continue
         if identity_registry is None:
@@ -69,3 +80,46 @@ def parse_verified_league_results(
             "result_scope": "football_90min",
         })
     return {"competition_id": competition_id, "results": results, "pending": pending}
+
+
+def adapt_theoddsapi_results_to_committed_receipt(
+    raw: list[dict[str, Any]],
+    competition_id: str,
+    *,
+    result_contract_evidence: dict[str, Any] | None,
+    identity_registry: LeagueTeamIdentityRegistry,
+) -> dict[str, Any]:
+    """Parse legacy The Odds scores and cross the Task 2 receipt boundary explicitly."""
+    parsed = parse_verified_league_results(
+        raw,
+        competition_id,
+        result_contract_evidence=result_contract_evidence,
+        identity_registry=identity_registry,
+    )
+    rows: dict[str, dict[str, Any]] = {}
+    evidence_fingerprint = str((result_contract_evidence or {}).get("fingerprint") or "")
+    for value in parsed["results"]:
+        source_core = {
+            "provider_schema": THEODDSAPI_RESULT_SCHEMA,
+            "evidence_fingerprint": evidence_fingerprint,
+            "result": value,
+        }
+        source_encoded = json.dumps(
+            source_core,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        row = _committed_row(
+            {
+                **value,
+                "source_fingerprint": hashlib.sha256(source_encoded.encode("utf-8")).hexdigest(),
+            },
+            competition_id,
+        )
+        rows[row["source_event_id"]] = row
+    return {
+        "provider_schema": THEODDSAPI_RESULT_SCHEMA,
+        "receipt": _committed_receipt(competition_id, rows),
+        "pending": list(parsed["pending"]),
+    }

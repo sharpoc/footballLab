@@ -1275,6 +1275,7 @@ def _fotmob_source_details(
             "matchId": match_id,
             "leagueId": provider_competition_id,
             "matchTimeUTC": kickoff_at_utc,
+            "matchTimeUTCDate": kickoff_at_utc,
             "homeTeam": {"name": home_team},
             "awayTeam": {"name": away_team},
         },
