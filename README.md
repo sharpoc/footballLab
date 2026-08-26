@@ -167,6 +167,26 @@ LaunchAgent generator 默认生成观察模式 JSON；label 固定为 `xin.celab
 
 `worldcup.league_postmatch_runner` 已实现 FotMob 严格赛果解析、单调分区 result store、开赛前最后合法 observed schema v2 closing、累计结算与逐联赛/六联赛统计、可恢复通知 outbox 和 LaunchAgent plist 生成器。当前仅证明了保存 fixture 与注入式 fake provider 下的离线契约；**尚未接受任何真实 FotMob 赛后样例，未执行 live/write，未安装赛后 timer，未发送手机通知，也未 push/merge/deploy 本实现**。
 
+FotMob 赛果合同固定使用 calendar `/api/data/matches?date=YYYYMMDD` 与 detail `/api/data/matchDetails?matchId=<event_id>`；Brasileirão 的 provider league ID 为 `268`，旧 `1122` 必须拒绝。HTTP 404 单独分类为 `provider_contract_drift`，并在受影响分区写入 result receipt 前阻断；普通 5xx/timeout 仍是 transport failure，健康联赛分区可继续。detail 开球只接受 timezone-aware ISO `general.matchTimeUTCDate`，不把展示字段 `matchTimeUTC` 当作机器时间；calendar/detail event、league、严格球队 identity、开球（容差最多 5 分钟）、FT 与比分必须一致。90 分钟终场还要求 detail `header.status` 同时证明 `reason.short=FT`、`firstExtraHalfStarted=""`、`secondExtraHalfStarted=""`、`whoLostOnPenalties=null`、`whoLostOnAggregated` 为 `null` 或空字符串；缺字段、畸形类型、加时/点球/聚合或不一致一律 fail closed。
+
+保存样例只能通过完全离线 evaluator 审核；它从同一 hardened file descriptor 读取并计算 SHA-256，输出 ignored aggregate audit，不联网、不写 provider evidence/acceptance，也不激活 Gate A：
+
+```bash
+/Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  -m worldcup.league_fotmob_result_probe \
+  --root /Users/eagod/ai-dev/足彩 \
+  --entry serie_a_2026_27=data/probe/leagues/results/serie_a_2026_27/20260824-5749642.json \
+  --entry laliga_2026_27=data/probe/leagues/results/laliga_2026_27/20260825-5868020.json \
+  --entry epl_2026_27=data/probe/leagues/results/epl_2026_27/20260824-5795372.json \
+  --entry ligue_1_2026_27=data/probe/leagues/results/ligue_1_2026_27/20260823-5802901.json \
+  --entry serie_a_brazil_2026=data/probe/leagues/results/serie_a_brazil_2026/20260824-calendar.json \
+  --entry bundesliga_2026_27=data/probe/leagues/results/bundesliga_2026_27/20260828-calendar.json \
+  --captured-at 2026-08-26T00:00:00+00:00 \
+  --out data/probe/leagues/results/gate_a_offline_recheck_2026-08-26.json
+```
+
+2026-08-26 首次用上述 exact bundle 复核时，发现 evaluator 错把 wrapper `calendar_date` 限定为 ISO `YYYY-MM-DD`，与 FotMob calendar 请求和保存器使用的 provider-native `YYYYMMDD` 不一致；该离线 evaluator defect 随后修复为只接受组成真实 Gregorian 日期的 8 位 ASCII `YYYYMMDD`，不改任何保存样例。修复后同路径重跑得到 `status=partial`、`verified_count=4`、`blocked_count=2`：意甲、西甲、英超、法甲分别接受唯一 event `5749642`、`5868020`、`5795372`、`5802901`；Brazil 仍只有 calendar、报 `sample_detail_missing`，Bundesliga 当前 calendar 仍缺本赛季 FT、报 `no_current_season_finished_match`。aggregate audit SHA-256 为 `91602330757587553da7bc64bd88c3cb79043e2d2511e9bb0ad1496eb2796cce`。这只证明四份已保存样例通过离线 parser，并不等于 operational Gate A 完成或激活；不得写正式 evidence/aggregate acceptance，也不能进入 Gate B。Brazil detail 与 Bundesliga 本赛季 FT 仍须另行确认真实 re-probe。
+
 默认命令只读 `acceptance.json`、每个 active 联赛的 `providers/fotmob/result_contract_evidence.json`、history 和 `results.json` receipt，不读 legacy 或旧通用 evidence，不读/不改动 runner state 或 notification state；不创建锁，不读 `.env`，不请求 FotMob，不写盘，不通知，不调用 The Odds API scores 或改动 quota ledger。`--now` 只用于 dry-run 重放，live CLI 会拒绝它：
 
 ```bash
