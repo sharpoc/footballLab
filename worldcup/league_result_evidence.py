@@ -176,7 +176,7 @@ def read_fotmob_sample_bytes(
                 chunks.append(chunk)
                 digest.update(chunk)
             return b"".join(chunks), digest.hexdigest()
-    except (OSError, TypeError, ValueError):
+    except (OSError, RuntimeError, TypeError, ValueError):
         raise ValueError(_SAMPLE_READ_ERROR) from None
     finally:
         if file_descriptor is not None:

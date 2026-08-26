@@ -233,3 +233,16 @@ def test_shared_fotmob_sample_reader_rejects_inode_replacement_between_lstat_and
 
         with patch.object(evidence_module.os, "open", side_effect=replacing_open):
             _assert_safe_reader_error(root, relative, "private-replacement-bytes")
+
+
+def test_shared_fotmob_sample_reader_normalizes_root_symlink_loop_to_safe_constant():
+    """Path.resolve raises RuntimeError for a loop, which must not escape the public reader."""
+    with TemporaryDirectory() as tmp:
+        loop = Path(tmp) / "loop"
+        loop.symlink_to("loop", target_is_directory=True)
+
+        _assert_safe_reader_error(
+            loop,
+            "data/probe/leagues/results/epl/sample.json",
+            "symlink-loop-private-path",
+        )

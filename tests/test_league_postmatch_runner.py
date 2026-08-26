@@ -16,7 +16,7 @@ from worldcup.league_postmatch_notifications import (
 from worldcup.league_closing import select_league_closings
 from worldcup.league_live_probe import evaluate_league_probe_bundle
 from worldcup.league_postmatch import build_league_postmatch
-from worldcup.league_postmatch_runner import main, run_league_postmatch
+from worldcup.league_postmatch_runner import _saved_sample_matches, main, run_league_postmatch
 from worldcup.competitions import get_competition
 from worldcup.league_result_evidence import build_result_contract_evidence
 from worldcup.league_statistics import build_league_statistics
@@ -323,6 +323,24 @@ def test_live_rejects_wrong_and_malformed_expected_sample_sha_before_provider():
                 "reason": "result_contract_evidence_invalid",
             }
             assert result["safety"]["called_fotmob"] is False
+
+
+def test_runner_saved_sample_check_fails_closed_for_root_symlink_loop():
+    """A root resolution loop must remain a boolean evidence failure at the runner boundary."""
+    with TemporaryDirectory() as tmp:
+        loop = Path(tmp) / "loop"
+        loop.symlink_to("loop", target_is_directory=True)
+        evidence = build_result_contract_evidence(
+            competition_id=EPL,
+            sport_key="soccer_epl",
+            provider_schema="fotmob_league_results_v1",
+            score_scope="football_90min",
+            source_reference="a" * 64,
+            provider="fotmob",
+            sample_path="data/probe/leagues/results/epl/sample.json",
+        )
+
+        assert _saved_sample_matches(loop, evidence) is False
 
 
 def test_fotmob_runner_ignores_generic_and_legacy_provider_evidence_paths():

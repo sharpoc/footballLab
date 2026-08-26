@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import io
 import json
+import os
 import re
 import socket
 import urllib.request
@@ -170,6 +171,23 @@ def test_saved_bundle_evaluator_returns_exact_verified_schema_from_one_hardened_
         assert re.fullmatch(r"[0-9a-f]{64}", result["evidence_fingerprint"])
 
 
+def test_saved_bundle_evaluator_normalizes_root_symlink_loop_to_sample_path_invalid():
+    """The evaluator must not expose Path.resolve's loop-specific RuntimeError."""
+    with TemporaryDirectory() as tmp:
+        loop = Path(tmp) / "loop"
+        loop.symlink_to("loop", target_is_directory=True)
+
+        result = _evaluate(
+            loop,
+            "data/probe/leagues/results/epl/sample.json",
+            "epl_2026_27",
+        )
+
+        assert result["status"] == "blocked"
+        assert result["reason"] == "sample_path_invalid"
+        assert result["sample_path"] == "data/probe/leagues/results/epl/sample.json"
+
+
 def test_saved_bundle_evaluator_has_complete_deterministic_semantic_reason_taxonomy():
     """Choosing an arbitrary parser pending reason would make top-level audit status payload-order dependent."""
     with TemporaryDirectory() as tmp:
@@ -229,6 +247,10 @@ def test_saved_bundle_evaluator_blocks_every_structural_failure_with_exact_reaso
         wrong_schema = deepcopy(base)
         wrong_schema["schema_version"] = 2
         cases.append(("schema", wrong_schema, "bundle_schema_invalid"))
+
+        boolean_schema = deepcopy(base)
+        boolean_schema["schema_version"] = True
+        cases.append(("boolean-schema", boolean_schema, "bundle_schema_invalid"))
 
         extra_key = deepcopy(base)
         extra_key["private_metadata"] = "must-not-escape"
@@ -370,6 +392,67 @@ def test_cli_out_is_same_atomic_bytes_and_preserves_old_file_on_replace_failure(
         assert list(out.parent.glob(".audit.json.*.tmp")) == []
 
 
+def test_cli_output_rejects_temp_path_substitution_before_atomic_replace():
+    """Renaming a substituted symlink or foreign inode would install attacker-controlled output."""
+    module = _probe_module()
+    real_replace = os.replace
+    for mutation in ("external_symlink", "replacement_inode"):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            relative = "data/probe/leagues/results/epl/sample.json"
+            _write_bundle(root, relative, _bundle("epl_2026_27"))
+            out = root / "data/probe/audit.json"
+            outside = root / "private-outside.json"
+            outside.write_bytes(b"private-attacker-output")
+
+            def substituting_replace(
+                source,
+                destination,
+                *,
+                src_dir_fd=None,
+                dst_dir_fd=None,
+            ):
+                os.unlink(source, dir_fd=src_dir_fd)
+                if mutation == "external_symlink":
+                    os.symlink(str(outside), source, dir_fd=src_dir_fd)
+                else:
+                    os.link(
+                        outside,
+                        source,
+                        dst_dir_fd=src_dir_fd,
+                        follow_symlinks=False,
+                    )
+                return real_replace(
+                    source,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+
+            stdout = io.StringIO()
+            with patch.object(
+                module.os,
+                "replace",
+                side_effect=substituting_replace,
+            ), redirect_stdout(stdout):
+                code = module.main([
+                    "--root", str(root),
+                    "--entry", f"epl_2026_27={relative}",
+                    "--captured-at", "2026-08-26T00:00:00+00:00",
+                    "--out", "data/probe/audit.json",
+                ])
+
+            assert code == 2
+            assert json.loads(stdout.getvalue()) == {
+                "status": "error",
+                "reason": "fotmob_probe_output_failed",
+            }
+            assert outside.read_bytes() == b"private-attacker-output"
+            assert not out.exists()
+            assert not out.is_symlink()
+            assert list(out.parent.glob(".audit.json.*.tmp")) == []
+
+
 def test_cli_rejects_outside_traversal_and_symlink_output_without_touching_targets():
     """Output validation must bind the final rename to the real non-symlink data/probe directory fd."""
     module = _probe_module()
@@ -475,3 +558,31 @@ def test_cli_rejects_no_entries_duplicates_and_malformed_bundle_with_safe_json()
             "no_current_season_finished_match"
         )
         assert "Traceback" not in stdout.getvalue()
+
+
+def test_cli_deep_json_is_bundle_schema_invalid_without_traceback_or_path_leakage():
+    """json.loads RecursionError is untrusted bundle structure, not a process traceback."""
+    module = _probe_module()
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        relative = "data/probe/leagues/results/epl/deep.json"
+        path = root / relative
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"[" * 10000 + b"0" + b"]" * 10000)
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            code = module.main([
+                "--root", str(root),
+                "--entry", f"epl_2026_27={relative}",
+                "--captured-at", "2026-08-26T00:00:00+00:00",
+            ])
+
+        payload = json.loads(stdout.getvalue())
+        assert code == 2
+        assert payload["status"] == "blocked"
+        assert payload["competitions"]["epl_2026_27"]["reason"] == (
+            "bundle_schema_invalid"
+        )
+        for forbidden in (str(root), "Traceback", "RecursionError", "maximum recursion"):
+            assert forbidden not in stdout.getvalue()

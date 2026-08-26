@@ -96,7 +96,7 @@ def _bundle_structure_reason(
 ) -> str | None:
     if not isinstance(bundle, dict) or set(bundle) != _BUNDLE_KEYS:
         return "bundle_schema_invalid"
-    if bundle.get("schema_version") != 1:
+    if type(bundle.get("schema_version")) is not int or bundle["schema_version"] != 1:
         return "bundle_schema_invalid"
     if bundle.get("provider") != "fotmob":
         return "bundle_provider_invalid"
@@ -175,7 +175,7 @@ def evaluate_saved_fotmob_result_bundle(
         )
     try:
         bundle = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (RecursionError, UnicodeDecodeError, json.JSONDecodeError):
         bundle = None
     structural_reason = _bundle_structure_reason(bundle, competition_id)
     if structural_reason is not None:
@@ -329,6 +329,19 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         remaining = remaining[written:]
 
 
+def _unlink_if_same_inode(
+    parent_descriptor: int,
+    filename: str,
+    expected: os.stat_result,
+) -> None:
+    try:
+        current = os.lstat(filename, dir_fd=parent_descriptor)
+    except OSError:
+        return
+    if result_evidence._same_inode(current, expected):
+        os.unlink(filename, dir_fd=parent_descriptor)
+
+
 def _atomic_write_output(root: str | Path, output_path: str, payload: bytes) -> None:
     if not fotmob_sample_path_is_sanitized(output_path):
         raise _OutputPathInvalid
@@ -361,8 +374,14 @@ def _atomic_write_output(root: str | Path, output_path: str, payload: bytes) -> 
                 )
                 _write_all(descriptor, payload)
                 os.fsync(descriptor)
-                os.close(descriptor)
-                descriptor = None
+                opened_temp = os.fstat(descriptor)
+                bound_temp = os.lstat(temporary_name, dir_fd=parent_descriptor)
+                if (
+                    not stat.S_ISREG(opened_temp.st_mode)
+                    or not stat.S_ISREG(bound_temp.st_mode)
+                    or not result_evidence._same_inode(opened_temp, bound_temp)
+                ):
+                    raise _OutputCommitFailed
                 os.replace(
                     temporary_name,
                     filename,
@@ -370,6 +389,16 @@ def _atomic_write_output(root: str | Path, output_path: str, payload: bytes) -> 
                     dst_dir_fd=parent_descriptor,
                 )
                 temporary_name = None
+                try:
+                    installed = os.lstat(filename, dir_fd=parent_descriptor)
+                except OSError:
+                    raise _OutputCommitFailed from None
+                if (
+                    not stat.S_ISREG(installed.st_mode)
+                    or not result_evidence._same_inode(opened_temp, installed)
+                ):
+                    _unlink_if_same_inode(parent_descriptor, filename, installed)
+                    raise _OutputCommitFailed
                 os.fsync(parent_descriptor)
             except _OutputPathInvalid:
                 raise
