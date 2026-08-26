@@ -109,7 +109,8 @@ def test_accepted_registry_covers_verified_provider_teams_for_the_other_five_lea
         },
         "serie_a_brazil_2026": {
             "Atletico Mineiro": "atletico_mineiro", "Atletico Paranaense": "atletico_paranaense",
-            "Bahia": "bahia", "Botafogo": "botafogo", "Bragantino-SP": "bragantino",
+            "Athletico Paranaense": "atletico_paranaense", "Bahia": "bahia",
+            "Botafogo": "botafogo", "Botafogo RJ": "botafogo", "Bragantino-SP": "bragantino",
             "Chapecoense": "chapecoense", "Corinthians": "corinthians", "Coritiba": "coritiba",
             "Cruzeiro": "cruzeiro", "Flamengo": "flamengo", "Fluminense": "fluminense",
             "Grêmio": "gremio", "Internacional": "internacional", "Mirassol": "mirassol",
