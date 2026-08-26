@@ -46,6 +46,24 @@ FotMob collector 只把保存的响应解析为安全候选，不读 closing、�
 
 live 开启前必须对每个联赛保存至少一份真实完赛样例，并用 competition、event、strict team identity、terminal status 和 90 分钟比分契约共同生成证据指纹。德甲未 active 时可完成离线契约，但不得进入 live 结算集合。
 
+### 2026-08-26 Gate A 真实契约修订
+
+首次真实 probe 证明 FotMob 已将 calendar 与 detail 路径分别迁移为 `/api/data/matches` 和 `/api/data/matchDetails`；旧 `/api/matches` 与 `/api/matchDetails` 均返回 404。采集层必须统一使用新路径，不能把 404 当作无比赛，也不能在新旧路径之间静默 fallback。巴甲当前真实 FotMob competition ID 为 `268`，原配置 `1122` 必须更正；其他五联赛 ID 保持 `55 / 87 / 47 / 54 / 53`。
+
+真实 FT 样例的 `status.reason` 提供 `short=FT`，但不再提供旧测试假定的 `extraTime=false`。正式 90 分钟结果改用以下组合证据，所有条件必须同时满足：
+
+- calendar 与 detail `header.status` 都为 `finished=true`，且 `reason.short=FT`。
+- calendar 与 detail 的 `scoreStr` 都可解析为主客队非负整数，并且比分完全一致。
+- detail `header.status.halfs.firstExtraHalfStarted` 与 `secondExtraHalfStarted` 都必须存在且为空字符串，证明没有进入两个加时半场；字段缺失或非空均 blocked。
+- detail `header.status.whoLostOnPenalties` 必须存在且为 `null`；出现点球负方或字段缺失均 blocked。
+- detail `header.status.whoLostOnAggregated` 必须存在且只能为空字符串或 `null`；字段缺失或出现 aggregate loser 均 blocked。
+- competition ID、event ID、主客 strict canonical identity 与 timezone-aware kickoff 必须在 calendar/detail 间严格一致；开球时间只保留既有五分钟容差。
+- `reason.short=FT` 或比分本身不能单独证明 90 分钟，禁止回退旧 `extraTime`、其他比分字段、加时比分或点球比分。
+
+方案只替换已经从真实样例证伪的单一 `extraTime=false` 条件，不放宽 terminal、比分、身份或时间门禁。保存样例继续以规范化 `data/probe/...` 路径和文件字节 SHA-256 绑定 evidence；只有 strict parser 对样例产生且只产生一条正式结果时，才允许该联赛 result-contract evidence 进入 provider-named FotMob 路径并更新 acceptance。
+
+本次 Gate A 捕获 10 个正式请求，另有 35 个端点/日期诊断请求；全部只访问 FotMob，The Odds API 请求与额度消耗均为 0。六联赛仍保持 blocked：意甲、西甲、英超、法甲因旧 `extraTime=false` 假设未通过；巴甲因 ID 错配未通过；德甲截至 probe 日期没有本赛季联赛 FT。修复后必须使用已保存的前五联赛样例离线重验；德甲必须等待本赛季首场真实 FT，禁止用上赛季或杯赛样例激活。
+
 ## Closing 与结算
 
 每次赛前 snapshot 成功提交时，必须在分区 history 保留不可变的完整 snapshot。赛后 runner 用已有 select_league_closings 在同一 competition + event + kickoff + canonical teams 下选择开赛前最后一份合法 schema v2 decision。
@@ -100,6 +118,7 @@ live 使用独立非阻塞文件锁，在锁内重读 acceptance、state 和 due
 ## 错误处理
 
 - FotMob 超时/5xx/schema 变更：记录脱敏 source error，保留旧 state，其他联赛继续。
+- FotMob 端点返回 404：作为 provider contract drift 明确 blocked，不得解释为当天无比赛；端点修订必须先由真实 probe 验收。
 - 比赛未 terminal：保持 pending，下次重试。
 - 结果语义/身份不明：不写正式 results。
 - closing 缺失：可接受赛果证据，但只计 missing_closing，不补造首选。
@@ -111,6 +130,8 @@ live 使用独立非阻塞文件锁，在锁内重读 acceptance、state 和 due
 ## 验证与运维门
 
 - collector 用 data/probe 真实样例覆盖完赛、未完赛、延期、schema 缺失、重复 event、错联赛、身份冲突和非 90 分钟字段。
+- 增加真实组合语义回归：接受 FT + 双边比分一致 + 两个 extra-half start 为空 + penalties/aggregate 为空；分别拒绝 extra-half 字段缺失或非空、penalty/aggregate 标记、calendar/detail 比分冲突。
+- source URL 回归必须断言 `/api/data/matches` 与 `/api/data/matchDetails`，巴甲回归必须断言 competition ID `268`；禁止保留 `1122` 或旧无 `/data` 路径。
 - closing 回归证明最后合法赛前 snapshot 被选中，开赛后 snapshot 被拒绝。
 - 结算复用现有 1X2、大小球、亚洲让球含走水/半赢/半输矩阵。
 - dry-run 证明不读 .env、不联网、不写盘、不通知。
@@ -118,6 +139,8 @@ live 使用独立非阻塞文件锁，在锁内重读 acceptance、state 和 due
 - 完整项目测试、py_compile、git diff --check 和敏感字段扫描必须通过。
 
 真实运维门依次为：真实 FotMob probe 及契约证据；本地 dry-run/shadow；一次显式确认的 live/write 和通知 dry-run；单独确认 LaunchAgent 安装/加载；单独确认首次真实通知。
+
+2026-08-26 Gate A 仅完成真实样例捕获与问题定位，状态为 partial；没有写入 FotMob provider evidence 或修改 acceptance。端点、巴甲 ID 和组合语义修复通过完整测试后，必须再次运行保存样例离线验收及真实 probe。只有六联赛全部通过时 Gate A 才完成；德甲无本赛季 FT 时继续等待，不得提前进入 Gate B。
 
 ## 回滚
 
@@ -129,6 +152,7 @@ live 使用独立非阻塞文件锁，在锁内重读 acceptance、state 和 due
 - 聚合样本可能由单一联赛主导；正式优化前必须检查逐联赛覆盖与方向一致性。
 - 命中率上升可能是盘口组成变化；候选必须与同样本市场概率基准比较。
 - FotMob 免费源可能延迟、修订或改 schema；必须用 terminal 状态、指纹幂等和冲突门禁。
+- `FT` 只是组合证据之一；如果 FotMob 后续移除 `halfs`、penalty 或 aggregate 证明字段，必须重新 blocked，不得把“字段不存在”解释成“没有加时/点球”。
 - 赛前 history 归档缺口会导致 missing_closing；不得删除这些场次提高表面命中率。
 - 世界杯、中超、legacy 和 reconstructed 必须在 competition + schema + scope 三层排除。
 - 20 场只是健康检查，50 场只允许离线候选，100 场也不是自动上线授权。
