@@ -392,8 +392,8 @@ def test_cli_out_is_same_atomic_bytes_and_preserves_old_file_on_replace_failure(
         assert list(out.parent.glob(".audit.json.*.tmp")) == []
 
 
-def test_cli_output_rejects_temp_path_substitution_before_atomic_replace():
-    """Renaming a substituted symlink or foreign inode would install attacker-controlled output."""
+def test_cli_output_private_staging_preserves_old_output_on_parent_source_substitution():
+    """A parent-only attacker must not reach the protected source before a failed publish."""
     module = _probe_module()
     real_replace = os.replace
     for mutation in ("external_symlink", "replacement_inode"):
@@ -404,6 +404,9 @@ def test_cli_output_rejects_temp_path_substitution_before_atomic_replace():
             out = root / "data/probe/audit.json"
             outside = root / "private-outside.json"
             outside.write_bytes(b"private-attacker-output")
+            old = b"previous-committed-audit\n"
+            out.write_bytes(old)
+            parent_decoys: list[Path] = []
 
             def substituting_replace(
                 source,
@@ -412,16 +415,24 @@ def test_cli_output_rejects_temp_path_substitution_before_atomic_replace():
                 src_dir_fd=None,
                 dst_dir_fd=None,
             ):
-                os.unlink(source, dir_fd=src_dir_fd)
+                # The in-scope attacker can mutate the destination parent, but
+                # cannot traverse a writer-owned 0700 staging directory.
+                try:
+                    os.unlink(source, dir_fd=dst_dir_fd)
+                except FileNotFoundError:
+                    pass
                 if mutation == "external_symlink":
-                    os.symlink(str(outside), source, dir_fd=src_dir_fd)
+                    os.symlink(str(outside), source, dir_fd=dst_dir_fd)
                 else:
                     os.link(
                         outside,
                         source,
-                        dst_dir_fd=src_dir_fd,
+                        dst_dir_fd=dst_dir_fd,
                         follow_symlinks=False,
                     )
+                parent_decoys.append(out.parent / str(source))
+                if src_dir_fd != dst_dir_fd:
+                    raise OSError("simulated publication interruption")
                 return real_replace(
                     source,
                     destination,
@@ -448,9 +459,67 @@ def test_cli_output_rejects_temp_path_substitution_before_atomic_replace():
                 "reason": "fotmob_probe_output_failed",
             }
             assert outside.read_bytes() == b"private-attacker-output"
-            assert not out.exists()
+            assert out.read_bytes() == old
             assert not out.is_symlink()
             assert list(out.parent.glob(".audit.json.*.tmp")) == []
+            assert list(out.parent.glob(".audit.json.*.stage")) == []
+            for decoy in parent_decoys:
+                if decoy.exists() or decoy.is_symlink():
+                    decoy.unlink()
+
+
+def test_cli_output_does_not_unlink_a_concurrent_legitimate_replacement():
+    """A writer must never clean the final pathname after another publisher replaces it."""
+    module = _probe_module()
+    real_replace = os.replace
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        relative = "data/probe/leagues/results/epl/sample.json"
+        _write_bundle(root, relative, _bundle("epl_2026_27"))
+        out = root / "data/probe/audit.json"
+        out.write_bytes(b"previous-committed-audit\n")
+        concurrent = out.parent / "concurrent-legitimate.tmp"
+        concurrent_bytes = b"concurrent-legitimate-audit\n"
+        concurrent.write_bytes(concurrent_bytes)
+
+        def publish_then_concurrent_replace(
+            source,
+            destination,
+            *,
+            src_dir_fd=None,
+            dst_dir_fd=None,
+        ):
+            real_replace(
+                source,
+                destination,
+                src_dir_fd=src_dir_fd,
+                dst_dir_fd=dst_dir_fd,
+            )
+            real_replace(
+                concurrent.name,
+                destination,
+                src_dir_fd=dst_dir_fd,
+                dst_dir_fd=dst_dir_fd,
+            )
+
+        stdout = io.StringIO()
+        with patch.object(
+            module.os,
+            "replace",
+            side_effect=publish_then_concurrent_replace,
+        ), redirect_stdout(stdout):
+            code = module.main([
+                "--root", str(root),
+                "--entry", f"epl_2026_27={relative}",
+                "--captured-at", "2026-08-26T00:00:00+00:00",
+                "--out", "data/probe/audit.json",
+            ])
+
+        assert code == 0
+        assert json.loads(stdout.getvalue())["status"] == "verified"
+        assert out.read_bytes() == concurrent_bytes
+        assert list(out.parent.glob(".audit.json.*.tmp")) == []
+        assert list(out.parent.glob(".audit.json.*.stage")) == []
 
 
 def test_cli_rejects_outside_traversal_and_symlink_output_without_touching_targets():

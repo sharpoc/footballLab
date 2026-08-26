@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import fcntl
 import json
 import os
 import stat
@@ -329,29 +330,20 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         remaining = remaining[written:]
 
 
-def _unlink_if_same_inode(
-    parent_descriptor: int,
-    filename: str,
-    expected: os.stat_result,
-) -> None:
-    try:
-        current = os.lstat(filename, dir_fd=parent_descriptor)
-    except OSError:
-        return
-    if result_evidence._same_inode(current, expected):
-        os.unlink(filename, dir_fd=parent_descriptor)
-
-
 def _atomic_write_output(root: str | Path, output_path: str, payload: bytes) -> None:
     if not fotmob_sample_path_is_sanitized(output_path):
         raise _OutputPathInvalid
-    temporary_name: str | None = None
-    descriptor: int | None = None
+    staging_name: str | None = None
+    staging_created = False
+    staging_descriptor: int | None = None
+    payload_descriptor: int | None = None
+    staged_payload = "payload"
     try:
         with result_evidence._hardened_probe_parent(root, output_path) as (
             parent_descriptor,
             filename,
         ):
+            fcntl.flock(parent_descriptor, fcntl.LOCK_EX)
             try:
                 existing = os.lstat(filename, dir_fd=parent_descriptor)
             except OSError as exc:
@@ -360,59 +352,90 @@ def _atomic_write_output(root: str | Path, output_path: str, payload: bytes) -> 
             else:
                 if not stat.S_ISREG(existing.st_mode):
                     raise _OutputPathInvalid
-            temporary_name = f".{filename}.{uuid.uuid4().hex}.tmp"
+            staging_name = f".{filename}.{uuid.uuid4().hex}.stage"
             try:
-                descriptor = os.open(
-                    temporary_name,
+                os.mkdir(staging_name, 0o700, dir_fd=parent_descriptor)
+                staging_created = True
+                before_staging = os.lstat(staging_name, dir_fd=parent_descriptor)
+                staging_descriptor = os.open(
+                    staging_name,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=parent_descriptor,
+                )
+                opened_staging = os.fstat(staging_descriptor)
+                if (
+                    not stat.S_ISDIR(before_staging.st_mode)
+                    or not stat.S_ISDIR(opened_staging.st_mode)
+                    or not result_evidence._same_inode(before_staging, opened_staging)
+                    or opened_staging.st_uid != os.geteuid()
+                ):
+                    raise _OutputCommitFailed
+                os.fchmod(staging_descriptor, 0o700)
+                protected_staging = os.fstat(staging_descriptor)
+                if (
+                    not stat.S_ISDIR(protected_staging.st_mode)
+                    or not result_evidence._same_inode(opened_staging, protected_staging)
+                    or protected_staging.st_uid != os.geteuid()
+                    or stat.S_IMODE(protected_staging.st_mode) != 0o700
+                ):
+                    raise _OutputCommitFailed
+                payload_descriptor = os.open(
+                    staged_payload,
                     os.O_WRONLY
                     | os.O_CREAT
                     | os.O_EXCL
                     | getattr(os, "O_CLOEXEC", 0)
                     | getattr(os, "O_NOFOLLOW", 0),
                     0o600,
-                    dir_fd=parent_descriptor,
+                    dir_fd=staging_descriptor,
                 )
-                _write_all(descriptor, payload)
-                os.fsync(descriptor)
-                opened_temp = os.fstat(descriptor)
-                bound_temp = os.lstat(temporary_name, dir_fd=parent_descriptor)
+                os.fchmod(payload_descriptor, 0o600)
+                _write_all(payload_descriptor, payload)
+                os.fsync(payload_descriptor)
+                opened_payload = os.fstat(payload_descriptor)
+                bound_payload = os.lstat(staged_payload, dir_fd=staging_descriptor)
                 if (
-                    not stat.S_ISREG(opened_temp.st_mode)
-                    or not stat.S_ISREG(bound_temp.st_mode)
-                    or not result_evidence._same_inode(opened_temp, bound_temp)
+                    not stat.S_ISREG(opened_payload.st_mode)
+                    or not stat.S_ISREG(bound_payload.st_mode)
+                    or not result_evidence._same_inode(opened_payload, bound_payload)
+                    or opened_payload.st_uid != os.geteuid()
+                    or stat.S_IMODE(opened_payload.st_mode) != 0o600
                 ):
                     raise _OutputCommitFailed
                 os.replace(
-                    temporary_name,
+                    staged_payload,
                     filename,
-                    src_dir_fd=parent_descriptor,
+                    src_dir_fd=staging_descriptor,
                     dst_dir_fd=parent_descriptor,
                 )
-                temporary_name = None
-                try:
-                    installed = os.lstat(filename, dir_fd=parent_descriptor)
-                except OSError:
-                    raise _OutputCommitFailed from None
-                if (
-                    not stat.S_ISREG(installed.st_mode)
-                    or not result_evidence._same_inode(opened_temp, installed)
-                ):
-                    _unlink_if_same_inode(parent_descriptor, filename, installed)
-                    raise _OutputCommitFailed
+                staged_payload = ""
                 os.fsync(parent_descriptor)
             except _OutputPathInvalid:
                 raise
             except OSError:
                 raise _OutputCommitFailed from None
             finally:
-                if descriptor is not None:
+                if payload_descriptor is not None:
                     try:
-                        os.close(descriptor)
+                        os.close(payload_descriptor)
                     except OSError:
                         pass
-                if temporary_name is not None:
+                if staging_descriptor is not None and staged_payload:
                     try:
-                        os.unlink(temporary_name, dir_fd=parent_descriptor)
+                        os.unlink(staged_payload, dir_fd=staging_descriptor)
+                    except OSError:
+                        pass
+                if staging_descriptor is not None:
+                    try:
+                        os.close(staging_descriptor)
+                    except OSError:
+                        pass
+                if staging_created and staging_name is not None:
+                    try:
+                        os.rmdir(staging_name, dir_fd=parent_descriptor)
                     except OSError:
                         pass
     except _OutputPathInvalid:
