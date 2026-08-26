@@ -40,7 +40,7 @@ FotMob collector 只把保存的响应解析为安全候选，不读 closing、�
 - timezone-aware kickoff_at_utc。
 - 明确 terminal FINISHED 状态。
 - 90 分钟主客队非负整数比分。
-- provider 结果更新时间和源指纹。
+- timezone-aware 本地响应捕获时间 `captured_at` 和源指纹；FotMob 当前样例没有可验证的 provider result-updated timestamp，不得把本地捕获时间表述为 provider 更新时间。
 
 身份不明、重复 event ID、球队不匹配、比分结构不完整、状态不明、开球时间超容差或无法证明 90 分钟语义时，只输出脱敏 rejection，不产生正式赛果。
 
@@ -57,7 +57,7 @@ live 开启前必须对每个联赛保存至少一份真实完赛样例，并用
 - detail `header.status.halfs.firstExtraHalfStarted` 与 `secondExtraHalfStarted` 都必须存在且为空字符串，证明没有进入两个加时半场；字段缺失或非空均 blocked。
 - detail `header.status.whoLostOnPenalties` 必须存在且为 `null`；出现点球负方或字段缺失均 blocked。
 - detail `header.status.whoLostOnAggregated` 必须存在且只能为空字符串或 `null`；字段缺失或出现 aggregate loser 均 blocked。
-- competition ID、event ID、主客 strict canonical identity 与 timezone-aware kickoff 必须在 calendar/detail 间严格一致；开球时间只保留既有五分钟容差。
+- competition ID、event ID、主客 strict canonical identity 与 timezone-aware kickoff 必须在 calendar/detail 间严格一致；calendar 使用 `status.utcTime`，detail 必须使用 ISO 字段 `general.matchTimeUTCDate`。`general.matchTimeUTC` 是展示字符串，不允许作为 fallback；`matchTimeUTCDate` 缺失、naive 或不可解析时 blocked。开球时间只保留既有五分钟容差。
 - `reason.short=FT` 或比分本身不能单独证明 90 分钟，禁止回退旧 `extraTime`、其他比分字段、加时比分或点球比分。
 
 方案只替换已经从真实样例证伪的单一 `extraTime=false` 条件，不放宽 terminal、比分、身份或时间门禁。保存样例继续以规范化 `data/probe/...` 路径和文件字节 SHA-256 绑定 evidence；只有 strict parser 对样例产生且只产生一条正式结果时，才允许该联赛 result-contract evidence 进入 provider-named FotMob 路径并更新 acceptance。
@@ -132,6 +132,10 @@ live 使用独立非阻塞文件锁，在锁内重读 acceptance、state 和 due
 - collector 用 data/probe 真实样例覆盖完赛、未完赛、延期、schema 缺失、重复 event、错联赛、身份冲突和非 90 分钟字段。
 - 增加真实组合语义回归：接受 FT + 双边比分一致 + 两个 extra-half start 为空 + penalties/aggregate 为空；分别拒绝 extra-half 字段缺失或非空、penalty/aggregate 标记、calendar/detail 比分冲突。
 - source URL 回归必须断言 `/api/data/matches` 与 `/api/data/matchDetails`，巴甲回归必须断言 competition ID `268`；禁止保留 `1122` 或旧无 `/data` 路径。
+- detail kickoff 回归必须使用真实 `matchTimeUTC` 展示字符串与 `matchTimeUTCDate` ISO 字段并存的形状，证明只消费后者；缺失、naive、错误类型和超过五分钟容差均 blocked。
+- 共享赛前 lineup collector 也必须只消费 detail `general.matchTimeUTCDate`，并用现有 strict event/competition/team join 验证；端点迁移后不得继续读取展示字段 `matchTimeUTC`。
+- 404 回归必须证明 source 输出脱敏的 provider-contract-drift 分类，runner 将其投影为明确 blocked；5xx、timeout 仍是可重试 source error。
+- 提供纯离线保存样例 evaluator：复用 runner 的 symlink-safe 路径/字节绑定，输出固定 schema 的逐联赛校验报告，不联网、不写 provider evidence、不修改 acceptance。
 - closing 回归证明最后合法赛前 snapshot 被选中，开赛后 snapshot 被拒绝。
 - 结算复用现有 1X2、大小球、亚洲让球含走水/半赢/半输矩阵。
 - dry-run 证明不读 .env、不联网、不写盘、不通知。
@@ -144,7 +148,7 @@ live 使用独立非阻塞文件锁，在锁内重读 acceptance、state 和 due
 
 ## 回滚
 
-代码回滚只需停用新 runner，它不覆盖赛前 aggregate snapshot。LaunchAgent 回滚只 bootout 新的独立 label，不影响世界杯、中超、六联赛首发或赔率 timer。已接受赛果和结算不自动删除；如果契约有问题，停止新写入并人工审计。
+赛后 parser/结算问题可先停用新 postmatch runner，它不覆盖赛前 aggregate snapshot。由于 2026-08-26 修订同时更新共享 FotMob URL builder 与赛前 lineup kickoff 字段，若问题位于共享 source/lineup 链路，必须回滚对应 source/collector commit 或停用六联赛 FotMob lineup refresh；仅停用 postmatch runner 不足以回滚赛前影响。LaunchAgent 回滚只 bootout 新的独立 label，不影响世界杯、中超或赔率 timer。已接受赛果和结算不自动删除；如果契约有问题，停止新写入并人工审计。
 
 ## 对抗性自审
 
