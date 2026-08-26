@@ -6,8 +6,9 @@ import json
 from pathlib import Path
 
 from worldcup.collectors.league_fotmob_results import parse_fotmob_league_results
+from worldcup.competitions import get_competition
 from worldcup.league_result_evidence import build_result_contract_evidence
-from worldcup.league_team_identity import LeagueTeamIdentityRegistry
+from worldcup.league_team_identity import LeagueTeamIdentityRegistry, accepted_league_team_identity_registry
 
 
 COMPETITION = "epl_2026_27"
@@ -120,6 +121,26 @@ def _parse(calendar: dict[str, object], details: dict[str, dict[str, object]], *
     return parse_fotmob_league_results(calendar, details, COMPETITION, **values)
 
 
+def _parse_finished_for(competition_id: str, league_id: int, home: str, away: str) -> dict[str, object]:
+    """A wrong FotMob provider ID must not select another formal league's results."""
+    evidence = build_result_contract_evidence(
+        competition_id=competition_id,
+        sport_key=get_competition(competition_id).theoddsapi_sport_key,
+        provider_schema="fotmob_league_results_v1",
+        score_scope="football_90min",
+        source_reference="a" * 64,
+        provider="fotmob",
+    )
+    return parse_fotmob_league_results(
+        _calendar(status="finished", league_id=league_id, home=home, away=away),
+        {"1001": _details(league_id=league_id, home=home, away=away)},
+        competition_id,
+        result_contract_evidence=evidence,
+        identity_registry=accepted_league_team_identity_registry(),
+        captured_at=CAPTURED_AT,
+    )
+
+
 def test_finished_integer_score_with_strict_identity_is_accepted():
     """Dropping terminal, identity, or score validation could write a non-90-minute result."""
     parsed = _parse(_load("calendar_finished.json"), {"1001": _load("details_1001_finished.json")})
@@ -148,6 +169,33 @@ def test_unverified_semantics_and_wrong_competition_fail_closed():
         assert str(exc) == "fotmob_result_competition_mismatch"
     else:
         raise AssertionError("wrong competition must fail closed")
+
+
+def test_every_formal_league_accepts_its_exact_fotmob_provider_id():
+    """Changing a formal provider ID must remain isolated to its intended league."""
+    cases = (
+        ("serie_a_2026_27", 55, "Bologna", "Lazio"),
+        ("serie_a_brazil_2026", 268, "Bahia", "Botafogo"),
+        ("laliga_2026_27", 87, "Valencia", "Real Betis"),
+        ("epl_2026_27", 47, "Fulham", "Chelsea"),
+        ("bundesliga_2026_27", 54, "Augsburg", "Bayern Munich"),
+        ("ligue_1_2026_27", 53, "Angers", "Lille"),
+    )
+
+    for competition_id, league_id, home, away in cases:
+        parsed = _parse_finished_for(competition_id, league_id, home, away)
+        assert len(parsed["results"]) == 1
+        assert parsed["pending"] == []
+
+
+def test_brasileirao_legacy_fotmob_id_fails_competition_isolation():
+    """The obsolete Brazil ID 1122 must not be accepted as Brasileirão evidence."""
+    try:
+        _parse_finished_for("serie_a_brazil_2026", 1122, "Bahia", "Botafogo")
+    except ValueError as exc:
+        assert str(exc) == "fotmob_result_competition_mismatch"
+    else:
+        raise AssertionError("obsolete Brasileirão FotMob ID must fail closed")
 
 
 def test_legacy_evidence_cannot_authorize_the_fotmob_parser():

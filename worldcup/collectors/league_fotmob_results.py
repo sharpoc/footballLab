@@ -15,7 +15,7 @@ from worldcup.league_team_identity import LeagueTeamIdentityRegistry
 _KICKOFF_TOLERANCE = timedelta(minutes=5)
 _FOTMOB_COMPETITION_IDS = {
     "serie_a_2026_27": "55",
-    "serie_a_brazil_2026": "1122",
+    "serie_a_brazil_2026": "268",
     "laliga_2026_27": "87",
     "epl_2026_27": "47",
     "bundesliga_2026_27": "54",

@@ -17,6 +17,7 @@ from worldcup.league_closing import select_league_closings
 from worldcup.league_live_probe import evaluate_league_probe_bundle
 from worldcup.league_postmatch import build_league_postmatch
 from worldcup.league_postmatch_runner import main, run_league_postmatch
+from worldcup.competitions import get_competition
 from worldcup.league_result_evidence import build_result_contract_evidence
 from worldcup.league_statistics import build_league_statistics
 from worldcup.league_team_identity import accepted_league_team_identity_registry
@@ -24,6 +25,7 @@ from worldcup.league_team_identity import accepted_league_team_identity_registry
 
 EPL = "epl_2026_27"
 LALIGA = "laliga_2026_27"
+BRAZIL = "serie_a_brazil_2026"
 NOW = datetime(2026, 8, 29, 0, 0, tzinfo=timezone.utc)
 
 
@@ -46,7 +48,6 @@ def _fotmob_evidence_path(root: Path, competition_id: str) -> Path:
 
 
 def _evidence(root: Path, competition_id: str) -> dict:
-    sport_keys = {EPL: "soccer_epl", LALIGA: "soccer_spain_la_liga"}
     sample_path = Path("data/probe/leagues/results") / f"{competition_id}.json"
     sample_bytes = f"{competition_id}:saved-sample".encode()
     absolute_sample = root / sample_path
@@ -54,7 +55,7 @@ def _evidence(root: Path, competition_id: str) -> dict:
     absolute_sample.write_bytes(sample_bytes)
     evidence = build_result_contract_evidence(
         competition_id=competition_id,
-        sport_key=sport_keys[competition_id],
+        sport_key=get_competition(competition_id).theoddsapi_sport_key,
         provider_schema="fotmob_league_results_v1",
         score_scope="football_90min",
         source_reference=hashlib.sha256(sample_bytes).hexdigest(),
@@ -69,7 +70,6 @@ def _acceptance(evidence_by_competition: dict[str, dict]) -> dict:
 
 
 def _producer_acceptance(evidence_by_competition: dict[str, dict]) -> dict:
-    sport_keys = {EPL: "soccer_epl", LALIGA: "soccer_spain_la_liga"}
     registry = accepted_league_team_identity_registry()
     rows = {}
     for competition_id, evidence in evidence_by_competition.items():
@@ -78,10 +78,10 @@ def _producer_acceptance(evidence_by_competition: dict[str, dict]) -> dict:
             {
                 "schema_version": 1,
                 "competition_id": competition_id,
-                "sport_key": sport_keys[competition_id],
+                "sport_key": get_competition(competition_id).theoddsapi_sport_key,
                 "odds": [{
                     "id": f"{competition_id}-sample-event",
-                    "sport_key": sport_keys[competition_id],
+                    "sport_key": get_competition(competition_id).theoddsapi_sport_key,
                     "home_team": home,
                     "away_team": away,
                     "bookmakers": [{
@@ -103,6 +103,8 @@ def _producer_acceptance(evidence_by_competition: dict[str, dict]) -> dict:
 def _teams(competition_id: str) -> tuple[str, str, str, str]:
     if competition_id == EPL:
         return "Arsenal", "Chelsea", "arsenal", "chelsea"
+    if competition_id == BRAZIL:
+        return "Bahia", "Botafogo", "bahia", "botafogo"
     return "Barcelona", "Real Madrid", "barcelona", "real_madrid"
 
 
@@ -163,7 +165,7 @@ def _status(*, finished: bool, score: str = "2 - 1") -> dict:
 
 def _calendar(competition_id: str, event_id: str, *, finished: bool = True, score: str = "2 - 1") -> dict:
     home, away, _home_canonical, _away_canonical = _teams(competition_id)
-    league_ids = {EPL: 47, LALIGA: 87}
+    league_ids = {EPL: 47, LALIGA: 87, BRAZIL: 268}
     return {"leagues": [{
         "id": league_ids[competition_id],
         "name": "safe",
@@ -178,7 +180,7 @@ def _calendar(competition_id: str, event_id: str, *, finished: bool = True, scor
 
 def _details(competition_id: str, event_id: str, *, finished: bool = True, score: str = "2 - 1") -> dict:
     home, away, _home_canonical, _away_canonical = _teams(competition_id)
-    league_ids = {EPL: 47, LALIGA: 87}
+    league_ids = {EPL: 47, LALIGA: 87, BRAZIL: 268}
     return {
         "general": {
             "matchId": int(event_id),
@@ -845,6 +847,63 @@ def test_provider_failure_is_isolated_by_formal_competition_partition():
         assert (root / f"data/local/leagues/{EPL}/postmatch.json").exists()
         assert not (root / f"data/local/leagues/{LALIGA}/results.json").exists()
         assert "provider-token" not in json.dumps(result)
+
+
+def test_brasileirao_268_result_commits_a_verified_receipt():
+    """The runner must store an accepted 90-minute receipt from Brasileirão's real FotMob ID."""
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _setup(root, (BRAZIL,))
+
+        result = run_league_postmatch(
+            root,
+            live=True,
+            write=True,
+            now=NOW,
+            calendar_fetcher=lambda _competition, _date: _calendar(BRAZIL, "1001"),
+            detail_fetcher=lambda _competition, event_id: _details(BRAZIL, event_id),
+        )
+
+        receipt = json.loads((root / f"data/local/leagues/{BRAZIL}/results.json").read_text())
+        assert result["competitions"][BRAZIL]["status"] == "settled"
+        assert receipt["competition_id"] == BRAZIL
+        assert [row["source_event_id"] for row in receipt["results"]] == ["1001"]
+
+
+def test_invalid_brazil_provider_id_is_blocked_while_epl_still_settles():
+    """One malformed provider partition must not prevent another formal league from advancing."""
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _setup(root, (BRAZIL, EPL))
+
+        def calendar_fetcher(competition_id: str, _date: str) -> dict:
+            payload = _calendar(competition_id, "1001" if competition_id == BRAZIL else "1002")
+            if competition_id == BRAZIL:
+                payload["leagues"][0]["id"] = 1122
+            return payload
+
+        def detail_fetcher(competition_id: str, event_id: str) -> dict:
+            payload = _details(competition_id, event_id)
+            if competition_id == BRAZIL:
+                payload["general"]["leagueId"] = 1122
+            return payload
+
+        result = run_league_postmatch(
+            root,
+            live=True,
+            write=True,
+            now=NOW,
+            calendar_fetcher=calendar_fetcher,
+            detail_fetcher=detail_fetcher,
+        )
+
+        assert result["status"] == "partial"
+        assert result["competitions"][BRAZIL] == {
+            "status": "error", "reason": "result_parse_failed",
+        }
+        assert result["competitions"][EPL]["status"] == "settled"
+        assert not (root / f"data/local/leagues/{BRAZIL}/results.json").exists()
+        assert (root / f"data/local/leagues/{EPL}/results.json").exists()
 
 
 def test_calendar_404_blocks_only_affected_competition_as_provider_contract_drift():
