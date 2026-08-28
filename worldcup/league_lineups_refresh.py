@@ -16,6 +16,7 @@ from worldcup.collectors.league_fotmob_lineups import (
 )
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
 from worldcup.league_acceptance import LeagueAcceptanceStore, acceptance_row_is_active
+from worldcup.league_fotmob_competitions import FOTMOB_COMPETITION_IDS
 from worldcup.league_lineup_planner import plan_league_lineup_poll
 from worldcup.league_lineup_store import LeagueLineupStore
 from worldcup.observed_clock import MonotonicUtcClock
@@ -258,13 +259,16 @@ def _provider_ids(
         raise ValueError("invalid_provider_competition_ids")
     resolved: dict[str, str] = {}
     for competition_id, row in acceptance_report["competitions"].items():
-        value = explicit.get(competition_id) if explicit is not None else None
-        providers = row.get("providers") if isinstance(row, Mapping) else None
-        fotmob = providers.get("fotmob") if isinstance(providers, Mapping) else None
-        if value is None and isinstance(fotmob, Mapping):
-            value = fotmob.get("competition_id")
-        if value is None and isinstance(row, Mapping):
-            value = row.get("fotmob_competition_id")
+        if explicit is not None:
+            value = explicit.get(competition_id)
+        else:
+            providers = row.get("providers") if isinstance(row, Mapping) else None
+            fotmob = providers.get("fotmob") if isinstance(providers, Mapping) else None
+            value = fotmob.get("competition_id") if isinstance(fotmob, Mapping) else None
+            if value is None and isinstance(row, Mapping):
+                value = row.get("fotmob_competition_id")
+            if value is None:
+                value = FOTMOB_COMPETITION_IDS.get(competition_id)
         provider_id = _scalar_id(value)
         if provider_id is not None:
             resolved[competition_id] = provider_id

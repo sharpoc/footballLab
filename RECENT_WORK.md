@@ -48,6 +48,7 @@
 - 中文俱乐部展示与下拉清理已通过 PR #12 squash merge 到 `main` commit `d82bd98e4f31cd968ffdc5656972c63b058e41d2`，CI 与合并前完整回归 `1363/1363` 通过。经独立部署确认，已创建并原子切换 `/opt/worldcup/releases/d82bd98e4f31cd968ffdc5656972c63b058e41d2`，`worldcup.service` 与 Nginx 均为 `active`，readyz 及公网 `/healthz`、`/api/matches`、`/preview` 均返回 200。功能验收确认 80 场 API 仍保留英文 canonical，页面已显示六联赛中文队名，finished-only 世界杯下拉入口不存在。部署未读取/修改 secret，未调用 provider、未消耗 quota、未发布新 snapshot、未修改 LaunchAgent 或 DB schema。
 - 已确认六联赛赛后结算与信号评估闭环设计：推荐免费 FotMob 公开 snapshot + 严格 90 分钟契约门禁，不使用 The Odds API scores 争抢赔率 quota；逐联赛 closing/results/postmatch/statistics 隔离，只结算赛前最后一份 observed schema v2 closing，每日 10:30/16:30 计划唤醒，有新结算才发日摘要，20/50/100 decided 样本分别触发健康检查/离线候选/正式优化审查提醒。当前仅写设计，未联网 probe、未实现 runner、未安装调度器或发送通知。
 - 已基于上述设计编写六联赛赛后闭环实施计划：拆分 FotMob 赛果契约、单调结果/closing store、纯 due planner 与累计结算、可恢复通知 outbox、dry-run-first live runner、LaunchAgent generator 和文档/完整验证 7 个 TDD 任务；真实 FotMob probe、首次 live/write、定时器安装和首次真实通知保留为 4 个独立运维门。计划阶段未实现代码、未联网、未写运行 state、未安装定时器或发送通知。
+- 2026-08-28 只读排查确认近期西甲 4 场均进入未来 90 分钟窗口但每场连续 9 次 `provider_competition_id_missing`；每轮 `calendar_fetch_count=0` / `details_fetch_count=0`，证明未访问 FotMob 而非首发未发布。TDD 回归先在 acceptance 缺 provider 元数据时 RED，随后将赛果 parser 已验证的六联赛 FotMob ID 抽为共享只读 registry，首发刷新仅在整个显式映射未提供且 acceptance 无值时回退；显式映射缺项仍 fail closed。聚焦 GREEN 后完整回归 `1503/1503 tests passed, 1 optional fastapi module skipped`。实现阶段未联网、未读 `.env`、未修改 acceptance/LaunchAgent、未发布或通知；本地 LaunchAgent 仍指向旧 checkout，需在合并后另行确认同步才会生效。
 
 ## 2026-08-24 The Odds API 五 Key 轮换
 
