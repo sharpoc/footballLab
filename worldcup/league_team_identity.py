@@ -53,8 +53,9 @@ _ACCEPTED_TEAM_GROUPS: dict[str, dict[str, tuple[str, ...]]] = {
         "toulouse": ("Toulouse",), "troyes": ("Troyes",),
     },
     "serie_a_brazil_2026": {
-        "atletico_mineiro": ("Atletico Mineiro",), "atletico_paranaense": ("Atletico Paranaense",),
-        "bahia": ("Bahia",), "botafogo": ("Botafogo",), "bragantino": ("Bragantino-SP",),
+        "atletico_mineiro": ("Atletico Mineiro",),
+        "atletico_paranaense": ("Atletico Paranaense", "Athletico Paranaense"),
+        "bahia": ("Bahia",), "botafogo": ("Botafogo", "Botafogo RJ"), "bragantino": ("Bragantino-SP",),
         "chapecoense": ("Chapecoense",), "corinthians": ("Corinthians",),
         "coritiba": ("Coritiba",), "cruzeiro": ("Cruzeiro",), "flamengo": ("Flamengo",),
         "fluminense": ("Fluminense",), "gremio": ("Grêmio",),
