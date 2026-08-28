@@ -205,6 +205,36 @@ def test_no_due_live_plan_makes_zero_transport_and_store_calls():
     assert result["counts"]["details_fetch_count"] == 0
 
 
+def test_live_refresh_uses_verified_fotmob_id_when_acceptance_omits_provider_metadata():
+    """Dropping provider metadata from acceptance must not block every due lineup poll."""
+    kickoff = "2026-08-24T13:00:00+00:00"
+    fixture = _fixture("epl-default-provider", kickoff)
+
+    with TemporaryDirectory() as tmp:
+        result = run_league_lineups_refresh(
+            root=tmp,
+            now=NOW,
+            live=True,
+            write=True,
+            acceptance_report=_active_report(),
+            fixtures_by_competition={COMPETITION: [fixture]},
+            state=_empty_state(),
+            identity_registry=accepted_league_team_identity_registry(),
+            calendar_fetcher=lambda **_kwargs: _calendar(
+                _calendar_match("1001", kickoff, "Arsenal", "Chelsea")
+            ),
+            details_fetcher=lambda **_kwargs: _details(
+                "1001", kickoff, "Arsenal", "Chelsea"
+            ),
+        )
+
+        assert result["status"] == "refreshed"
+        assert result["counts"]["calendar_fetch_count"] == 1
+        assert result["counts"]["details_fetch_count"] == 1
+        assert result["counts"]["accepted_count"] == 1
+        assert result["rejection_reasons"] == {}
+
+
 def test_live_refresh_coalesces_calendar_by_date_and_fetches_only_due_details():
     """Fetching one calendar per event or details for non-due events would waste provider calls."""
     due = [

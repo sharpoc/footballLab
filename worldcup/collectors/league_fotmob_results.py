@@ -8,19 +8,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
+from worldcup.league_fotmob_competitions import (
+    FOTMOB_COMPETITION_IDS as _FOTMOB_COMPETITION_IDS,
+)
 from worldcup.league_result_evidence import verify_result_contract_evidence
 from worldcup.league_team_identity import LeagueTeamIdentityRegistry
 
 
 _KICKOFF_TOLERANCE = timedelta(minutes=5)
-_FOTMOB_COMPETITION_IDS = {
-    "serie_a_2026_27": "55",
-    "serie_a_brazil_2026": "268",
-    "laliga_2026_27": "87",
-    "epl_2026_27": "47",
-    "bundesliga_2026_27": "54",
-    "ligue_1_2026_27": "53",
-}
 _SCORE = re.compile(r"(0|[1-9][0-9]*)\s*-\s*(0|[1-9][0-9]*)\Z")
 
 
