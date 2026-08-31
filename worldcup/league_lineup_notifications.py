@@ -450,6 +450,7 @@ def render_notification_event(value: Mapping[str, Any]) -> dict[str, str]:
     if event_type in {"published_refresh_changed", "published_refresh_unchanged"}:
         before = payload["previous_decision"]
         after = payload["current_decision"]
+        lines.append("已获取正式首发")
         lines.append(f"双方首发已确认：{_beijing_text(payload['confirmed_at'])}")
         if event_type == "published_refresh_changed":
             lines.append(f"本场首选：{_pick_label(before)} → {_pick_label(after)}")
@@ -463,7 +464,11 @@ def render_notification_event(value: Mapping[str, Any]) -> dict[str, str]:
         summary = f"{competition_name}首发后本场首选已更新"
     else:
         messages = {
-            "missing_confirmed": "首发未确认，保留原推荐",
+            "missing_confirmed": (
+                "尚未获取正式首发；未完成首发后复核。"
+                "旧推荐及赔率有效性未验证，本提醒不展示旧概率或赔率，"
+                "不代表最新推荐结果。"
+            ),
             "quota_blocked": "首发已保存，赔率刷新被额度保护阻断，保留原推荐",
             "sustained_source_failure": (
                 f"首发数据源连续失败（{payload.get('failure_threshold')} 次），保留原推荐"

@@ -62,7 +62,9 @@ _TERMINAL_FIXTURE_STATUSES = frozenset({
     "IN_PROGRESS",
     "FINISHED",
 })
-_MISSING_ELIGIBLE_FIXTURE_STATUSES = frozenset({"SCHEDULED"})
+# Snapshot adapters may omit status; this permits only a tracking reminder,
+# not confirmation of fixture status or acceptance of a starting lineup.
+_MISSING_ELIGIBLE_FIXTURE_STATUSES = frozenset({"", "SCHEDULED"})
 _QUOTA_BLOCK_REASONS = frozenset({
     "quota_unknown",
     "quota_below_minimum",

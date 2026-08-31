@@ -2272,7 +2272,7 @@ def test_missing_t20_requires_active_acceptance_and_nonterminal_current_fixture(
         ("active", "POSTPONED", 0),
         ("active", "CANCELLED", 0),
         ("active", "FINISHED", 0),
-        ("active", "", 0),
+        ("active", "", 1),
         ("active", "NOT_A_REAL_STATUS", 0),
         ("active", "SCHEDULED", 1),
     )
@@ -2299,6 +2299,31 @@ def test_missing_t20_requires_active_acceptance_and_nonterminal_current_fixture(
             assert len(delivered) == expected_count
             if delivered:
                 assert delivered[0]["event_type"] == "missing_confirmed"
+
+
+def test_omitted_fixture_status_sends_missing_once_across_runner_restarts():
+    sent = []
+    with TemporaryDirectory() as tmp:
+        _write_context_fixture(tmp, acceptance_state="active", fixture_status="", event_id="missing-status")
+        path = Path(tmp) / f"data/cache/leagues/{EPL}/snapshot.json"
+        snapshot = json.loads(path.read_text())
+        del snapshot["matches"][0]["fixture_status"]
+        path.write_text(json.dumps(snapshot))
+
+        def notifier(content, **kwargs):
+            sent.append(content)
+            return {"status": "sent"}
+
+        for now in (NOW, "2026-08-24T12:05:00+00:00", "2026-08-24T12:10:00+00:00"):
+            run_league_pre_match(
+                root=tmp, now=now,
+                lineup_refresh_fn=lambda **_kwargs: _lineup_result(status="no_due"),
+                post_lineup_refresh_fn=_fail, notifier=notifier,
+                **_full_flags(notify=True),
+            )
+        assert len(sent) == 1
+        assert "尚未获取正式首发" in sent[0]
+        assert "新参考赔率" not in sent[0]
 
 
 def test_malformed_lineup_state_suppresses_missing_notification_for_whole_cycle():
