@@ -195,6 +195,30 @@ def test_negative_zero_dnb_line_is_canonical_positive_zero():
     assert "-0.0" not in json.dumps(negative)
 
 
+def test_missing_retry_does_not_suppress_later_unchanged_confirmed_update():
+    with TemporaryDirectory() as tmp:
+        event = build_missing_lineup_event(**MATCH, source_fingerprint="missing")
+        assert LeagueLineupNotificationOutbox(tmp).deliver(
+            event, notify=True, notifier=lambda *_a, **_k: {"status": "failed"},
+        )["status"] == "failed"
+        sent = []
+
+        def notifier(content, **_kwargs):
+            sent.append(content)
+            return {"status": "sent"}
+
+        outbox = LeagueLineupNotificationOutbox(tmp)
+        assert outbox.retry_pending(notify=True, notifier=notifier)["sent"] == 1
+        assert outbox.deliver(event, notify=True, notifier=notifier)["status"] == "already_sent"
+        updated = _published_event(current_selection="home")
+        assert outbox.deliver(updated, notify=True, notifier=notifier)["status"] == "sent"
+        assert LeagueLineupNotificationOutbox(tmp).deliver(updated, notify=True, notifier=notifier)["status"] == "already_sent"
+        assert len(sent) == 2
+        assert "尚未获取正式首发" in sent[0]
+        assert "已获取正式首发" in sent[1]
+        assert "方向未变" in sent[1]
+
+
 def test_publish_failure_never_creates_a_success_event():
     for publish_status in ("failed", "pending", None):
         assert _published_event(publish_status=publish_status) is None
@@ -217,7 +241,11 @@ def test_degraded_and_recovery_events_are_safe_and_deduplicated_by_episode():
         error_details="provider response had raw Cookie",
     )
 
-    assert "首发未确认，保留原推荐" in _render(missing)["content"]
+    assert "尚未获取正式首发" in _render(missing)["content"]
+    assert "未完成首发后复核" in _render(missing)["content"]
+    assert "旧推荐及赔率有效性未验证" in _render(missing)["content"]
+    assert "官方尚未公布" not in _render(missing)["content"]
+    assert "保留原推荐" not in _render(missing)["content"]
     assert "首发已保存，赔率刷新被额度保护阻断，保留原推荐" in _render(quota)["content"]
     assert "首发数据源连续失败（3 次）" in _render(failed)["content"]
     assert "首发数据源已恢复" in _render(recovered)["content"]
