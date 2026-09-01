@@ -1,5 +1,11 @@
 # 近期工作
 
+## 2026-09-01 德甲 FotMob 赛果身份别名修复（本地实现）
+
+- 根因是 FotMob 对 event `5881143` 返回 `Bayern München`，而德甲严格 registry 仅登记 `Bayern Munich`；calendar/detail 的 FT、5–1 比分、开球时间及无加时/点球/aggregate 证据本身均有效。已按 TDD 仅在 `bundesliga_2026_27` 作用域把 provider 精确原名 `Bayern München` 绑定到既有 canonical `bayern_munich`，不启用 slug 或跨联赛回退。
+- 新增 registry 精确映射回归和 event `5881143` 保存契约回归；先复现 `unmatched_team`，再修复并通过。原始 994KB 保存 bundle 离线重跑为 `verified`，唯一接受 event `5881143`，无 pending；样例 SHA-256 仍为 `b5012f81983fbdcab58342f79645acc723b8c98a4b2c68aa1d6be4c9fcafc529`，未改原始响应。
+- 完整离线回归 `1623/1623 tests passed`，跳过 1 个可选 FastAPI 模块；`py_compile` 与 `git diff --check` 通过。本阶段未联网、写正式 result evidence/acceptance、修改运行目录或 timer、消耗 quota、通知、提交、推送或部署；德甲正式状态仍为 `identity_verified`，需另行授权写入 Gate A 后才可推进到六联赛 `6/6`。
+
 ## 2026-09-01 FotMob `standard` 首发真实契约修复（本地实现）
 
 - 只读根因确认生产轮询正常、但真实 FotMob detail 使用 `lineupType=standard` 且不提供原测试假定的 `lineupStatus=confirmed`，因此全部被记为 `lineup_status_unknown`；完整莱切–罗马样例还发现 FotMob `Roma` 未登记导致 `unmatched_team`。已按 TDD 接受严格 `standard + 双方11个唯一ID + provider赛前状态 + 响应完成于开球前` 复合证据，并加入意甲作用域内 `Roma -> as_roma` 精确别名；不启用 slug 回退，继续拒绝 predicted、缺状态、已开赛以及任何联赛/比赛/球队/开球身份不一致。

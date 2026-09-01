@@ -33,7 +33,8 @@ _ACCEPTED_TEAM_GROUPS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "bundesliga_2026_27": {
         "fc_koln": ("1. FC Köln",), "augsburg": ("Augsburg",),
-        "bayer_leverkusen": ("Bayer Leverkusen",), "bayern_munich": ("Bayern Munich",),
+        "bayer_leverkusen": ("Bayer Leverkusen",),
+        "bayern_munich": ("Bayern Munich", "Bayern München"),
         "borussia_dortmund": ("Borussia Dortmund",),
         "borussia_monchengladbach": ("Borussia Monchengladbach",),
         "eintracht_frankfurt": ("Eintracht Frankfurt",), "elversberg": ("Elversberg",),

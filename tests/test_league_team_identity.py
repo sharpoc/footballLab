@@ -94,7 +94,8 @@ def test_accepted_registry_covers_verified_provider_teams_for_the_other_five_lea
         },
         "bundesliga_2026_27": {
             "1. FC Köln": "fc_koln", "Augsburg": "augsburg", "Bayer Leverkusen": "bayer_leverkusen",
-            "Bayern Munich": "bayern_munich", "Borussia Dortmund": "borussia_dortmund",
+            "Bayern Munich": "bayern_munich", "Bayern München": "bayern_munich",
+            "Borussia Dortmund": "borussia_dortmund",
             "Borussia Monchengladbach": "borussia_monchengladbach", "Eintracht Frankfurt": "eintracht_frankfurt",
             "Elversberg": "elversberg", "FC Schalke 04": "schalke_04", "FSV Mainz 05": "mainz_05",
             "Hamburger SV": "hamburger_sv", "RB Leipzig": "rb_leipzig", "SC Freiburg": "freiburg",

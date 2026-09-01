@@ -115,13 +115,14 @@ def _write_bundle(root: Path, relative: str, bundle: object) -> bytes:
     return raw
 
 
-def _evaluate(root: Path, relative: str, competition_id: str, *, identity_registry=None) -> dict:
+def _evaluate(root: Path, relative: str, competition_id: str, *, identity_registry=None,
+              captured_at: datetime = CAPTURED_AT) -> dict:
     module = _probe_module()
     return module.evaluate_saved_fotmob_result_bundle(
         root=root,
         sample_path=relative,
         competition_id=competition_id,
-        captured_at=CAPTURED_AT,
+        captured_at=captured_at,
         identity_registry=identity_registry,
     )
 
@@ -169,6 +170,44 @@ def test_saved_bundle_evaluator_returns_exact_verified_schema_from_one_hardened_
         }
         assert re.fullmatch(r"[0-9a-f]{64}", result["sample_sha256"])
         assert re.fullmatch(r"[0-9a-f]{64}", result["evidence_fingerprint"])
+
+
+def test_saved_bundesliga_5881143_bundle_accepts_exact_fotmob_team_identity():
+    """The real provider spelling must remain bound to Bayern's existing canonical identity."""
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        relative = "data/probe/leagues/results/bundesliga/20260828-5881143.json"
+        bundle = _bundle("bundesliga_2026_27")
+        match = bundle["calendar"]["leagues"][0]["matches"][0]
+        match.update({
+            "id": 5881143,
+            "home": {"name": "Bayern München"},
+            "away": {"name": "VfB Stuttgart"},
+            "status": _status(
+                finished=True,
+                score="5 - 1",
+                kickoff="2026-08-28T18:30:00Z",
+            ),
+        })
+        detail = _detail("54", "5881143", "Bayern München", "VfB Stuttgart", score="5 - 1")
+        detail["general"]["matchTimeUTCDate"] = "2026-08-28T18:30:00Z"
+        detail["header"]["status"]["utcTime"] = "2026-08-28T18:30:00Z"
+        bundle["calendar_date"] = "20260828"
+        bundle["details"] = {"5881143": detail}
+        _write_bundle(root, relative, bundle)
+
+        result = _evaluate(
+            root,
+            relative,
+            "bundesliga_2026_27",
+            captured_at=datetime(2026, 8, 28, 20, 31, 9, tzinfo=timezone.utc),
+        )
+
+        assert result["status"] == "verified"
+        assert result["reason"] is None
+        assert result["accepted_event_ids"] == ["5881143"]
+        assert result["accepted_result_count"] == 1
+        assert result["pending"] == []
 
 
 def test_saved_bundle_evaluator_normalizes_root_symlink_loop_to_sample_path_invalid():
