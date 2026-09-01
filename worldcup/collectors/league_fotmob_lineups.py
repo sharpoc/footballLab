@@ -154,12 +154,22 @@ def _players(block: Any) -> list[dict[str, str | None]] | None:
 
 def _lineup_status(lineup: Mapping[str, Any]) -> str:
     raw_status = str(lineup.get("lineupStatus") or "").strip().casefold()
+    raw_type = str(lineup.get("lineupType") or "").strip().casefold()
     if raw_status == "confirmed":
         return "confirmed"
     if raw_status in {"predicted", "probable", "expected"}:
         return "predicted"
     if not raw_status and (lineup.get("isConfirmed") is True or lineup.get("confirmed") is True):
         return "confirmed"
+    if not raw_status and raw_type in {"predicted", "probable", "expected"}:
+        return "predicted"
+    if (
+        not raw_status
+        and lineup.get("isConfirmed") is not False
+        and lineup.get("confirmed") is not False
+        and raw_type == "standard"
+    ):
+        return "standard"
     return "unknown"
 
 
@@ -233,7 +243,17 @@ def _details_rejection_reason(
     status = _lineup_status(lineup)
     if status == "predicted":
         return "lineup_predicted", {}, {}
-    if status != "confirmed":
+    if status == "standard":
+        header_status = _mapping(_mapping(root.get("header")).get("status"))
+        if (
+            general.get("started") is not False
+            or general.get("finished") is not False
+            or header_status.get("started") is not False
+            or header_status.get("finished") is not False
+            or header_status.get("cancelled") is not False
+        ):
+            return "lineup_status_unknown", {}, {}
+    elif status != "confirmed":
         return "lineup_status_unknown", {}, {}
     if {player["player_id"] for player in home_players} & {
         player["player_id"] for player in away_players
@@ -425,7 +445,7 @@ def parse_confirmed_fotmob_lineups(
         away_players = players["away_players"]
         home_block = blocks["home_block"]
         away_block = blocks["away_block"]
-        accepted.append({
+        accepted_row = {
             "schema_version": 1,
             "provider": "fotmob",
             "competition_id": competition_id,
@@ -448,7 +468,13 @@ def parse_confirmed_fotmob_lineups(
                 home_players=home_players,
                 away_players=away_players,
             ),
-        })
+        }
+        if _lineup_status(blocks["lineup"]) == "standard":
+            accepted_row.update({
+                "provider_lineup_type": "standard",
+                "confirmation_basis": "fotmob_standard_pregame_11v11",
+            })
+        accepted.append(accepted_row)
 
     accepted.sort(key=lambda row: (row["event_id"], row["source_match_id"]))
     rejected.sort(key=lambda row: (row["source_match_id"], row["reason"]))

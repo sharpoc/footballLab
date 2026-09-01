@@ -66,7 +66,7 @@ _ACCEPTED_TEAM_GROUPS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "serie_a_2026_27": {
         "ac_milan": ("AC Milan",),
-        "as_roma": ("AS Roma",),
+        "as_roma": ("AS Roma", "Roma"),
         "atalanta": ("Atalanta BC",),
         "bologna": ("Bologna",),
         "cagliari": ("Cagliari",),

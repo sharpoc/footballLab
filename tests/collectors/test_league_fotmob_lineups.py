@@ -76,6 +76,95 @@ def test_confirmed_11_plus_11_is_canonically_joined_with_only_safe_fields():
     assert not ({"raw", "raw_response", "headers", "request_headers", "cookie"} & set(accepted))
 
 
+def test_real_fotmob_standard_11_plus_11_is_accepted_with_explicit_derived_basis():
+    """Requiring a nonexistent lineupStatus field would discard FotMob's real standard starting XI."""
+    details = _load("details_confirmed.json")
+    lineup = details["content"]["lineup"]
+    del lineup["lineupStatus"]
+    lineup["lineupType"] = "standard"
+    lineup["source"] = "enetpulse"
+    details["general"].update({"started": False, "finished": False})
+    details["header"] = {
+        "status": {"started": False, "finished": False, "cancelled": False},
+    }
+
+    result = _parse(details_by_match_id={"1001": details})
+
+    assert result["rejected"] == []
+    assert len(result["accepted"]) == 1
+    assert result["accepted"][0]["lineup_status"] == "confirmed"
+    assert result["accepted"][0]["provider_lineup_type"] == "standard"
+    assert result["accepted"][0]["confirmation_basis"] == "fotmob_standard_pregame_11v11"
+
+
+def test_standard_lineup_requires_explicit_provider_pregame_state():
+    """A standard lineup must not be promoted when provider state is missing or says play started."""
+    for provider_state in (None, True):
+        details = _load("details_confirmed.json")
+        lineup = details["content"]["lineup"]
+        del lineup["lineupStatus"]
+        lineup["lineupType"] = "standard"
+        if provider_state is not None:
+            details["general"]["started"] = provider_state
+            details["general"]["finished"] = False
+            details["header"] = {
+                "status": {"started": provider_state, "finished": False, "cancelled": False},
+            }
+
+        result = _parse(details_by_match_id={"1001": details})
+
+        assert result["accepted"] == []
+        assert result["rejected"][0]["reason"] == "lineup_status_unknown"
+
+
+def test_standard_lineup_requires_each_provider_pregame_state_field():
+    """Removing or flipping any one provider pregame flag must block derived acceptance."""
+    fields = (
+        ("general", "started"),
+        ("general", "finished"),
+        ("header", "started"),
+        ("header", "finished"),
+        ("header", "cancelled"),
+    )
+    for section, field in fields:
+        for mutation in ("missing", True):
+            details = _load("details_confirmed.json")
+            lineup = details["content"]["lineup"]
+            del lineup["lineupStatus"]
+            lineup["lineupType"] = "standard"
+            details["general"].update({"started": False, "finished": False})
+            details["header"] = {
+                "status": {"started": False, "finished": False, "cancelled": False},
+            }
+            target = details[section] if section == "general" else details["header"]["status"]
+            if mutation == "missing":
+                del target[field]
+            else:
+                target[field] = mutation
+
+            result = _parse(details_by_match_id={"1001": details})
+
+            assert result["accepted"] == []
+            assert result["rejected"][0]["reason"] == "lineup_status_unknown"
+
+
+def test_real_fotmob_lineup_type_predicted_is_rejected_as_predicted():
+    """The real predicted schema must never enter the standard starting-XI branch."""
+    details = _load("details_confirmed.json")
+    lineup = details["content"]["lineup"]
+    del lineup["lineupStatus"]
+    lineup["lineupType"] = "predicted"
+    details["general"].update({"started": False, "finished": False})
+    details["header"] = {
+        "status": {"started": False, "finished": False, "cancelled": False},
+    }
+
+    result = _parse(details_by_match_id={"1001": details})
+
+    assert result["accepted"] == []
+    assert result["rejected"][0]["reason"] == "lineup_predicted"
+
+
 def test_lineup_fingerprint_is_stable_when_provider_player_order_changes():
     """Hashing payload order would emit a false new-lineup event for the same starting XI."""
     reordered = _load("details_confirmed.json")

@@ -63,6 +63,10 @@ _PARSER_ACCEPTED_FIELDS = frozenset({
     "away_starting",
     "lineup_fingerprint",
 })
+_PARSER_PROVENANCE_FIELDS = frozenset({
+    "provider_lineup_type",
+    "confirmation_basis",
+})
 LINEUP_PENDING_ACK_KEY_FIELDS = (
     "competition_id",
     "event_id",
@@ -496,7 +500,15 @@ def _parser_player_list(value: Any) -> list[dict[str, str | None]]:
 
 
 def _parser_accepted_row(value: Any, competition_id: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != _PARSER_ACCEPTED_FIELDS:
+    if not isinstance(value, Mapping) or set(value) not in {
+        _PARSER_ACCEPTED_FIELDS,
+        _PARSER_ACCEPTED_FIELDS | _PARSER_PROVENANCE_FIELDS,
+    }:
+        raise ValueError("parser_report_invalid")
+    if _PARSER_PROVENANCE_FIELDS <= set(value) and (
+        value.get("provider_lineup_type") != "standard"
+        or value.get("confirmation_basis") != "fotmob_standard_pregame_11v11"
+    ):
         raise ValueError("parser_report_invalid")
     if (
         value.get("schema_version") != 1

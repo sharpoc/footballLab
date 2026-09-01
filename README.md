@@ -92,7 +92,9 @@
 - 单场分析页对六联赛使用 competition-scoped canonical 中文俱乐部展示名；英文 `home_team` / `away_team`、snapshot、API、身份匹配和结算契约不变，未登记球队安全回退英文。页面下拉列表只从当前公开比赛生成杯赛入口，不再因历史完赛记录保留已结束的世界杯；固定六联赛验收入口仍保留。
 - `worldcup.league_lifecycle` 仍是当前 scheduled publisher 已接线的 The Odds API scores 兼容边界：legacy parser 只读 `data/local/leagues/legacy_theoddsapi/<competition_id>/result_contract_evidence.json` 中精确 `theoddsapi_scores_v1` evidence，再显式转成 Task 2 committed receipt 后结算。它只写 `data/local/leagues/legacy_theoddsapi/` 下的 evidence/postmatch/statistics，不读写 FotMob provider evidence、正式 `postmatch_statistics.json` / state / outbox；聚合快照仍读取该已标记 origin 的兼容统计，直到 FotMob Gates A–D 单独验收后再评审退役。
 
-### 六联赛 Confirmed Lineup 赛前编排（本地离线实现）
+### 六联赛首发赛前编排（本地离线实现）
+
+FotMob 真实 detail 不一定提供测试早期假定的 `lineupStatus=confirmed`。六联赛解析器同时接受两种严格证据：provider 明示的 confirmed 11+11；或 `lineupType=standard`、双方恰好各 11 个唯一球员 ID、`general.started/finished=false`、`header.status.started/finished/cancelled=false`，并且响应完成于开球前的复合证据。后一种在内部仍进入可用首发链路，但缓存额外保存 `provider_lineup_type=standard` 与 `confirmation_basis=fotmob_standard_pregame_11v11`，明确这是本地派生判定，不伪称 FotMob 返回了 confirmed。`predicted/probable/expected`、缺少赛前状态、已开赛/完赛/取消、人数不完整，以及联赛、比赛、球队或开球身份不一致仍全部 fail closed。意甲 registry 仅增加真实样例证明的 competition-scoped `Roma -> as_roma` 别名，不启用通用 slug 回退。
 
 `worldcup.league_pre_match_runner` 是六联赛独立赛前入口，不修改世界杯 `worldcup.pre_match_runner` 或 `xin.celab.football.pre-match`。默认命令只做本地 dry-run，不创建单实例锁，不读 `.env`，不联网、写盘、消耗 The Odds API quota、发布或通知：
 
@@ -102,7 +104,7 @@
   --root /Users/eagod/ai-dev/足彩
 ```
 
-观察模式只请求并原子保存 FotMob confirmed 11+11，不刷新赔率、不发布、不通知：
+观察模式只请求并原子保存通过上述严格门禁的 FotMob 11+11，不刷新赔率、不发布、不通知：
 
 ```bash
 /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
@@ -159,7 +161,7 @@ LaunchAgent generator 默认生成观察模式 JSON；label 固定为 `xin.celab
   --out /Users/eagod/ai-dev/足彩/data/cache/xin.celab.football.league-pre-match.plist
 ```
 
-每 300 秒唤醒不等于每 300 秒请求：未来 90 分钟没有未开赛 active 比赛时 FotMob 请求为 0；T-90..T-45 最快 15 分钟一次，T-45..T-0 最快 5 分钟一次，同日 calendar 合并、details 仅限 due match ID。FotMob 是免费非正式源，没有 SLA；schema、confirmed 语义或身份无法证明时只保留旧首发和旧推荐，不用 predicted/unknown 猜测。
+每 300 秒唤醒不等于每 300 秒请求：未来 90 分钟没有未开赛 active 比赛时 FotMob 请求为 0；T-90..T-45 最快 15 分钟一次，T-45..T-0 最快 5 分钟一次，同日 calendar 合并、details 仅限 due match ID。FotMob 是免费非正式源，没有 SLA；无法满足明示 confirmed 或 `standard + 完整赛前状态 + 11v11` 复合门禁时只保留旧首发和旧推荐，不用 predicted/unknown 猜测。
 
 上述六联赛赛前 timer `xin.celab.football.league-pre-match` 已经独立确认安装并加载；回滚时只 bootout 该 label，不影响世界杯、中超或赛后 timer。本文下述的六联赛赛后 timer 已有只生成 plist 的离线实现，但仍未安装/加载；真实 probe、live/write、LaunchAgent 安装/加载和首次通知仍是后续独立确认门。
 

@@ -235,6 +235,45 @@ def test_live_refresh_uses_verified_fotmob_id_when_acceptance_omits_provider_met
         assert result["rejection_reasons"] == {}
 
 
+def test_live_refresh_persists_real_standard_lineup_provenance():
+    """Runner/store field whitelists must not discard an accepted real FotMob standard XI."""
+    kickoff = "2026-08-24T13:00:00+00:00"
+    details = _details("1001", kickoff, "Arsenal", "Chelsea")
+    lineup = details["content"]["lineup"]
+    del lineup["lineupStatus"]
+    lineup.update({"lineupType": "standard", "source": "enetpulse"})
+    details["general"].update({"started": False, "finished": False})
+    details["header"] = {
+        "status": {"started": False, "finished": False, "cancelled": False},
+    }
+
+    with TemporaryDirectory() as tmp:
+        result = run_league_lineups_refresh(
+            root=tmp,
+            now=NOW,
+            live=True,
+            write=True,
+            acceptance_report=_active_report(),
+            fixtures_by_competition={COMPETITION: [_fixture("epl-standard", kickoff)]},
+            state=_empty_state(),
+            identity_registry=accepted_league_team_identity_registry(),
+            calendar_fetcher=lambda **_kwargs: _calendar(
+                _calendar_match("1001", kickoff, "Arsenal", "Chelsea")
+            ),
+            details_fetcher=lambda **_kwargs: details,
+        )
+
+        assert result["status"] == "refreshed"
+        assert result["counts"]["accepted_count"] == 1
+        stored = json.loads(
+            (Path(tmp) / "data/cache/leagues/lineups/epl_2026_27.json").read_text(
+                encoding="utf-8"
+            )
+        )["accepted"][0]
+        assert stored["provider_lineup_type"] == "standard"
+        assert stored["confirmation_basis"] == "fotmob_standard_pregame_11v11"
+
+
 def test_live_refresh_coalesces_calendar_by_date_and_fetches_only_due_details():
     """Fetching one calendar per event or details for non-due events would waste provider calls."""
     due = [
