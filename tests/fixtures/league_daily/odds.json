@@ -1,0 +1,27 @@
+[
+  {
+    "id": "4e4a813bf4218cc527e6f8ef2351170d",
+    "sport_key": "soccer_epl",
+    "commence_time": "2026-08-24T19:00:00Z",
+    "home_team": "Fulham",
+    "away_team": "Chelsea",
+    "bookmakers": [
+      {
+        "key": "pinnacle",
+        "title": "Pinnacle",
+        "last_update": "2026-08-24T08:05:41Z",
+        "markets": [
+          {
+            "key": "h2h",
+            "last_update": "2026-08-24T08:05:41Z",
+            "outcomes": [
+              {"name": "Chelsea", "price": 1.85},
+              {"name": "Fulham", "price": 4.18},
+              {"name": "Draw", "price": 3.9}
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

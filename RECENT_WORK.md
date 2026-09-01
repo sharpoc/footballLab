@@ -6,6 +6,14 @@
 - 内部沿用 `lineup_status=confirmed` 表示“已通过本地可用首发门禁”，同时持久化 `provider_lineup_type=standard` 和 `confirmation_basis=fotmob_standard_pregame_11v11`，不伪称 FotMob 明示 confirmed。runner 与 store 对旧 confirmed schema 保持兼容。
 - 新增解析器正/反例、五个 provider 赛前状态逐字段门禁、精确别名及 live runner→cache provenance 回归；保存的莱切–罗马 late detail 原始样例已通过新解析器完整离线复核。完整回归 `1510/1510 tests passed, 1 optional fastapi module skipped`，独立只读审查无 Critical/Important。实现位于独立 worktree；未联网、未读取 `.env`、未消耗 The Odds API quota、未修改运行目录或 LaunchAgent，未刷新赔率、发布、通知、提交、推送或部署。
 
+## 2026-08-31 联赛日常刷新与可靠发布（本地离线实现）
+
+- 完成独立于首发的日常 runner、严格 acceptance/identity、生产赛事发现、due/markets 合并、每日共享预算预留、崩溃恢复及持久发布 outbox；首发后赔率接入同一执行锁/预算/发布边界。SQLite 同事务校验赔率组件版本，内部 manifest 不进入公开比赛行；未扩展赛后结果组件或公网关闭。
+- 新增独立 `league-daily` plist 生成器，默认观察、300 秒、`RunAtLoad=false`；full-live 必须显式有效 endpoint 与正整数预算，不含通知。首发生成器仅增加 full-live 共享预算配置，observer 默认不变。未安装/加载或修改任何真实 timer。
+- 保存的英超赔率脱敏摘录通过真实 batch、HMAC、临时 SQLite 和 `project_match_rows` 端到端验证：无首发有效首选、pending 原样重试不再消费、已完成锚点不重复请求、过期赔率无法计算、旧发布不能回退 latest；默认 dry-run 与 raw response 恢复前后临时整树/fixture manifest 不变，HTTPError 费用仍保留。
+- 最终审查 I1/I2/I4/I5 已通过真实 HTTPError/HMAC/SQLite 与 runner 回归：已知版本拒绝审计并清旧 pending，未知收费保留预留且 30 分钟后可独立预算新 attempt，坏形状分区安全 LKG，运行入口和生成器共享保留域名门禁。用户确认的 I3 已按 TDD 完成：provider 单轮遗漏事件时保留上一版公开行和逐场 source snapshot 绑定；SQLite 服务端拒绝较新 component 缩减事件 membership 或改写同一 event 的开球/主客身份。只有后续严格 result component 才能删除已确认完赛事件。M1 discovery 后首次 T-6 间隔策略保持现有行为，首次 live 前通过预算预检观察。
+- 完整离线回归 `1622/1622 tests passed`，跳过 1 个可选 FastAPI 模块；仅 worktree 源码/测试/文档和临时测试产物变更。未联网、读真实 env、消耗 quota、通知、提交/推送/部署或写生产数据。服务端先部署、本机 writer/预算配置验证、timer 安装分别另行授权；首发 probe、德甲 Gate A 与赛后 Gates 未改变。未清理既有超过 20 条的近期记录。
+
 ## 2026-08-31 六联赛首发跟踪缺失提醒（本地实现）
 
 - 修复正式 snapshot 缺省 `fixture_status` 导致 T-20 未获取首发提醒被跳过；仅扩大提醒资格，仍需 active acceptance、合法状态文件及未开赛窗口，终态与未知非空状态继续拒绝，不放宽首发 parser 或球队 identity。

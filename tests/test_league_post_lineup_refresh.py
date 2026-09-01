@@ -22,6 +22,18 @@ LALIGA = "laliga_2026_27"
 def run_post_lineup_refresh(**kwargs):
     requested_now = kwargs.get("now", NOW)
     kwargs.setdefault("observed_clock", lambda: requested_now)
+    kwargs['root'] = Path(kwargs['root']).resolve()
+    kwargs.setdefault('endpoint', 'https://research.fixture-domain.net/api/ingest')
+    kwargs.setdefault('daily_credit_limit', 100)
+    if 'receipt_context_loader' not in kwargs:
+        context = {}
+        for rows in kwargs.get('newly_confirmed', {}).values():
+            for receipt in rows:
+                context.update(_receipt_context(receipt))
+        kwargs['receipt_context_loader'] = lambda: context
+    old_publish = kwargs.get('publish_fn')
+    if old_publish is not None:
+        kwargs['publish_fn'] = lambda *, payload, endpoint, timestamp: old_publish(payload['snapshot'])
     return _run_post_lineup_refresh(**kwargs)
 
 
@@ -30,12 +42,14 @@ def _fail(*_args, **_kwargs):
 
 
 def _active_row(competition_id):
+    from worldcup.league_team_identity import league_team_identity_registry_fingerprint
     return {
         "competition_id": competition_id,
         "state": "active",
         "reason": None,
         "fingerprints": {
-            name: f"{competition_id}-{name}"
+            name: (league_team_identity_registry_fingerprint(_registry(competition_id), competition_id)
+                   if name == 'team_identity' else hashlib.sha256(f'{competition_id}-{name}'.encode()).hexdigest())
             for name in ("sport_catalog", "odds_sample", "team_identity", "result_contract")
         },
     }
@@ -150,6 +164,48 @@ def _env(two=False):
 
 def _ack_events(result, group):
     return [row["ack_key"]["event_id"] for row in result["acks"][group]]
+
+
+def test_initial_insufficient_budget_does_not_claim_and_later_admission_can_progress():
+    from worldcup.league_daily_state import DailyStateStore
+    receipt = _receipt(EPL, 'budget-event', 'a')
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve(); _write_acceptance(root, EPL); calls = []
+        kwargs = dict(root=root, now=NOW, live=True, newly_confirmed={EPL: [receipt]},
+            env=_env(), quota_ledger=_quota(theoddsapi_primary=100),
+            identity_registry=_registry(EPL), snapshot_builder=_snapshot_builder,
+            odds_fetcher=lambda *args: calls.append(1) or [{'id': 'budget-event'}],
+            publish_fn=lambda snapshot: {'status': 'stored'})
+        first = run_post_lineup_refresh(**kwargs, daily_credit_limit=1)
+        assert first['acks']['blocked'] == [{'ack_key': receipt['ack_key'], 'reason': 'daily_budget_exhausted'}], first
+        assert PostLineupRefreshStateStore(root).read()['receipts'] == {}
+        assert DailyStateStore(root).read()['attempts'] == {}
+        assert calls == []
+        second = run_post_lineup_refresh(**kwargs, daily_credit_limit=10)
+        assert second['status'] == 'published', second
+        assert calls == [1]
+
+
+def test_tampered_incoming_kickoff_never_retires_actual_future_pending():
+    from worldcup.league_daily_runner import read_daily_publication
+    receipt = _receipt(EPL, 'future-pending', 'b', kickoff='2026-08-24T13:00:00+00:00')
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve(); _write_acceptance(root, EPL)
+        _write_task4_pending(root, {EPL: [receipt]})
+        first = run_post_lineup_refresh(root=root, now=NOW, live=True,
+            newly_confirmed={EPL: [receipt]}, env=_env(), quota_ledger=_quota(theoddsapi_primary=100),
+            identity_registry=_registry(EPL), snapshot_builder=_snapshot_builder,
+            receipt_context_loader=lambda: _receipt_context(receipt),
+            odds_fetcher=lambda *args: [{'id': 'future-pending'}], publish_fn=lambda snapshot: {'status': 'failed'})
+        assert first['status'] == 'publish_failed'
+        before = read_daily_publication(root)
+        altered = {**receipt, 'kickoff_at_utc': '2026-08-24T12:00:30+00:00'}
+        result = run_post_lineup_refresh(root=root, now='2026-08-24T12:01:00+00:00', live=True,
+            newly_confirmed={EPL: [altered]}, identity_registry=_registry(EPL),
+            receipt_context_loader=lambda: _receipt_context(receipt),
+            odds_fetcher=_fail, publish_fn=_fail)
+        assert result['acks']['durable'] == []
+        assert read_daily_publication(root) == before
 
 
 def test_dry_run_does_not_read_quota_refresh_publish_or_write():
@@ -1295,17 +1351,11 @@ def test_acceptance_fingerprint_drift_blocks_publish_and_durable_ack():
             publish_fn=lambda snapshot: published.append(snapshot) or {"status": "stored"},
         )
 
-        assert result["status"] == "publish_failed"
-        assert result["acks"]["durable"] == []
-        assert result["acks"]["retryable"] == [{
-            "ack_key": receipt["ack_key"],
-            "reason": "publish_failed",
-        }]
+        assert result['status'] == 'blocked'
+        assert result['acks']['durable'] == []
+        assert result['acks']['blocked'] == [{'ack_key': receipt['ack_key'], 'reason': 'daily_acceptance_changed'}]
         assert published == []
-        state = PostLineupRefreshStateStore(tmp).read()
-        assert {
-            row.get("acceptance_fingerprint") for row in state["receipts"].values()
-        } == {acceptance_fingerprint(guarded_acceptance)}
+        assert PostLineupRefreshStateStore(tmp).read()['receipts'] == {}
 
 
 def test_dependency_mapping_results_are_strictly_projected_without_nested_secrets():

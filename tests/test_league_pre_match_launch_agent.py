@@ -46,6 +46,7 @@ def test_full_live_launch_agent_contains_every_layer_and_quota_guard_once():
         python_path=PYTHON,
         workdir=ROOT,
         full_live=True,
+        daily_credit_limit=10,
     )
 
     args = plist["ProgramArguments"]
@@ -60,6 +61,7 @@ def test_full_live_launch_agent_contains_every_layer_and_quota_guard_once():
     )
     assert all(args.count(flag) == 1 for flag in expected)
     assert args.index("--refresh-guard") > args.index("--live-refresh")
+    assert args[args.index('--daily-credit-limit') + 1] == '10'
     serialized = json.dumps(plist).lower()
     for forbidden in ("launchctl", "ingest_hmac_secret", "the_odds_api_key", "wxpusher"):
         assert forbidden not in serialized
@@ -81,3 +83,27 @@ def test_write_generator_only_writes_requested_plist_and_never_loads_timer():
         assert list(Path(tmp).iterdir()) == [out]
         assert plist["Label"] == DEFAULT_LABEL
         assert plist["RunAtLoad"] is False
+
+
+def test_full_live_generator_rejects_unconfigured_or_invalid_shared_budget():
+    for budget in (None, 0, -1, True, 1.5):
+        try:
+            build_league_pre_match_launch_agent(full_live=True, daily_credit_limit=budget)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(budget)
+
+
+def test_full_live_cli_forwards_explicit_shared_budget_without_installing():
+    import contextlib
+    import io
+    from worldcup.league_pre_match_launch_agent import main
+    with TemporaryDirectory() as tmp:
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream):
+            assert main(['--workdir', tmp, '--full-live', '--daily-credit-limit', '10']) == 0
+        output = json.loads(stream.getvalue())
+        args = output['plist']['ProgramArguments']
+        assert args[args.index('--daily-credit-limit') + 1] == '10'
+        assert output['loaded'] is False and not list(Path(tmp).iterdir())

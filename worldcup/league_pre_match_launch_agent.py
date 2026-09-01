@@ -29,6 +29,7 @@ def build_league_pre_match_launch_agent(
     env_path: str | Path = ".env",
     quota_path: str | Path = "data/cache/quota.json",
     endpoint: str = DEFAULT_ENDPOINT,
+    daily_credit_limit: int | None = None,
 ) -> dict[str, Any]:
     root = Path(workdir).expanduser()
     program_args = [
@@ -41,6 +42,8 @@ def build_league_pre_match_launch_agent(
         "--write-lineups",
     ]
     if full_live:
+        if type(daily_credit_limit) is not int or daily_credit_limit <= 0:
+            raise ValueError('daily_budget_unconfigured')
         program_args.extend([
             "--refresh-after-lineups",
             "--live-refresh",
@@ -53,6 +56,8 @@ def build_league_pre_match_launch_agent(
             str(quota_path),
             "--endpoint",
             endpoint,
+            '--daily-credit-limit',
+            str(daily_credit_limit),
         ])
     logs = Path(log_dir).expanduser()
     return {
@@ -95,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env", default=".env")
     parser.add_argument("--quota-path", default="data/cache/quota.json")
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
+    parser.add_argument('--daily-credit-limit', type=int)
     args = parser.parse_args(argv)
     build_args = {
         "python_path": args.python,
@@ -106,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         "env_path": args.env,
         "quota_path": args.quota_path,
         "endpoint": args.endpoint,
+        'daily_credit_limit': args.daily_credit_limit,
     }
     plist = build_league_pre_match_launch_agent(**build_args)
     written = write_league_pre_match_launch_agent(args.out, **build_args) if args.out else None

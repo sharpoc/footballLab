@@ -531,3 +531,15 @@ def test_scheduler_projects_pending_publisher_mapping_without_sensitive_nested_f
     assert all(value not in encoded for value in (
         "SECRET", "Authorization", "headers", "signed_body"
     ))
+def test_aggregate_id_tracks_actual_safe_component_content_and_is_stable():
+    import copy
+    with TemporaryDirectory() as tmp:
+        _write_acceptance(tmp, "epl_2026_27")
+        snapshot = {"snapshot_id": "same-source-id", "snapshot_at": "2026-09-01T12:00:00Z", "competition": {"id": "epl_2026_27"}, "matches": [{"source_event_id": "event", "competition": {"id": "epl_2026_27"}, "home_team": "Home"}]}
+        first = league_scheduled_publish.build_aggregate_league_snapshot(root=tmp, snapshots=[snapshot])
+        assert first == league_scheduled_publish.build_aggregate_league_snapshot(root=tmp, snapshots=[copy.deepcopy(snapshot)])
+        snapshot["matches"][0]["provider"] = {"secret": "NEVER"}
+        assert first == league_scheduled_publish.build_aggregate_league_snapshot(root=tmp, snapshots=[snapshot])
+        snapshot["matches"][0]["home_team"] = "Changed"
+        second = league_scheduled_publish.build_aggregate_league_snapshot(root=tmp, snapshots=[snapshot])
+        assert first["snapshot_id"] != second["snapshot_id"]

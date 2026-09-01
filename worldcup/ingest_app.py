@@ -43,11 +43,19 @@ def process_local_ingest(
 
     assert verification.idempotency_key is not None
     assert verification.payload is not None
-    result = snapshot_store.put_snapshot(
-        idempotency_key=verification.idempotency_key,
-        payload=verification.payload,
-        stored_at=now,
-    )
+    from worldcup.league_publication import ERRORS
+    if "league_publication" in (verification.payload.get("snapshot") or {}) and not getattr(snapshot_store, "supports_atomic_league_publication", False):
+        return {"status": "rejected", "reason": "league_publication_unsupported"}
+    try:
+        result = snapshot_store.put_snapshot(
+            idempotency_key=verification.idempotency_key,
+            payload=verification.payload,
+            stored_at=now,
+        )
+    except ValueError as exc:
+        if str(exc) not in ERRORS:
+            raise
+        return {"status": "rejected", "reason": str(exc)}
     return result
 
 

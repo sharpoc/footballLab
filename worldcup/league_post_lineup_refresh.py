@@ -22,6 +22,7 @@ from worldcup.league_scheduled_publish import publish_committed_league_snapshots
 from worldcup.league_team_identity import LeagueTeamIdentityRegistry
 from worldcup.observed_clock import MonotonicUtcClock
 from worldcup.theoddsapi_keys import LOW_QUOTA_SWITCH_THRESHOLD, configured_key_slots
+from worldcup.sources.theoddsapi import DEFAULT_MARKETS
 
 
 AckItem = dict[str, Any]
@@ -768,7 +769,113 @@ def _result(
     }
 
 
-def run_post_lineup_refresh(
+def _bound_pending_receipts(*, root, pending, post_state, submitted, context_loader, now):
+    """Prove pending ownership/expiry from durable artifacts, not caller timing."""
+    from worldcup.league_publication import build_publication_vector
+    from worldcup.league_daily_runner import _safe_path
+    from worldcup.league_lineups_refresh import _pending_deliveries
+    originals = {row['token']: row for row in _normalize_receipts(_pending_deliveries(_read_pending(root)))}
+    incoming = {row['token']: row for row in submitted}
+    contexts = context_loader() if context_loader is not None else None
+    bound = []
+    for token, state_row in _validate_state(post_state)['receipts'].items():
+        if state_row['phase'] != 'committed':
+            continue
+        ack = state_row['ack_key']; cid = ack['competition_id']; event_id = ack['event_id']
+        component_key = 'odds:' + cid
+        component = pending['components'].get(component_key)
+        if component is None or component['snapshot_id'] != state_row['snapshot_id']:
+            continue
+        if state_row.get('acceptance_fingerprint') != pending['accepted_fingerprint']:
+            raise ValueError('post_lineup_pending_binding_invalid')
+        path = Path(root) / 'data/local/leagues' / cid / 'history' / (state_row['snapshot_id'] + '.json')
+        _safe_path(path)
+        snapshot = _read_snapshot(path)
+        if snapshot is None or build_publication_vector([snapshot]).get(component_key) != component:
+            raise ValueError('post_lineup_pending_binding_invalid')
+        matches = [row for row in snapshot['matches'] if row['source_event_id'] == event_id]
+        if len(matches) != 1:
+            raise ValueError('post_lineup_pending_binding_invalid')
+        original = originals.get(token)
+        stored_kickoff = matches[0].get('kickoff_at_utc')
+        if stored_kickoff is None and original is not None:
+            stored_kickoff = original['kickoff_at_utc']
+        kickoff = _utc(stored_kickoff)
+        if original is not None and _utc(original['kickoff_at_utc']) != kickoff:
+            raise ValueError('post_lineup_pending_binding_invalid')
+        if token in incoming and _utc(incoming[token]['kickoff_at_utc']) != kickoff:
+            raise ValueError('post_lineup_pending_context_invalid')
+        if contexts is not None:
+            context = contexts.get(f'{cid}:{event_id}') if isinstance(contexts, Mapping) else None
+            if (not isinstance(context, Mapping) or context.get('competition_id') != cid
+                    or context.get('event_id') != event_id or _utc(context.get('kickoff_at_utc')) != kickoff):
+                raise ValueError('post_lineup_pending_context_invalid')
+        elif kickoff <= now:
+            # Expiry retirement needs a fresh trusted context in addition to the
+            # frozen original; absence cannot authorize clearing an outbox.
+            raise ValueError('post_lineup_pending_context_invalid')
+        bound.append({'competition_id': cid, 'event_id': event_id, 'token': token,
+                      'ack_key': dict(ack), 'kickoff_at_utc': kickoff.isoformat()})
+    return bound
+
+
+def run_post_lineup_refresh(**kwargs):
+    """Keep observer/ACK gates inside a shared live odds execution boundary."""
+    if not kwargs.get('live') or not kwargs.get('newly_confirmed'):
+        return _run_post_lineup_refresh_locked(**kwargs)
+    from worldcup.league_daily_state import DailyStateStore, odds_execution_lock
+    from worldcup.league_daily_runner import (valid_daily_endpoint, read_daily_acceptance,
+        read_daily_publication, publish_daily_components)
+    root = Path(kwargs['root'])
+    try:
+        receipts = _normalize_receipts(kwargs['newly_confirmed'])
+        plan = {'competition_ids': sorted({row['competition_id'] for row in receipts}), 'receipt_count': len(receipts)}
+        if not valid_daily_endpoint(kwargs.get('endpoint')):
+            raise ValueError('daily_endpoint_invalid')
+        DailyStateStore(root).read()
+        read_daily_publication(root)
+        with odds_execution_lock(root):
+            DailyStateStore(root).read()
+            report, _ = read_daily_acceptance(root, kwargs.get('identity_registry'))
+            supplied = kwargs.get('acceptance_report')
+            if supplied is not None and acceptance_fingerprint(supplied) != acceptance_fingerprint(report):
+                raise ValueError('daily_acceptance_changed')
+            kwargs['acceptance_report'] = report
+            publication = read_daily_publication(root)
+            if publication['pending']:
+                clock = kwargs.get('observed_clock') or (lambda: datetime.now(timezone.utc))
+                observed = _utc(clock())
+                post_state = kwargs.get('state_store_factory', PostLineupRefreshStateStore)(root).read()
+                bound = _bound_pending_receipts(root=root, pending=publication['pending'], post_state=post_state,
+                    submitted=receipts, context_loader=kwargs.get('receipt_context_loader'), now=observed)
+                expired = [row for row in bound if _utc(row['kickoff_at_utc']) <= observed]
+                if expired:
+                    from worldcup.league_publication import supersede_pending
+                    retired = supersede_pending(root=root, reason='post_lineup_pending_expired',
+                        now=observed.isoformat(), expected_body_sha256=publication['pending']['body_sha256'])
+                    if retired['status'] != 'superseded':
+                        raise ValueError('daily_publication_changed')
+                elif bound:
+                    kwargs['_pending_recovery'] = True
+                else:
+                    publish_daily_components(root=root, endpoint=kwargs['endpoint'],
+                        publish_fn=kwargs.get('publish_fn'), now=observed.isoformat(),
+                        acceptance_fingerprint=acceptance_fingerprint(report))
+                    return _result(status='publish_failed', plan=plan, durable=[], blocked=[],
+                        retryable=[_ack_item(row, 'publication_pending_recovery') for row in receipts])
+            return _run_post_lineup_refresh_locked(**kwargs)
+    except (ValueError, TypeError, KeyError, OSError) as exc:
+        try:
+            receipts = _normalize_receipts(kwargs['newly_confirmed'])
+        except ValueError:
+            receipts = []
+        reason = str(exc) if str(exc).replace('_', '').isalnum() else 'daily_shared_state_invalid'
+        return _result(status='blocked', plan={'competition_ids': sorted({r['competition_id'] for r in receipts}),
+            'receipt_count': len(receipts)}, durable=[], retryable=[],
+            blocked=[_ack_item(row, reason) for row in receipts])
+
+
+def _run_post_lineup_refresh_locked(
     *,
     root: str | Path,
     now: Any,
@@ -790,6 +897,9 @@ def run_post_lineup_refresh(
     quota_max_age_seconds: int = QUOTA_LEDGER_MAX_AGE_SECONDS,
     observed_clock: Callable[[], Any] | None = None,
     receipt_context_loader: Callable[[], Any] | None = None,
+    endpoint: str | None = None,
+    daily_credit_limit: int | None = None,
+    _pending_recovery: bool = False,
 ) -> dict[str, Any]:
     try:
         requested_now = _utc(now)
@@ -1063,6 +1173,28 @@ def run_post_lineup_refresh(
             new_rows = []
 
         if new_rows:
+            if _pending_recovery:
+                for row in new_rows:
+                    retryable_by_token[row['token']] = _ack_item(row, 'waiting_for_committed_publish')
+                new_rows = []
+
+        if new_rows:
+            if type(daily_credit_limit) is not int or daily_credit_limit <= 0:
+                for row in new_rows:
+                    blocked_by_token[row['token']] = _ack_item(row, 'daily_budget_unconfigured')
+                new_rows = []
+
+        if new_rows:
+            from zoneinfo import ZoneInfo
+            from worldcup.league_daily_state import DailyStateStore
+            budget = DailyStateStore(Path(root)).read()['budgets'].get(now_dt.astimezone(ZoneInfo('Asia/Shanghai')).date().isoformat())
+            used = budget['reserved_credits'] if budget else 0
+            if (budget and budget['limit'] != daily_credit_limit) or used + len(DEFAULT_MARKETS) > daily_credit_limit:
+                for row in new_rows:
+                    blocked_by_token[row['token']] = _ack_item(row, 'daily_budget_exhausted')
+                new_rows = []
+
+        if new_rows:
             if not isinstance(identity_registry, LeagueTeamIdentityRegistry):
                 for row in new_rows:
                     blocked_by_token[row["token"]] = _ack_item(
@@ -1205,7 +1337,17 @@ def run_post_lineup_refresh(
             selected_env = _selected_env(loaded_env, selected)
             expected_sport_key = _sport_key(competition_id)
             try:
+                from zoneinfo import ZoneInfo
+                from worldcup.league_daily_state import DailyStateStore
+                budget_store = DailyStateStore(Path(root))
+                budget_store.reserve(date_bj=request_observed_at.astimezone(ZoneInfo('Asia/Shanghai')).date().isoformat(),
+                    attempt_id=attempt_id, estimated=len(DEFAULT_MARKETS), limit=daily_credit_limit)
                 provider_payload = odds_fetcher(expected_sport_key, selected_env)
+                actual_cost = None
+                if isinstance(provider_payload, Mapping) and set(provider_payload) == {'raw_events', 'actual_cost'}:
+                    actual_cost = provider_payload['actual_cost']
+                    provider_payload = provider_payload['raw_events']
+                budget_store.settle(attempt_id=attempt_id, actual_cost=actual_cost)
             except Exception:
                 for row in attempt_rows:
                     retryable_by_token[row["token"]] = _ack_item(row, "refresh_failed")
@@ -1681,6 +1823,8 @@ def run_post_lineup_refresh(
         snapshot_receipts=[component_receipts[key] for key in sorted(component_receipts)],
         publish_fn=publish_fn,
         expected_acceptance_fingerprint=guarded_acceptance_fingerprint,
+        endpoint=endpoint,
+        now=final_publish_observed_at.isoformat(),
     )
     if publication.get("status") != "published":
         for row in committed_rows:

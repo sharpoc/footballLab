@@ -13,7 +13,7 @@
 
 - Git 仓库已初始化。
 - Plan 1 引擎核心已完成第一版。
-- 当前完整离线回归为 `1446/1446 tests passed`；标准测试入口会显式跳过本机未安装可选 `fastapi` 时的单个适配层模块，不把它误报为全量失败。
+- 当前完整离线回归为 `1622/1622 tests passed`；标准测试入口会显式跳过本机未安装可选 `fastapi` 时的单个适配层模块，不把它误报为全量失败。
 - Plan 0 核心数据源探测已完成第一轮：openfootball 赛程、eloratings Elo、The Odds API 赔率可用；API-Football Free plan 不能访问 2026 season。
 - Plan 2 当前产品链路已切到 MatchPick v3：本地/联赛 runner 只生成每场唯一 `match_decision`，不再生成或序列化 S/A/B/C；公开 API、静态导出、预览页、变化通知、完赛战绩和日报也只使用“本场首选 / 无法计算”。采集、概率模型、quota、调度、首发、HMAC ingest、SQLite/PostgreSQL 适配和多赛事合并能力继续保留。
 - Plan 3A FastAPI 本地适配层已实现并完成测试。
@@ -152,12 +152,13 @@ LaunchAgent generator 默认生成观察模式 JSON；label 固定为 `xin.celab
   --python /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
   --workdir /Users/eagod/ai-dev/足彩
 
-# 全链路 plist 草案；包含 quota guard，仍不安装/加载
+# 全链路 plist 草案；先把占位符替换为单独确认的正整数预算，仍不安装/加载
 /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
   -m worldcup.league_pre_match_launch_agent \
   --python /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
   --workdir /Users/eagod/ai-dev/足彩 \
   --full-live --endpoint https://football.celab.xin/api/ingest/snapshot \
+  --daily-credit-limit <已确认的每日credits> \
   --out /Users/eagod/ai-dev/足彩/data/cache/xin.celab.football.league-pre-match.plist
 ```
 
@@ -272,6 +273,20 @@ launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/xin.celab.football.
 
 零副作用调度外壳示例：
 
+### 联赛日常刷新（本地实现，未启用）
+
+最终审查的 HTTP 拒绝恢复、未知收费有界重试、畸形分区 LKG、占位 endpoint 门禁和 I3 公开事件保留/version-binding 均已修复，离线回归为 `1622/1622`（跳过可选 FastAPI 模块）。provider 本轮漏掉的旧事件会保留上一版逐场 `source_snapshot_id`，不会被误判为完赛；服务端拒绝 odds component 缩减事件 membership 或改写同一 event 的开球/主客身份。只有后续严格 result component 才能移除已确认完赛事件。首次 discovery 后 T-6 最短间隔的 M1 策略保持现有行为，首次 live 前仍需预算预检；当前完成的是本地实现，不代表已部署或获准 live。
+
+`league_daily_runner` 独立于正式首发：已验收 acceptance/严格 identity → 生产 events/snapshot → due 与 markets 并集 → 北京时间每日额度预留 → 同一次赔率响应生成/归档 → 持久 pending → HMAC ingest。日常与首发后赔率写入共用 `odds_execution.lock`、`daily_refresh_state.json` 预算及 `publication_state.json` 发布边界；真实响应 header 结算费用，未知失败不自动退款。SQLite 在同一事务校验 `league_publication` 赔率组件版本，旧 payload 不能回退较新版本；内部 manifest 不进入公开比赛行。
+
+默认 `python3 -m worldcup.league_daily_runner --root <repo>` 不读 `.env`、不联网、不建锁、不写盘、不通知。生产入口必须同时给出 `--live --write --publish --endpoint <真实HTTPS地址> --daily-credit-limit <已确认正整数>`，禁止 live 配合 `--now`。每日预算不是旧 4-credit 估算；首次使用前重新核验 active、markets、槽位及预计费用。
+
+`python3 -m worldcup.league_daily_launch_agent --workdir <repo>` 只打印观察版配置，独立 label 为 `xin.celab.football.league-daily`，固定 `StartInterval=300`、`RunAtLoad=false`；仅显式 `--out` 写 plist，不安装或加载。`--full-live` 必须提供有效 endpoint 与正整数 `--daily-credit-limit`，不含通知标志。已有首发生成器的 observer 默认不变，但 full-live 同样必须显式传共享预算。每五分钟唤醒不等于每五分钟付费：新 discovery 后可首次进入赛事锚点，已成功的同一锚点则不重复请求。
+
+启用顺序：先独立授权部署服务端版本校验并 GET smoke，再更新本机两条 writer 代码、配置已确认预算并验证，最后独立授权安装 timer（不 kickstart）。停用只 bootout 对应 label，保留 pending/history/审计；新契约启用后不得恢复旧 multi-league writer。当前仅离线 fake transport + 真实 HMAC/临时 SQLite/公开投影验证，不代表真实 ingest、公网或费用验收。首发 probe、德甲 Gate A 和赛后 Gates A–D 未被改变；本功能不完成赛后公网关闭，不新增日常群发，通知仍由原有首发触发链路负责。仅供研究，不构成投注建议。
+
+原有只读调度外壳仍可使用：
+
 ```bash
 /Users/eagod/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m worldcup.league_scheduled_publish --root /Users/eagod/ai-dev/足彩 --now 2026-08-24T12:00:00Z
 ```
@@ -343,6 +358,11 @@ worldcup/
   pre_match_launch_agent.py     # 赛前首发轮询 LaunchAgent plist 生成器（不加载 launchd）
   league_pre_match_runner.py    # 六联赛 confirmed lineup → quota guard → aggregate publish → outbox 单实例编排
   league_pre_match_launch_agent.py # 六联赛独立 LaunchAgent plist 生成器（不调用 launchctl）
+  league_daily_plan.py          # 生产赛事输入、纯 due/markets/预算计划
+  league_daily_state.py         # 每日额度预留、持久 attempt 与共享执行锁
+  league_daily_runner.py        # 日常 dry-run-first 生产编排与恢复
+  league_publication.py         # 赔率组件版本、持久 outbox 与防回退
+  league_daily_launch_agent.py  # 300 秒观察版/显式预算 live plist 生成器（不安装）
   league_result_store.py        # 六联赛 90 分钟赛果单调分区 store 与冲突隔离
   league_postmatch_planner.py   # 只读 due-event 计划；开赛时间不代表完赛
   league_postmatch_notifications.py # 研究摘要/20·50·100 里程碑与可恢复 outbox
