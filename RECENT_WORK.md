@@ -1,5 +1,11 @@
 # 近期工作
 
+## 2026-09-01 FotMob `standard` 首发真实契约修复（本地实现）
+
+- 只读根因确认生产轮询正常、但真实 FotMob detail 使用 `lineupType=standard` 且不提供原测试假定的 `lineupStatus=confirmed`，因此全部被记为 `lineup_status_unknown`；完整莱切–罗马样例还发现 FotMob `Roma` 未登记导致 `unmatched_team`。已按 TDD 接受严格 `standard + 双方11个唯一ID + provider赛前状态 + 响应完成于开球前` 复合证据，并加入意甲作用域内 `Roma -> as_roma` 精确别名；不启用 slug 回退，继续拒绝 predicted、缺状态、已开赛以及任何联赛/比赛/球队/开球身份不一致。
+- 内部沿用 `lineup_status=confirmed` 表示“已通过本地可用首发门禁”，同时持久化 `provider_lineup_type=standard` 和 `confirmation_basis=fotmob_standard_pregame_11v11`，不伪称 FotMob 明示 confirmed。runner 与 store 对旧 confirmed schema 保持兼容。
+- 新增解析器正/反例、五个 provider 赛前状态逐字段门禁、精确别名及 live runner→cache provenance 回归；保存的莱切–罗马 late detail 原始样例已通过新解析器完整离线复核。完整回归 `1510/1510 tests passed, 1 optional fastapi module skipped`，独立只读审查无 Critical/Important。实现位于独立 worktree；未联网、未读取 `.env`、未消耗 The Odds API quota、未修改运行目录或 LaunchAgent，未刷新赔率、发布、通知、提交、推送或部署。
+
 ## 2026-08-31 六联赛首发跟踪缺失提醒（本地实现）
 
 - 修复正式 snapshot 缺省 `fixture_status` 导致 T-20 未获取首发提醒被跳过；仅扩大提醒资格，仍需 active acceptance、合法状态文件及未开赛窗口，终态与未知非空状态继续拒绝，不放宽首发 parser 或球队 identity。

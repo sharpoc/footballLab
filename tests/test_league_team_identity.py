@@ -41,6 +41,7 @@ def test_accepted_registry_resolves_every_verified_serie_a_provider_team_and_rej
     expected = {
         "AC Milan": "ac_milan",
         "AS Roma": "as_roma",
+        "Roma": "as_roma",
         "Atalanta BC": "atalanta",
         "Bologna": "bologna",
         "Cagliari": "cagliari",

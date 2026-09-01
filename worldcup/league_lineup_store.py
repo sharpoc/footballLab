@@ -14,6 +14,7 @@ from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
 
 _FINGERPRINT_CHARS = frozenset("0123456789abcdef")
 _FORBIDDEN_FIELD_PARTS = ("raw", "header", "secret", "authorization", "cookie", "api_key", "token")
+_CONFIRMED_PROVENANCE_FIELDS = {"provider_lineup_type", "confirmation_basis"}
 
 
 def _atomic_write(path: Path, payload: str) -> None:
@@ -185,9 +186,22 @@ def _validate_confirmed_row(competition_id: str, row: Any) -> dict[str, Any]:
         "fetched_at", "lineup_status", "home_canonical", "away_canonical", "home_formation", "away_formation",
         "home_starting", "away_starting", "lineup_fingerprint",
     }
-    if set(row) != expected or row.get("schema_version") != 1 or row.get("provider") != "fotmob":
+    allowed_fields = {
+        frozenset(expected),
+        frozenset(expected | _CONFIRMED_PROVENANCE_FIELDS),
+    }
+    if (
+        set(row) not in allowed_fields
+        or row.get("schema_version") != 1
+        or row.get("provider") != "fotmob"
+    ):
         raise ValueError("league_lineup_invalid_report")
     if row.get("competition_id") != competition_id or row.get("lineup_status") != "confirmed":
+        raise ValueError("league_lineup_invalid_report")
+    if _CONFIRMED_PROVENANCE_FIELDS <= set(row) and (
+        row.get("provider_lineup_type") != "standard"
+        or row.get("confirmation_basis") != "fotmob_standard_pregame_11v11"
+    ):
         raise ValueError("league_lineup_invalid_report")
     checked = dict(row)
     for name in ("event_id", "source_match_id", "home_canonical", "away_canonical"):

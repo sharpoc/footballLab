@@ -55,6 +55,7 @@
 - legacy 与 FotMob runner 共享的 `closing.json` 必须在同一 `flock` 内完成读取、验证、单调 merge 和原子写入；删除、身份变化、时间倒退、同时间 decision 冲突必须拒绝，并发不同 event 不得 lost update。
 - FotMob 正式汇总使用 `postmatch_components.json` 保留逐联赛 last-known-good 验证统计、provider/schema 身份和 event membership。即使 fresh `postmatch.json` 结构合法，tally/sample/核心 coverage 或 membership 回退也必须显式 `postmatch_partition_regression` 并保留 LKG；不可读、结构无效、legacy shape 或 LKG 身份/schema 不兼容同样不得污染新 manifest。坏分区显式 `stale` / `blocked`，健康分区仍可推进 statistics/state/通知，不得将坏分区当空集合导致 aggregate 回退。
 - 六联赛赛后 timer 固定为北京时间 10:30 / 16:30、`RunAtLoad=false`；赛前 confirmed-lineup observer 是独立 `xin.celab.football.league-pre-match` 五分钟唤醒链路，不得把五分钟频率写成赛后调度。
+- 六联赛 FotMob 首发真实契约允许两类可用证据：provider 明示 confirmed 11+11；或 `lineupType=standard`、双方各 11 个唯一球员 ID、`general.started/finished=false`、`header.status.started/finished/cancelled=false`，且响应完成于开球前。后一类内部规范化为可用首发，但必须保留 `provider_lineup_type=standard` 与 `confirmation_basis=fotmob_standard_pregame_11v11`，不得声称 FotMob 明示 confirmed。predicted、缺状态、已开赛及身份/开球不一致仍 fail closed。
 - The Odds API 使用 `THE_ODDS_API_KEY_PRIMARY` / `THE_ODDS_API_KEY_SECONDARY` / `THE_ODDS_API_KEY_TERTIARY` / `THE_ODDS_API_KEY_QUATERNARY` / `THE_ODDS_API_KEY_QUINARY` 五个显式槽位依次轮换；当前槽位剩余额度降到 30 或以下时，优先切换到仍未探测或剩余大于 30 的下一槽位并保留低额度应急余额。只有五个槽位都没有新鲜额度时才按低额度锚点降频，全部耗尽时暂停刷新。真实 token 只允许写入 ignored `.env`，不得进入代码、文档、日志或回复。
 - scheduled refresh 默认 dry-run；只有显式 `--live` 且调度 due，或同时传 `--force`，才会调用 refresh runner。
 - 正常额度时，世界杯与中超调度都必须把 `match_decision.valid_until - 20 分钟` 作为刷新候选，避免有效首选先过期再等下一个赛前锚点；quota 低于等于 30 时允许按既有低额度锚点降级。
