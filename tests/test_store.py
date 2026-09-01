@@ -152,3 +152,27 @@ def test_sqlite_snapshot_store_lists_latest_snapshots_by_competition_without_rec
             "fifa_world_cup_2026",
             "csl_2026",
         ]
+def test_league_publication_uses_one_top_level_candidate_query():
+    import runpy
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from worldcup.ingest import build_ingest_payload
+    from worldcup.league_publication import build_publication_vector
+    from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
+    fixture = runpy.run_path(str(Path(__file__).with_name("test_league_publication.py")))
+    with TemporaryDirectory() as tmp:
+        store = SQLiteSnapshotStore(Path(tmp)/"store.db")
+        store.initialize(); statements = []; original = store._connect
+        def connect():
+            conn = original(); conn.set_trace_callback(statements.append); return conn
+        store._connect = connect
+        snapshot = fixture["_aggregate"]()
+        parts = []
+        for cid in FORMAL_SINGLE_MATCH_IDS:
+            part = fixture["_component"](); part["competition"]["id"] = cid; part["matches"] = []
+            parts.append(part)
+        snapshot["league_publication"]["components"] = build_publication_vector(parts)
+        snapshot["matches"] = []
+        store.put_snapshot("six", build_ingest_payload(snapshot))
+        assert len([sql for sql in statements if "json_extract(snapshot_json" in sql]) == 1
+        assert any("BEGIN IMMEDIATE" in sql for sql in statements)

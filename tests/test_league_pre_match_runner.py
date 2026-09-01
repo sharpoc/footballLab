@@ -13,7 +13,7 @@ from worldcup.league_lineups_refresh import run_league_lineups_refresh
 from worldcup.league_post_lineup_refresh import (
     PostLineupRefreshStateStore,
     _ack_token,
-    run_post_lineup_refresh,
+    run_post_lineup_refresh as _real_post_lineup_refresh,
 )
 from worldcup.league_team_identity import (
     LeagueTeamIdentityRegistry,
@@ -37,6 +37,81 @@ def run_league_pre_match(**kwargs):
     requested_now = kwargs.get("now", NOW)
     kwargs.setdefault("observed_clock", lambda: requested_now)
     return _run_league_pre_match(**kwargs)
+
+
+def run_post_lineup_refresh(**kwargs):
+    kwargs['root'] = Path(kwargs['root']).resolve()
+    kwargs.setdefault('endpoint', 'https://research.fixture-domain.net/api/ingest')
+    kwargs.setdefault('daily_credit_limit', 100)
+    old = kwargs.get('publish_fn')
+    if old:
+        kwargs['publish_fn'] = lambda *, payload, endpoint, timestamp: old(payload['snapshot'])
+    return _real_post_lineup_refresh(**kwargs)
+
+
+def _approved_fingerprints(acceptance, registry):
+    import hashlib
+    from worldcup.league_team_identity import league_team_identity_registry_fingerprint
+    for cid, row in acceptance['competitions'].items():
+        row['fingerprints'] = {name: (league_team_identity_registry_fingerprint(registry, cid)
+            if name == 'team_identity' else hashlib.sha256(f'{cid}-{name}'.encode()).hexdigest())
+            for name in ('sport_catalog', 'odds_sample', 'team_identity', 'result_contract')}
+
+
+def test_notify_filter_of_expired_receipt_does_not_starve_new_healthy_post_refresh():
+    from worldcup.league_daily_runner import read_daily_publication
+    old, new = _receipt('expired-original', 'a'), _receipt('healthy-new', 'b')
+    new['kickoff_at_utc'] = '2026-08-24T14:00:00+00:00'
+    clock = [NOW]; provider_calls = []; publish_calls = []; notifications = []; post_submitted = []
+    registry = LeagueTeamIdentityRegistry({EPL: {'home': ('Home FC',), 'away': ('Away FC',)}})
+    acceptance = {'schema_version': 1, 'competitions': {EPL: {'competition_id': EPL, 'state': 'active', 'reason': None}}}
+    _approved_fingerprints(acceptance, registry)
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        path = root / 'data/local/leagues/acceptance.json'; path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(acceptance))
+        _write_pending(root, old)
+        def contexts(_root):
+            snapshot_path = root / f'data/cache/leagues/{EPL}/snapshot.json'
+            snapshot_id = json.loads(snapshot_path.read_text())['snapshot_id'] if snapshot_path.exists() else 'before-lineups'
+            return {f'{EPL}:{row["event_id"]}': _context(row['event_id'], kickoff_at_utc=row['kickoff_at_utc'], snapshot_id=snapshot_id)
+                    for row in (old, new)}
+        def builder(payload, competition_id, observed_at, **kwargs):
+            return {'snapshot_at': observed_at, 'competition': {'id': competition_id}, 'matches': [
+                {'source_event_id': row['id'], 'competition': {'id': competition_id},
+                 'kickoff_at_utc': old['kickoff_at_utc'] if row['id'] == old['event_id'] else new['kickoff_at_utc'],
+                 'match_decision': _decision('home')} for row in payload]}
+        def provider(*args):
+            provider_calls.append(clock[0])
+            return [{'id': old['event_id'] if clock[0] == NOW else new['event_id']}]
+        def post(**kwargs):
+            post_submitted.append([row['event_id'] for rows in kwargs['newly_confirmed'].values() for row in rows])
+            return run_post_lineup_refresh(**kwargs, env={'THE_ODDS_API_KEY_PRIMARY': 'fake'},
+                quota_ledger={'providers': {'theoddsapi_primary': {'remaining': 100, 'observed_at': clock[0]}}},
+                acceptance_report=acceptance, snapshot_builder=builder)
+        def publisher(snapshot):
+            publish_calls.append(snapshot)
+            return {'status': 'failed' if clock[0] == NOW else 'stored'}
+        def run(lineups):
+            return run_league_pre_match(root=root, now=clock[0], observed_clock=lambda: clock[0],
+                lineup_refresh_fn=lambda **kwargs: lineups, post_lineup_refresh_fn=post,
+                match_context_loader=contexts, identity_registry=registry, odds_fetcher=provider,
+                publish_fn=publisher, notifier=lambda content, **kwargs: notifications.append(content) or {'status': 'sent'},
+                **_full_flags(notify=True))
+        first = run(_lineup_result())
+        assert read_daily_publication(root)['pending'] is not None, first
+        clock[0] = '2026-08-24T12:41:00+00:00'
+        second = run(_lineup_result(new))
+        assert provider_calls == [NOW, clock[0]], second
+        assert post_submitted == [[old['event_id']], [new['event_id']]], post_submitted
+        state = PostLineupRefreshStateStore(root).read()['receipts']
+        assert state[_ack_token(old['ack_key'])]['phase'] == 'committed'
+        assert state[_ack_token(new['ack_key'])]['phase'] == 'published'
+        publication = read_daily_publication(root)
+        assert publication['pending'] is None
+        assert publication['superseded'][-1]['reason'] == 'post_lineup_pending_expired'
+        assert len(publish_calls) == 2
+        assert len(notifications) == 1  # only the healthy receipt reaches the fake notifier
 
 
 def _fail(*_args, **_kwargs):
@@ -468,9 +543,11 @@ def test_unclaimed_pending_and_new_same_sport_are_one_real_task5_provider_fetch(
         EPL: {
             "home": ("Home FC",),
             "away": ("Away FC",),
-        }
+        },
+        LALIGA: {'home': ('Home FC',), 'away': ('Away FC',)},
     })
     calls = {"lineups": 0, "post": 0, "provider": 0, "publish": 0}
+    _approved_fingerprints(acceptance, registry)
     published_components = []
 
     def snapshot_builder(payload, competition_id, observed_at, **_kwargs):
@@ -769,7 +846,9 @@ def test_staged_postponed_receipt_never_reaches_real_task5_while_other_due_publi
             "home": ("Home FC",),
             "away": ("Away FC",),
         },
+        EPL: {'home': ('Home FC',), 'away': ('Away FC',)},
     })
+    _approved_fingerprints(acceptance, registry)
 
     def contexts(_root):
         return {
@@ -852,6 +931,7 @@ def test_staged_postponed_receipt_never_reaches_real_task5_while_other_due_publi
             acceptance_states={EPL: "active", LALIGA: "active"},
             snapshots={EPL: "epl-before", LALIGA: current_laliga_snapshot},
         )
+        (Path(tmp) / 'data/local/leagues/acceptance.json').write_text(json.dumps(acceptance))
         _write_pending(tmp, old)
         first = run_league_pre_match(
             root=tmp,
@@ -3206,9 +3286,11 @@ def test_real_multi_active_task5_ack_failure_keeps_cached_extra_and_does_not_sta
         EPL: {
             "home": ("Home FC",),
             "away": ("Away FC",),
-        }
+        },
+        LALIGA: {'home': ('Home FC',), 'away': ('Away FC',)},
     })
     calls = {"lineups": 0, "provider": 0, "publish": 0, "post": []}
+    _approved_fingerprints(acceptance, registry)
     delivered = []
     published_components = []
 

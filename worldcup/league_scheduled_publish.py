@@ -15,6 +15,7 @@ from worldcup.league_lifecycle import run_league_lifecycle
 from worldcup.league_live_planner import plan_league_live_refresh
 from worldcup.quota import load_quota_ledger
 from worldcup.competitions import FORMAL_SINGLE_MATCH_IDS
+from worldcup.league_publication import build_publication_vector, project_publication_match
 
 
 def _read_json(path: Path) -> Any:
@@ -115,7 +116,7 @@ def build_aggregate_league_snapshot(
         for raw_match in snapshot.get("matches") or []:
             if not isinstance(raw_match, Mapping):
                 raise ValueError("league_aggregate_match_invalid")
-            match = dict(raw_match)
+            match = project_publication_match(dict(raw_match))
             match_competition = match.get("competition")
             if not isinstance(match_competition, Mapping) or match_competition.get("id") != competition_id:
                 raise ValueError("league_aggregate_match_competition_mismatch")
@@ -127,7 +128,9 @@ def build_aggregate_league_snapshot(
 
     if not components:
         raise ValueError("league_aggregate_empty")
-    digest_payload = json.dumps(components, sort_keys=True, separators=(",", ":"))
+    vector = build_publication_vector(list(by_competition.values()))
+    matches.sort(key=lambda row: row["source_event_id"])
+    digest_payload = json.dumps(vector, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     digest = hashlib.sha256(digest_payload.encode("utf-8")).hexdigest()[:20]
     statistics_path = (
         root_path / "data/local/leagues/legacy_theoddsapi/statistics.json"
@@ -142,6 +145,7 @@ def build_aggregate_league_snapshot(
         "run": {"run_id": f"league-aggregate-{digest}"},
         "competition": {"id": "multi_league", "name": "联赛聚合"},
         "components": components,
+        "league_publication": {"schema_version": 1, "components": vector},
         "matches": matches,
         "league_acceptance": acceptance or {"schema_version": 1, "competitions": {}},
         "data_quality": {"missing_competition_snapshots": missing},
@@ -205,6 +209,8 @@ def publish_committed_league_snapshots(
     snapshot_receipts: list[Any],
     publish_fn: Callable[[Mapping[str, Any]], Mapping[str, Any]],
     expected_acceptance_fingerprint: str | None = None,
+    endpoint: str | None = None,
+    now: str | None = None,
 ) -> dict[str, Any]:
     """Re-read committed partitions, build one complete aggregate, and publish it."""
     try:
@@ -225,7 +231,20 @@ def publish_committed_league_snapshots(
             "aggregate": None,
         }
     try:
-        published_value = publish_fn(aggregate)
+        if endpoint is not None:
+            from worldcup.league_daily_runner import read_daily_publication, valid_daily_endpoint
+            from worldcup.league_publication import deliver_league_publication, publication_vector
+            if not valid_daily_endpoint(endpoint) or now is None:
+                raise ValueError('league_publication_endpoint_invalid')
+            read_daily_publication(root)
+            published_value = deliver_league_publication(root=Path(root), endpoint=endpoint,
+                snapshot=aggregate, publish_fn=publish_fn, now=now)
+            durable = read_daily_publication(root)
+            expected = publication_vector(aggregate)
+            if durable['components'] != expected or not durable['sent'] or durable['sent']['endpoint'] != endpoint:
+                raise ValueError('league_publication_receipt_mismatch')
+        else:
+            published_value = publish_fn(aggregate)
         published = _project_publish_result(published_value)
     except Exception:
         return {

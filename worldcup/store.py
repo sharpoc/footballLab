@@ -42,6 +42,7 @@ _BUSY_TIMEOUT_MS = 5000
 
 
 class SQLiteSnapshotStore(SnapshotStore):
+    supports_atomic_league_publication = True
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self._initialized = False
@@ -90,6 +91,23 @@ class SQLiteSnapshotStore(SnapshotStore):
         snapshot = payload.get("snapshot") or {}
         snapshot_json = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute("SELECT idempotency_key FROM snapshots WHERE idempotency_key = ?", (idempotency_key,)).fetchone()
+            if existing is not None:
+                return {"status": "duplicate", "idempotency_key": idempotency_key,
+                        "run_id": payload["run_id"], "snapshot_id": payload["snapshot_id"]}
+            if (snapshot.get("competition") or {}).get("id") == "multi_league" or "league_publication" in snapshot:
+                from worldcup.league_publication import validate_publication_transition
+                previous = conn.execute(
+                    "SELECT snapshot_json, MAX(stored_at) OVER () FROM snapshots WHERE json_extract(snapshot_json, '$.competition.id') = ? ORDER BY rowid DESC LIMIT 1",
+                    ("multi_league",),
+                ).fetchone()
+                validate_publication_transition(json.loads(previous[0]) if previous else None, snapshot)
+                if previous is not None and "league_publication" in snapshot:
+                    # Public readers order by stored_at then rowid. A request may
+                    # capture its clock before waiting for this transaction lock;
+                    # never let that earlier clock hide a later accepted version.
+                    stored = max(stored, previous[1])
             cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO snapshots (

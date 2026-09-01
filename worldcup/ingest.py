@@ -70,13 +70,20 @@ def build_ingest_request(
     secret: str,
     timestamp: str | None = None,
 ) -> dict[str, Any]:
+    observed = timestamp or _now_utc_iso()
+    return build_frozen_ingest_request(build_ingest_payload(snapshot, generated_at=observed), endpoint, secret, observed)
+
+
+def build_frozen_ingest_request(
+    payload: dict[str, Any], endpoint: str, secret: str, timestamp: str | None = None,
+) -> dict[str, Any]:
+    """Sign an already frozen ingest wrapper without changing generated_at/body."""
     if not secret:
         raise ValueError("HMAC secret is required")
 
     observed = timestamp or _now_utc_iso()
     method = "POST"
     path = _endpoint_path(endpoint)
-    payload = build_ingest_payload(snapshot, generated_at=observed)
     body = canonical_json(payload)
     body_sha256 = _sha256_text(body)
     message = _signature_message(

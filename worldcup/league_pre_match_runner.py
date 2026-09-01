@@ -1886,6 +1886,8 @@ def _call_post(
     identity_registry: Any,
     observed_clock: Callable[[], Any] | None,
     receipt_context_loader: Callable[[], Any] | None,
+    endpoint: str | None = None,
+    daily_credit_limit: int | None = None,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "root": root,
@@ -1907,6 +1909,10 @@ def _call_post(
         kwargs["publish_fn"] = publish_fn
     if identity_registry is not None:
         kwargs["identity_registry"] = identity_registry
+    if endpoint is not None:
+        kwargs['endpoint'] = endpoint
+    if daily_credit_limit is not None:
+        kwargs['daily_credit_limit'] = daily_credit_limit
     return _validate_post_result(
         fn(**kwargs),
         submitted=receipts,
@@ -1939,6 +1945,8 @@ def run_league_pre_match(
     identity_registry: Any = None,
     live_preflight: Callable[[], Mapping[str, Any]] | None = None,
     observed_clock: Callable[[], Any] | None = None,
+    endpoint: str | None = None,
+    daily_credit_limit: int | None = None,
 ) -> dict[str, Any]:
     if not _flags_are_safe(
         live_lineups=live_lineups,
@@ -2109,6 +2117,8 @@ def run_league_pre_match(
                         identity_registry=identity_registry,
                         observed_clock=clock.now if clock is not None else None,
                         receipt_context_loader=lambda: match_context_loader(root),
+                        endpoint=endpoint,
+                        daily_credit_limit=daily_credit_limit,
                     )
                 except Exception:
                     return {
@@ -2232,6 +2242,8 @@ def run_league_pre_match(
                         identity_registry=identity_registry,
                         observed_clock=clock.now if clock is not None else None,
                         receipt_context_loader=lambda: match_context_loader(root),
+                        endpoint=endpoint,
+                        daily_credit_limit=daily_credit_limit,
                     )
                 except Exception:
                     return {
@@ -2498,10 +2510,13 @@ def _cli_odds_fetcher(
             observed_at=_utc(observed_clock()).isoformat(),
             quota_provider=selected.provider,
             markets=DEFAULT_MARKETS,
+            max_attempts=1,
         )
         if not isinstance(result.json_body, list):
             raise ValueError("odds_payload_invalid")
-        return result.json_body
+        from worldcup.league_daily_runner import _cost
+        return {'raw_events': result.json_body,
+                'actual_cost': _cost({str(k).lower(): str(v) for k, v in result.headers.items()})}
 
     return fetch
 
@@ -2569,6 +2584,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env", default=".env")
     parser.add_argument("--quota-path", default=str(DEFAULT_QUOTA_RELATIVE_PATH))
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
+    parser.add_argument('--daily-credit-limit', type=int)
     parser.add_argument("--source-failure-threshold", type=int, default=DEFAULT_SOURCE_FAILURE_THRESHOLD)
     parser.add_argument("--live-lineups", action="store_true")
     parser.add_argument("--write-lineups", action="store_true")
@@ -2606,6 +2622,7 @@ def main(argv: list[str] | None = None) -> int:
             env_cache["value"] = _load_env(env_path)
         return env_cache["value"]
 
+    from worldcup.league_daily_runner import frozen_cli_publisher
     result = run_league_pre_match(
         root=root,
         now=observed_at,
@@ -2624,11 +2641,9 @@ def main(argv: list[str] | None = None) -> int:
             quota_path=quota_path,
             observed_clock=live_clock.now,
         ),
-        publish_fn=_cli_publisher(
-            env_path=env_path,
-            endpoint=args.endpoint,
-            observed_clock=live_clock.now,
-        ),
+        publish_fn=frozen_cli_publisher(load_live_env),
+        endpoint=args.endpoint,
+        daily_credit_limit=args.daily_credit_limit,
         identity_registry=accepted_league_team_identity_registry(),
         live_preflight=_cli_live_preflight(
             env_loader=load_live_env, endpoint=args.endpoint
