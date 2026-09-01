@@ -86,7 +86,7 @@
 - 离线实现阶段只使用保存样例和依赖注入，默认 dry-run，不读取 `.env`、不联网、不消耗 quota、不生成正式 closing 或统计。真实赔率/比分样例、90 分钟比分口径、生产调度、发布和部署均须后续单独确认。
 - 设计文档：[六联赛单场分析完整闭环设计](docs/superpowers/specs/2026-08-24-six-league-single-match-integration-design.md)。
 - Live 激活设计：[六联赛单场分析 Live 激活设计](docs/superpowers/specs/2026-08-24-six-league-live-activation-design.md)。六联赛同时进入赛程发现，按最近开球动态排序并逐联赛独立验收/启用；已经开赛的比赛不得补造赛前首选。
-- 意甲、英超、西甲、法甲和巴甲已通过本地正式验收并标记 `active`；德甲因 2026/27 尚无完赛证据停留在 `identity_verified`，调度必须排除。
+- 意甲、英超、西甲、法甲和巴甲已通过本地正式验收并标记 `active`；德甲的保存样例已具备本赛季完赛证据，但正式 FotMob result evidence/acceptance 尚未写入，运行态仍停留在 `identity_verified`，调度必须排除。
 - 内部仍按联赛隔离 snapshot/history/closing/postmatch，公开发布则每轮只生成一份 `league-aggregate-*` snapshot。本轮未刷新的 `active` 联赛会从已提交缓存补齐，避免公开页只剩最后一个联赛；跨联赛身份错配、空 ID 或重复比赛会 fail-closed。
 - SQLite public view 的检索候选固定包含顶层 `competition.id=multi_league` 的已验收聚合 snapshot，不会为六个内部联赛 ID 分别重复扫描 SQLite JSON；这与 profile 为防止普通 scheduler 越权而继续标记 `dry_run_probe` 的运行门禁相互独立。检索候选不等于公开行，页面只投影 snapshot 中真实存在的 match，因此未 active/无比赛的德甲不会被伪造展示。
 - 单场分析页对六联赛使用 competition-scoped canonical 中文俱乐部展示名；英文 `home_team` / `away_team`、snapshot、API、身份匹配和结算契约不变，未登记球队安全回退英文。页面下拉列表只从当前公开比赛生成杯赛入口，不再因历史完赛记录保留已结束的世界杯；固定六联赛验收入口仍保留。
@@ -189,6 +189,8 @@ FotMob 赛果合同固定使用 calendar `/api/data/matches?date=YYYYMMDD` 与 d
 ```
 
 2026-08-26 首次用上述 exact bundle 复核时，发现 evaluator 错把 wrapper `calendar_date` 限定为 ISO `YYYY-MM-DD`，与 FotMob calendar 请求和保存器使用的 provider-native `YYYYMMDD` 不一致；该离线 evaluator defect 随后修复为只接受组成真实 Gregorian 日期的 8 位 ASCII `YYYYMMDD`，不改任何保存样例。修复后同路径重跑得到 `status=partial`、`verified_count=4`、`blocked_count=2`：意甲、西甲、英超、法甲分别接受唯一 event `5749642`、`5868020`、`5795372`、`5802901`；Brazil 仍只有 calendar、报 `sample_detail_missing`，Bundesliga 当前 calendar 仍缺本赛季 FT、报 `no_current_season_finished_match`。aggregate audit SHA-256 为 `91602330757587553da7bc64bd88c3cb79043e2d2511e9bb0ad1496eb2796cce`。这只证明四份已保存样例通过离线 parser，并不等于 operational Gate A 完成或激活；不得写正式 evidence/aggregate acceptance，也不能进入 Gate B。Brazil detail 与 Bundesliga 本赛季 FT 仍须另行确认真实 re-probe。
+
+2026-09-01 对后续保存的 Bundesliga event `5881143`（Bayern München 5–1 VfB Stuttgart）做离线复核时，唯一阻断是 FotMob 原名 `Bayern München` 未登记。球队 registry 现仅在 `bundesliga_2026_27` 作用域将该精确原名绑定到既有 canonical `bayern_munich`；不启用 slug 或跨联赛回退。修复后原始 bundle 通过 calendar/detail FT、90 分钟比分一致、无加时/点球/aggregate、严格球队身份及 timezone-aware kickoff 的完整审核。该结果只证明本地代码和保存样例满足写入 Gate A 证据的条件；正式 provider evidence/acceptance 未写，德甲仍未 `active`。
 
 默认命令只读 `acceptance.json`、每个 active 联赛的 `providers/fotmob/result_contract_evidence.json`、history 和 `results.json` receipt，不读 legacy 或旧通用 evidence，不读/不改动 runner state 或 notification state；不创建锁，不读 `.env`，不请求 FotMob，不写盘，不通知，不调用 The Odds API scores 或改动 quota ledger。`--now` 只用于 dry-run 重放，live CLI 会拒绝它：
 
